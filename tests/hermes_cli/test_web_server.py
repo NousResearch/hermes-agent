@@ -845,6 +845,46 @@ class TestWebServerEndpoints:
         assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
         assert installed == [("honcho-ai",)]
 
+    def test_memory_provider_setup_reads_plugin_yml_manifest(
+        self, monkeypatch, tmp_path
+    ):
+        """Dashboard setup metadata must match plugin discovery's YAML parity."""
+        import hermes_cli.web_server as web_server
+
+        provider_dir = tmp_path / "yml-provider"
+        provider_dir.mkdir()
+        (provider_dir / "plugin.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "pip_dependencies": ["example-memory>=1"],
+                    "external_dependencies": [
+                        {
+                            "name": "example-cli",
+                            "install": "install example-cli",
+                            "check": "example-cli --version",
+                        }
+                    ],
+                    "requires_env": ["EXAMPLE_MEMORY_KEY"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.find_provider_dir", lambda name: provider_dir
+        )
+
+        assert web_server._memory_provider_setup_manifest("yml-provider") == {
+            "pip_dependencies": ["example-memory>=1"],
+            "external_dependencies": [
+                {
+                    "name": "example-cli",
+                    "install": "install example-cli",
+                    "check": "example-cli --version",
+                }
+            ],
+            "required_env": ["EXAMPLE_MEMORY_KEY"],
+        }
+
 
 
 

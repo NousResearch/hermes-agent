@@ -108,12 +108,47 @@ def _get_project_plugins_dir() -> Optional[Path]:
 def _is_memory_provider_dir(path: Path) -> bool:
     """Heuristic: does *path* look like a memory provider plugin?
 
-    Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
-    ``__init__.py`` source.  Cheap text scan — no import needed.
+    Checks for an explicit ``kind: exclusive`` manifest first.  Explicit
+    non-exclusive kinds are rejected; only manifests with no kind retain the
+    legacy source-text fallback.  The manifest check lets standalone
+    providers keep their implementation in another module without making
+    discovery import arbitrary user code.
     """
     init_file = path / "__init__.py"
     if not init_file.exists():
         return False
+
+    yaml_file = path / "plugin.yaml"
+    if not yaml_file.exists():
+        yaml_file = path / "plugin.yml"
+    if yaml_file.exists():
+        try:
+            import yaml
+
+            with open(yaml_file, encoding="utf-8-sig") as f:
+                meta = yaml.safe_load(f)
+        except Exception:
+            return False
+
+        if not isinstance(meta, dict):
+            return False
+
+        name = meta.get("name", path.name)
+        if not isinstance(name, str):
+            return False
+
+        kind = meta.get("kind")
+        if kind is None:
+            kind = ""
+        elif isinstance(kind, str):
+            kind = kind.strip().lower()
+        else:
+            return False
+        if kind == "exclusive":
+            return True
+        if kind:
+            return False
+
     try:
         source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
@@ -269,9 +304,11 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     seen: set[str] = set()
 
     for name, child in _iter_provider_dirs():
-        # Read description from plugin.yaml if available
+        # Read description from the manifest, matching discovery precedence.
         desc = ""
         yaml_file = child / "plugin.yaml"
+        if not yaml_file.exists():
+            yaml_file = child / "plugin.yml"
         if yaml_file.exists():
             try:
                 import yaml
@@ -557,6 +594,16 @@ class _ProviderCollector:
         self._register_skills = register_skills
         self._context = None
 
+    @property
+    def llm(self):
+        """Return the provider's host-owned LLM facade.
+
+        Delegates to the real ``PluginContext`` facade so a standalone
+        memory provider gets the same host-owned completions access as
+        any other plugin, without its own provider keys.
+        """
+        return self._plugin_context().llm
+
     def register_memory_provider(self, provider):
         self.provider = provider
 
@@ -745,10 +792,12 @@ def discover_plugin_cli_commands() -> List[dict]:
         if not callable(register_cli):
             return results
 
-        # Read metadata from plugin.yaml if available
+        # Read metadata from the manifest, matching discovery precedence.
         help_text = f"Manage {active_provider} memory plugin"
         description = ""
         yaml_file = plugin_dir / "plugin.yaml"
+        if not yaml_file.exists():
+            yaml_file = plugin_dir / "plugin.yml"
         if yaml_file.exists():
             try:
                 import yaml

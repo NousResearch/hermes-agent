@@ -378,6 +378,219 @@ class TestUserInstalledProviderDiscovery:
         assert p.name == "myexternal"
         assert p.is_available()
 
+    def test_legacy_manifest_without_kind_keeps_source_heuristic(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy manifests without kind remain discoverable by source scan."""
+        from plugins.memory import _is_memory_provider_dir, load_memory_provider
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "legacyprovider")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        assert _is_memory_provider_dir(plugin_dir)
+        assert load_memory_provider("legacyprovider") is not None
+
+    @pytest.mark.parametrize(
+        ("kind_manifest", "expected"),
+        [
+            pytest.param("", True, id="missing-kind"),
+            pytest.param("kind: null\n", True, id="null-kind"),
+            pytest.param('kind: ""\n', True, id="empty-kind"),
+            pytest.param('kind: "   "\n', True, id="whitespace-kind"),
+            pytest.param("kind: exclusive\n", True, id="exclusive-kind"),
+            pytest.param("kind: standalone\n", False, id="standalone-kind"),
+            pytest.param("kind: backend\n", False, id="backend-kind"),
+            pytest.param("kind: platform\n", False, id="platform-kind"),
+            pytest.param("kind: other\n", False, id="other-kind"),
+        ],
+    )
+    def test_manifest_kind_classification(
+        self, kind_manifest, expected, tmp_path
+    ):
+        """Only explicit non-empty non-exclusive kinds reject memory fallback."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "kindprovider")
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: kindprovider\n{kind_manifest}",
+            encoding="utf-8",
+        )
+
+        assert _is_memory_provider_dir(plugin_dir) is expected
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected"),
+        [
+            pytest.param("name: nameprovider\nkind: exclusive\n", True, id="string-name-exclusive"),
+            pytest.param(
+                "name: [nope]\nkind: exclusive\n",
+                False,
+                id="list-name-exclusive",
+            ),
+            pytest.param(
+                "name: 42\nkind: exclusive\n",
+                False,
+                id="numeric-name-exclusive",
+            ),
+            pytest.param(
+                "name: {a: b}\nkind: exclusive\n",
+                False,
+                id="mapping-name-exclusive",
+            ),
+        ],
+    )
+    def test_manifest_name_must_be_string(self, manifest, expected, tmp_path):
+        """Non-string manifest names reject the provider before kind is read."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "nameprovider")
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        assert _is_memory_provider_dir(plugin_dir) is expected
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected"),
+        [
+            pytest.param("name: documentprovider\n", True, id="valid-unspecified-mapping"),
+            pytest.param(
+                "name: documentprovider\nkind: null\n",
+                True,
+                id="valid-null-kind-mapping",
+            ),
+            pytest.param("kind: [\n", False, id="malformed-yaml"),
+            pytest.param("- documentprovider\n", False, id="list-document"),
+            pytest.param("documentprovider\n", False, id="scalar-document"),
+            pytest.param("null\n", False, id="null-document"),
+            pytest.param("", False, id="empty-document"),
+        ],
+    )
+    def test_manifest_document_must_be_mapping_before_source_fallback(
+        self, manifest, expected, tmp_path
+    ):
+        """Malformed or non-mapping manifests cannot activate source fallback."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "documentprovider")
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        assert _is_memory_provider_dir(plugin_dir) is expected
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected"),
+        [
+            pytest.param("name: ymlprovider\n", True, id="unspecified-mapping"),
+            pytest.param("name: ymlprovider\nkind: exclusive\n", True, id="exclusive-kind"),
+            pytest.param("name: ymlprovider\nkind: standalone\n", False, id="standalone-kind"),
+            pytest.param("kind: [\n", False, id="malformed-yaml"),
+            pytest.param("- ymlprovider\n", False, id="list-document"),
+        ],
+    )
+    def test_plugin_yml_manifest_classification(
+        self, manifest, expected, tmp_path
+    ):
+        """Memory discovery classifies plugin.yml like plugin.yaml."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "ymlprovider")
+        (plugin_dir / "plugin.yaml").unlink()
+        (plugin_dir / "plugin.yml").write_text(manifest, encoding="utf-8")
+
+        assert _is_memory_provider_dir(plugin_dir) is expected
+
+    @pytest.mark.parametrize(
+        ("yaml_manifest", "yml_manifest", "expected"),
+        [
+            pytest.param(
+                "name: bothprovider\nkind: standalone\n",
+                "name: bothprovider\n",
+                False,
+                id="yaml-explicit-wins",
+            ),
+            pytest.param(
+                "name: bothprovider\n",
+                "name: bothprovider\nkind: standalone\n",
+                True,
+                id="yaml-unspecified-wins",
+            ),
+            pytest.param(
+                "kind: [\n",
+                "name: bothprovider\nkind: exclusive\n",
+                False,
+                id="yaml-malformed-wins",
+            ),
+            pytest.param(
+                "name: bothprovider\nkind: exclusive\n",
+                "kind: [\n",
+                True,
+                id="yaml-exclusive-wins",
+            ),
+        ],
+    )
+    def test_plugin_yaml_precedes_plugin_yml(
+        self, yaml_manifest, yml_manifest, expected, tmp_path
+    ):
+        """Both-file precedence matches generic scanner: plugin.yaml wins."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "bothprovider")
+        (plugin_dir / "plugin.yaml").write_text(yaml_manifest, encoding="utf-8")
+        (plugin_dir / "plugin.yml").write_text(yml_manifest, encoding="utf-8")
+
+        assert _is_memory_provider_dir(plugin_dir) is expected
+
+    @pytest.mark.parametrize(
+        "kind_manifest",
+        [
+            pytest.param("kind: false\n", id="boolean-kind"),
+            pytest.param("kind: 0\n", id="integer-kind"),
+            pytest.param("kind: []\n", id="list-kind"),
+            pytest.param("kind: {}\n", id="mapping-kind"),
+        ],
+    )
+    def test_manifest_non_string_kind_rejects_source_heuristic(
+        self, kind_manifest, tmp_path
+    ):
+        """Explicit non-string kinds are not unspecified legacy manifests."""
+        from plugins.memory import _is_memory_provider_dir
+
+        plugin_dir = self._make_user_memory_plugin(tmp_path, "nonstringprovider")
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: nonstringprovider\n{kind_manifest}",
+            encoding="utf-8",
+        )
+
+        assert not _is_memory_provider_dir(plugin_dir)
+
+    @pytest.mark.parametrize("kind", ["standalone", "backend", "platform", "other"])
+    def test_explicit_non_exclusive_manifest_skips_source_heuristic(
+        self, kind, tmp_path, monkeypatch
+    ):
+        """Non-memory plugin kinds must not route through memory.provider."""
+        from plugins.memory import _is_memory_provider_dir, load_memory_provider
+
+        name = f"nonmemory_{kind}"
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "# This source marker must not classify this plugin as memory.\n"
+            "MemoryProvider\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {name}\nkind: {kind}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        assert not _is_memory_provider_dir(plugin_dir)
+        assert load_memory_provider(name) is None
+
     def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
         """Bundled provider wins when user plugin has the same name."""
         from plugins.memory import load_memory_provider, discover_memory_providers
@@ -408,6 +621,73 @@ class TestUserInstalledProviderDiscovery:
         providers = discover_memory_providers()
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1
+
+    def test_discover_explicit_exclusive_user_plugin(self, tmp_path, monkeypatch):
+        """A standalone provider may declare its category in plugin.yaml."""
+        from plugins.memory import discover_memory_providers
+
+        plugin_dir = tmp_path / "plugins" / "manifestprovider"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "provider.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class ManifestProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'manifestprovider'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from .provider import ManifestProvider\n"
+            "def register(ctx):\n"
+            "    getattr(ctx, 'register_' + 'memory_provider')(ManifestProvider())\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: manifestprovider\nkind: exclusive\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        names = [name for name, _, _ in discover_memory_providers()]
+        assert "manifestprovider" in names
+
+    def test_provider_collector_exposes_host_llm(self, tmp_path, monkeypatch):
+        """User providers receive host-owned LLM facade from their context."""
+        from plugins.memory import load_memory_provider
+
+        plugin_dir = tmp_path / "plugins" / "llmprovider"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class LlmProvider(MemoryProvider):\n"
+            "    def __init__(self, llm): self.llm = llm\n"
+            "    @property\n"
+            "    def name(self): return 'llmprovider'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(LlmProvider(ctx.llm))\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        provider = load_memory_provider("llmprovider")
+        assert provider is not None
+        assert provider.llm.__class__.__name__ == "PluginLlm"
+        assert provider.llm._plugin_id == "llmprovider"
 
 
 

@@ -3778,6 +3778,10 @@ _SECURITY_COMMENT = """
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+# mcp_stdio_command_allowlist_enabled is opt-in (default false): once on,
+# MCP stdio servers must launch through npx/uvx/python/python3/node/docker/
+# deno, or the connection is refused. Config-only (no env var override) —
+# this is behavioral config, not a secret.
 #
 # security:
 #   redact_secrets: true
@@ -3785,6 +3789,7 @@ _SECURITY_COMMENT = """
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
 #   tirith_fail_open: true
+#   mcp_stdio_command_allowlist_enabled: false
 """
 
 _FALLBACK_COMMENT = """

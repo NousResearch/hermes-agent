@@ -1614,6 +1614,16 @@ class _CuaDriverSession:
                 self._owned_standard_runtime_socket = owned_socket
                 child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
+
+            from tools.mcp_command_guard import is_enabled, validate_stdio_command  # tasks-69t.4 C2
+            if is_enabled():
+                command = validate_stdio_command(
+                    command, server_name="cua-driver",
+                    extra_allowed=frozenset({"cua-driver"}),
+                    extra_trusted_paths=frozenset({os.path.realpath(driver_cmd)}),
+                    resolved_path=child_env.get("PATH"),
+                )
+
             params = StdioServerParameters(
                 command=command,
                 args=args,

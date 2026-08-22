@@ -67,7 +67,12 @@ class TestStdioInitializeTimeout:
         from tools import mcp_tool
 
         server = mcp_tool.MCPServerTask("leak-guard")
-        config = {"command": "fake-mcp", "args": [], "connect_timeout": 0.2}
+        # "npx" (not e.g. "fake-mcp") so this stays green regardless of
+        # whether the (opt-in) tools.mcp_command_guard.validate_stdio_command
+        # allowlist is enabled in the environment running this test —
+        # otherwise it would reject the command before _run_stdio reaches
+        # the initialize() hang this test is exercising.
+        config = {"command": "npx", "args": [], "connect_timeout": 0.2}
 
         async def drive():
             with patch.object(mcp_tool, "stdio_client", _fake_stdio_client), \

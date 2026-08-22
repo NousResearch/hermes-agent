@@ -2477,6 +2477,13 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # Reject MCP stdio server commands outside a fixed interpreter
+        # allowlist before spawning. Opt-in (default False) — see
+        # ``tools/mcp_command_guard.py`` for the allowlist, provenance
+        # rules, and known compat tradeoffs (e.g. node_modules/.bin/npx,
+        # or a bare interpreter resolved only via a server-supplied PATH
+        # into a project venv — see that module for the workaround).
+        "mcp_stdio_command_allowlist_enabled": False,
     },
 
     "cron": {

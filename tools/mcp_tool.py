@@ -3021,6 +3021,14 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
+        # Opt-in command allowlist (tasks-69t.4 C2) — see tools/mcp_command_guard.py.
+        from tools.mcp_command_guard import is_enabled, validate_stdio_command
+        if is_enabled():
+            command = validate_stdio_command(
+                command, server_name=self.name,
+                resolved_path=safe_env.get("PATH"),
+            )
+
         # Check package against OSV malware database before spawning.
         # Run off the event loop (the urllib HTTPS call is blocking) and bound
         # it with a wall-clock timeout so a stalled SSL handshake can't freeze

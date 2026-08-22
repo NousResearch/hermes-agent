@@ -6802,8 +6802,18 @@ class BasePlatformAdapter(ABC):
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
 
-            # Determine overall success for the processing hook
+            # Authorization/policy layers may explicitly classify an empty
+            # response as failure. Otherwise preserve the normal no-op logic.
+            explicit_outcome = event.metadata.get("_hermes_processing_outcome")
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            if isinstance(explicit_outcome, ProcessingOutcome):
+                outcome = explicit_outcome
+            else:
+                outcome = (
+                    ProcessingOutcome.SUCCESS
+                    if processing_ok
+                    else ProcessingOutcome.FAILURE
+                )
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(
@@ -6816,7 +6826,7 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                outcome,
             )
 
             # The active drain owns debounce state. If a queue-mode timer has

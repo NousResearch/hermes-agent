@@ -2681,6 +2681,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -16796,6 +16797,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # Empty handler responses are normally successful no-ops. A policy
+            # denial must finish lifecycle reactions as a failure instead.
+            event.metadata["_hermes_processing_outcome"] = ProcessingOutcome.FAILURE
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"

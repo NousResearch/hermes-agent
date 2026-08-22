@@ -1,6 +1,7 @@
 """Tests for BasePlatformAdapter topic-aware session handling."""
 
 import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -133,6 +134,29 @@ class TestBasePlatformTopicSessions:
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_honors_explicit_failure_outcome(self):
+        adapter = DummyTelegramAdapter()
+
+        async def denied_handler(event):
+            rewritten = dataclasses.replace(event, text="rewritten")
+            rewritten.metadata["_hermes_processing_outcome"] = ProcessingOutcome.FAILURE
+            return None
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(denied_handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.FAILURE),
         ]
 
 

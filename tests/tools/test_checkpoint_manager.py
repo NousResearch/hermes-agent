@@ -494,6 +494,57 @@ class TestGitEnvIsolation:
         env = _git_env(store, f"~/{tilde_work.name}")
         assert env["GIT_WORK_TREE"] == str(tilde_work.resolve())
 
+    def test_git_child_cannot_apply_inherited_config_parameters(
+        self, tmp_path, monkeypatch,
+    ):
+        work = tmp_path / "work"
+        work.mkdir()
+        store = tmp_path / "store"
+        subprocess.run(
+            ["git", "init", "--bare", str(store)],
+            cwd=work,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.pager=cat'")
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.editor")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "evil-editor")
+
+        env = _git_env(store, str(work))
+        result = subprocess.run(
+            ["git", "config", "--get", "core.pager"],
+            cwd=work,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_git_env_strips_credential_wrappers_and_provider_secrets(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("GIT_SSH_COMMAND", "evil-ssh")
+        monkeypatch.setenv("GIT_ASKPASS", "evil-askpass")
+        monkeypatch.setenv("SSH_ASKPASS", "evil-ssh-askpass")
+        monkeypatch.setenv("GIT_PROXY_COMMAND", "evil-proxy")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-should-not-leak")
+
+        env = _git_env(tmp_path / "store", str(tmp_path))
+
+        for key in (
+            "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_PROXY_COMMAND",
+            "OPENAI_API_KEY",
+        ):
+            assert key not in env
+
 
 # =========================================================================
 # Error resilience

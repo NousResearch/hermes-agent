@@ -2086,7 +2086,7 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
 
 
 def _update_read_timestamp(filepath: str, task_id: str) -> None:
-    """Record the file's current modification time after a successful write.
+    """Record the file's current modification time after an applied write.
 
     Called after write_file and patch so that consecutive edits by the
     same task don't trigger false staleness warnings — each write
@@ -2145,7 +2145,7 @@ def _mark_verification_stale(
     resolved_paths: list[str],
     session_id: str | None = None,
 ) -> None:
-    """Best-effort note that successful edits made prior verification stale."""
+    """Best-effort note that applied edits made prior verification stale."""
     paths = [p for p in resolved_paths if p]
     if not paths:
         return
@@ -2268,9 +2268,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
-            if not result_dict.get("error"):
+            if result_dict.get("applied") is True:
+                result_dict["files_modified"] = [path]
                 _mark_verification_stale(task_id, [path], session_id=session_id)
-            _update_read_timestamp(path, task_id)
+                _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -2294,13 +2295,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
             result_dict["resolved_path"] = _resolved
-            if not result_dict.get("error"):
+            if result_dict.get("applied") is True:
                 result_dict["files_modified"] = [_resolved]
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
-            # Refresh stamps after the successful write so consecutive
-            # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
-            if not result_dict.get("error"):
+                # Refresh stamps after an applied write so consecutive writes
+                # by this task don't trigger false staleness warnings.
+                _update_read_timestamp(path, task_id)
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -2474,24 +2474,47 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _resolved_modified = [
                 _path_to_resolved.get(_p) or _p for _p in _paths_to_check
             ]
-            # Refresh stored timestamps for all successfully-patched paths so
-            # consecutive edits by this task don't trigger false warnings.
-            if not result_dict.get("error"):
-                result_dict["files_modified"] = _resolved_modified
-                if len(_resolved_modified) == 1:
-                    result_dict["resolved_path"] = _resolved_modified[0]
-                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
-                for _p in _paths_to_check:
-                    _update_read_timestamp(_p, task_id)
-                    _r = _path_to_resolved.get(_p)
-                    if _r:
-                        file_state.note_write(task_id, _r)
-                # Successful patch: clear any prior consecutive-failure
-                # counters for the touched paths so a future failure on
-                # the same path starts the escalation cycle fresh.
-                _reset_patch_failures(task_id, [
-                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
-                ])
+            if result_dict.get("applied") is True:
+                # V4A can partially apply before a later operation fails. Use
+                # its per-operation lists when present so untouched targets do
+                # not acquire mutation side effects merely because some edit
+                # in the aggregate patch landed.
+                _reported_applied: list[str] = []
+                for _field in ("files_modified", "files_created", "files_deleted"):
+                    _files = result_dict.get(_field)
+                    if not isinstance(_files, list):
+                        continue
+                    for _reported in _files:
+                        if not _reported:
+                            continue
+                        _reported_text = str(_reported)
+                        if " -> " in _reported_text:
+                            _reported_applied.extend(
+                                _part.strip() for _part in _reported_text.split(" -> ", 1)
+                                if _part.strip()
+                            )
+                        else:
+                            _reported_applied.append(_reported_text)
+
+                _applied_paths: list[str] = []
+                for _reported in _reported_applied:
+                    _resolved_reported = _path_to_resolved.get(_reported) or _reported
+                    if _resolved_reported not in _applied_paths:
+                        _applied_paths.append(_resolved_reported)
+                if not _applied_paths:
+                    _applied_paths = _resolved_modified
+
+                result_dict["files_modified"] = _applied_paths
+                if len(_applied_paths) == 1:
+                    result_dict["resolved_path"] = _applied_paths[0]
+                _mark_verification_stale(task_id, _applied_paths, session_id=session_id)
+                for _resolved_applied in _applied_paths:
+                    _update_read_timestamp(_resolved_applied, task_id)
+                    file_state.note_write(task_id, _resolved_applied)
+                # An applied patch changed the anchoring content, even when
+                # post-edit validation failed. A later anchoring failure must
+                # therefore start a fresh escalation cycle.
+                _reset_patch_failures(task_id, _applied_paths)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
@@ -2665,7 +2688,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). Result fields: applied:true means the content changed on disk even if an error is returned; validated:false means the landed content introduced a validation error and must be repaired (validated is omitted when validation is skipped); verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2686,7 +2709,10 @@ PATCH_SCHEMA = {
     "description": (
         "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
         "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
-        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
+        "Returns a unified diff. Auto-runs syntax checks after editing. "
+        "Result fields: applied:true means at least one edit changed disk even if an error is returned; "
+        "validated:false means a landed edit introduced a validation error and must be repaired "
+        "(validated is omitted when validation is skipped).\n\n"
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "

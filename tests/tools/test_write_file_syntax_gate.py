@@ -42,21 +42,36 @@ class TestFailClosedSyntaxGate:
         assert target.read_text() == content
 
 
-    def test_invalid_python_is_NOT_hard_refused(self, ops, tmp_path: Path):
-        """Deliberate scope decision: .py keeps the pre-existing NON-BLOCKING
-        lint-delta report rather than a hard refusal (see
-        ``_FAIL_CLOSED_INPROC_EXTS`` in tools/file_operations.py for why --
-        this codebase's own test suite writes arbitrary non-Python content
-        through *.py paths as generic write-mechanics fixtures)."""
+    def test_invalid_python_is_applied_but_fails_validation(self, ops, tmp_path: Path):
+        """A Python write lands, but cannot be reported as a completed edit."""
         target = tmp_path / "broken.py"
         bad_python = "def foo(:\n    pass\n"
         res = ops.write_file(str(target), bad_python)
-        assert res.error is None, res.error
         assert target.read_text() == bad_python
-        # Still surfaced via the (non-blocking) lint report:
+        assert res.applied is True
+        assert res.error is not None
+        assert "VALIDATION FAILED AFTER EDIT" in res.error
+        assert res.validated is False
         assert res.lint is not None
         assert res.lint.get("status") == "error"
         assert "SyntaxError" in res.lint.get("output", "")
+
+    def test_patch_with_new_indentation_error_is_applied_but_fails(self, ops, tmp_path: Path):
+        target = tmp_path / "deploy.py"
+        target.write_text("def deploy():\n    return True\n")
+
+        res = ops.patch_replace(
+            str(target),
+            "    return True",
+            "return True",
+        )
+
+        assert target.read_text() == "def deploy():\nreturn True\n"
+        assert res.success is False
+        assert res.applied is True
+        assert res.validated is False
+        assert "VALIDATION FAILED AFTER EDIT" in res.error
+        assert "IndentationError" in res.lint["output"]
 
 
     def test_custom_tagged_yaml_is_valid_and_written(self, ops, tmp_path: Path):

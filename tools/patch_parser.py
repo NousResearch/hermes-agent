@@ -455,6 +455,10 @@ def apply_v4a_operations(operations: List[PatchOperation],
                     if result[3]:
                         lint_results[op.file_path] = result[3]
                 else:
+                    if "VALIDATION FAILED AFTER EDIT" in str(result[1]):
+                        # write_file persisted the content before validation
+                        # failed. Keep that fact in the aggregate result.
+                        files_created.append(op.file_path)
                     errors.append(f"Failed to add {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.DELETE:
@@ -483,6 +487,8 @@ def apply_v4a_operations(operations: List[PatchOperation],
                     if result[3]:
                         lint_results[op.file_path] = result[3]
                 else:
+                    if "VALIDATION FAILED AFTER EDIT" in str(result[1]):
+                        files_modified.append(op.file_path)
                     errors.append(f"Failed to update {op.file_path}: {result[1]}")
 
         except Exception as e:
@@ -503,6 +509,9 @@ def apply_v4a_operations(operations: List[PatchOperation],
     combined_lsp = "\n\n".join(lsp_blocks) if lsp_blocks else None
 
     if errors:
+        validation_failed = any(
+            "VALIDATION FAILED AFTER EDIT" in error for error in errors
+        )
         return PatchResult(
             success=False,
             diff=combined_diff,
@@ -510,6 +519,8 @@ def apply_v4a_operations(operations: List[PatchOperation],
             files_created=files_created,
             files_deleted=files_deleted,
             lint=lint_results if lint_results else None,
+            applied=bool(files_modified or files_created or files_deleted),
+            validated=False if validation_failed else None,
             lsp_diagnostics=combined_lsp,
             error="Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
                   + "\n".join(f"  • {e}" for e in errors),
@@ -522,6 +533,14 @@ def apply_v4a_operations(operations: List[PatchOperation],
         files_created=files_created,
         files_deleted=files_deleted,
         lint=lint_results if lint_results else None,
+        applied=bool(files_modified or files_created or files_deleted),
+        validated=(
+            False if any(result.get("status") == "error" for result in lint_results.values()
+                         if isinstance(result, dict))
+            else True if any(result.get("status") == "ok" for result in lint_results.values()
+                            if isinstance(result, dict))
+            else None
+        ),
         lsp_diagnostics=combined_lsp,
     )
 

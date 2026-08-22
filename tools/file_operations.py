@@ -189,6 +189,10 @@ class WriteResult:
     # flag — it becomes a hard error.
     verified: Optional[bool] = None
     lint: Optional[Dict[str, Any]] = None
+    # Whether the file changed.
+    applied: Optional[bool] = None
+    # Lint result; None when skipped.
+    validated: Optional[bool] = None
     # Semantic diagnostics from the LSP layer, when applicable.  Kept in
     # its own field (not folded into ``lint``) so the model and any
     # downstream parsers can read syntax errors and semantic errors as
@@ -212,6 +216,10 @@ class PatchResult:
     files_created: List[str] = field(default_factory=list)
     files_deleted: List[str] = field(default_factory=list)
     lint: Optional[Dict[str, Any]] = None
+    # Whether the file changed.
+    applied: Optional[bool] = None
+    # Lint result; None when skipped.
+    validated: Optional[bool] = None
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
@@ -237,6 +245,10 @@ class PatchResult:
             result["files_deleted"] = self.files_deleted
         if self.lint:
             result["lint"] = self.lint
+        if self.applied is not None:
+            result["applied"] = self.applied
+        if self.validated is not None:
+            result["validated"] = self.validated
         if self.lsp_diagnostics:
             result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
@@ -345,6 +357,32 @@ class LintResult:
         if self.message:
             result["message"] = self.message
         return result
+
+
+def _introduced_lint_failure(lint_result: LintResult) -> bool:
+    """Return whether this edit introduced a lint failure.
+
+    Lint is normally advisory.  A syntax/lint error that was already present
+    before the edit is not attributable to this operation, so it remains
+    advisory.  A post-edit error without that pre-existing marker must be
+    treated as an incomplete mutation: the file changed, but the agent must
+    repair it before continuing.
+    """
+    if lint_result.success or lint_result.skipped:
+        return False
+    if "pre-existing lint errors" in (lint_result.message or "").lower():
+        return False
+    return True
+
+
+def _validation_failure_error(path: str, lint_result: LintResult) -> str:
+    """Make a validation failure impossible to mistake for a clean edit."""
+    detail = str(lint_result.output or "Validation failed").strip()
+    return (
+        f"VALIDATION FAILED AFTER EDIT: '{path}' was modified but is not valid. "
+        f"Do not treat this edit as complete; repair the reported error before continuing. "
+        f"{detail}"
+    )
 
 
 @dataclass
@@ -2067,6 +2105,15 @@ class ShellFileOperations(FileOperations):
         # toolchains key on it). Only prepend when the original had a BOM
         # and the new content doesn't already carry one (guards against
         # double-BOM if a caller passed raw bytes).
+        #
+        # Snapshot the pre-BOM content for linting below: pre_content is
+        # always BOM-stripped (read_file_raw strips it), and in-process
+        # linters like ast.parse reject a literal U+FEFF outright — the
+        # same reason the pre-write fail-closed gate above checks the raw
+        # ``content`` argument before these shims run. Linting the
+        # BOM-restored bytes would falsely report "this edit introduced a
+        # syntax error" on every legitimately BOM-marked file.
+        lint_content = content
         if self._file_has_bom(path, pre_content) and not _has_bom(content):
             content = _UTF8_BOM + content
 
@@ -2157,8 +2204,13 @@ class ShellFileOperations(FileOperations):
         except Exception:
             content_verified = None
 
-        # Post-write lint with delta refinement.
-        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        # Post-write lint with delta refinement. Lints lint_content (the
+        # pre-BOM-shim content), not the on-disk `content`, so a legitimately
+        # BOM-marked file's restored U+FEFF doesn't get misread as a syntax
+        # error introduced by this write.
+        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=lint_content)
+        introduced_lint_failure = _introduced_lint_failure(lint_result)
+        validated = None if lint_result.skipped else lint_result.success
 
         # Semantic diagnostics from the LSP layer — separate channel.
         # Only fired when the syntax tier reported clean (no point asking
@@ -2179,7 +2231,10 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             verified=content_verified,
             lint=lint_result.to_dict() if lint_result else None,
+            applied=True,
+            validated=validated,
             lsp_diagnostics=lsp_diagnostics,
+            error=_validation_failure_error(path, lint_result) if introduced_lint_failure else None,
         )
     
     # =========================================================================
@@ -2277,6 +2332,20 @@ class ShellFileOperations(FileOperations):
         write_result = self.write_file(path, new_content,
                                        pre_content=raw_content)
         if write_result.error:
+            # write_file may have persisted the bytes and then deliberately
+            # failed validation. Preserve that distinct state at the patch
+            # boundary instead of collapsing it into an ordinary write error.
+            if write_result.applied and write_result.validated is False:
+                return PatchResult(
+                    success=False,
+                    diff=self._unified_diff(content, new_content, path),
+                    files_modified=[path],
+                    lint=write_result.lint,
+                    applied=True,
+                    validated=False,
+                    lsp_diagnostics=write_result.lsp_diagnostics,
+                    error=write_result.error,
+                )
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 
         # Post-write verification — re-read the file and confirm the bytes we
@@ -2318,12 +2387,16 @@ class ShellFileOperations(FileOperations):
         # by this patch, filtering out pre-existing lint failures so the
         # agent isn't distracted by problems that were already there.
         lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
+        introduced_lint_failure = _introduced_lint_failure(lint_result)
+        validated = None if lint_result.skipped else lint_result.success
 
         return PatchResult(
-            success=True,
+            success=not introduced_lint_failure,
             diff=diff,
             files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
+            applied=True,
+            validated=validated,
             # Propagate the LSP diagnostics already captured by the
             # internal ``write_file`` call.  Its baseline was the
             # pre-patch content (taken at the start of write_file via
@@ -2331,6 +2404,7 @@ class ShellFileOperations(FileOperations):
             # the patch as a whole.  Keep the field separate from the
             # syntax-check ``lint`` so the agent can read both signals.
             lsp_diagnostics=write_result.lsp_diagnostics,
+            error=_validation_failure_error(path, lint_result) if introduced_lint_failure else None,
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:

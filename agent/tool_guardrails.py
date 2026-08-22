@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    file_mutation_result_landed,
+    file_mutation_validation_failed,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -307,11 +310,14 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     """
     if result is None:
         return False, ""
+    data = safe_json_loads(result)
     if file_mutation_result_landed(tool_name, result):
-        return False, ""
+        if file_mutation_validation_failed(tool_name, result):
+            return False, ""
+        if not data.get("error"):
+            return False, ""
 
     if tool_name == "terminal":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
@@ -319,7 +325,6 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         return False, ""
 
     if tool_name == "memory":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"

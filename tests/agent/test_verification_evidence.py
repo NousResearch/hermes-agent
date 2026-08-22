@@ -287,6 +287,34 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
     assert verification_status(session_id="turn", cwd=tmp_path)["status"] == "unverified"
 
 
+def test_validation_failed_write_stales_verification_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    target = tmp_path / "broken.py"
+
+    record_terminal_result(
+        command="pytest",
+        cwd=tmp_path,
+        session_id="conversation",
+        exit_code=0,
+        output="green",
+    )
+
+    from tools.file_tools import write_file_tool
+
+    result = json.loads(write_file_tool(
+        str(target),
+        "def broken(:\n",
+        task_id="turn",
+        session_id="conversation",
+    ))
+
+    assert result["applied"] is True
+    assert result["validated"] is False
+    assert result["files_modified"] == [str(target.resolve())]
+    assert verification_status(session_id="conversation", cwd=tmp_path)["status"] == "stale"
+
+
 
 
 

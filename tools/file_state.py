@@ -118,7 +118,7 @@ class FileStateRegistry:
         *,
         mtime: Optional[float] = None,
     ) -> None:
-        """Record a successful write.
+        """Record an applied write.
 
         Updates the global last-writer map AND this agent's own read stamp
         (a write is an implicit read — the agent now knows the current

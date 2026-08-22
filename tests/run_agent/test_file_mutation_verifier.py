@@ -163,7 +163,7 @@ class TestRecordFileMutationResult:
 
         assert paths == ["/tmp/project/src/app.py"]
 
-    def test_write_file_with_lint_error_counts_as_landed(self):
+    def test_write_file_validation_failure_is_landed_but_remains_unresolved(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
             "write_file",
@@ -175,6 +175,9 @@ class TestRecordFileMutationResult:
 
         result = json.dumps({
             "bytes_written": 24,
+            "applied": True,
+            "validated": False,
+            "error": "VALIDATION FAILED AFTER EDIT",
             "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
         })
 
@@ -185,7 +188,50 @@ class TestRecordFileMutationResult:
             is_error=True,
         )
 
-        assert agent._turn_failed_file_mutations == {}
+        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+        assert agent._turn_failed_file_mutations["/tmp/a.py"]["applied"] is True
+        assert agent._turn_failed_file_mutations["/tmp/a.py"]["validation_failed"] is True
+
+    def test_partial_v4a_apply_failure_keeps_all_targets_unresolved(self):
+        agent = _bare_agent()
+        args = {
+            "mode": "patch",
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Add File: /tmp/first.py\n"
+                "+first = True\n"
+                "*** Add File: /tmp/second.py\n"
+                "+second = True\n"
+                "*** End Patch\n"
+            ),
+        }
+        result = json.dumps({
+            "success": False,
+            "files_created": ["/tmp/first.py"],
+            "applied": True,
+            "error": (
+                "Apply phase failed (state may be inconsistent — run `git diff` "
+                "to assess): Failed to add /tmp/second.py: file not found"
+            ),
+        })
+
+        agent._record_file_mutation_result(
+            "patch", args, result, is_error=True,
+        )
+
+        assert set(agent._turn_failed_file_mutations) == {
+            "/tmp/first.py",
+            "/tmp/second.py",
+        }
+        assert agent._turn_failed_file_mutations["/tmp/first.py"]["applied"] is True
+        assert agent._turn_failed_file_mutations["/tmp/second.py"]["applied"] is False
+        assert agent._turn_file_mutation_paths == {"/tmp/first.py"}
+
+        footer = agent._format_file_mutation_failure_footer(
+            agent._turn_failed_file_mutations,
+        )
+        assert "modified before patch failed" in footer
+        assert "not modified" in footer
 
     def test_patch_with_lsp_diagnostics_counts_as_landed(self):
         agent = _bare_agent()
@@ -208,7 +254,7 @@ class TestRecordFileMutationResult:
             "patch",
             {"mode": "replace", "path": "/tmp/a.py", "old_string": "x", "new_string": "y"},
             result,
-            is_error=True,
+            is_error=False,
         )
 
         assert agent._turn_failed_file_mutations == {}
@@ -244,10 +290,10 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 file mutation(s) need attention" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
-        assert "git status" in out  # user-actionable hint
+        assert "git diff" in out  # user-actionable hint
 
     def test_truncation_at_10_entries(self):
         failed = {
@@ -255,7 +301,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 file mutation(s) need attention" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

@@ -24,17 +24,41 @@ def tool_may_have_side_effect(tool_name: str) -> bool:
 
 
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
-    """Return True when a file mutation result proves the write landed."""
+    """Return whether any requested edit physically landed.
+
+    This remains true for a V4A patch that applied only some operations before
+    a later operation failed.
+    """
     if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):
         return False
     try:
         data = json.loads(result.strip())
     except Exception:
         return False
-    if not isinstance(data, dict) or data.get("error"):
+    if not isinstance(data, dict):
+        return False
+    if data.get("applied") is True:
+        return True
+    if data.get("error"):
         return False
     if tool_name == "write_file":
         return "bytes_written" in data
     if tool_name == "patch":
         return data.get("success") is True
     return False
+
+
+def file_mutation_validation_failed(tool_name: str, result: Any) -> bool:
+    """Return whether a mutation landed but requires validation repair."""
+    if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):
+        return False
+    try:
+        data = json.loads(result.strip())
+    except Exception:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("applied") is True
+        and data.get("validated") is False
+        and bool(data.get("error"))
+    )

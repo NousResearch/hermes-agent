@@ -91,6 +91,31 @@ class TestDetectToolFailureStructured:
         assert suffix == " [File not found: missing.py]"
 
 
+    def test_partial_v4a_apply_error_is_surfaced(self):
+        result = json.dumps({
+            "success": False,
+            "files_created": ["first.py"],
+            "applied": True,
+            "error": "Apply phase failed (state may be inconsistent)",
+        })
+
+        is_failure, suffix = _detect_tool_failure("patch", result)
+
+        assert is_failure is True
+        assert "Apply phase failed" in suffix
+
+
+    def test_applied_validation_failure_is_not_an_apply_failure(self):
+        result = json.dumps({
+            "success": False,
+            "applied": True,
+            "validated": False,
+            "error": "VALIDATION FAILED AFTER EDIT",
+        })
+
+        assert _detect_tool_failure("patch", result) == (False, "")
+
+
 
     def test_successful_result_not_flagged(self):
         result = json.dumps({"success": True, "data": "hello"})
@@ -118,4 +143,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-

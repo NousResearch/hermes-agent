@@ -198,6 +198,34 @@ class TestPatchStaleness(unittest.TestCase):
         ))
         self.assertNotIn("_warning", result)
 
+    def test_validation_failed_patch_refreshes_timestamp_for_repair(self):
+        """A landed invalid patch must not look externally modified on repair."""
+        with open(self._tmpfile, "w") as f:
+            f.write("def deploy():\n    return True\n")
+
+        read_result = json.loads(read_file_tool(self._tmpfile, task_id="repair"))
+        self.assertNotIn("error", read_result)
+
+        invalid = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="    return True",
+            new_string="return True",
+            task_id="repair",
+        ))
+        self.assertTrue(invalid.get("applied"), invalid)
+        self.assertFalse(invalid.get("validated"), invalid)
+
+        repaired = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="return True",
+            new_string="    return True",
+            task_id="repair",
+        ))
+        self.assertNotIn("modified since you last read", repaired.get("_warning", ""))
+        self.assertNotIn("sibling", repaired.get("_warning", "").lower())
+
 
 # ---------------------------------------------------------------------------
 # Unit test for the helper

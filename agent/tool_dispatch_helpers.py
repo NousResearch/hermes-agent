@@ -459,7 +459,7 @@ def _extract_landed_file_mutation_paths(
     args: Dict[str, Any],
     result: Any,
 ) -> List[str]:
-    """Return the concrete file paths a successful mutation reports."""
+    """Return the concrete file paths a mutation reports as applied."""
     targets = _extract_file_mutation_targets(tool_name, args)
     if tool_name not in _FILE_MUTATING_TOOLS or not isinstance(result, str):
         return targets
@@ -470,11 +470,13 @@ def _extract_landed_file_mutation_paths(
     if not isinstance(data, dict):
         return targets
 
-    files = data.get("files_modified")
-    if isinstance(files, list):
-        landed = [str(p) for p in files if p]
-        if landed:
-            return landed
+    landed: List[str] = []
+    for field in ("files_modified", "files_created", "files_deleted"):
+        files = data.get(field)
+        if isinstance(files, list):
+            landed.extend(str(p) for p in files if p)
+    if landed:
+        return list(dict.fromkeys(landed))
 
     resolved = data.get("resolved_path")
     if resolved:

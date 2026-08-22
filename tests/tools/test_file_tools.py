@@ -12,6 +12,7 @@ import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    WRITE_FILE_SCHEMA,
 )
 
 
@@ -55,6 +56,35 @@ class TestWriteFileHandler:
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
         mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+
+    def test_applied_validation_failure_runs_write_side_effects(self, tmp_path):
+        target = tmp_path / "broken.py"
+        target.write_text("x = 1\n")
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "applied": True,
+            "validated": False,
+            "error": "VALIDATION FAILED AFTER EDIT",
+        }
+
+        with (
+            patch("tools.file_tools._get_file_ops") as mock_get,
+            patch("tools.file_tools._mark_verification_stale") as mark_stale,
+            patch("tools.file_tools._update_read_timestamp") as update_stamp,
+            patch("tools.file_tools.file_state.note_write") as note_write,
+        ):
+            mock_get.return_value.write_file.return_value = result_obj
+            from tools.file_tools import write_file_tool
+
+            result = json.loads(write_file_tool(str(target), "def broken(:\n"))
+
+        resolved = str(target.resolve())
+        assert result["error"] == "VALIDATION FAILED AFTER EDIT"
+        assert result["resolved_path"] == resolved
+        assert result["files_modified"] == [resolved]
+        mark_stale.assert_called_once_with("default", [resolved], session_id=None)
+        update_stamp.assert_called_once_with(str(target), "default")
+        note_write.assert_called_once_with("default", resolved)
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -160,6 +190,81 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="patch", patch="*** Begin Patch\n..."))
         assert result["status"] == "ok"
         mock_ops.patch_v4a.assert_called_once()
+
+    def test_applied_validation_failure_runs_patch_side_effects(self, tmp_path):
+        target = tmp_path / "broken.py"
+        target.write_text("def ok():\n    return True\n")
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "success": False,
+            "applied": True,
+            "validated": False,
+            "files_modified": [str(target)],
+            "error": "VALIDATION FAILED AFTER EDIT",
+        }
+
+        with (
+            patch("tools.file_tools._get_file_ops") as mock_get,
+            patch("tools.file_tools._mark_verification_stale") as mark_stale,
+            patch("tools.file_tools._update_read_timestamp") as update_stamp,
+            patch("tools.file_tools.file_state.note_write") as note_write,
+            patch("tools.file_tools._reset_patch_failures") as reset_failures,
+        ):
+            mock_get.return_value.patch_replace.return_value = result_obj
+            from tools.file_tools import patch_tool
+
+            result = json.loads(patch_tool(
+                mode="replace",
+                path=str(target),
+                old_string="    return True",
+                new_string="return True",
+            ))
+
+        resolved = str(target.resolve())
+        assert result["error"] == "VALIDATION FAILED AFTER EDIT"
+        assert result["resolved_path"] == resolved
+        assert result["files_modified"] == [resolved]
+        mark_stale.assert_called_once_with("default", [resolved], session_id=None)
+        update_stamp.assert_called_once_with(resolved, "default")
+        note_write.assert_called_once_with("default", resolved)
+        reset_failures.assert_called_once_with("default", [resolved])
+
+    def test_partial_v4a_failure_only_marks_reported_paths_applied(self, tmp_path):
+        first = tmp_path / "first.py"
+        second = tmp_path / "second.py"
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "success": False,
+            "applied": True,
+            "files_created": [str(first)],
+            "error": "Apply phase failed: second.py was not created",
+        }
+        patch_text = (
+            "*** Begin Patch\n"
+            f"*** Add File: {first}\n"
+            "+first = True\n"
+            f"*** Add File: {second}\n"
+            "+second = True\n"
+            "*** End Patch\n"
+        )
+
+        with (
+            patch("tools.file_tools._get_file_ops") as mock_get,
+            patch("tools.file_tools._mark_verification_stale") as mark_stale,
+            patch("tools.file_tools._update_read_timestamp") as update_stamp,
+            patch("tools.file_tools.file_state.note_write") as note_write,
+        ):
+            mock_get.return_value.patch_v4a.return_value = result_obj
+            from tools.file_tools import patch_tool
+
+            result = json.loads(patch_tool(mode="patch", patch=patch_text))
+
+        resolved_first = str(first.resolve())
+        assert result["files_modified"] == [resolved_first]
+        assert result["resolved_path"] == resolved_first
+        mark_stale.assert_called_once_with("default", [resolved_first], session_id=None)
+        update_stamp.assert_called_once_with(resolved_first, "default")
+        note_write.assert_called_once_with("default", resolved_first)
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -515,6 +620,15 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+def test_mutation_schemas_document_applied_validation_failure_contract():
+    for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
+        description = schema["description"]
+        assert "applied:true" in description
+        assert "changed" in description and "disk" in description
+        assert "validated:false" in description
+        assert "must be repaired" in description
 
 
 # ---------------------------------------------------------------------------
@@ -879,7 +993,7 @@ class TestNotFoundCache:
         # First read → not found; second read (after write) → present.
         mock_ops.read_file.side_effect = [not_found_obj, present_obj]
         write_result_obj = MagicMock()
-        write_result_obj.to_dict.return_value = {"status": "ok"}
+        write_result_obj.to_dict.return_value = {"status": "ok", "applied": True}
         mock_ops.write_file.return_value = write_result_obj
         mock_get.return_value = mock_ops
 

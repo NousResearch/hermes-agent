@@ -177,6 +177,24 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("agentB", warn)
         self.assertIn("sibling", warn.lower())
 
+    def test_validation_failed_write_still_marks_sibling_read_stale(self):
+        p = self._write_seed("shared.py", "value = 1\n")
+        r = json.loads(read_file_tool(path=p, task_id="agentA"))
+        self.assertNotIn("error", r)
+
+        w_b = json.loads(write_file_tool(
+            path=p,
+            content="def broken(:\n",
+            task_id="agentB",
+        ))
+        self.assertTrue(w_b.get("applied"), w_b)
+        self.assertFalse(w_b.get("validated"), w_b)
+        self.assertIn("VALIDATION FAILED AFTER EDIT", w_b.get("error", ""))
+
+        warning = file_state.check_stale("agentA", p)
+        self.assertIsNotNone(warning)
+        self.assertIn("agentB", warning)
+
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

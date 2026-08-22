@@ -36,3 +36,16 @@ jobs:
       - name: 8.3 short-path normalization (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-longpath.ps1
+
+      # The language mode preflight (#89857) is the one guard that must hold on a
+      # host where almost nothing else in install.ps1 can run, so it is worth
+      # asserting on both shells too: the child runspace is dropped into
+      # ConstrainedLanguage by the test itself, so no AppLocker/WDAC policy is
+      # needed on the runner.
+      - name: Language mode preflight (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-language-mode.ps1
+
+      - name: Language mode preflight (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-language-mode.ps1

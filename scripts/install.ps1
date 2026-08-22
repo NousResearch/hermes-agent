@@ -77,6 +77,63 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ============================================================================
+# PowerShell language mode preflight
+# ============================================================================
+# AppLocker and WDAC in enforcement mode drop PowerShell into
+# ConstrainedLanguage, which refuses method calls on anything but a short list
+# of core types: [Environment]::GetEnvironmentVariable, [Environment]::
+# GetFolderPath, [Console]::Error.WriteLine, New-Object on a .NET type and
+# [System.IO.File]::WriteAllText all throw
+# MethodInvocationNotSupportedInConstrainedLanguage. This installer makes more
+# than forty of those calls.
+#
+# The first one runs at SCRIPT scope in Set-LongProfileEnvVars a couple of
+# hundred lines below, so the script dies before any parameter is honored --
+# including -Manifest and -ProtocolVersion, which are read-only queries that
+# touch nothing. What the operator gets instead is a raw .NET error, localized
+# into the host language, naming a line number inside a cached copy of a
+# script they never wrote (#89857).
+#
+# Fail here instead, while we still can, and say what is wrong. This is a
+# refusal, not a workaround: there is no flag that makes the rest of the file
+# run, because the restriction is on the language, not on this script.
+#
+# Every construct below is legal under ConstrainedLanguage: a property read on
+# an automatic variable, string concatenation, Write-Host and Write-Error.
+# $host.UI.WriteErrorLine is NOT -- it is a method call on a non-core type and
+# throws the exact error this block exists to explain -- so the detail goes
+# out through Write-Error, whose cmdlet form is allowed.
+$DetectedLanguageMode = [string]$ExecutionContext.SessionState.LanguageMode
+if ($DetectedLanguageMode -and $DetectedLanguageMode -ne 'FullLanguage') {
+    Write-Host ""
+    Write-Host "[X] Hermes cannot install in PowerShell $DetectedLanguageMode mode." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "    This session is restricted by an application control policy" -ForegroundColor Yellow
+    Write-Host "    (AppLocker, WDAC, or Windows Defender Application Control)." -ForegroundColor Yellow
+    Write-Host "    In this mode PowerShell refuses the .NET calls the installer" -ForegroundColor Yellow
+    Write-Host "    needs to read environment variables and locate profile folders." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    -ExecutionPolicy Bypass does not help. Execution policy and" -ForegroundColor Yellow
+    Write-Host "    language mode are separate controls; bypassing the first" -ForegroundColor Yellow
+    Write-Host "    leaves the second exactly as it was." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    PowerShell applies the restriction because this script sits in" -ForegroundColor Yellow
+    Write-Host "    a user-writable directory that the policy does not trust. Ask" -ForegroundColor Yellow
+    Write-Host "    whoever administers the policy to either:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "      * allow-list the installer's path, or" -ForegroundColor Yellow
+    Write-Host "      * let you run it from a directory the policy already trusts" -ForegroundColor Yellow
+    Write-Host "        (typically %ProgramFiles% or %SystemRoot%)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    Confirm the fix worked before re-running:" -ForegroundColor Yellow
+    Write-Host "      `$ExecutionContext.SessionState.LanguageMode" -ForegroundColor Yellow
+    Write-Host "    must print FullLanguage." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Error -Message ("install.ps1 requires FullLanguage; this session is " + $DetectedLanguageMode) -ErrorAction Continue
+    exit 1
+}
+
 # Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
 # 5.1's progress UI repaints synchronously on every received byte, which
 # pegs CPU on a single core and throttles downloads by 10-100x (a 57MB

@@ -12883,6 +12883,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 else:
                     logger.warning("No adapter available for %s", _pval)
+                # Overwrite whatever this platform last reported. The runtime
+                # status file is what the status/monitor surfaces read, and
+                # nothing else clears it on this path: a platform that connected
+                # in a previous life keeps its "connected" flag once its adapter
+                # stops building, so a platform that is entirely down still
+                # reads as up until someone inspects the log by hand.
+                self._update_platform_runtime_status(
+                    _pval,
+                    platform_state="failed",
+                    error_code="adapter_unavailable",
+                    error_message=(
+                        "Adapter creation failed -- missing dependencies or "
+                        "no plugin registered for this platform."
+                    ),
+                )
                 continue
 
             # Set up message + fatal error handlers. Under multiplexing the

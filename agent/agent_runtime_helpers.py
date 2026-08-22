@@ -896,14 +896,35 @@ def strip_think_blocks(agent, content: str) -> str:
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
-    for _pattern in _TOOL_CALL_BLOCK_PATTERNS:
-        content = _pattern.sub('', content)
+    #     Logged (not silently dropped): a model emitting its tool call as
+    #     text instead of the structured tool_calls field means the call
+    #     never actually executed, but the model's surrounding narration
+    #     often still claims success -- e.g. #56461, where a local Ollama
+    #     model told the user it saved a memory and nothing was ever
+    #     written. Without this log line that failure is undiagnosable.
+    def _log_stripped_pseudo_tool_call(tag_name: str):
+        def _sub(match: "re.Match") -> str:
+            logger.warning(
+                "Stripped a <%s> block the model emitted as plain text "
+                "instead of a structured tool call -- the call never "
+                "executed, but any surrounding narration claiming success "
+                "is untouched: %r",
+                tag_name, match.group(0)[:300],
+            )
+            return ""
+        return _sub
+
+    for _tc_name, _pattern in zip(_TOOL_CALL_TAG_NAMES,
+                                  _TOOL_CALL_BLOCK_PATTERNS):
+        content = _pattern.sub(_log_stripped_pseudo_tool_call(_tc_name), content)
     # 1c. <function name="...">...</function> — Gemma-style standalone
     #     tool call. Only strip when the tag sits at a block boundary
     #     (start of text, after a newline, or after sentence-ending
     #     punctuation) AND carries a name="..." attribute. This keeps
     #     prose mentions like "Use <function> to declare" safe.
-    content = _NAMED_FUNCTION_BLOCK_PATTERN.sub('', content)
+    content = _NAMED_FUNCTION_BLOCK_PATTERN.sub(
+        _log_stripped_pseudo_tool_call("function"), content
+    )
     # 2. Unterminated reasoning block — open tag at a block boundary
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568

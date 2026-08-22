@@ -2866,6 +2866,26 @@ def _pin_kanban_board_env() -> None:
         pass
 
 
+def _drop_inherited_kanban_lifecycle(args) -> None:
+    """Child chats must not inherit dispatcher run ownership.
+
+    A Kanban worker that shells out to ``hermes chat --source tool`` (Browser
+    Use benchmarks, local-model evals) used to keep ``HERMES_KANBAN_TASK``
+    and could ``kanban_complete`` the parent card. The dispatcher worker
+    itself is identified by source ``kanban`` plus ``work kanban task <id>``.
+    """
+    try:
+        from agent.delegation_context import (
+            drop_inherited_kanban_lifecycle_if_not_board_worker,
+        )
+    except Exception:
+        return
+    drop_inherited_kanban_lifecycle_if_not_board_worker(
+        query=getattr(args, "query", None),
+        source=os.environ.get("HERMES_SESSION_SOURCE"),
+    )
+
+
 def _sync_bundled_skills_quietly() -> None:
     """Seed ``~/.hermes/skills/`` with the bundled skill library on first launch.
 
@@ -3184,6 +3204,12 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # Defer the drop when the query is still on disk: a --query-file board
+    # worker would otherwise look like an interactive child and lose ownership
+    # before the prompt is loaded.
+    if getattr(args, "query", None) or not getattr(args, "query_file", None):
+        _drop_inherited_kanban_lifecycle(args)
+
     _pin_kanban_board_env()
     _confirm_startup_expensive_model_override(args)
 
@@ -3233,6 +3259,9 @@ def cmd_chat(args):
         if not (args.query or "").strip():
             print(f"Error: --query-file {_qfile} is empty", file=sys.stderr)
             sys.exit(2)
+
+    # Query may have arrived via --query-file after the first ownership check.
+    _drop_inherited_kanban_lifecycle(args)
 
     # Build kwargs from args
     kwargs = {

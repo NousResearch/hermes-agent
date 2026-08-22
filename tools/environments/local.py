@@ -526,6 +526,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
+    sanitized = _scrub_kanban_lifecycle_ownership(sanitized)
 
     return sanitized
 
@@ -543,6 +544,30 @@ def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
     except Exception:
         pass
     return env
+
+
+def _scrub_kanban_lifecycle_ownership(env: dict[str, str]) -> dict[str, str]:
+    """Strip Kanban run ownership from every child process.
+
+    A Kanban worker's terminal / browser / ACP children inherit ``os.environ``.
+    Without this, ``hermes chat --source tool`` becomes a second board worker
+    and can ``kanban_complete`` the parent card. Fail closed if the helper
+    cannot be imported: drop the known ownership keys locally.
+    """
+    try:
+        from agent.delegation_context import scrub_kanban_lifecycle_ownership
+
+        return scrub_kanban_lifecycle_ownership(env)
+    except Exception:
+        for key in (
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            "HERMES_KANBAN_CLAIM_LOCK",
+        ):
+            env.pop(key, None)
+        return env
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
@@ -667,6 +692,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # context that later imports Kanban DB code in the spawned process would
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)
+    env = _scrub_kanban_lifecycle_ownership(env)
 
     return env
 
@@ -1338,6 +1364,7 @@ def _make_run_env(env: dict) -> dict:
     _apply_windows_msys_bash_env_defaults(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
+    run_env = _scrub_kanban_lifecycle_ownership(run_env)
 
     return run_env
 

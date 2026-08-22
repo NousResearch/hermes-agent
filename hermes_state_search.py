@@ -274,6 +274,69 @@ class SessionSearchMixin:
             logger.debug("FTS trash teardown chunk failed (will retry): %s", exc)
             return True
 
+    def _drop_mismatched_fts_vtables(self) -> None:
+        """Drop FTS vtables whose column set does not match the v23 schema.
+
+        ``_ensure_fts_schema``'s DDL is ``CREATE VIRTUAL TABLE IF NOT
+        EXISTS``, so an interrupted demote/resume can leave a v22-shaped
+        single-column ``content`` vtable that the IF NOT EXISTS silently
+        accepts — every later ``fts_rebuild_step`` INSERT then fails with
+        "no column named tool_name" and the resume can never complete
+        (#72716). A dropped table is re-created correctly by the ensure
+        that follows; the rebuild markers still present make the backfill
+        re-populate it, so reset ``fts_rebuild_progress`` to 0 whenever a
+        table was dropped (rows claimed under the wrong shape may be
+        missing even though the marker advanced). No-op when the shapes
+        already match. Caller holds ``self._lock`` and commits.
+        """
+        expected_columns = {"content", "tool_name", "tool_calls"}
+        dropped = False
+        try:
+            base_cursor = self._conn.execute(
+                "SELECT * FROM messages_fts LIMIT 0"
+            )
+            base_columns = {d[0] for d in base_cursor.description or []}
+        except sqlite3.OperationalError:
+            base_columns = None  # absent — ensure will create it
+        if base_columns is not None and not expected_columns.issubset(
+            base_columns
+        ):
+            logger.warning(
+                "FTS table messages_fts has an unexpected column set (%s); "
+                "rebuilding it to complete the optimize-storage resume",
+                sorted(base_columns),
+            )
+            self._drop_fts_triggers(self._conn)
+            self._conn.execute("DROP TABLE IF EXISTS messages_fts")
+            dropped = True
+        try:
+            tri_cursor = self._conn.execute(
+                "SELECT * FROM messages_fts_trigram LIMIT 0"
+            )
+            tri_columns = {d[0] for d in tri_cursor.description or []}
+        except sqlite3.OperationalError:
+            tri_columns = None
+        if tri_columns is not None and not expected_columns.issubset(
+            tri_columns
+        ):
+            logger.warning(
+                "FTS table messages_fts_trigram has an unexpected column "
+                "set (%s); rebuilding it to complete the optimize-storage "
+                "resume",
+                sorted(tri_columns),
+            )
+            self._drop_fts_triggers(self._conn)
+            self._conn.execute(
+                "DROP TABLE IF EXISTS messages_fts_trigram"
+            )
+            dropped = True
+        if dropped:
+            self._conn.execute(
+                "INSERT INTO state_meta (key, value) "
+                "VALUES ('fts_rebuild_progress', '0') "
+                "ON CONFLICT(key) DO UPDATE SET value = '0'"
+            )
+
     def fts_rebuild_step(self) -> bool:
         """Backfill one chunk of the deferred FTS rebuild.
 
@@ -800,6 +863,31 @@ class SessionSearchMixin:
                         "on optimize-storage resume"
                     )
                 self._conn.commit()
+
+        # Shape guard before ANY path reaches the backfill: the resume branch
+        # above (and the legacy+pending combination that skips both branches)
+        # can reach the backfill with a v22-shaped single-column `content`
+        # vtable — ``IF NOT EXISTS`` ensure silently accepts it, and every
+        # ``fts_rebuild_step`` INSERT then dies on "no column named
+        # tool_name" and retries forever (#72716). Validate the column set
+        # and rebuild mismatched vtables; markers survive so the backfill
+        # re-populates them from progress 0.
+        with self._lock:
+            self._drop_mismatched_fts_vtables()
+            base_ok = self._ensure_fts_schema(
+                self._conn, "messages_fts", FTS_SQL
+            )
+            trigram_ok = self._ensure_fts_schema(
+                self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            if self._trigram_available is not False:
+                self._trigram_available = bool(trigram_ok)
+            if not base_ok and self.get_meta("fts_rebuild_high_water"):
+                raise sqlite3.OperationalError(
+                    "failed to re-create v23 messages_fts "
+                    "on optimize-storage resume"
+                )
+            self._conn.commit()
 
         # A stale CJK index (triggers dropped by a tokenizer-less process)
         # can only be recovered from scratch — reset it now so the cjk

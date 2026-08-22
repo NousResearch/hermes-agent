@@ -3286,6 +3286,73 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_optimize_resume_rebuilds_wrong_shaped_vtables(self, tmp_path):
+        """#72716 follow-up shape: markers set but messages_fts is a v22
+        single-column `content` vtable. _ensure_fts_schema's IF NOT EXISTS
+        silently accepted it and the very first fts_rebuild_step INSERT
+        died on "no column named tool_name" — the resume could never
+        complete. The resume must validate the column set, rebuild the
+        vtable, and let the backfill re-populate it from progress 0."""
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            self._simulate_pre_fix_demote_crash_window(db)
+            # Re-introduce the reporter's shape: single-column v22-shaped
+            # vtables (only the legacy `content` column) WITH markers set
+            # and progress advanced past some rows.
+            conn = db._conn
+            conn.execute("DROP TABLE IF EXISTS messages_fts")
+            conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            conn.execute(
+                "CREATE VIRTUAL TABLE messages_fts USING fts5(content)"
+            )
+            conn.execute(
+                "CREATE VIRTUAL TABLE messages_fts_trigram USING "
+                "fts5(content, tokenize='trigram')"
+            )
+            hw = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES "
+                "('fts_rebuild_high_water', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(hw),),
+            )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES "
+                "('fts_rebuild_progress', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+            conn.commit()
+
+            # Sanity: the wrong-shaped table cannot serve the v23 INSERT.
+            with pytest.raises(sqlite3.OperationalError):
+                conn.execute(
+                    "INSERT INTO messages_fts(rowid, content, tool_name, "
+                    "tool_calls) VALUES (1, 'a', NULL, NULL)"
+                )
+            conn.rollback()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.get_meta("fts_rebuild_progress") is None
+            # The vtable is now the v23 shape and fully populated.
+            n_msg = db._conn.execute(
+                "SELECT COUNT(*) FROM messages"
+            ).fetchone()[0]
+            n_fts = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0]
+            assert n_fts == n_msg
+            assert len(db.search_messages("deployment")) == 1
+            assert db.fts_optimize_available() is False
+        finally:
+            db.close()
+
     def test_repair_rebuilds_partial_index_without_duplicates(self, tmp_path):
         """high_water without progress on a PARTIALLY indexed DB must not
         replay the backfill from zero on top of surviving rows: the chunk

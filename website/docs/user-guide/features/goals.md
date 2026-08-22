@@ -71,7 +71,11 @@ What you'll see:
 | `/goal gate remove <N>` | Remove the Nth gate (1-based). |
 | `/goal gate clear` | Remove all gates. |
 
-Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+Goal controls work on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
+
+Quality-gate creation is currently exposed by the classic CLI and messaging gateway. The TUI and Desktop can execute gates already persisted on a resumed session but do not expose `gate add`.
+
+Because a quality gate executes a shell command on the Hermes host, gateway users may add gates only when their ID is explicitly listed in `allow_admin_from` for DMs or `group_allow_admin_from` for groups. Listing and removing gates remain available to other allowed gateway users; local CLI behavior is unchanged.
 
 ## Completion contracts
 

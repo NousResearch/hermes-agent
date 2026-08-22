@@ -1086,16 +1086,14 @@ class GatewaySlashCommandsMixin:
         # the same owner — fail closed.
         return False
 
-    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
-        """Whether *source* is an EXPLICITLY-configured admin allowed to make a
-        cross-origin /resume or /sessions listing.
+    def _caller_is_explicit_admin(self, source: SessionSource) -> bool:
+        """Whether *source* is an explicitly configured gateway admin.
 
         Deliberately stricter than ``SlashAccessPolicy.is_admin()``: that returns
         True for every allowed caller when slash gating is DISABLED (so commands
-        stay runnable by default), but cross-ORIGIN DATA ACCESS must require a
-        real, configured admin. Otherwise the default (no admin list) config
-        would treat every gateway caller as cross-origin-capable and re-open the
-        enumeration IDOR.
+        stay runnable by default). Security-sensitive operations must require a
+        real configured admin instead of treating backward-compatible unrestricted
+        slash access as administrative identity.
         """
         try:
             from gateway.slash_access import policy_for_source
@@ -1104,6 +1102,10 @@ class GatewaySlashCommandsMixin:
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
             return False
+
+    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
+        """Whether *source* may access cross-origin session data as an admin."""
+        return self._caller_is_explicit_admin(source)
 
     async def _resume_target_allowed(
         self, source: SessionSource, target_id: str, allow_override: bool = False
@@ -2795,6 +2797,21 @@ class GatewaySlashCommandsMixin:
             if not gate_arg or gate_lower == "list":
                 return mgr.render_gates()
             if gate_lower.startswith("add "):
+                # SECURITY: a gate is persisted and later executed with
+                # shell=True at a turn boundary. Letting an allowed but
+                # non-admin gateway sender choose that string is authenticated
+                # remote code execution under the Hermes process account.
+                # Backward-compatible slash access treats every allowed sender
+                # as unrestricted when no admin list is set, but that must not
+                # silently grant host-shell authority. Require a real
+                # scope-specific admin entry for this one mutation; listing and
+                # removing gates remain available for recovery.
+                if not self._caller_is_explicit_admin(event.source):
+                    return (
+                        "⛔ /goal gate add requires an explicitly configured "
+                        "gateway admin (allow_admin_from for DMs or "
+                        "group_allow_admin_from for groups)."
+                    )
                 command = gate_arg[len("add"):].strip()
                 try:
                     gate = mgr.add_gate(command)

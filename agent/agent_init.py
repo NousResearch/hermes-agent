@@ -509,6 +509,35 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     return seconds
 
 
+def _memory_int_setting(mem_config: dict, key: str, default: int) -> int:
+    """An int memory setting that can never abort memory initialization.
+
+    The whole memory block runs under one ``except``, so a bare ``int()`` on
+    a user-supplied value put a cosmetic tuning knob in front of the store:
+    ``nudge_interval: ten`` — or a bare ``nudge_interval:``, which YAML reads
+    as ``None`` — raised before ``MemoryStore`` was ever constructed and took
+    the entire feature down with it, silently.
+
+    Bad values fall back to *default* and say so once, so the setting is
+    diagnosable instead of invisible. ``bool`` is rejected because it is an
+    ``int`` subclass, and ``nudge_interval: true`` meaning "every turn" is
+    not what anyone writes on purpose.
+    """
+    raw = mem_config.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        logger.warning(
+            "memory.%s: expected an integer, got %r — using %d", key, raw, default
+        )
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "memory.%s: %r is not an integer — using %d", key, raw, default
+        )
+        return default
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1850,7 +1879,9 @@ def init_agent(
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
-            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            agent._memory_nudge_interval = _memory_int_setting(
+                mem_config, "nudge_interval", 10
+            )
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
@@ -1861,7 +1892,13 @@ def init_agent(
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
-            pass  # Memory is optional -- don't break agent init
+            # Memory is optional -- don't break agent init. But say so: a
+            # silently absent memory store is indistinguishable from one the
+            # user never enabled, and that made a bad tuning value look like
+            # the feature simply not working.
+            logger.warning(
+                "Memory initialization failed; continuing without it", exc_info=True
+            )
     
 
 

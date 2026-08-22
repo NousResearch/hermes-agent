@@ -133,9 +133,28 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
-  it('does not overwrite unsupported configured languages', async () => {
+  it('loads de from display.language config', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('de')
+    expect(screen.getByTestId('save').textContent).toBe('Speichern')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite unsupported configured languages', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'xx' } }),
       saveConfig: vi.fn()
     }
 

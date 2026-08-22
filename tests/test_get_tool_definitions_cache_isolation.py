@@ -17,6 +17,7 @@ These tests pin:
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import os
 from threading import Barrier
 
 import pytest
@@ -33,6 +34,67 @@ def _clear_cache():
 
 
 class TestQuietModeCacheIsolation:
+
+    def test_same_size_same_mtime_config_rewrite_recomputes_definitions(
+        self, tmp_path, monkeypatch
+    ):
+        """A content edit must invalidate the quiet-mode cache even when a
+        writer preserves both the config file's size and nanosecond mtime."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "delegation:\n"
+            "  max_concurrent_children: 4\n"
+            "code_execution:\n"
+            "  mode: project\n",
+            encoding="utf-8",
+        )
+        original_stat = config_file.stat()
+        monkeypatch.setattr(
+            "hermes_cli.config.get_config_path", lambda: config_file
+        )
+
+        initial = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation", "code_execution"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        initial_by_name = {tool["function"]["name"]: tool for tool in initial}
+        assert "up to 4" in initial_by_name["delegate_task"]["function"][
+            "parameters"
+        ]["properties"]["tasks"]["description"]
+        assert (
+            "session's working directory"
+            in initial_by_name["execute_code"]["function"]["description"]
+        )
+
+        config_file.write_text(
+            "delegation:\n"
+            "  max_concurrent_children: 7\n"
+            "code_execution:\n"
+            "  mode: strict \n",
+            encoding="utf-8",
+        )
+        os.utime(
+            config_file,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+        assert config_file.stat().st_size == original_stat.st_size
+        assert config_file.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+        refreshed = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation", "code_execution"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        refreshed_by_name = {tool["function"]["name"]: tool for tool in refreshed}
+
+        assert "up to 7" in refreshed_by_name["delegate_task"]["function"][
+            "parameters"
+        ]["properties"]["tasks"]["description"]
+        assert (
+            "own temp dir"
+            in refreshed_by_name["execute_code"]["function"]["description"]
+        )
 
     def test_first_uncached_call_returns_fresh_list(self):
         """The first quiet_mode call must not alias the cached object \u2014

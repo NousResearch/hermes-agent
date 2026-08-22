@@ -175,6 +175,12 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    # Optional desktop wallpaper presentation. Relative paths are resolved
+    # beside the user skin file before the payload leaves the backend.
+    background_image: str = ""
+    background_image_fit: str = "cover"
+    background_image_position: str = "center"
+    background_overlay: str = ""
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -818,7 +824,7 @@ def _mapping_or_empty(value: Any, *, section: str, skin_name: str) -> Dict[str, 
     return {}
 
 
-def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
+def _build_skin_config(data: Dict[str, Any], *, source_dir: Optional[Path] = None) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
@@ -843,6 +849,13 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     light_colors = _mapping_or_empty(data.get("light_colors"), section="light_colors", skin_name=skin_name)
     dark_colors = _mapping_or_empty(data.get("dark_colors"), section="dark_colors", skin_name=skin_name)
 
+    background_image = str(data.get("background_image", "") or "").strip()
+    if background_image and source_dir is not None:
+        candidate = Path(background_image).expanduser()
+        has_url_scheme = background_image.lower().startswith(("data:", "file:", "http://", "https://"))
+        if not candidate.is_absolute() and not has_url_scheme:
+            background_image = str((source_dir / candidate).resolve())
+
     return SkinConfig(
         name=skin_name,
         description=data.get("description", ""),
@@ -855,6 +868,12 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
+        background_image=background_image,
+        background_image_fit=str(data.get("background_image_fit", "cover") or "cover").strip() or "cover",
+        background_image_position=(
+            str(data.get("background_image_position", "center") or "center").strip() or "center"
+        ),
+        background_overlay=str(data.get("background_overlay", "") or "").strip(),
     )
 
 
@@ -897,7 +916,7 @@ def load_skin(name: str) -> SkinConfig:
     if user_file.is_file():
         data = _load_skin_from_yaml(user_file)
         if data:
-            return _build_skin_config(data)
+            return _build_skin_config(data, source_dir=user_file.parent)
 
     # Check built-in skins
     if name in _BUILTIN_SKINS:

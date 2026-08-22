@@ -47,4 +47,21 @@ describe('skinToDesktopTheme', () => {
 
     expect(theme.colors.destructive).toBe(normalizeHex('#ff5566'))
   })
+
+  it('maps wallpaper presentation without changing the palette conversion', () => {
+    const theme = skinToDesktopTheme({
+      name: 'wallpaper',
+      colors: { background: '#101010', ui_text: '#f0f0f0' },
+      background_image: '  C:/Hermes/skins/wallpaper.png  ',
+      background_image_fit: ' contain ',
+      background_image_position: ' top right ',
+      background_overlay: ' #00000066 '
+    })!
+
+    expect(theme.backgroundImage).toBe('C:/Hermes/skins/wallpaper.png')
+    expect(theme.backgroundImageFit).toBe('contain')
+    expect(theme.backgroundImagePosition).toBe('top right')
+    expect(theme.backgroundOverlay).toBe('#00000066')
+    expect(theme.colors.background).toBe('#101010')
+  })
 })

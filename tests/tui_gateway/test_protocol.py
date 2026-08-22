@@ -1141,7 +1141,15 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\n"
+        "description: t\n"
+        "colors:\n"
+        "  banner_title: '#00ffcc'\n"
+        "  background: '#001010'\n"
+        "background_image: wallpaper.png\n"
+        "background_image_fit: contain\n"
+        "background_image_position: top right\n"
+        "background_overlay: '#00000066'\n"
     )
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -1164,6 +1172,10 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     assert [ev for ev, _ in emitted] == ["skin.changed"]
     assert emitted[0][1]["name"] == "midnight"
     assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    assert emitted[0][1]["background_image"] == str((tmp_path / "skins" / "wallpaper.png").resolve())
+    assert emitted[0][1]["background_image_fit"] == "contain"
+    assert emitted[0][1]["background_image_position"] == "top right"
+    assert emitted[0][1]["background_overlay"] == "#00000066"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):

@@ -107,4 +107,10 @@ export interface HermesSkin {
   banner_hero?: string
   tool_prefix?: string
   help_header?: string
+  /** Desktop wallpaper path or inline image URL. */
+  background_image?: string
+  background_image_fit?: 'cover' | 'contain' | 'fill' | 'scale-down' | string
+  background_image_position?: string
+  /** CSS colour placed over the wallpaper to retain text contrast. */
+  background_overlay?: string
 }

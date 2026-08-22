@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { BUILTIN_THEMES } from './presets'
 
 const skin = (name: string) => ({
   name,
@@ -98,6 +99,38 @@ describe('ingestBackendSkin', () => {
 
     expect($backendThemes.get().mono).toBeUndefined()
     expect($pendingSkinApply.get()).toBe('mono')
+  })
+
+  it('decorates a built-in palette with backend wallpaper metadata', () => {
+    ingestBackendSkin(
+      {
+        ...skin('mono'),
+        background_image: 'C:/Hermes/skins/mono.png',
+        background_image_fit: 'contain',
+        background_image_position: 'top right',
+        background_overlay: '#120a22ba'
+      },
+      { apply: true }
+    )
+
+    const decorated = $backendThemes.get().mono
+
+    expect(decorated.colors).toEqual(BUILTIN_THEMES.mono.colors)
+    expect(decorated.colors).not.toEqual(skin('mono').colors)
+    expect(decorated.backgroundImage).toBe('C:/Hermes/skins/mono.png')
+    expect(decorated.backgroundImageFit).toBe('contain')
+    expect(decorated.backgroundImagePosition).toBe('top right')
+    expect(decorated.backgroundOverlay).toBe('#120a22ba')
+    expect($pendingSkinApply.get()).toBe('mono')
+  })
+
+  it('removes stale built-in wallpaper metadata when the backend clears it', () => {
+    ingestBackendSkin({ ...skin('mono'), background_image: 'data:image/png;base64,AA==' }, { apply: false })
+    expect($backendThemes.get().mono?.backgroundImage).toBe('data:image/png;base64,AA==')
+
+    ingestBackendSkin(skin('mono'), { apply: false })
+
+    expect($backendThemes.get().mono).toBeUndefined()
   })
 
   it('ignores empty payloads', () => {

@@ -171,9 +171,9 @@ export function contributedThemes(): DesktopTheme[] {
 /** Resolve a theme by name across the merged set (built-in + user + backend + contributed). */
 export function resolveTheme(name: string): DesktopTheme | undefined {
   return (
-    BUILTIN_THEMES[name] ??
     $userThemes.get()[name] ??
     $backendThemes.get()[name] ??
+    BUILTIN_THEMES[name] ??
     contributedThemes().find(theme => theme.name === name)
   )
 }
@@ -185,9 +185,9 @@ export function listAllThemes(): DesktopTheme[] {
   const shadows = (theme: DesktopTheme) => user[theme.name] || backend[theme.name]
 
   return [
-    ...Object.values(BUILTIN_THEMES),
+    ...Object.values(BUILTIN_THEMES).map(theme => backend[theme.name] ?? theme),
     ...contributedThemes().filter(theme => !shadows(theme)),
-    ...Object.values(backend).filter(theme => !user[theme.name]),
+    ...Object.values(backend).filter(theme => !BUILTIN_THEMES[theme.name] && !user[theme.name]),
     ...Object.values(user)
   ]
 }

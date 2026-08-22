@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import {
   $marketplaceInstalls,
@@ -26,6 +27,7 @@ const makeTheme = (label: string, source?: string) =>
 describe('user theme registry', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    $backendThemes.set({})
     $userThemes.set({})
   })
 
@@ -58,6 +60,18 @@ describe('user theme registry', () => {
     expect(resolveTheme(DEFAULT_SKIN_NAME)).toBe(BUILTIN_THEMES[DEFAULT_SKIN_NAME])
   })
 
+  it('resolves one wallpaper-decorated built-in without duplicating the theme list', () => {
+    const decorated = {
+      ...BUILTIN_THEMES.mono,
+      backgroundImage: 'data:image/png;base64,AA=='
+    }
+
+    $backendThemes.set({ mono: decorated })
+
+    expect(resolveTheme('mono')).toBe(decorated)
+    expect(listAllThemes().filter(theme => theme.name === 'mono')).toEqual([decorated])
+  })
+
   it('refuses to shadow a built-in name', () => {
     const builtinName = makeTheme('x')
     builtinName.name = DEFAULT_SKIN_NAME
@@ -77,6 +91,7 @@ describe('user theme registry', () => {
 describe('marketplace install tracking', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    $backendThemes.set({})
     $userThemes.set({})
   })
 

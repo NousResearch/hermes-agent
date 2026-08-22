@@ -117,6 +117,35 @@ class TestUserSkins:
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
 
+    def test_load_user_skin_resolves_wallpaper_metadata(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        import yaml
+
+        (skins_dir / "mono.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "mono",
+                    "colors": {"background": "#ff00ff"},
+                    "background_image": "wallpaper.png",
+                    "background_image_fit": "contain",
+                    "background_image_position": "top right",
+                    "background_overlay": "#10101099",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("mono")
+
+        assert skin.background_image == str((skins_dir / "wallpaper.png").resolve())
+        assert skin.background_image_fit == "contain"
+        assert skin.background_image_position == "top right"
+        assert skin.background_overlay == "#10101099"
+
     def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import load_skin
 

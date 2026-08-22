@@ -4463,6 +4463,68 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_pending_kind_reports_approval_as_waiting(monkeypatch):
+    """An approval-blocked session must read as "waiting" in the live status.
+
+    Approvals enqueue in tools/approval.py's own queue (_gateway_queues via
+    _await_gateway_decision), not tui_gateway's _block() _pending registry.
+    Without the approval lookup in _session_pending_kind, _session_live_status
+    reported "working" and Desktop's active_list poll clobbered the amber
+    needs-input dot back to blue (#86565).
+    """
+    from tools import approval as approval_mod
+
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    session = _session(session_key="session-key")
+    server._sessions["sid"] = session
+    resolved: dict[str, dict | None] = {"decision": None}
+
+    def _block_on_approval():
+        resolved["decision"] = approval_mod._await_gateway_decision(
+            "session-key",
+            lambda data: None,
+            {
+                "command": "rm -rf .git",
+                "description": "dangerous command",
+                "pattern_key": "dangerous",
+                "pattern_keys": ["dangerous"],
+            },
+        )
+
+    thread = threading.Thread(target=_block_on_approval, daemon=True)
+    thread.start()
+
+    try:
+        deadline = time.time() + 5.0
+        while time.time() < deadline and approval_mod.get_pending_gateway_approval(
+            "session-key"
+        ) is None:
+            time.sleep(0.05)
+
+        assert approval_mod.get_pending_gateway_approval("session-key") is not None
+        assert server._session_pending_kind("sid") == "approval"
+        assert server._session_live_status("sid", session) == "waiting"
+
+        approval_mod.resolve_gateway_approval("session-key", "deny")
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+        assert resolved["decision"] is not None
+        assert resolved["decision"].get("resolved") is True
+        assert resolved["decision"].get("choice") == "deny"
+        assert server._session_pending_kind("sid") == ""
+        assert server._session_live_status("sid", session) == "idle"
+    finally:
+        # A failure before resolution must not leave the blocking thread
+        # parked on Event.wait() forever — resolve it, then reap the state.
+        if thread.is_alive():
+            approval_mod.resolve_gateway_approval("session-key", "deny")
+            thread.join(timeout=1.0)
+        approval_mod.clear_session("session-key")
+        approval_mod._gateway_queues.pop("session-key", None)
+        approval_mod._pending.pop("session-key", None)
+        server._sessions.pop("sid", None)
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

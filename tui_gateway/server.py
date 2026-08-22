@@ -8790,6 +8790,20 @@ def _session_pending_kind(sid: str) -> str:
             continue
         event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
         return str(event).removesuffix(".request")
+    # Approvals block through tools/approval.py's OWN queue (_gateway_queues),
+    # not _block()'s _pending registry — a session waiting on an approval
+    # would otherwise report "working" instead of "waiting", so Desktop's
+    # active_list poll clobbers the amber "needs input" dot back to blue
+    # (#86565). Fail open: any error here degrades to the pre-fix status.
+    session = _sessions.get(sid)
+    if session is not None:
+        try:
+            from tools.approval import get_pending_gateway_approval
+
+            if get_pending_gateway_approval(_session_lookup_key(session, fallback=sid)):
+                return "approval"
+        except Exception:
+            logger.debug("failed to read pending approval for %s", sid, exc_info=True)
     return ""
 
 

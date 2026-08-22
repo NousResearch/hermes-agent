@@ -4769,6 +4769,36 @@ def run_conversation(
                             "messages with image parts found; surfacing original error."
                         )
 
+                # Image-corrupt recovery: the provider decoded the request but
+                # rejected the image bytes themselves (e.g. xAI's "Invalid PNG
+                # image." on a re-serialized image part from replayed
+                # history). Shrinking corrupt bytes doesn't help, so strip the
+                # image parts and retry once instead of routing through the
+                # shrink path above. See issue #69078.
+                if classified.reason == FailoverReason.image_corrupt:
+                    # Strip ONLY the per-call payload copy. api_messages rows
+                    # are shallow copies of canonical history, and the strip
+                    # replaces msg["content"] rather than mutating the shared
+                    # parts list — so canonical messages keep their images.
+                    # A transient provider rejection must not permanently
+                    # erase history (#69104 sweeper review; the copy-on-write
+                    # contract from e762a5a473).
+                    _imgs_removed = False
+                    if isinstance(api_messages, list):
+                        _imgs_removed = _strip_images_from_messages(api_messages)
+                    if _imgs_removed:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Provider rejected a corrupted image — "
+                            f"stripped images from the retry payload and retrying...",
+                            force=True,
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "image-corrupt recovery: no image parts found to "
+                            "strip; surfacing original error."
+                        )
+
                 # Anthropic OAuth subscription rejected the 1M-context beta
                 # header ("long context beta is not yet available for this
                 # subscription"). Disable the beta for the rest of this

@@ -306,7 +306,10 @@ def run_oneshot(
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
         _write_usage_file(usage_file, result, failure=str(failure))
-        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        err_str = str(failure)
+        if "No access token found" in err_str or getattr(failure, "relogin_required", False):
+            err_str += "\n  -> Hint: Run 'hermes login' or configure provider credentials via 'hermes setup' / environment variables."
+        real_stderr.write(f"hermes -z: agent failed: {err_str}\n")
         real_stderr.flush()
         return 1
 

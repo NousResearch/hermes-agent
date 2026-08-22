@@ -21,11 +21,13 @@ import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
   $projectDialog,
+  $projects,
   addProjectFolder,
   closeProjectDialog,
   createProject,
   generateProjectIdea,
   pickProjectFolder,
+  removeProjectFolder,
   renameProject
 } from '@/store/projects'
 
@@ -36,8 +38,11 @@ export function ProjectDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const state = useStore($projectDialog)
+  const projects = useStore($projects)
   const open = state !== null
   const mode = state?.mode ?? 'create'
+  const managedProject = mode === 'manage-folders' ? projects.find(proj => proj.id === state?.projectId) : undefined
+  const managedFolders = managedProject?.folders ?? []
 
   const [name, setName] = useState('')
   const [folders, setFolders] = useState<string[]>([])
@@ -97,6 +102,24 @@ export function ProjectDialog() {
 
       const projectId = state?.projectId
 
+      if (mode === 'manage-folders' && projectId) {
+        if (submitting) {
+          return
+        }
+
+        setSubmitting(true)
+
+        try {
+          await addProjectFolder(projectId, dir)
+        } catch (err) {
+          notifyError(err, p.createFailed)
+        } finally {
+          setSubmitting(false)
+        }
+
+        return
+      }
+
       if (mode === 'add-folder' && projectId) {
         await runSubmit(() => addProjectFolder(projectId, dir))
 
@@ -146,7 +169,32 @@ export function ProjectDialog() {
     }
   }
 
-  const title = mode === 'rename' ? p.renameTitle : mode === 'add-folder' ? p.addFolderTitle : p.createTitle
+  const removeManagedFolder = async (path: string) => {
+    const projectId = state?.projectId
+
+    if (!projectId || submitting) {
+      return
+    }
+
+    setSubmitting(true)
+
+    try {
+      await removeProjectFolder(projectId, path)
+    } catch (err) {
+      notifyError(err, p.createFailed)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const title =
+    mode === 'rename'
+      ? p.renameTitle
+      : mode === 'add-folder'
+        ? p.addFolderTitle
+        : mode === 'manage-folders'
+          ? p.manageFoldersTitle
+          : p.createTitle
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -156,7 +204,7 @@ export function ProjectDialog() {
           {mode === 'create' && <DialogDescription>{p.createDesc}</DialogDescription>}
         </DialogHeader>
 
-        {mode !== 'add-folder' && (
+        {mode !== 'add-folder' && mode !== 'manage-folders' && (
           <Input
             autoFocus
             disabled={submitting}
@@ -278,6 +326,59 @@ export function ProjectDialog() {
           </div>
         )}
 
+        {mode === 'manage-folders' && (
+          <div className="flex flex-col gap-1.5">
+            {managedFolders.length === 0 ? (
+              <span className="text-[0.75rem] text-(--ui-text-quaternary)">{p.manageFoldersEmpty}</span>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {managedFolders.map(folder => (
+                  <li
+                    className={cn(
+                      'flex items-center gap-2 rounded-md bg-(--ui-control-hover-background) px-2 py-1 text-[0.75rem]'
+                    )}
+                    key={folder.path}
+                  >
+                    <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder" size="0.75rem" />
+                    <span className="min-w-0 flex-1 truncate" title={folder.path}>
+                      {folder.path}
+                    </span>
+                    {folder.is_primary && (
+                      <span className="shrink-0 text-[0.625rem] uppercase text-(--ui-text-quaternary)">
+                        {p.primaryBadge}
+                      </span>
+                    )}
+                    <Tip label={managedFolders.length <= 1 ? p.minFolderRequired : p.removeFolder}>
+                      <Button
+                        aria-label={p.removeFolder}
+                        className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
+                        disabled={submitting || managedFolders.length <= 1}
+                        onClick={() => void removeManagedFolder(folder.path)}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="close" size="0.75rem" />
+                      </Button>
+                    </Tip>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button
+              className="self-start"
+              disabled={submitting}
+              onClick={() => void pickFolder()}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="add" size="0.75rem" />
+              {p.addFolder}
+            </Button>
+          </div>
+        )}
+
         {mode === 'add-folder' && (
           <Button disabled={submitting} onClick={() => void pickFolder()} type="button">
             <Codicon name="folder-opened" size="0.875rem" />
@@ -285,7 +386,7 @@ export function ProjectDialog() {
           </Button>
         )}
 
-        {mode !== 'add-folder' && (
+        {mode !== 'add-folder' && mode !== 'manage-folders' && (
           <DialogFooter>
             <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
               {t.common.cancel}
@@ -296,6 +397,14 @@ export function ProjectDialog() {
               type="button"
             >
               {mode === 'rename' ? t.common.save : p.create}
+            </Button>
+          </DialogFooter>
+        )}
+
+        {mode === 'manage-folders' && (
+          <DialogFooter>
+            <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
+              {t.common.close}
             </Button>
           </DialogFooter>
         )}

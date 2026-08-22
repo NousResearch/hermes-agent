@@ -2,10 +2,14 @@ import { useEffect, useRef } from 'react'
 
 /** Run a UI-only clock while this document is actually being viewed.
  *
- * macOS can leave an occluded BrowserWindow `visible`, and active streaming
- * deliberately disables Chromium's background timer throttling. Pairing focus
- * with visibility avoids waking React for elapsed labels nobody can see while
- * a leading tick on return catches the UI up immediately.
+ * "Viewed" is visibility ONLY, deliberately not focus. An unfocused window is
+ * usually still fully on screen -- on a multi-monitor desktop it is normal to
+ * watch one window while typing in another -- and stopping an elapsed clock
+ * there makes a working turn look hung, which is the exact bug this used to
+ * cause. Focus was standing in for occlusion (macOS can leave an occluded
+ * window `visible`), but a 1s interval is far too cheap to be worth showing a
+ * frozen timer to everyone whose window is merely unfocused. A hidden document
+ * still stops the clock, and the leading tick on return catches the UI up.
  */
 export function useViewedInterval(callback: () => void, intervalMs: number, enabled = true): void {
   const callbackRef = useRef(callback)
@@ -30,7 +34,7 @@ export function useViewedInterval(callback: () => void, intervalMs: number, enab
     }
 
     const sync = () => {
-      const viewed = document.visibilityState === 'visible' && document.hasFocus()
+      const viewed = document.visibilityState === 'visible'
 
       if (!viewed) {
         stop()
@@ -44,15 +48,11 @@ export function useViewedInterval(callback: () => void, intervalMs: number, enab
       }
     }
 
-    window.addEventListener('focus', sync)
-    window.addEventListener('blur', sync)
     document.addEventListener('visibilitychange', sync)
     sync()
 
     return () => {
       stop()
-      window.removeEventListener('focus', sync)
-      window.removeEventListener('blur', sync)
       document.removeEventListener('visibilitychange', sync)
     }
   }, [enabled, intervalMs])

@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 from tools.environments.base import (
@@ -403,14 +404,92 @@ class SSHEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        """Spawn an SSH process that runs bash on the remote host."""
+        """Spawn an SSH process with a remotely-owned process group.
+
+        Killing the local ``ssh`` client is not sufficient cleanup: sshd can
+        leave the remote command alive after a tool timeout or controller
+        disconnect.  The remote wrapper creates a fresh session, records its
+        process-group leader in a per-command pid file, and lets
+        :meth:`_kill_process` terminate that exact group before closing the
+        SSH channel.
+        """
         cmd = self._build_ssh_command()
         if login:
-            cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])
+            remote_command = f"bash -l -c {shlex.quote(cmd_string)}"
         else:
-            cmd.extend(["bash", "-c", shlex.quote(cmd_string)])
+            remote_command = f"bash -c {shlex.quote(cmd_string)}"
 
-        return _popen_bash(cmd, stdin_data)
+        pid_file = f"/tmp/hermes-ssh-{os.getpid()}-{uuid.uuid4().hex}.pid"
+        cleanup = f"trap {shlex.quote(f'rm -f -- {shlex.quote(pid_file)}')} EXIT"
+        wrapped = (
+            f"printf '%s\\n' \"$$\" > {shlex.quote(pid_file)}; "
+            f"{cleanup}; {remote_command}"
+        )
+        # macOS does not ship a standalone `setsid` utility. Use Python's
+        # os.setsid() before exec'ing bash so the wrapper works on Mini2 as
+        # well as Linux workers. An SSH remote command can already be a
+        # process-group leader, where setsid() raises EPERM; fork once so the
+        # child can become the new session/process-group leader instead of
+        # silently falling back to an unowned remote payload.
+        launcher = (
+            "import os\n"
+            "try: os.setsid()\n"
+            "except PermissionError:\n"
+            "    if os.fork(): os._exit(0)\n"
+            "    os.setsid()\n"
+            f"os.execvp('bash', ['bash', '-c', {wrapped!r}])"
+        )
+        cmd.append(f"exec python3 -c {shlex.quote(launcher)}")
+
+        proc = _popen_bash(cmd, stdin_data)
+        setattr(proc, "_hermes_remote_pid_file", pid_file)
+        return proc
+
+    def _kill_process(self, proc):
+        """Kill the exact remote process group before the SSH client."""
+        pid_file = getattr(proc, "_hermes_remote_pid_file", "")
+        if pid_file:
+            remote_killer = (
+                "import os, signal, time\n"
+                "from pathlib import Path\n"
+                f"path = Path({pid_file!r})\n"
+                "try:\n"
+                "    pgid = int(path.read_text().strip())\n"
+                "except (FileNotFoundError, ValueError, OSError):\n"
+                "    raise SystemExit(0)\n"
+                "try:\n"
+                "    os.killpg(pgid, signal.SIGTERM)\n"
+                "except ProcessLookupError:\n"
+                "    raise SystemExit(0)\n"
+                "time.sleep(1.0)\n"
+                "try:\n"
+                "    os.killpg(pgid, signal.SIGKILL)\n"
+                "except ProcessLookupError:\n"
+                "    pass\n"
+                "try:\n"
+                "    path.unlink()\n"
+                "except FileNotFoundError:\n"
+                "    pass\n"
+            )
+            command = self._build_ssh_command()
+            command.append(f"python3 -c {shlex.quote(remote_killer)}")
+            try:
+                subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                # The SSH channel may already be gone; local cleanup below is
+                # still required and remains the best available fallback.
+                pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     def cleanup(self):
         if self._sync_manager:

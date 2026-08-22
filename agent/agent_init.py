@@ -2783,6 +2783,17 @@ def init_agent(
         compression_idle_compact_after_seconds
     )
 
+    # P3: oversized-single-message handling (default off, zero behavior
+    # change unless opted in). chunk_oversized_input enables the file-ref
+    # primary path at the 413/context_overflow dead-ends. never_413 is the
+    # master override that forces it on so a 413 is never surfaced.
+    agent.chunk_oversized_input = str(
+        _compression_cfg.get("chunk_oversized_input", False)
+    ).lower() in {"true", "1", "yes"}
+    agent.never_413 = str(
+        _compression_cfg.get("never_413", False)
+    ).lower() in {"true", "1", "yes"}
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

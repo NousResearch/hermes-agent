@@ -36,6 +36,16 @@ def _source() -> SessionSource:
     )
 
 
+def _whatsapp_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="15551234567@s.whatsapp.net",
+        chat_name="DM",
+        chat_type="private",
+        user_name="Alice",
+    )
+
+
 @pytest.mark.asyncio
 async def test_reply_prefix_injected_when_text_absent_from_history():
     runner = _make_runner()
@@ -98,4 +108,26 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.startswith(f'[Replying to: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
 
+
+@pytest.mark.asyncio
+async def test_whatsapp_reply_id_is_explicit_when_quote_text_is_unavailable():
+    runner = _make_runner()
+    source = _whatsapp_source()
+    event = MessageEvent(
+        text="send it",
+        source=source,
+        reply_to_message_id="outbound-42",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[{"role": "assistant", "content": "two possible drafts"}],
+    )
+
+    assert result is not None
+    assert result.startswith(
+        '[Replying to WhatsApp message "outbound-42"; quoted text unavailable]'
+    )
+    assert result.endswith("send it")
 

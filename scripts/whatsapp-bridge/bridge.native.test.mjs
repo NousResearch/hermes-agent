@@ -130,6 +130,66 @@ import {
 }
 
 {
+  const store = createBoundedMessageStore(2);
+  store.remember({
+    key: { id: 'outbound-stanza-only' },
+    message: { conversation: 'send the approved draft?' },
+  });
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'incoming-stanza-only',
+        remoteJid: '15551234567@s.whatsapp.net',
+        fromMe: false,
+      },
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: '/queue send it',
+          contextInfo: { stanzaId: 'outbound-stanza-only' },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    messageStore: store,
+  });
+
+  assert.equal(event.quotedMessageId, 'outbound-stanza-only');
+  assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.quotedText, 'send the approved draft?');
+  console.log('  ✓ stanza-only replies recover quoted text from the message store');
+}
+
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'incoming-unresolved-quote',
+        remoteJid: '15551234567@s.whatsapp.net',
+        fromMe: false,
+      },
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: '/queue send it',
+          contextInfo: { stanzaId: 'evicted-message' },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+  });
+
+  assert.equal(event.quotedMessageId, 'evicted-message');
+  assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.quotedText, '');
+  console.log('  ✓ unresolved stanza-only replies retain their quote relation');
+}
+
+{
   const event = await extractBridgeEvent({
     msg: {
       key: { id: 'doc-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },

@@ -2449,7 +2449,11 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        ("clarify", {
+            "question": "Continue?",
+            "choices": ["No", "Yes"],
+            "recommended_index": 1,
+        }),
         ("read_terminal", {}),
         ("read_preview", {}),
         ("drive_preview", {"action": "elements"}),
@@ -2488,9 +2492,15 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.memory_tool.memory_tool",
             lambda **kwargs: '{"ok":true}',
         )
+        clarify_calls = []
+
+        def fake_clarify_tool(**kwargs):
+            clarify_calls.append(kwargs)
+            return '{"ok":true}'
+
         monkeypatch.setattr(
             "tools.clarify_tool.clarify_tool",
-            lambda **kwargs: '{"ok":true}',
+            fake_clarify_tool,
         )
         monkeypatch.setattr(
             "tools.read_terminal_tool.read_terminal_tool",
@@ -2552,6 +2562,9 @@ class TestAgentRuntimePostHookOwnershipSync:
             f"{tool_name}-sequential",
         ]
         assert all(call["tool_name"] == tool_name for call in post_calls)
+        if tool_name == "clarify":
+            assert len(clarify_calls) == 2
+            assert all(call["recommended_index"] == 1 for call in clarify_calls)
 
     def test_post_hook_ownership_contract_lists_exercised_tools(self):
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES

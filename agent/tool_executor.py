@@ -2170,6 +2170,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     choices=next_args.get("choices"),
                     multi_select=next_args.get("multi_select", False),
                     questions=next_args.get("questions"),
+                    recommended_index=next_args.get("recommended_index"),
                     callback=agent.clarify_callback,
                 )
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(

@@ -63,7 +63,7 @@ class TestClarifyToolChoicesValidation:
             return "answer"
 
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
-        assert choices_received == ["1 (Recommended)", "2", "3"]
+        assert choices_received == ["1", "2", "3"]
 
 
 class TestClarifyToolCallbackHandling:
@@ -130,7 +130,7 @@ class TestClarifyDictChoices:
             callback=cb,
         ))  # type: ignore
         assert seen == [
-            "Tight, covers all 3 points (Recommended)",
+            "Tight, covers all 3 points",
             "Loose layout",
             "A plain string choice",
         ]
@@ -158,6 +158,20 @@ class TestClarifySchema:
         # The model should treat it as false when omitted
         assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
 
+    def test_schema_exposes_optional_recommended_index(self):
+        params = CLARIFY_SCHEMA["parameters"]
+        assert params["properties"]["recommended_index"] == {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": MAX_CHOICES - 1,
+            "description": (
+                "Zero-based index into `choices` for the option you actually "
+                "recommend. The UI labels that exact option '(Recommended)'. "
+                "Omit when you are not making a recommendation."
+            ),
+        }
+        assert "recommended_index" not in params["required"]
+
 
     def test_schema_description_advertises_batching(self):
         """The top-level description must tell the model it can batch.
@@ -178,6 +192,9 @@ class TestClarifySchema:
         params = CLARIFY_SCHEMA["parameters"]
         assert "questions" not in params["required"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
+        question_props = params["properties"]["questions"]["items"]["properties"]
+        assert question_props["recommended_index"]["minimum"] == 0
+        assert question_props["recommended_index"]["maximum"] == MAX_CHOICES - 1
 
 
 class TestClarifyToolMultiSelect:
@@ -245,22 +262,113 @@ class TestClarifyToolMultiSelect:
 
 
 class TestClarifyRecommendedLabel:
-    """The first choice is the agent's pick and is labelled as such.
+    """Explicit recommendation metadata controls the presentation-only label."""
 
-    The schema tells the model to order choices best-first, so the tool tags
-    element 0 with "(Recommended)" at the one platform-agnostic entry point —
-    CLI, TUI, desktop, and messaging adapters all inherit the same label. The
-    label is presentation only: it never appears in the answer the agent reads.
-    """
-
-    def test_first_choice_is_labelled(self):
+    def test_explicit_recommendation_labels_the_matching_non_first_choice(self):
+        """The badge follows the model's explicit pick, not array position."""
         seen = []
 
         def cb(question, choices):
             seen.extend(choices or [])
             return choices[1]
 
+        result = json.loads(clarify_tool(
+            "I recommend Merge.",
+            choices=["Rebase", "Merge"],
+            recommended_index=1,
+            callback=cb,
+        ))
+
+        assert seen == ["Rebase", "Merge (Recommended)"]
+        assert result["user_response"] == "Merge"
+        assert result["choices_offered"] == ["Rebase", "Merge"]
+
+    def test_explicit_recommendation_survives_dropped_malformed_choice(self):
+        """The index refers to the original tool array before normalization."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[1]
+
+        clarify_tool(
+            "I recommend Merge.",
+            choices=[{"value": "drop-me"}, "Rebase", "Merge"],
+            recommended_index=2,
+            callback=cb,
+        )
+
+        assert seen == ["Rebase", "Merge (Recommended)"]
+
+    def test_schema_out_of_range_index_stays_invalid_after_normalization(self):
+        """An index rejected by the schema cannot become valid after dropped choices."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
+        clarify_tool(
+            "Pick",
+            choices=[{"value": "drop-me"}, "A", "B", "C", "D"],
+            recommended_index=4,
+            callback=cb,
+        )
+
+        assert seen == ["A", "B", "C", "D"]
+
+    def test_explicit_recommendation_replaces_a_model_written_label(self):
+        """Explicit metadata is authoritative and cannot produce two badges."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[1]
+
+        clarify_tool(
+            "I recommend Merge.",
+            choices=["Rebase (Recommended)", "Merge"],
+            recommended_index=1,
+            callback=cb,
+        )
+
+        assert seen == ["Rebase", "Merge (Recommended)"]
+
+    def test_legacy_positional_callback_still_occupies_fourth_argument(self):
+        """Adding recommendation metadata must not break direct legacy callers."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
+        clarify_tool("Pick", ["Rebase", "Merge"], False, cb)
+        assert seen == ["Rebase", "Merge"]
+
+    def test_omitted_recommendation_does_not_invent_one(self):
+        """Missing recommendation metadata is safer than a false first-choice badge."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
         clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb)
+        assert seen == ["Rebase", "Merge"]
+
+    def test_first_choice_is_labelled_when_explicitly_recommended(self):
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[1]
+
+        clarify_tool(
+            "Pick",
+            choices=["Rebase", "Merge"],
+            recommended_index=0,
+            callback=cb,
+        )
         assert seen == ["Rebase (Recommended)", "Merge"]
 
     def test_answer_strips_the_label(self):
@@ -268,7 +376,12 @@ class TestClarifyRecommendedLabel:
         def cb(question, choices):
             return choices[0]
 
-        result = json.loads(clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb))
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["Rebase", "Merge"],
+            recommended_index=0,
+            callback=cb,
+        ))
         assert result["user_response"] == "Rebase"
         assert result["choices_offered"] == ["Rebase", "Merge"]
 
@@ -280,6 +393,7 @@ class TestClarifyRecommendedLabel:
             "Pick some",
             choices=["Rebase", "Merge", "Squash"],
             multi_select=True,
+            recommended_index=0,
             callback=cb,
         ))
         assert result["user_response"] == ["Rebase", "Merge"]
@@ -295,8 +409,8 @@ class TestClarifyRecommendedLabel:
         clarify_tool("Confirm", choices=["Ship it"], callback=cb)
         assert seen == ["Ship it"]
 
-    def test_label_is_not_doubled(self):
-        """A model that wrote its own label doesn't get a second one."""
+    def test_model_written_label_is_stripped_without_explicit_recommendation(self):
+        """A model cannot bypass structured recommendation metadata."""
         seen = []
 
         def cb(question, choices):
@@ -304,7 +418,7 @@ class TestClarifyRecommendedLabel:
             return choices[0]
 
         clarify_tool("Pick", choices=["Rebase (recommended)", "Merge"], callback=cb)
-        assert seen == ["Rebase (recommended)", "Merge"]
+        assert seen == ["Rebase", "Merge"]
 
     def test_open_ended_unaffected(self):
         def cb(question, choices):
@@ -349,7 +463,22 @@ class TestInvokeCallbackDispatch:
 
 
 class TestRegistryMultiSelectPassThrough:
-    """The registered tool handler must forward multi_select from tool args."""
+    """The registered tool handler forwards clarify metadata from tool args."""
+
+    def test_handler_passes_recommended_index(self):
+        from tools.registry import registry
+        entry = registry.get_entry("clarify")
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[1]
+
+        entry.handler(
+            {"question": "Pick", "choices": ["a", "b"], "recommended_index": 1},
+            callback=cb,
+        )
+        assert seen == ["a", "b (Recommended)"]
 
     def test_handler_passes_multi_select(self):
         from tools.registry import registry
@@ -448,10 +577,14 @@ class TestClarifyBatchValidation:
         clarify_tool(
             "",
             questions=[
-                {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"]},
+                {
+                    "question": "Pick letter",
+                    "choices": ["a", "b", "c", "d", "e", "f"],
+                    "recommended_index": 0,
+                },
                 {"question": "Pick layout", "choices": [
                     {"description": "Loose layout"}, "Tight",
-                ]},
+                ], "recommended_index": 0},
             ],
             callback=cb,
         )
@@ -459,6 +592,30 @@ class TestClarifyBatchValidation:
         assert len(q0["choices"]) == MAX_CHOICES
         assert q0["choices"][0] == "a (Recommended)"
         assert q1["choices"] == ["Loose layout (Recommended)", "Tight"]
+
+    def test_batch_recommendation_binds_to_normalized_non_first_choice(self):
+        """Each batch item maps its original explicit index after dropped rows."""
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": questions[0]["choices"][1]}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{
+                "question": "Pick",
+                "choices": [{"value": "drop"}, "Rebase", "Merge"],
+                "recommended_index": 2,
+            }],
+            callback=cb,
+        ))
+
+        assert seen["questions"][0]["choices"] == [
+            "Rebase", "Merge (Recommended)",
+        ]
+        assert result["responses"][0]["choices_offered"] == ["Rebase", "Merge"]
+        assert result["responses"][0]["user_response"] == "Merge"
 
     def test_batch_internal_ids_are_stable_and_model_id_echoed(self):
         """Wire ids are q0..qN. A model-supplied id only shows in results."""
@@ -530,7 +687,11 @@ class TestClarifyBatchDispatch:
 
         result = json.loads(clarify_tool(
             "",
-            questions=[{"question": "Pick", "choices": ["Rebase", "Merge"]}],
+            questions=[{
+                "question": "Pick",
+                "choices": ["Rebase", "Merge"],
+                "recommended_index": 0,
+            }],
             callback=cb,
         ))
         assert result["responses"][0]["user_response"] == "Rebase"
@@ -587,7 +748,11 @@ class TestClarifyBatchDispatch:
         result = json.loads(clarify_tool(
             "",
             questions=[
-                {"question": "One?", "choices": ["a", "b"]},
+                {
+                    "question": "One?",
+                    "choices": ["a", "b"],
+                    "recommended_index": 0,
+                },
                 {"question": "Two?"},
             ],
             callback=legacy_cb,

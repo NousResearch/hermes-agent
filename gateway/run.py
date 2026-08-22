@@ -2063,7 +2063,6 @@ def _clear_planned_restart_notification() -> None:
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
-
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -11488,10 +11487,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
             # This watcher is intentionally outside the running gateway. If it
             # inherits the gateway marker, `hermes gateway restart` refuses to
-            # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
+            watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
             project_root = Path(__file__).resolve().parent.parent
-            # The watcher runs sys.executable (console python) under the
             # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
             # console, inherited by the `hermes gateway restart` child, so
             # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
@@ -11577,7 +11575,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
-        setsid_bin = shutil.which("setsid")
+        watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
         if setsid_bin:
             subprocess.Popen(
                 [setsid_bin, "bash", "-lc", shell_cmd],
@@ -30465,6 +30463,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # platforms. Set here (not at module import) so incidental imports of
     # gateway.run from CLI/tool code do not poison HERMES_EXEC_ASK.
     os.environ["HERMES_EXEC_ASK"] = "1"
+
+    # Strip any stale delegated-child marker inherited from a parent shell
+    # (#87650): a long-lived gateway process is never a delegated child. Scoped
+    # to gateway startup (not module import) so incidental imports of
+    # gateway.run from tool/CLI code never scrub a legitimate child's marker.
+    os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
 

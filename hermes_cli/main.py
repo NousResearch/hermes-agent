@@ -2686,11 +2686,19 @@ def _launch_tui(
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     import tempfile
+    import os
+    import subprocess
+    import signal
 
     # TUI child is a hermes process: propagate the profile-home contract via
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+
+    # Restore tmux env vars
+    for k, v in tmux_env.items():
+        if v:
+            env[k] = v
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -2812,14 +2820,108 @@ def _launch_tui(
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None
     try:
+        # Use PTY so the TUI gets correct terminal dimensions from tmux
         try:
+            import ptyprocess
+            import termios
+            import struct
+            import fcntl
+            import sys
+            import subprocess
+            import os
+            
+            # Get current terminal size - try multiple methods
+            # Default to a reasonable size for TUI; the polling thread will track max
+            cols, rows = 120, 40
+            
+            proc = ptyprocess.PtyProcess.spawn(argv, cwd=str(cwd), env=env, dimensions=(rows, cols))
+
+            # Forward SIGWINCH from tmux to the PTY so the TUI gets resize events
+            import signal
+            def _forward_sigwinch(signum, frame):
+                # Don't read from fds - they're not the tmux TTY
+                # The polling thread handles resize via tmux list-panes
+                pass
+
+            signal.signal(signal.SIGWINCH, _forward_sigwinch)
+
+            # Also forward resize from tmux by polling pane size (since Python isn't in fg group)
+            # The PTY child (Node.js) is the foreground process, but tmux shows the Python process PID
+            # because Python is the session leader of the tmux pane
+            import threading
+            import time
+            my_pid = os.getpid()
+            
+            # Immediately resize the tmux pane to a reasonable size if we can
+            if cols > 0 and rows > 0:
+                try:
+                    # Get the window ID from the pane ID
+                    result = subprocess.run(
+                        ['tmux', 'list-panes', '-a', '-F', '#{pane_id} #{window_id} #{pane_pid}'],
+                        capture_output=True, text=True, timeout=1
+                    )
+                    window_id = None
+                    for line in result.stdout.strip().split('\n'):
+                        parts = line.split()
+                        if len(parts) >= 3 and int(parts[2]) == my_pid:
+                            window_id = parts[1]
+                            break
+                    if window_id:
+                        subprocess.run(
+                            ['tmux', 'resize-window', '-t', window_id, '-x', str(max(cols, 120)), '-y', str(max(rows, 40))],
+                            capture_output=True, timeout=1
+                        )
+                except Exception:
+                    pass
+            
+            def _poll_tmux_size():
+                # Track maximum size seen to prevent reverting to tmux defaults
+                max_cols, max_rows = cols, rows
+                last_cols, last_rows = cols, rows
+                while True:
+                    time.sleep(0.5)
+                    try:
+                        # Find our pane by matching our own PID (Python is the tmux pane foreground process)
+                        result = subprocess.run(
+                            ['tmux', 'list-panes', '-a', '-F', '#{pane_width} #{pane_height} #{pane_pid}'],
+                            capture_output=True, text=True, timeout=1
+                        )
+                        if result.stdout.strip():
+                            for line in result.stdout.strip().split('\n'):
+                                parts = line.split()
+                                if len(parts) >= 3:
+                                    try:
+                                        pane_pid = int(parts[2])
+                                        if pane_pid == my_pid:
+                                            new_cols, new_rows = int(parts[0]), int(parts[1])
+                                            # Update max size seen
+                                            if new_cols > max_cols:
+                                                max_cols = new_cols
+                                            if new_rows > max_rows:
+                                                max_rows = new_rows
+                                            # Only forward resize if it matches or exceeds max seen
+                                            if (new_cols >= max_cols and new_rows >= max_rows and
+                                                (new_cols != last_cols or new_rows != last_rows)):
+                                                proc.setwinsize(new_rows, new_cols)
+                                                last_cols, last_rows = new_cols, new_rows
+                                            break
+                                    except ValueError:
+                                        continue
+                    except Exception:
+                        pass
+
+            poll_thread = threading.Thread(target=_poll_tmux_size, daemon=True)
+            poll_thread.start()
+
+            code = proc.wait()
+        except (ImportError, AttributeError, OSError):
+            # Fallback to subprocess if PTY unavailable
             code = subprocess.call(argv, cwd=str(cwd), env=env)
         except KeyboardInterrupt:
             code = 130
 
-        if code in {0, 130}:
-            _print_tui_exit_summary(resume_session_id, active_session_file)
-    finally:
+    except KeyboardInterrupt:
+        code = 130
         try:
             os.unlink(active_session_file)
         except OSError:

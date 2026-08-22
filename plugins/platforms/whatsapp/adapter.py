@@ -1412,6 +1412,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
+        if existing is not None:
+            from gateway.platforms.helpers import batch_authors_match
+            if not batch_authors_match(existing, event):
+                # Shared group session: a DIFFERENT person wrote during the
+                # debounce window. Merging would rewrite authorship (the
+                # 2026-08-20 cross-author merge incident) — flush the pending
+                # batch as its own turn and start fresh for the new author.
+                prior = self._pending_text_batch_tasks.get(key)
+                if prior and not prior.done():
+                    prior.cancel()
+                flushed = self._pending_text_batches.pop(key, None)
+                if flushed is not None:
+                    asyncio.create_task(self.handle_message(flushed))
+                existing = None
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event

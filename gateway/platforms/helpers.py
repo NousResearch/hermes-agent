@@ -94,6 +94,29 @@ class MessageDeduplicator:
 # ─── Text Batch Aggregation ──────────────────────────────────────────────────
 
 
+def batch_authors_match(existing: "MessageEvent", event: "MessageEvent") -> bool:
+    """True when two batched events come from the same author.
+
+    Text debounce batching keys on the SESSION, and shared group sessions
+    (``group_sessions_per_user: false``) scope one session to the whole
+    group — so rapid-fire messages from DIFFERENT people land on the same
+    batch key. Merging across authors rewrites who said what: the combined
+    event keeps the first sender's identity and the gateway prefixes every
+    line with that one name (observed live 2026-08-20: a turn tagged with user A's
+    name carrying a line user B wrote, and the agent then addressing A
+    about B's statement). Callers must flush instead of merging when this
+    returns False. Events with no identifiers at all (both ids and names
+    None) compare equal, preserving legacy single-user behavior.
+    """
+    ex_src = getattr(existing, "source", None)
+    ev_src = getattr(event, "source", None)
+    ex_id = getattr(ex_src, "user_id", None) or getattr(ex_src, "user_id_alt", None)
+    ev_id = getattr(ev_src, "user_id", None) or getattr(ev_src, "user_id_alt", None)
+    if ex_id is not None or ev_id is not None:
+        return ex_id == ev_id
+    return getattr(ex_src, "user_name", None) == getattr(ev_src, "user_name", None)
+
+
 class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.
 
@@ -137,6 +160,17 @@ class TextBatchAggregator:
         """Add *event* to the pending batch for *key*."""
         chunk_len = len(event.text or "")
         existing = self._pending.get(key)
+        if existing and not batch_authors_match(existing, event):
+            # Different author on a shared-session key: never merge across
+            # people (identity rewrite). Dispatch the pending batch now and
+            # start a fresh one for the new author.
+            prior = self._pending_tasks.get(key)
+            if prior and not prior.done():
+                prior.cancel()
+            flushed = self._pending.pop(key, None)
+            if flushed:
+                asyncio.create_task(self._dispatch_now(flushed, key))
+            existing = None
         if not existing:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending[key] = event
@@ -149,6 +183,13 @@ class TextBatchAggregator:
         if prior and not prior.done():
             prior.cancel()
         self._pending_tasks[key] = asyncio.create_task(self._flush(key))
+
+    async def _dispatch_now(self, event: "MessageEvent", key: str) -> None:
+        """Dispatch *event* immediately (author-change flush; no quiet wait)."""
+        try:
+            await self._handler(event)
+        except Exception:
+            logger.exception("[TextBatchAggregator] Error dispatching author-flush event for %s", key)
 
     async def _flush(self, key: str) -> None:
         """Wait then dispatch the batched event for *key*."""

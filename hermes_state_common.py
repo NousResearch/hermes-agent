@@ -302,7 +302,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -503,6 +503,144 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claim TEXT,
     delivery_claimed_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS research_runs (
+    id TEXT PRIMARY KEY,
+    objective TEXT NOT NULL,
+    owner_scope_key TEXT NOT NULL,
+    owner_profile TEXT,
+    owner_connection_id TEXT,
+    status TEXT NOT NULL DEFAULT 'OPEN'
+        CHECK (status IN ('OPEN', 'COMPLETED', 'CANCELLED', 'FAILED')),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence_records (
+    id TEXT PRIMARY KEY,
+    research_run_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    retrieval_method TEXT NOT NULL,
+    source_uri TEXT,
+    canonical_uri TEXT,
+    title TEXT,
+    publisher_or_origin TEXT,
+    published_at REAL,
+    retrieved_at REAL NOT NULL,
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    raw_reference TEXT,
+    relevant_passages_json TEXT NOT NULL DEFAULT '[]',
+    created_by_agent TEXT NOT NULL,
+    created_by_profile TEXT,
+    provider TEXT,
+    model TEXT,
+    derived_from_evidence_id TEXT,
+    untrusted_external_content INTEGER NOT NULL DEFAULT 1
+        CHECK (untrusted_external_content IN (0, 1)),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    UNIQUE (id, research_run_id),
+    FOREIGN KEY (research_run_id) REFERENCES research_runs(id),
+    FOREIGN KEY (derived_from_evidence_id, research_run_id)
+        REFERENCES evidence_records(id, research_run_id)
+);
+
+CREATE TABLE IF NOT EXISTS claims (
+    id TEXT PRIMARY KEY,
+    research_run_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'UNVERIFIED'
+        CHECK (status IN ('UNVERIFIED', 'SUPPORTED', 'PARTIALLY_SUPPORTED', 'CONTRADICTED', 'UNRESOLVED')),
+    created_by_agent TEXT NOT NULL,
+    created_by_profile TEXT,
+    updated_by_agent TEXT,
+    updated_by_profile TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE (id, research_run_id),
+    FOREIGN KEY (research_run_id) REFERENCES research_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS claim_evidence_links (
+    claim_id TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    research_run_id TEXT NOT NULL,
+    relation TEXT NOT NULL CHECK (relation IN ('SUPPORTS', 'CONTRADICTS', 'CONTEXT')),
+    passage_locator_json TEXT,
+    created_by_agent TEXT NOT NULL,
+    created_by_profile TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (claim_id, evidence_id),
+    FOREIGN KEY (claim_id, research_run_id)
+        REFERENCES claims(id, research_run_id),
+    FOREIGN KEY (evidence_id, research_run_id)
+        REFERENCES evidence_records(id, research_run_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_evidence_exact_uri_hash
+    ON evidence_records(research_run_id, canonical_uri, content_hash)
+    WHERE canonical_uri IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_evidence_exact_raw_hash
+    ON evidence_records(research_run_id, raw_reference, content_hash)
+    WHERE canonical_uri IS NULL AND raw_reference IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_evidence_records_run
+    ON evidence_records(research_run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_claims_run
+    ON claims(research_run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_claim_links_run
+    ON claim_evidence_links(research_run_id, created_at);
+
+CREATE TRIGGER IF NOT EXISTS research_runs_terminal_status_guard
+BEFORE UPDATE OF status ON research_runs
+WHEN OLD.status <> 'OPEN'
+BEGIN
+    SELECT RAISE(ABORT, 'terminal research run is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_records_open_run_insert_guard
+BEFORE INSERT ON evidence_records
+WHEN NOT EXISTS (
+    SELECT 1 FROM research_runs WHERE id = NEW.research_run_id AND status = 'OPEN'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'research run is not open');
+END;
+CREATE TRIGGER IF NOT EXISTS claims_open_run_insert_guard
+BEFORE INSERT ON claims
+WHEN NOT EXISTS (
+    SELECT 1 FROM research_runs WHERE id = NEW.research_run_id AND status = 'OPEN'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'research run is not open');
+END;
+CREATE TRIGGER IF NOT EXISTS links_open_run_insert_guard
+BEFORE INSERT ON claim_evidence_links
+WHEN NOT EXISTS (
+    SELECT 1 FROM research_runs WHERE id = NEW.research_run_id AND status = 'OPEN'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'research run is not open');
+END;
+CREATE TRIGGER IF NOT EXISTS evidence_records_terminal_update_guard
+BEFORE UPDATE ON evidence_records
+WHEN EXISTS (SELECT 1 FROM research_runs WHERE id = OLD.research_run_id AND status <> 'OPEN')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal research run is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS claims_terminal_update_guard
+BEFORE UPDATE ON claims
+WHEN EXISTS (SELECT 1 FROM research_runs WHERE id = OLD.research_run_id AND status <> 'OPEN')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal research run is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS links_terminal_update_guard
+BEFORE UPDATE ON claim_evidence_links
+WHEN EXISTS (SELECT 1 FROM research_runs WHERE id = OLD.research_run_id AND status <> 'OPEN')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal research run is immutable');
+END;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);

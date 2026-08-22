@@ -5297,15 +5297,40 @@ class BasePlatformAdapter(ABC):
         self._typing_paused.discard(chat_id)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
-        """Signal the active session loop to stop and clear typing immediately."""
+        """Signal the active session loop to stop and clear typing immediately.
+
+        The Event.set() below is synchronous and happens inline — that is the
+        part that actually cancels the turn, and callers (e.g. RelayAdapter's
+        interrupt-frame test) rely on it being visible the instant this
+        coroutine returns.
+
+        The typing-clear rides a background task instead of a direct await.
+        For the relay adapter, stop_typing() answers by sending an outbound
+        frame through the SAME WS transport this method can be invoked from:
+        RelayAdapter.on_interrupt runs ON the connector's read loop (an
+        interrupt_inbound frame is dispatched to it directly from
+        _handle_frame). Awaiting the send there self-deadlocks the transport
+        for the full outbound timeout — the frame's own outbound_result can
+        only be resolved by a LATER call to the very read loop this coroutine
+        would be blocking. Same shape as the lifecycle-ack deadlock fixed for
+        prompt-response sends (see RelayAdapter._send_lifecycle_ack); typing
+        clear is cosmetic by contract (stop_typing's own docstring) so
+        deferring it is safe for every adapter, not just relay.
+        """
         if session_key:
             interrupt_event = self._active_sessions.get(session_key)
             if interrupt_event is not None:
                 interrupt_event.set()
-        try:
-            await self._stop_typing_with_metadata(chat_id, metadata)
-        except Exception:
-            pass
+
+        async def _clear_typing() -> None:
+            try:
+                await self._stop_typing_with_metadata(chat_id, metadata)
+            except Exception:
+                pass
+
+        task = asyncio.create_task(_clear_typing())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def register_post_delivery_callback(
         self,

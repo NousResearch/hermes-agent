@@ -95,18 +95,6 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         lambda: hidden_flags,
     )
 
-    class _PatchResult:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _fake_run(cmd: List[str], **kwargs: Any) -> _PatchResult:
-        spawned["patch_cmd"] = cmd
-        spawned["patch_kwargs"] = kwargs
-        return _PatchResult()
-
-    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
-
     class _FakeProc:
         pid = 999
         stdout = None
@@ -137,75 +125,4 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
-    assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
-
-
-@pytest.mark.asyncio
-async def test_spectrum_patch_runs_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The node patch run must not block the shared gateway event loop.
-
-    ``_start_sidecar`` spawns the Spectrum patch script and *waits* for it
-    (``timeout=10``). Run inline it holds the loop for that whole window, so
-    every other platform's traffic stalls — and ``_start_sidecar`` runs on
-    every reconnect (``connect(is_reconnect=True)``), not just startup, so the
-    stall recurs on a live gateway. The dep reinstall a few lines above already
-    hops to a thread for exactly this reason; the patch run must too.
-    """
-    import threading
-
-    adapter = _make_adapter(monkeypatch)
-    main_thread = threading.current_thread()
-    seen: Dict[str, Any] = {}
-
-    # node_modules present + deps fresh, so we reach the patch run.
-    monkeypatch.setattr(photon_adapter.Path, "exists", lambda self: True)
-    monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
-
-    async def _no_reap() -> None:
-        return None
-
-    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
-
-    def _fake_run(*a: Any, **k: Any) -> Any:
-        seen["thread"] = threading.current_thread()
-
-        class _Done:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return _Done()
-
-    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
-
-    class _FakeProc:
-        pid = 4242
-        stdin = None
-        stdout = None
-
-        def poll(self) -> int:
-            # Report "exited" so the readiness health-poll loop bails out
-            # immediately instead of spinning for its full 15s deadline —
-            # the assertion below only cares where the patch run executed.
-            return 0
-
-    monkeypatch.setattr(
-        photon_adapter.subprocess, "Popen", lambda *a, **k: _FakeProc()
-    )
-
-    try:
-        await adapter._start_sidecar()
-    except Exception:
-        # Readiness/handshake past the patch run may fail under the fakes —
-        # irrelevant here; we only assert where the patch run executed.
-        pass
-
-    assert seen.get("thread") is not None, "patch run never executed"
-    assert seen["thread"] is not main_thread, (
-        "Spectrum patch subprocess ran on the event-loop thread; it must be "
-        "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
-        "every other platform on the gateway loop"
-    )

@@ -183,8 +183,9 @@ All env vars are documented in `plugin.yaml`. The most important:
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
 majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
 split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
-that re-exports them; v8 made `richlink` primarily outbound, so many inbound
-links now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
+that re-exports them; v8 made `richlink` primarily outbound; v12 changed the
+resolved provider and telemetry dependency tree). A floating range or
+`npm install spectrum-ts@latest`
 would let a breaking release take down fresh setups silently. Upgrades are
 deliberate:
 
@@ -197,14 +198,15 @@ deliberate:
    `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
    of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
    (the hosted docs can lag).
-4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
-   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
-   so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
-   fails loudly if the anchors no longer match — update them to the new output
-   (`test_spectrum_patch.py` covers the patch).
-5. Run `pytest tests/plugins/platforms/photon/`.
-6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
+4. Re-resolve and audit the sidecar dependency tree. Keep security overrides
+   only when `npm audit` and the resolved package engines prove they remain
+   compatible with the target SDK.
+5. Verify mixed text+attachment inbound behavior against the target SDK. The
+   v12 mapper preserves ordered text and attachment parts natively; do not
+   restore the deleted v8 compiled-code patch.
+6. Run `pytest tests/plugins/platforms/photon/`.
+7. Verify end-to-end: `hermes photon status`, text and media DM roundtrips,
+   MP3-to-native-voice conversion, a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises
    `space.get` rehydration).
 

@@ -924,26 +924,34 @@ companion repo, not in this tree.
 
 The desktop "Bots" experience ships bundled in-tree. Each bot is a Hermes
 agent **profile** with a persistent identity. Its design rests on one settled
-invariant that has been regressed twice, cost users real conversation
-history both times, and is not open for re-litigation in a routine PR:
+invariant that has been regressed repeatedly, cost users real conversation
+history each time, and is not open for re-litigation in a routine PR:
 
-**One bot = ONE canonical forever-chat ("Bot Chat"), ever.** The full
-lifecycle when a bot row is clicked:
+**One bot = ONE canonical forever-chat, identified by NAME.** The chat's one
+and only identity is **(profile, session titled exactly "Bot Chat")** — the
+state DB's UNIQUE(title) index makes that pair an exact registry of at most
+one row. The full lifecycle when a bot row is clicked:
 
-1. **A live pin ALWAYS and ONLY wins.** If the bot's pinned session resolves
-   (verified through the backend's `preferred_session` resolver), open it.
-   Nothing overrides it — not recency, not a newer visible session, not a
-   title mismatch on a pin that carries real history (grandfathered chats
-   stay adopted).
-2. **No/dead pin → adopt before mint.** Look up the profile's existing
-   `Bot Chat` session by title via `session.list include_hidden:true` (the
-   state DB's unique-title index makes this an exact registry lookup) and
-   re-pin it. Only if none exists, create one.
-3. **Create-time title conflict → adopt.** A failed/conflicting create means
-   the canonical session already exists — register that session as the pin.
-   Never mint a differently-titled replacement. (`set_session_title`
-   silently drops conflicting titles — returns 0 rows — which is how the
-   2026-08 infinite fork loop started.)
+1. **Resolve the registry, every time.** Look up the profile's `Bot Chat`
+   session by exact title via `session.list {title, include_hidden: true}`
+   (indexed, window-free; hidden rows resolve because canonical chats are
+   always hidden; compression lineages resolve to the live tip). Row exists →
+   open it. That is the entire happy path.
+2. **No row → create it,** titled `Bot Chat`, born hidden, kicked off with
+   the bot's intro. Creation adopts-before-minting: it re-runs the registry
+   lookup first, so a concurrent or pre-existing row is opened, never forked.
+   (`set_session_title` silently drops conflicting titles — returns 0 rows —
+   which is how the 2026-08 infinite fork loop started; adopt-before-mint is
+   what kills it.)
+
+**There is NO session-id pin.** The previous design stored a pointer in
+`ui_meta['hermes-bots'].chat` and verified it per click; five hardening
+waves (#88690, #90732, #90751, the #91791 revert, #92042) each guarded a new
+way that pointer dangled or got stolen — rows[0] steals, `last_session`
+adoptions, transient clears, drifted-title welds (a pin re-anchored onto a
+cron session passed every guard). Name-as-identity removes the failure class:
+a name cannot dangle, and a corrupted historical pointer simply never gets
+read. Legacy `chat` keys in ui_meta are ignored and dropped from merges.
 
 Why recency must never win (the #91791 → #92042 lesson): canonical Bot
 Chats are **unconditionally hidden** from the Sessions sidebar, so the bot
@@ -959,18 +967,24 @@ Corollaries for reviewers:
 
 - There is no per-bot session browser, by explicit design (removed in
   #90732). Do not add one back.
-- A pinned session with real messages is the user's conversation whatever
-  its title says; only a pin resolving to an *empty* stray draft counts as
-  corrupted metadata.
+- Reject any PR that reintroduces a stored session-id pointer as canonical
+  identity — including "as a fallback tier" or "for verification". The
+  registry lookup is the whole contract; pointers are how every prior
+  incident started.
 - Reject any PR that consults recency, visibility, or "where the user left
-  off" while the pin is alive — reports that motivate such a change are
+  off" for the bot row's target — reports that motivate such a change are
   almost always about side-chats, and the fix belongs in the Sessions
   sidebar (hide-sweep false positives), not in the bot row's target.
+- The gateway reports the registry row per profile as `canonical_session`
+  on `profiles.list` (resolved server-side by title); roster preview,
+  activity signals, and the `/new`→`/compact` guard all read it, so preview
+  identity and click identity are the same row by construction.
 
 Regression tests encoding this contract:
-`tests/bot-row-opens-canonical-chat.test.mjs`,
-`tests/canonical-chat-adopt-before-mint.test.mjs`,
-`tests/canonical-chat-pin.test.mjs`, `tests/hide-bot-chats.test.mjs`.
+`tests/canonical-chat-registry.test.mjs` (includes a tripwire asserting the
+open path never reads or writes a stored pointer),
+`tests/canonical-chat-creation.test.mjs`, `tests/hide-bot-chats.test.mjs`,
+and `tests/tui_gateway/test_profiles_list_canonical_session.py`.
 
 ---
 

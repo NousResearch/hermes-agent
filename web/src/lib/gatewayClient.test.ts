@@ -52,6 +52,7 @@ class FakeWebSocket {
 
 type EventLike = {
   code?: number;
+  data?: string;
 };
 
 beforeEach(() => {
@@ -84,6 +85,13 @@ describe("GatewayClient", () => {
     const socket = FakeWebSocket.instances[0];
     socket.readyState = 1;
     socket.emit("open", {});
+    socket.emit("message", {
+      data: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type: "gateway.ready" },
+      }),
+    });
     await connectPromise;
 
     socket.emit("close", { code: 4401 });

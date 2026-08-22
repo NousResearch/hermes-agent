@@ -103,7 +103,7 @@ describe('deriveBillingView', () => {
     expect(view.refillRow?.caption).toContain('Mastercard ••4444')
     expect(view.refillRow?.caption).toContain('reconcile')
     expect(view.refillRow?.action).toEqual({
-      label: 'Reconcile ↗',
+      label: 'Reconcile',
       url: 'https://portal.nousresearch.com/billing'
     })
   })
@@ -140,21 +140,129 @@ describe('deriveBillingView', () => {
     })
   })
 
-  it('keeps buy credit controls visible but disabled when no card is on file', () => {
+  it('replaces the buy controls with the reason and an Add card action when no card is on file', () => {
     const fixture = billingDevFixtures['no-card']
     const view = deriveBillingView(fixture.billing, fixture.subscription)
     const buyCredits = view.topupRow
 
+    // Dead disabled controls can't explain themselves — the row states the blocker
+    // and offers the one action that fixes it instead.
     expect(buyCredits).toMatchObject({
-      action: { disabled: true, label: 'Buy' },
-      // The no-card blocker is explained once by the page-level notice, not
-      // duplicated (emoji and all) into the row description.
-      description: 'A single charge on your card, added to your balance today.'
+      action: { label: 'Add card', url: 'https://portal.nousresearch.com/billing' },
+      description: 'A single charge on your card, added to your balance today.',
+      value: 'No card on file'
     })
-    expect(buyCredits?.description).not.toContain('💳')
-    expect(buyCredits?.chips?.map(chip => chip.disabled)).toEqual([true, true, true])
+    expect(buyCredits?.chips).toBeUndefined()
+    expect(buyCredits?.action?.disabled).toBeUndefined()
     // The page still leads with the warn banner naming the blocker + fix.
     expect(view.notice).toMatchObject({ title: 'No payment method on file', tone: 'warn' })
+  })
+
+  it('gives the off auto-refill row the same no-card reason and Add card action', () => {
+    const fixture = billingDevFixtures['no-card']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.refillRow).toMatchObject({
+      action: { label: 'Add card', url: 'https://portal.nousresearch.com/billing' },
+      caption: 'Needs a card on file before it can be turned on.',
+      pill: { label: 'Off', tone: 'muted' }
+    })
+    expect(view.refillRow?.manageInApp).toBeUndefined()
+  })
+
+  it('shows the no-card auto-refill reason with an em-dash pill when auto_reload is absent', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, auto_reload: null, card: null }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    expect(view.refillRow).toMatchObject({
+      action: { label: 'Add card' },
+      caption: 'Needs a card on file before it can be turned on.',
+      pill: { label: '—', tone: 'muted' }
+    })
+  })
+
+  it('drops the auto-refill claim from the banner while auto-refill is actually running', () => {
+    const view = deriveBillingView(
+      okBilling({
+        ...postTrainBillingState,
+        auto_reload: { ...postTrainBillingState.auto_reload, enabled: true },
+        card: null
+      }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    expect(view.notice?.message).toBe('Buying top-up credits stays disabled until a card is on file. Add one on the portal.')
+  })
+
+  it('keeps an enabled auto-refill config manageable even after the card disappears', () => {
+    const view = deriveBillingView(
+      okBilling({
+        ...postTrainBillingState,
+        auto_reload: { ...postTrainBillingState.auto_reload, enabled: true },
+        card: null
+      }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // The user must still be able to turn it off in-app — no Add card hijack here.
+    expect(view.refillRow).toMatchObject({ action: { label: 'Manage' }, manageInApp: true })
+  })
+
+  it('lets a policy blocker outrank the missing card on the buy row', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_charge: false, card: null }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // Adding a card would not unlock buying while remote spending is off, so the
+    // row names the policy reason and shows no card call-to-action.
+    expect(view.topupRow?.action).toBeUndefined()
+    expect(view.topupRow?.value).toBeUndefined()
+    expect(view.topupRow?.description).not.toContain('single charge')
+  })
+
+  it('applies the same policy precedence to the no-card auto-refill row', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_charge: false, card: null }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // Policy-blocked → the plain off row (portal caption), never Add card.
+    expect(view.refillRow?.action).toMatchObject({ label: 'Turn on' })
+    expect(view.refillRow?.caption).toBe('Turn on auto-refill from the portal.')
+  })
+
+  it('gates the buy row on can_change_plan, not the deprecated is_admin role check', () => {
+    // A FINANCE_ADMIN: legacy is_admin=false but server-granted capability true.
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_change_plan: true, card: null, is_admin: false }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    expect(view.topupRow).toMatchObject({ action: { label: 'Add card' }, value: 'No card on file' })
+  })
+
+  it('falls back to is_admin when the server omits can_change_plan', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_change_plan: undefined, card: null, is_admin: false }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // Legacy payloads keep the old member gating.
+    expect(view.topupRow?.action).toBeUndefined()
+    expect(view.topupRow?.description).toContain('admin')
+  })
+
+  it('links the off-with-card auto-refill row to the portal it names', () => {
+    const view = deriveBillingView(okBilling(postTrainBillingState), okSubscription(postTrainSubscriptionState))
+
+    expect(view.refillRow).toMatchObject({
+      action: { label: 'Turn on', url: 'https://portal.nousresearch.com/billing' },
+      caption: 'Turn on auto-refill from the portal.',
+      pill: { label: 'Off', tone: 'muted' }
+    })
   })
 
   it('derives a calm logged-out card with no account or usage rows', () => {
@@ -195,7 +303,7 @@ describe('deriveBillingView', () => {
     expect(view.plan?.action).toBeUndefined()
     // The caption promises the portal is still reachable — so the link must exist.
     expect(view.plan?.link).toMatchObject({
-      label: 'Adjust plan ↗',
+      label: 'Adjust plan',
       url: 'https://portal.nousresearch.com/manage-subscription'
     })
   })
@@ -322,7 +430,7 @@ describe('derivePlanCard (current-plan card)', () => {
 
     expect(view.plan?.action).toBeUndefined()
     expect(view.plan?.link).toMatchObject({
-      label: 'Adjust plan ↗',
+      label: 'Adjust plan',
       url: 'https://portal.nousresearch.com/manage-subscription?org_id=sid-5'
     })
   })
@@ -335,7 +443,7 @@ describe('derivePlanCard (current-plan card)', () => {
 
     expect(view.plan?.action).toBeUndefined()
     expect(view.plan?.link).toMatchObject({
-      label: 'Adjust plan ↗',
+      label: 'Adjust plan',
       url: 'https://portal.nousresearch.com/manage-subscription?org_id=sid-5'
     })
   })
@@ -366,7 +474,7 @@ describe('derivePlanCard (current-plan card)', () => {
 
     expect(view.tiers.map(tier => tier.state)).toEqual(['current'])
     expect(view.plan?.action).toBeUndefined()
-    expect(view.plan?.link?.label).toBe('Adjust plan ↗')
+    expect(view.plan?.link?.label).toBe('Adjust plan')
   })
 
   it('gives a top-tier subscriber a portal link, not a dead in-app button', () => {
@@ -495,7 +603,7 @@ describe('derivePlanCard (current-plan card)', () => {
 
     expect(view.tiers).toEqual([])
     expect(view.plan?.action).toBeUndefined()
-    expect(view.plan?.link?.label).toBe('Adjust plan ↗')
+    expect(view.plan?.link?.label).toBe('Adjust plan')
   })
 })
 
@@ -636,7 +744,7 @@ describe('derivePlanTiers (plans grid)', () => {
     expect('action' in byName.Legacy).toBe(false)
     expect(byName.Basic.state).toBe('downgrade')
     expect('action' in byName.Basic).toBe(false)
-    expect(byName.Ultra).toMatchObject({ action: { label: 'Choose ↗' }, state: 'upgrade' })
+    expect(byName.Ultra).toMatchObject({ action: { label: 'Choose' }, state: 'upgrade' })
   })
 
   it('backs Choose URLs with billing.portal_url (org_id + plan intact) when the subscription has no portal_url', () => {

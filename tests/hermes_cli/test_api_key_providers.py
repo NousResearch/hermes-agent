@@ -30,6 +30,9 @@ class TestProviderRegistry:
     """Test that new providers are correctly registered."""
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
+        ("mistral", "Mistral AI", "api_key"),
+        ("cohere", "Cohere", "api_key"),
+        ("siliconflow", "SiliconFlow", "api_key"),
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
@@ -98,12 +101,30 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
         assert pconfig.base_url_env_var == "GMI_BASE_URL"
 
+    def test_mistral_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["mistral"]
+        assert pconfig.api_key_env_vars == ("MISTRAL_API_KEY",)
+        assert pconfig.base_url_env_var == "MISTRAL_BASE_URL"
+
+    def test_cohere_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["cohere"]
+        assert pconfig.api_key_env_vars == ("COHERE_API_KEY", "COHERE_KEY")
+        assert pconfig.base_url_env_var == "COHERE_BASE_URL"
+
+    def test_siliconflow_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["siliconflow"]
+        assert pconfig.api_key_env_vars == ("SILICONFLOW_API_KEY",)
+        assert pconfig.base_url_env_var == "SILICONFLOW_BASE_URL"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
     def test_base_urls(self):
+        assert PROVIDER_REGISTRY["mistral"].inference_base_url == "https://api.mistral.ai/v1"
+        assert PROVIDER_REGISTRY["cohere"].inference_base_url == "https://api.cohere.ai/v1"
+        assert PROVIDER_REGISTRY["siliconflow"].inference_base_url == "https://api.siliconflow.cn/v1"
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
@@ -329,9 +350,110 @@ class TestApiKeyProviderStatus:
         assert status["key_source"] == "GLM_API_KEY"
         assert "z.ai" in status["base_url"].lower() or "api.z.ai" in status["base_url"]
 
+    def test_fallback_env_var(self, monkeypatch):
+        """ZAI_API_KEY should work when GLM_API_KEY is not set."""
+        monkeypatch.setenv("ZAI_API_KEY", "zai-fallback-key")
+        status = get_api_key_provider_status("zai")
+        assert status["configured"] is True
+        assert status["key_source"] == "ZAI_API_KEY"
+
+    def test_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
+        monkeypatch.setenv("KIMI_BASE_URL", "https://custom.kimi.example/v1")
+        status = get_api_key_provider_status("kimi-coding")
+        assert status["base_url"] == "https://custom.kimi.example/v1"
+
+    def test_stepfun_status_uses_configured_base_url(self, monkeypatch):
+        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-key")
+        monkeypatch.setenv("STEPFUN_BASE_URL", STEPFUN_STEP_PLAN_CN_BASE_URL)
+        status = get_api_key_provider_status("stepfun")
+        assert status["configured"] is True
+        assert status["base_url"] == STEPFUN_STEP_PLAN_CN_BASE_URL
+
+    def test_copilot_status_uses_gh_cli_token(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_gh_cli_token")
+        status = get_api_key_provider_status("copilot")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "gh auth token"
+        assert status["base_url"] == "https://api.githubcopilot.com"
+
+    def test_get_auth_status_dispatches_to_api_key(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        status = get_auth_status("minimax")
+        assert status["configured"] is True
+        assert status["provider"] == "minimax"
+
+    def test_copilot_acp_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        status = get_external_process_provider_status("copilot-acp")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "copilot"
+        assert status["resolved_command"] == "/usr/local/bin/copilot"
+        assert status["args"] == ["--acp", "--stdio", "--debug"]
+        assert status["base_url"] == "acp://copilot"
+
+    def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_auth_status("copilot-acp")
+
+        assert status["configured"] is True
+        assert status["provider"] == "copilot-acp"
+
+    def test_non_api_key_provider(self):
+        status = get_api_key_provider_status("nous")
+        assert status["configured"] is False
+    def test_unconfigured_mistral(self):
+        status = get_api_key_provider_status("mistral")
+        assert status["configured"] is False
+        assert status["logged_in"] is False
+        assert status["provider"] == "mistral"
+
+    def test_configured_mistral(self, monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-mistral-key")
+        monkeypatch.delenv("MISTRAL_BASE_URL", raising=False)
+        status = get_api_key_provider_status("mistral")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "MISTRAL_API_KEY"
+        assert status["base_url"] == "https://api.mistral.ai/v1"
+
+    def test_unconfigured_cohere(self):
+        status = get_api_key_provider_status("cohere")
+        assert status["configured"] is False
+        assert status["logged_in"] is False
+        assert status["provider"] == "cohere"
+
+    def test_configured_cohere(self, monkeypatch):
+        monkeypatch.setenv("COHERE_API_KEY", "test-cohere-key")
+        monkeypatch.delenv("COHERE_BASE_URL", raising=False)
+        status = get_api_key_provider_status("cohere")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "COHERE_API_KEY"
+        assert status["base_url"] == "https://api.cohere.ai/v1"
+
+    def test_unconfigured_siliconflow(self):
+        status = get_api_key_provider_status("siliconflow")
+        assert status["configured"] is False
+        assert status["logged_in"] is False
+        assert status["provider"] == "siliconflow"
+
+    def test_configured_siliconflow(self, monkeypatch):
+        monkeypatch.setenv("SILICONFLOW_API_KEY", "test-sf-key")
+        monkeypatch.delenv("SILICONFLOW_BASE_URL", raising=False)
+        status = get_api_key_provider_status("siliconflow")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "SILICONFLOW_API_KEY"
+        assert status["base_url"] == "https://api.siliconflow.cn/v1"
 
 # =============================================================================
-# Credential Resolution tests
 # =============================================================================
 
 class TestResolveApiKeyProviderCredentials:

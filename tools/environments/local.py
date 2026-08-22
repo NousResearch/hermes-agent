@@ -10,12 +10,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.base import BaseEnvironment, PtyUnavailableError, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1705,6 +1706,120 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return prelude + cmd_string
 
 
+class _ForegroundPtyProcessHandle:
+    """Adapt a platform PTY bridge to BaseEnvironment's process contract."""
+
+    def __init__(self, bridge, proc):
+        self._bridge = bridge
+        self._proc = proc
+        self.pid = int(bridge.pid)
+        self._returncode = None
+        self._status_lock = threading.Lock()
+        self._done = threading.Event()
+
+        read_fd, write_fd = os.pipe()
+        self._stdout = os.fdopen(read_fd, "rb", buffering=0)
+        self._write_fd = write_fd
+        self._reader_thread = threading.Thread(
+            target=self._pump_output,
+            daemon=True,
+            name=f"foreground-pty-reader-{self.pid}",
+        )
+        self._reader_thread.start()
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    @property
+    def returncode(self):
+        return self._returncode
+
+    def _resolved_returncode(self) -> int | None:
+        exit_status = getattr(self._proc, "exitstatus", None)
+        if exit_status is not None:
+            return int(exit_status)
+        signal_status = getattr(self._proc, "signalstatus", None)
+        if signal_status is not None:
+            return -int(signal_status)
+        return None
+
+    def poll(self):
+        with self._status_lock:
+            if self._returncode is not None:
+                return self._returncode
+            try:
+                alive = bool(self._proc.isalive())
+            except Exception:
+                alive = not self._done.is_set()
+            if alive:
+                return None
+            self._returncode = self._resolved_returncode()
+            if self._returncode is None and self._done.is_set():
+                self._returncode = 1
+            return self._returncode
+
+    def _write_output(self, data: bytes) -> bool:
+        view = memoryview(data)
+        while view:
+            try:
+                written = os.write(self._write_fd, view)
+            except (BrokenPipeError, OSError):
+                return False
+            if written <= 0:
+                return False
+            view = view[written:]
+        return True
+
+    def _pump_output(self) -> None:
+        idle_after_exit = 0
+        try:
+            while True:
+                data = self._bridge.read(timeout=0.1)
+                if data is None:
+                    break
+                if data:
+                    idle_after_exit = 0
+                    if not self._write_output(data):
+                        break
+                    continue
+                if self.poll() is not None:
+                    idle_after_exit += 1
+                    if idle_after_exit >= 3:
+                        break
+        finally:
+            # Resolve the natural status before close() changes bridge state.
+            self.poll()
+            try:
+                self._bridge.close()
+            except Exception:
+                pass
+            self._done.set()
+            with self._status_lock:
+                if self._returncode is None:
+                    self._returncode = self._resolved_returncode()
+                if self._returncode is None:
+                    self._returncode = 1
+            try:
+                os.close(self._write_fd)
+            except OSError:
+                pass
+
+    def kill(self):
+        try:
+            self._bridge.close()
+        finally:
+            self._done.set()
+
+    def wait(self, timeout: float | None = None) -> int:
+        if timeout is None:
+            self._done.wait()
+        elif not self._done.wait(timeout=timeout):
+            raise subprocess.TimeoutExpired("foreground PTY", timeout)
+        returncode = self.poll()
+        return 1 if returncode is None else returncode
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -1777,9 +1892,13 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
-    def _run_bash(self, cmd_string: str, *, login: bool = False,
-                  timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+    def _prepare_bash_spawn(
+        self,
+        cmd_string: str,
+        *,
+        login: bool,
+    ) -> tuple[list[str], dict[str, str], str]:
+        """Build one local bash invocation for pipe or PTY execution."""
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
@@ -1819,7 +1938,15 @@ class LocalEnvironment(BaseEnvironment):
                 )
             self.cwd = safe_cwd
 
-        _popen_cwd = self.cwd
+        return args, run_env, self.cwd
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        args, run_env, _popen_cwd = self._prepare_bash_spawn(
+            cmd_string,
+            login=login,
+        )
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
@@ -1846,6 +1973,63 @@ class LocalEnvironment(BaseEnvironment):
             _pipe_stdin(proc, stdin_data)
 
         return proc
+
+    def _run_bash_pty(
+        self,
+        cmd_string: str,
+        *,
+        login: bool = False,
+        timeout: int = 120,
+        stdin_data: str | None = None,
+    ) -> _ForegroundPtyProcessHandle:
+        if stdin_data is not None:
+            raise PtyUnavailableError(
+                "Foreground PTY execution cannot also consume piped stdin."
+            )
+
+        args, run_env, spawn_cwd = self._prepare_bash_spawn(
+            cmd_string,
+            login=login,
+        )
+        if not run_env.get("TERM"):
+            run_env["TERM"] = "xterm-256color"
+
+        try:
+            if _IS_WINDOWS:
+                from hermes_cli.win_pty_bridge import WinPtyBridge
+                from winpty import PtyProcess  # type: ignore
+
+                proc = PtyProcess.spawn(
+                    args,
+                    cwd=spawn_cwd,
+                    env=run_env,
+                    dimensions=(30, 120),
+                )
+                bridge = WinPtyBridge(proc)
+            else:
+                from hermes_cli.pty_bridge import PtyBridge
+                from ptyprocess import PtyProcess
+
+                proc = PtyProcess.spawn(
+                    args,
+                    cwd=spawn_cwd,
+                    env=run_env,
+                    echo=False,
+                    dimensions=(30, 120),
+                )
+                bridge = PtyBridge(proc)
+        except ImportError as exc:
+            package = "pywinpty" if _IS_WINDOWS else "ptyprocess"
+            raise PtyUnavailableError(
+                f"Foreground PTY execution requires the declared {package} dependency. "
+                "Repair the Hermes installation with `hermes update`."
+            ) from exc
+        except Exception as exc:
+            raise PtyUnavailableError(
+                f"Could not start foreground PTY execution: {exc}"
+            ) from exc
+
+        return _ForegroundPtyProcessHandle(bridge, proc)
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

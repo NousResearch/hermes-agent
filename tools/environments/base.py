@@ -78,6 +78,10 @@ class EnvironmentConnectionError(RuntimeError):
         )
 
 
+class PtyUnavailableError(RuntimeError):
+    """Raised when an execution backend cannot provide a requested PTY."""
+
+
 class _BoundedOutputCollector:
     """Retain a bounded 40/60 head-tail window of streamed text.
 
@@ -657,6 +661,24 @@ class BaseEnvironment(ABC):
         Must be overridden by every backend.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
+
+    def _run_bash_pty(
+        self,
+        cmd_string: str,
+        *,
+        login: bool = False,
+        timeout: int = 120,
+        stdin_data: str | None = None,
+    ) -> ProcessHandle:
+        """Spawn a foreground command behind a pseudo-terminal.
+
+        PTY execution is intentionally opt-in. Backends must override this
+        hook before advertising support so a requested PTY can never degrade
+        silently to ordinary pipes.
+        """
+        raise PtyUnavailableError(
+            f"Foreground PTY execution is not supported by {type(self).__name__}."
+        )
 
     @abstractmethod
     def cleanup(self):
@@ -1406,6 +1428,7 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        use_pty: bool = False,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
@@ -1449,7 +1472,8 @@ class BaseEnvironment(ABC):
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
+        runner = self._run_bash_pty if use_pty else self._run_bash
+        proc = runner(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
         result = self._wait_for_process(

@@ -198,9 +198,13 @@ def _install_fake_tools_package():
             self.backend = backend
             self.detail = detail
 
+    class _DummyPtyUnavailableError(RuntimeError):
+        pass
+
     sys.modules["tools.environments.base"] = types.SimpleNamespace(
         BaseEnvironment=_DummyEnvironment,
         EnvironmentConnectionError=_DummyConnectionError,
+        PtyUnavailableError=_DummyPtyUnavailableError,
     )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(

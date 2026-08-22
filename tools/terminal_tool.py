@@ -1071,7 +1071,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
-from tools.environments.base import EnvironmentConnectionError
+from tools.environments.base import EnvironmentConnectionError, PtyUnavailableError
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
@@ -3379,7 +3379,16 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
+                    if pty and env_type == "local":
+                        execute_kwargs["use_pty"] = effective_pty
                     result = env.execute(command, **execute_kwargs)
+                except PtyUnavailableError as e:
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": _redact_terminal_error_text(str(e)),
+                        "status": "unsupported",
+                    }, ensure_ascii=False)
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -3543,6 +3552,8 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            if pty_disabled_reason:
+                result_dict["pty_note"] = pty_disabled_reason
             # cwd echo: when the command changed the session's working
             # directory (cd, pushd, ...), tell the model where it ended up.
             # Production mining shows 60% of terminal calls carry a

@@ -15895,6 +15895,39 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return client_host in _LOOPBACK_HOSTS
 
 
+def _ws_public_origin_matches(origin: urllib.parse.ParseResult, public_url: str) -> bool:
+    """Return True only for an exact configured public scheme/host/port."""
+    # ``urlparse`` deliberately accepts some non-browser forms (notably
+    # backslashes). A configured public URL is an explicit trust exception,
+    # so malformed or non-serialized Origins must fail closed rather than
+    # matching another malformed value.
+    if "\\" in origin.geturl() or "\\" in public_url:
+        return False
+    try:
+        public = urllib.parse.urlparse(public_url)
+    except ValueError:
+        return False
+    if public.scheme not in {"http", "https"} or not public.hostname:
+        return False
+    if origin.username or origin.password or origin.path or origin.params or origin.query or origin.fragment:
+        return False
+    if origin.scheme != public.scheme or origin.hostname != public.hostname:
+        return False
+
+    def _port(parsed: urllib.parse.ParseResult) -> Optional[int]:
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if port == 0:
+            return None
+        return port if port is not None else (443 if parsed.scheme == "https" else 80)
+
+    origin_port = _port(origin)
+    public_port = _port(public)
+    return origin_port is not None and origin_port == public_port
+
+
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     """Return a Host/Origin rejection reason, or None when allowed.
 
@@ -15914,7 +15947,10 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not origin:
         return None
 
-    parsed = urllib.parse.urlparse(origin)
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:
+        return f"origin_mismatch origin={origin} bound={bound_host}"
     if parsed.scheme not in {"http", "https"}:
         # Non-web origin (packaged Electron: file://, null, app://). The
         # upstream credential check is the real auth boundary; trust it.
@@ -15924,9 +15960,18 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if _is_accepted_host(parsed.netloc, bound_host):
+        return None
+
+    # A loopback reverse proxy may preserve the browser's public Origin while
+    # forwarding Host to the local dashboard. Reuse the canonical resolver
+    # and require exact scheme/host/effective-port equality; do not turn this
+    # into a general Host bypass.
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    public_url = resolve_public_url()
+    if public_url and _ws_public_origin_matches(parsed, public_url):
+        return None
+    return f"origin_mismatch origin={origin} bound={bound_host}"
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:

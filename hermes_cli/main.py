@@ -11236,6 +11236,17 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _should_force_serve_headless(headless_backend: bool) -> bool:
+    """Whether ``hermes serve`` should export HERMES_SERVE_HEADLESS=1.
+
+    Standalone ``serve`` is headless. Desktop spawns the same command with
+    ``HERMES_DESKTOP=1`` plus a packaged ``HERMES_WEB_DIST`` and session
+    token; forcing headless there 404s ``/`` and never mounts ``/api/ws``
+    (#91495).
+    """
+    return bool(headless_backend) and os.environ.get("HERMES_DESKTOP") != "1"
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -11444,7 +11455,7 @@ def cmd_dashboard(args):
         logger.debug("terminal config → env bridge failed for dashboard/serve",
                      exc_info=True)
 
-    if _headless_backend:
+    if _should_force_serve_headless(_headless_backend):
         # Don't build the SPA, and tell mount_spa() (read at web_server import
         # below) to disable it even if a stray dist exists. Set it first.
         os.environ["HERMES_SERVE_HEADLESS"] = "1"

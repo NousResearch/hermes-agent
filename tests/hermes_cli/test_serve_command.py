@@ -48,3 +48,21 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def test_desktop_spawned_serve_does_not_force_headless(monkeypatch):
+    """#91495: Desktop launches `hermes serve` with HERMES_DESKTOP=1.
+
+    Forcing HERMES_SERVE_HEADLESS=1 then 404s `/` and never mounts `/api/ws`,
+    so the desktop WebSocket probe rejects the session token.
+    Standalone `hermes serve` (no HERMES_DESKTOP) stays strictly headless.
+    """
+    from hermes_cli.main import _should_force_serve_headless
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    assert _should_force_serve_headless(True) is False
+    assert _should_force_serve_headless(False) is False
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    assert _should_force_serve_headless(True) is True
+    assert _should_force_serve_headless(False) is False

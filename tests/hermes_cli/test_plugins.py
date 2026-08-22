@@ -1222,8 +1222,8 @@ class TestPreToolCallModify:
         assert block_msg == "still blocked"
         assert modified == {"path": "/safe"}
 
-    def test_modify_after_block_is_invisible(self, monkeypatch):
-        """A modify after a block is never reached — first block wins."""
+    def test_modify_after_block_is_included_before_resolution(self, monkeypatch):
+        """Later mutations are included before the first directive resolves."""
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
@@ -1235,7 +1235,78 @@ class TestPreToolCallModify:
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
+        assert modified == {"path": "/invisible"}
+
+    def test_final_args_validator_preempts_approval_for_originally_invalid_args(
+        self, monkeypatch
+    ):
+        approvals = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "approve patch"}
+            ],
+        )
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: approvals.append((args, kwargs))
+            or {"approved": True},
+        )
+
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "patch",
+            {"mode": "replace", "path": "x.py"},
+            final_args_validator=lambda args: "PATCH_CONTRACT_ERROR",
+        )
+
+        assert block_msg == "PATCH_CONTRACT_ERROR"
         assert modified is None
+        assert approvals == []
+
+    def test_final_args_validator_sees_all_mutations_before_approval(
+        self, monkeypatch
+    ):
+        approvals = []
+        validated = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "approve patch"},
+                {"action": "modify", "args": {"path": None}},
+            ],
+        )
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: approvals.append((args, kwargs))
+            or {"approved": True},
+        )
+
+        def validate(args):
+            validated.append(dict(args))
+            return "PATCH_CONTRACT_ERROR"
+
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "x.py",
+                "old_string": "old",
+                "new_string": "new",
+            },
+            final_args_validator=validate,
+        )
+
+        assert block_msg == "PATCH_CONTRACT_ERROR"
+        assert validated == [
+            {
+                "mode": "replace",
+                "path": None,
+                "old_string": "old",
+                "new_string": "new",
+            }
+        ]
+        assert modified == validated[0]
+        assert approvals == []
 
     def test_modify_with_none_args(self, monkeypatch):
         """Modify should handle None args gracefully."""

@@ -3093,6 +3093,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
+        contract_result: Optional[str] = None
+
+        def _validate_final_args(args: Dict[str, Any]) -> Optional[str]:
+            nonlocal contract_result
+            if function_name == "patch":
+                from tools.file_tools import _validate_patch_contract
+
+                contract_result = _validate_patch_contract(args)
+            return contract_result
+
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
@@ -3102,13 +3112,18 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
+                final_args_validator=_validate_final_args,
             )
             if modified_args is not None:
                 function_args = modified_args
         except Exception:
             block_message = None
     if block_message is not None:
-        result = json.dumps({"error": block_message}, ensure_ascii=False)
+        result = (
+            contract_result
+            if contract_result is not None
+            else json.dumps({"error": block_message}, ensure_ascii=False)
+        )
         try:
             from model_tools import _emit_post_tool_call_hook
             _emit_post_tool_call_hook(
@@ -3121,7 +3136,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 status="blocked",
-                error_type="plugin_block",
+                error_type=(
+                    "malformed_input" if contract_result is not None else "plugin_block"
+                ),
                 error_message=block_message,
                 middleware_trace=list(_tool_middleware_trace),
             )

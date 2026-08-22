@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,6 +42,46 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    def test_handler_missing_path_key_returns_error(self):
+        """_handle_read_file must reject calls where 'path' is absent,
+        the same way _handle_write_file already does for its required
+        fields (see TestWriteFileHandler below)."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({}))
+        assert "error" in result
+        assert "path" in result["error"]
+
+    def test_handler_empty_string_path_returns_error(self):
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": ""}))
+        assert "error" in result
+        assert "path" in result["error"]
+
+    def test_handler_non_string_path_returns_error(self):
+        """A model that emits {"path": 123} instead of a string must be
+        rejected the same way as a missing/empty path."""
+        from tools.file_tools import _handle_read_file
+
+        result = json.loads(_handle_read_file({"path": 123}))
+        assert "error" in result
+        assert "path" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_handler_valid_path_still_executes(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "line1"
+        result_obj.to_dict.return_value = {"content": "line1", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(_handle_read_file({"path": "/tmp/test.txt"}))
+        assert result["content"] == "line1"
+        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 500)
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -54,7 +95,9 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(
+            os.path.realpath("/tmp/out.txt"), "hello world!\n"
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -145,7 +188,9 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(
+            os.path.realpath("/tmp/f.py"), "foo", "bar", False
+        )
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -167,7 +212,78 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
-        assert "Unknown mode" in result["error"]
+        assert "must be either 'replace' or 'patch'" in result["error"]
+
+    # -- _handle_patch (dict-args handler, one layer above patch_tool) ------
+    # The tests above call patch_tool() directly and already prove it
+    # validates its required fields (patch_tool() itself is unchanged by
+    # this addition). These next tests cover _handle_patch specifically:
+    # the dict-based tool-call entry point gets the same missing-toolset
+    # names + "don't retry" guidance that _handle_write_file already gives
+    # (see TestWriteFileHandler.test_missing_path_key_returns_error etc.).
+
+    def test_handler_replace_mode_missing_all_required_fields_errors(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({}))  # mode defaults to "replace"
+        assert "error" in result
+        assert "path" in result["error"]
+        assert "old_string" in result["error"]
+        assert "new_string" in result["error"]
+
+    def test_handler_replace_mode_missing_new_string_only_errors(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({"mode": "replace", "path": "x.py", "old_string": "a"}))
+        assert "error" in result
+        assert "new_string" in result["error"]
+
+    def test_handler_replace_mode_empty_old_string_errors(self):
+        """Deliberate asymmetry with new_string: an empty old_string has no
+        sensible "find and replace" meaning, unlike an empty new_string
+        which legitimately means "delete the matched text" (see
+        test_handler_replace_mode_empty_new_string_is_allowed below)."""
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(
+            _handle_patch({"mode": "replace", "path": "x.py", "old_string": "", "new_string": "y"})
+        )
+        assert "error" in result
+        assert "old_string" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_handler_replace_mode_empty_new_string_is_allowed(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "replacements": 1}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_patch
+        result = json.loads(
+            _handle_patch({"mode": "replace", "path": "/tmp/f.py", "old_string": "a", "new_string": ""})
+        )
+        assert result["status"] == "ok"
+        mock_ops.patch_replace.assert_called_once_with(
+            os.path.realpath("/tmp/f.py"), "a", "", False
+        )
+
+    def test_handler_patch_mode_missing_patch_field_errors(self):
+        from tools.file_tools import _handle_patch
+
+        result = json.loads(_handle_patch({"mode": "patch"}))
+        assert "error" in result
+        assert "patch" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_handler_unknown_mode_defers_to_patch_tool(self, mock_get):
+        """Unknown modes are rejected by the shared contract validator."""
+        mock_get.return_value = MagicMock()
+
+        from tools.file_tools import _handle_patch
+        result = json.loads(_handle_patch({"mode": "invalid_mode"}))
+        assert "error" in result
+        assert "must be either 'replace' or 'patch'" in result["error"]
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
@@ -303,6 +419,43 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+    def test_handler_missing_pattern_key_returns_error(self):
+        """_handle_search_files must reject calls where 'pattern' is
+        absent -- previously this silently defaulted to "" and ran a
+        real (meaningless) search instead of being rejected."""
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({}))
+        assert "error" in result
+        assert "pattern" in result["error"]
+
+    def test_handler_empty_string_pattern_returns_error(self):
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({"pattern": ""}))
+        assert "error" in result
+        assert "pattern" in result["error"]
+
+    def test_handler_non_string_pattern_returns_error(self):
+        from tools.file_tools import _handle_search_files
+
+        result = json.loads(_handle_search_files({"pattern": ["not", "a", "string"]}))
+        assert "error" in result
+        assert "pattern" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_handler_valid_pattern_still_executes(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_search_files
+        result = json.loads(_handle_search_files({"pattern": "*.md", "target": "files"}))
+        assert "matches" in result
+        mock_ops.search.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

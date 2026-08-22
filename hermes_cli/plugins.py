@@ -6056,15 +6056,15 @@ def _get_pre_tool_call_directive_details(
         middleware_trace=list(middleware_trace or []),
     )
 
-    block_msg: Optional[str] = None
+    directive: Optional[_PreToolCallDirective] = None
     modified_args: Optional[Dict[str, Any]] = None
 
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         # "modify" action — transform tool_input before dispatch.
-        # Processed before the block/approve gate so modify directives
-        # are visible even when a later hook blocks. Hooks accumulate:
+        # All mutations are collected before the first block/approve directive
+        # is resolved. Hooks accumulate:
         # each modify directive shallow-merges its keys into one
         # accumulated dict built from the original args on first hit.
         if result.get("action") == "modify":
@@ -6077,6 +6077,8 @@ def _get_pre_tool_call_directive_details(
         action = result.get("action")
         if action not in ("block", "approve"):
             continue
+        if directive is not None:
+            continue
         message = result.get("message")
         message = message if isinstance(message, str) and message else None
         # A block directive requires a message (it becomes the tool result);
@@ -6087,12 +6089,18 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(
+        directive = _PreToolCallDirective(
             action=action, message=message, rule_key=rule_key,
-            modified_args=modified_args,
         )
 
-    return _PreToolCallDirective(modified_args=modified_args)
+    if directive is None:
+        return _PreToolCallDirective(modified_args=modified_args)
+    return _PreToolCallDirective(
+        action=directive.action,
+        message=directive.message,
+        rule_key=directive.rule_key,
+        modified_args=modified_args,
+    )
 
 
 def get_pre_tool_call_directive(
@@ -6249,6 +6257,7 @@ def _dispatch_pre_tool_call_hooks(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    final_args_validator: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once and process all response types.
 
@@ -6260,6 +6269,9 @@ def _dispatch_pre_tool_call_hooks(
       context set around the human-approval gate.
     - ``modified_args`` — merged args from ``modify`` directives
       (or ``None`` when no hook requested modification).
+
+    When provided, ``final_args_validator`` receives the fully mutated args.
+    A validation result preempts directive resolution, including approval.
 
     This is the single invocation point for ``pre_tool_call`` hooks.
     Callers that only need block detection should keep using
@@ -6273,6 +6285,17 @@ def _dispatch_pre_tool_call_hooks(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
+    final_args = details.modified_args
+    if final_args is None:
+        final_args = dict(args) if isinstance(args, dict) else {}
+    validation_result = (
+        final_args_validator(final_args)
+        if final_args_validator is not None
+        else None
+    )
+    if validation_result is not None:
+        return (validation_result, details.modified_args)
+
     block_msg = _resolve_block_from_details(
         details, tool_name,
         turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,

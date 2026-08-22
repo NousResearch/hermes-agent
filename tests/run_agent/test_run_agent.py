@@ -2380,6 +2380,154 @@ class TestConcurrentToolExecution:
         ]
         assert outcome.blocked is False
 
+    def test_patch_contract_validation_and_retry_guard_precede_dispatch(
+        self, agent, monkeypatch
+    ):
+        from agent import relay_tools, tool_executor
+        from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+        dispatched = []
+        agent._tool_guardrails = ToolCallGuardrailController(
+            ToolCallGuardrailConfig(hard_stop_enabled=True)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(payload=args, trace=[]),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+
+        def dispatch_hooks(_name, args, *, final_args_validator=None, **_kwargs):
+            return (
+                final_args_validator(args) if final_args_validator is not None else None,
+                None,
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks", dispatch_hooks
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            relay_tools,
+            "execute",
+            lambda _name, args, callback, **_kwargs: (callback(args), args),
+        )
+
+        def invoke(args, call_id):
+            return tool_executor._run_agent_tool_execution_middleware(
+                agent,
+                function_name="patch",
+                function_args=args,
+                effective_task_id="task-1",
+                tool_call_id=call_id,
+                execute=lambda final_args: dispatched.append(final_args) or '{"ok":true}',
+            )
+
+        first = invoke({"mode": "replace", "path": "x.py"}, "call-1")
+        second = invoke(
+            {"mode": "replace", "old_string": "private", "new_string": "value"},
+            "call-2",
+        )
+        corrected = invoke(
+            {
+                "mode": "replace",
+                "path": "x.py",
+                "old_string": "old",
+                "new_string": "new",
+            },
+            "call-3",
+        )
+
+        first_payload = json.loads(first.result)
+        second_payload = json.loads(second.result)
+        assert first_payload["failure"]["class"] == "patch_contract"
+        assert (
+            second_payload["guardrail"]["code"]
+            == "structurally_equivalent_malformed_input_block"
+        )
+        assert "private" not in json.dumps(second_payload)
+        assert dispatched == [
+            {
+                "mode": "replace",
+                "path": "x.py",
+                "old_string": "old",
+                "new_string": "new",
+            }
+        ]
+        assert corrected.result == '{"ok":true}'
+
+    @pytest.mark.parametrize(
+        "original_args,hook_results",
+        [
+            (
+                {"mode": "replace", "path": "x.py"},
+                [{"action": "approve", "message": "approve patch"}],
+            ),
+            (
+                {
+                    "mode": "replace",
+                    "path": "x.py",
+                    "old_string": "old",
+                    "new_string": "new",
+                },
+                [
+                    {"action": "approve", "message": "approve patch"},
+                    {"action": "modify", "args": {"path": None}},
+                ],
+            ),
+        ],
+    )
+    def test_patch_final_contract_validation_preempts_plugin_approval_and_dispatch(
+        self, agent, monkeypatch, original_args, hook_results
+    ):
+        from agent import relay_tools, tool_executor
+        from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+        approvals = []
+        dispatched = []
+        agent._tool_guardrails = ToolCallGuardrailController(
+            ToolCallGuardrailConfig(hard_stop_enabled=True)
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda _name, args, **_kwargs: SimpleNamespace(payload=args, trace=[]),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            lambda _name, args, callback, **_kwargs: callback(args),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_results,
+        )
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: approvals.append((args, kwargs))
+            or {"approved": True},
+        )
+        monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            relay_tools,
+            "execute",
+            lambda _name, args, callback, **_kwargs: (callback(args), args),
+        )
+
+        outcome = tool_executor._run_agent_tool_execution_middleware(
+            agent,
+            function_name="patch",
+            function_args=original_args,
+            effective_task_id="task-1",
+            tool_call_id="call-invalid",
+            execute=lambda final_args: dispatched.append(final_args) or '{"ok":true}',
+        )
+
+        payload = json.loads(outcome.result)
+        assert payload["failure"]["class"] == "patch_contract"
+        assert approvals == []
+        assert dispatched == []
+
     def test_managed_tool_pipeline_allows_one_concurrent_dispatch(
         self,
         agent,

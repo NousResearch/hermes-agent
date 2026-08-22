@@ -2311,6 +2311,74 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
+def _patch_contract_error(message: str, code: str) -> str:
+    """Return a stable malformed-input envelope without echoing arguments."""
+    return json.dumps(
+        {
+            "error": message,
+            "success": False,
+            "failure": {
+                "kind": "malformed_input",
+                "class": "patch_contract",
+                "code": code,
+                "tool": "patch",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _validate_patch_contract(args: dict) -> str | None:
+    """Validate the mode-dependent patch contract before any file-side work."""
+    mode = args.get("mode", "replace")
+    if mode == "replace":
+        invalid_fields = []
+        for field in ("path", "old_string", "new_string"):
+            value = args.get(field)
+            if not isinstance(value, str) or (field != "new_string" and not value):
+                invalid_fields.append(field)
+        if invalid_fields:
+            return _patch_contract_error(
+                "patch mode='replace': required string field(s) invalid: "
+                + ", ".join(invalid_fields),
+                f"patch.replace.{invalid_fields[0]}.invalid",
+            )
+        if args["old_string"] == args["new_string"]:
+            return _patch_contract_error(
+                "patch mode='replace': old_string and new_string must differ.",
+                "patch.replace.no_change",
+            )
+        if "patch" in args:
+            return _patch_contract_error(
+                "patch mode='replace' cannot include the patch payload.",
+                "patch.replace.incompatible_fields",
+            )
+    elif mode == "patch":
+        payload = args.get("patch")
+        if not isinstance(payload, str) or not payload.strip():
+            return _patch_contract_error(
+                "patch mode='patch': 'patch' is required and must be nonempty text.",
+                "patch.patch.patch.invalid",
+            )
+        incompatible = [
+            field for field in ("path", "old_string", "new_string") if field in args
+        ]
+        if args.get("replace_all") is True:
+            incompatible.append("replace_all")
+        if incompatible:
+            return _patch_contract_error(
+                "patch mode='patch' cannot include replace-mode fields: "
+                + ", ".join(incompatible),
+                "patch.patch.incompatible_fields",
+            )
+    else:
+        return _patch_contract_error(
+            "patch: 'mode' must be either 'replace' or 'patch'.",
+            "patch.mode.invalid",
+        )
+    return None
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
@@ -2321,6 +2389,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
+    contract_args = {"mode": mode, "replace_all": replace_all}
+    for key, value in (
+        ("path", path),
+        ("old_string", old_string),
+        ("new_string", new_string),
+        ("patch", patch),
+    ):
+        if value is not None:
+            contract_args[key] = value
+    contract_error = _validate_patch_contract(contract_args)
+    if contract_error:
+        return contract_error
+
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     # Paths whose CONTENT will be text-written (Update/Add + explicit path).
@@ -2752,9 +2833,22 @@ SEARCH_FILES_SCHEMA = {
 }
 
 
+# Tool names in this toolset, kept next to the registry.register() calls below
+# so it can't silently drift if a tool is added/removed. Mirrors the format
+# conversation_loop.py's _invalid_tool_name_error_content() already uses
+# (sorted, comma-separated) so the two error paths read consistently.
+_FILE_TOOLSET_TOOL_NAMES = "patch, read_file, search_files, write_file"
+
+
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "read_file: missing required field 'path'. This tool call was not "
+            "executed. Do not re-emit the same empty call — set 'path' to a real "
+            f"file path. Available tools in this toolset: {_FILE_TOOLSET_TOOL_NAMES}."
+        )
+    return read_file_tool(path=args["path"], offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -2785,9 +2879,13 @@ def _handle_write_file(args, **kw):
 
 
 def _handle_patch(args, **kw):
+    contract_error = _validate_patch_contract(args)
+    if contract_error:
+        return contract_error
     tid = kw.get("task_id") or "default"
+    mode = args.get("mode", "replace")
     return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
@@ -2797,11 +2895,18 @@ def _handle_patch(args, **kw):
 
 def _handle_search_files(args, **kw):
     tid = kw.get("task_id") or "default"
+    if not args.get("pattern") or not isinstance(args.get("pattern"), str):
+        return tool_error(
+            "search_files: missing required field 'pattern'. This tool call was not "
+            "executed. Do not re-emit the same empty call — set 'pattern' to a real "
+            "search pattern or glob. Available tools in this toolset: "
+            f"{_FILE_TOOLSET_TOOL_NAMES}."
+        )
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args["pattern"], target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 

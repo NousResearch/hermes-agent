@@ -1,6 +1,7 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -220,6 +221,116 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert completed_events[0][1] == "web_search"
 
 
+def _patch_args(*, path="x.py", old_string="old", new_string="new"):
+    args = {"mode": "replace", "old_string": old_string, "new_string": new_string}
+    if path is not None:
+        args["path"] = path
+    return args
+
+
+def _run_reordered_patch_batch(agent, calls):
+    from agent import relay_tools
+
+    second_ready = threading.Event()
+    first_done = threading.Event()
+    dispatched = []
+    messages = []
+
+    def relay_execute(name, args, callback, **kwargs):
+        del name, kwargs
+        marker = args.get("old_string")
+        if marker == "first":
+            assert second_ready.wait(2)
+            result = callback(args)
+            first_done.set()
+        elif marker == "second":
+            second_ready.set()
+            result = callback(args)
+        else:
+            assert first_done.wait(2)
+            result = callback(args)
+        return result, args
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        dispatched.append((name, dict(args)))
+        return json.dumps({"ok": args["old_string"]})
+
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    with (
+        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch("run_agent.handle_function_call", side_effect=dispatch),
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+    return messages, dispatched
+
+
+def test_concurrent_patch_contract_streak_follows_model_order_and_corrected_call_clears_it():
+    agent = _make_agent("patch", config=_hard_stop_config())
+    calls = [
+        _mock_tool_call("patch", json.dumps(_patch_args(path=None, old_string="first")), "c1"),
+        _mock_tool_call("patch", json.dumps(_patch_args(old_string="second")), "c2"),
+        _mock_tool_call("patch", json.dumps(_patch_args(path=None, old_string="third")), "c3"),
+    ]
+
+    messages, dispatched = _run_reordered_patch_batch(agent, calls)
+    payloads = [json.loads(message["content"]) for message in messages]
+
+    assert payloads[0]["failure"]["class"] == "patch_contract"
+    assert payloads[1] == {"ok": "second"}
+    assert payloads[2]["failure"]["class"] == "patch_contract"
+    assert "guardrail" not in payloads[2]
+    assert dispatched == [("patch", _patch_args(old_string="second"))]
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_concurrent_patch_contract_streak_blocks_second_malformed_shape_in_model_order():
+    agent = _make_agent("patch", config=_hard_stop_config())
+    first = {"mode": "replace", "path": "x.py", "old_string": "first"}
+    second = _patch_args(path=None, old_string="second")
+    calls = [
+        _mock_tool_call("patch", json.dumps(first), "c1"),
+        _mock_tool_call("patch", json.dumps(second), "c2"),
+    ]
+
+    messages, dispatched = _run_reordered_patch_batch(agent, calls)
+    payloads = [json.loads(message["content"]) for message in messages]
+
+    assert payloads[0]["failure"]["class"] == "patch_contract"
+    assert payloads[1]["guardrail"]["code"] == "structurally_equivalent_malformed_input_block"
+    assert dispatched == []
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_sequential_patch_contract_streak_matches_ordered_concurrent_semantics():
+    agent = _make_agent("patch", config=_hard_stop_config())
+    calls = [
+        _mock_tool_call("patch", json.dumps(_patch_args(path=None, old_string="first")), "s1"),
+        _mock_tool_call("patch", json.dumps(_patch_args(old_string="second")), "s2"),
+        _mock_tool_call("patch", json.dumps(_patch_args(path=None, old_string="third")), "s3"),
+    ]
+    messages = []
+    dispatched = []
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        dispatched.append((name, dict(args)))
+        return json.dumps({"ok": args["old_string"]})
+
+    with patch("run_agent.handle_function_call", side_effect=dispatch):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=calls), messages, "task-1"
+        )
+
+    payloads = [json.loads(message["content"]) for message in messages]
+    assert payloads[0]["failure"]["class"] == "patch_contract"
+    assert payloads[1] == {"ok": "second"}
+    assert payloads[2]["failure"]["class"] == "patch_contract"
+    assert "guardrail" not in payloads[2]
+    assert dispatched == [("patch", _patch_args(old_string="second"))]
+    assert agent._tool_guardrail_halt_decision is None
+
+
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():
     agent = _make_agent("write_file")
     original_args = {"path": "/original/path", "content": "old"}
@@ -247,9 +358,9 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
         return callback(dict(final_args)), dict(final_args)
 
     def observe_plugin(name, args, **kwargs):
-        del kwargs
         observed["plugin"].append((name, dict(args)))
-        return (None, None)
+        validator = kwargs.get("final_args_validator")
+        return (validator(args) if validator is not None else None, None)
 
     def observe_approval(name, args):
         observed["approval"].append((name, dict(args)))
@@ -384,6 +495,8 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     queue and emits a finish chunk with zero content (indistinguishable
     from a crash for Open WebUI and similar clients).
     """
+    from agent.tool_guardrails import ToolGuardrailDecision
+
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}
     responses = [
@@ -392,7 +505,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
             finish_reason="tool_calls",
             tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
         )
-        for i in range(1, 10)
+        for i in range(1, 2)
     ]
     agent.client.chat.completions.create.side_effect = responses
 
@@ -405,6 +518,16 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     agent._disable_streaming = True
 
     with (
+        patch.object(
+            agent._tool_guardrails,
+            "before_call",
+            return_value=ToolGuardrailDecision(
+                action="halt",
+                code="explicit_test_halt",
+                message="Stopped retrying by explicit halt action.",
+                tool_name="web_search",
+            ),
+        ),
         patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),

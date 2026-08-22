@@ -617,9 +617,61 @@ def _run_agent_tool_execution_middleware(
             begin_execution(callback)
 
         block_message = scope_block
-        block_error_type = "tool_scope_block"
-        if block_message is None:
-            block_error_type = "plugin_block"
+        block_error_type = "tool_scope_block" if scope_block is not None else "plugin_block"
+        validation_result = None
+        guardrail_decision = None
+        terminal_result = None
+        terminal_error_type = None
+        terminal_error_message = None
+
+        def _validate_final_args(args: dict[str, Any]) -> str | None:
+            nonlocal validation_result, guardrail_decision
+            nonlocal terminal_result, terminal_error_type, terminal_error_message
+
+            # Provider-portable schemas cannot express every mode-dependent
+            # contract. Observe the post-hook args before directive resolution,
+            # approvals, checkpoints, or handlers.
+            if function_name == "patch":
+                from tools.file_tools import _validate_patch_contract
+
+                validation_result = _validate_patch_contract(args)
+            malformed_decision = agent._tool_guardrails.before_validated_call(
+                function_name, args, validation_result
+            )
+            if not malformed_decision.allows_execution:
+                guardrail_decision = malformed_decision
+                terminal_result = agent._guardrail_block_result(malformed_decision)
+                terminal_error_type = "guardrail_block"
+                terminal_error_message = (
+                    malformed_decision.message or "Tool blocked by guardrail policy"
+                )
+                return terminal_result
+            if validation_result is not None:
+                terminal_result = validation_result
+                terminal_error_type = "malformed_input"
+                parsed_validation = json.loads(validation_result)
+                terminal_error_message = parsed_validation.get(
+                    "error", "Invalid tool arguments"
+                )
+                return terminal_result
+
+            guardrail_decision = agent._tool_guardrails.before_call(
+                function_name, args
+            )
+            if not guardrail_decision.allows_execution:
+                terminal_result = agent._guardrail_block_result(guardrail_decision)
+                terminal_error_type = "guardrail_block"
+                terminal_error_message = (
+                    guardrail_decision.message or "Tool blocked by guardrail policy"
+                )
+                return terminal_result
+            guardrail_decision = None
+            return None
+
+        def _resolve_policy_and_begin() -> None:
+            nonlocal block_message, final_args
+            if block_message is not None:
+                return
 
             def _resolve_pre_tool_block():
                 nonlocal final_args
@@ -636,6 +688,7 @@ def _run_agent_tool_execution_middleware(
                         api_request_id=getattr(agent, "_current_api_request_id", "")
                         or "",
                         middleware_trace=list(state["middleware_trace"]),
+                        final_args_validator=_validate_final_args,
                     )
                     if modified_args is not None:
                         final_args = modified_args
@@ -644,34 +697,33 @@ def _run_agent_tool_execution_middleware(
                 except Exception:
                     return None
 
-            block_message = (
+            resolved = (
                 _resolve_pre_tool_block()
                 if authorization_gate is None
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
+            if terminal_result is None:
+                block_message = resolved
+                if block_message is None:
+                    _begin()
 
-        guardrail_decision = None
-        if block_message is None:
-            guardrail_decision = agent._tool_guardrails.before_call(
-                function_name, final_args
-            )
-            if guardrail_decision.allows_execution:
-                guardrail_decision = None
+        # The existing concurrent start-order gate is the serialization point
+        # for final-argument validation and guardrail streak transitions. This
+        # keeps policy state in model/tool-call order instead of worker order.
+        _advance_start_order(_resolve_policy_and_begin)
 
-        if block_message is not None or guardrail_decision is not None:
-            _advance_start_order()
+        if block_message is not None or terminal_result is not None:
             state["blocked"] = True
-            if block_message is not None:
+            if terminal_result is not None:
+                result = terminal_result
+                error_type = terminal_error_type
+                error_message = terminal_error_message
+            elif validation_result is None:
                 result = json.dumps({"error": block_message}, ensure_ascii=False)
                 error_type = block_error_type
                 error_message = block_message
             else:
-                result = agent._guardrail_block_result(guardrail_decision)
-                error_type = "guardrail_block"
-                error_message = (
-                    getattr(guardrail_decision, "message", None)
-                    or "Tool blocked by guardrail policy"
-                )
+                raise AssertionError("blocked tool call has no terminal result")
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
@@ -690,8 +742,6 @@ def _run_agent_tool_execution_middleware(
             agent._turns_since_memory = 0
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
-
-        _advance_start_order(_begin)
 
         # Keep the gateway turn-inactivity watchdog from abandoning a turn
         # whose tool call runs silently for longer than the inactivity

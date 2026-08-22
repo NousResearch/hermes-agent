@@ -56,15 +56,16 @@ def _patch_tool(**kwargs):
 
 
 class TestPatchReplaceAlreadyApplied:
-    def test_identical_old_new_present_is_success_noop(self, workdir):
+    def test_identical_old_new_is_rejected_as_malformed_noop(self, workdir):
         f = workdir / "a.py"
-        f.write_text("value = compute_total(items)\n")
+        original = "value = compute_total(items)\n"
+        f.write_text(original)
         r = _patch_tool(path=str(f), old_string="value = compute_total(items)",
                         new_string="value = compute_total(items)", task_id="t-applied")
-        assert r["success"] is True
-        assert r.get("no_change") is True
-        assert "already" in r["note"]
-        assert f.read_text() == "value = compute_total(items)\n"
+        assert r["success"] is False
+        assert r["failure"]["kind"] == "malformed_input"
+        assert r["failure"]["code"] == "patch.replace.no_change"
+        assert f.read_text() == original
 
     def test_replay_of_landed_edit_is_success_noop(self, workdir):
         # old_string is entirely gone (no approximate remnant for the fuzzy

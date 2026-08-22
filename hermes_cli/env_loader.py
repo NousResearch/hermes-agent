@@ -339,25 +339,51 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+_TASK_SCOPED_MULTICA_TOKEN_PREFIX = "mat_"
+
+
+def _capture_task_scoped_multica_token() -> str | None:
+    """Capture a daemon-provided task token before dotenv can override it.
+
+    Multica's daemon passes the task-scoped ``mat_`` token in the child
+    process environment, while the task Hermes home also contains the user's
+    workspace ``.env`` with a ``mul_`` token.  Hermes loads that file with
+    ``override=True`` for normal profile semantics, so without this guard the
+    less-privileged-looking file value silently replaces the task credential.
+    """
+    token = os.environ.get("MULTICA_TOKEN", "")
+    if token.startswith(_TASK_SCOPED_MULTICA_TOKEN_PREFIX):
+        return token
+    return None
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    # A Multica task token is a capability for this one task, not a profile
+    # setting. Preserve it across every dotenv load, including the managed-env
+    # overlay, so a workspace ``mul_`` value cannot downgrade the child.
+    task_token = _capture_task_scoped_multica_token()
     try:
-        # utf-8-sig strips a leading UTF-8 BOM if present (PowerShell 5.1
-        # Set-Content -Encoding UTF8 / Notepad) and is a no-op for BOM-less
-        # UTF-8. Plain "utf-8" would keep U+FEFF on the first key name and
-        # silently drop it from os.environ under its canonical name.
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        # utf-8-sig can't strip a BOM once we fall back to latin-1 decode.
-        raw = path.read_bytes()
-        if raw.startswith(codecs.BOM_UTF8):
-            raw = raw[len(codecs.BOM_UTF8) :]
-        load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
-    # Strip non-ASCII characters from credential env vars that were just
-    # loaded.  API keys must be pure ASCII since they're sent as HTTP
-    # header values (httpx encodes headers as ASCII).  Non-ASCII chars
-    # typically come from copy-pasting keys from PDFs or rich-text editors
-    # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
-    _sanitize_loaded_credentials()
+        try:
+            # utf-8-sig strips a leading UTF-8 BOM if present (PowerShell 5.1
+            # Set-Content -Encoding UTF8 / Notepad) and is a no-op for BOM-less
+            # UTF-8. Plain "utf-8" would keep U+FEFF on the first key name and
+            # silently drop it from os.environ under its canonical name.
+            load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            # utf-8-sig can't strip a BOM once we fall back to latin-1 decode.
+            raw = path.read_bytes()
+            if raw.startswith(codecs.BOM_UTF8):
+                raw = raw[len(codecs.BOM_UTF8) :]
+            load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
+        # Strip non-ASCII characters from credential env vars that were just
+        # loaded.  API keys must be pure ASCII since they're sent as HTTP
+        # header values (httpx encodes headers as ASCII).  Non-ASCII chars
+        # typically come from copy-pasting keys from PDFs or rich-text editors
+        # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
+        _sanitize_loaded_credentials()
+    finally:
+        if task_token is not None:
+            os.environ["MULTICA_TOKEN"] = task_token
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:

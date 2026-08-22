@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _bounded_media_tool_result,
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
@@ -76,6 +77,97 @@ class TestRedactApiErrorText:
 
     def test_limit_truncates_after_redaction(self):
         assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
+
+
+class TestBoundedMediaToolResult:
+    def test_omits_non_media_tool_result(self):
+        assert _bounded_media_tool_result("read_file", '{"content":"hello"}') is None
+
+    def test_includes_media_artifact_manifest(self):
+        result = _bounded_media_tool_result(
+            "media_generate",
+            json.dumps({
+                "success": True,
+                "prompt": "do not forward full prompt text",
+                "status": {
+                    "job": {
+                        "prompt_id": "abc123",
+                        "status": "completed",
+                        "workload": "gpu0-media-image",
+                        "artifacts": [{
+                            "artifact_id": "abc123:0",
+                            "filename": "image.png",
+                            "mime_type": "image/png",
+                            "url": "https://example.test/workloads/artifact/abc123/0?sig=signed",
+                            "download_url": "https://example.test/workloads/artifact/abc123/0?download=1&sig=signed",
+                            "inline_markdown": "![image.png](https://example.test/workloads/artifact/abc123/0?sig=signed)",
+                            "raw_path": "/tmp/secret.png",
+                        }],
+                    },
+                    "media_artifacts": [{
+                        "artifact_id": "abc123:0",
+                        "filename": "image.png",
+                        "mime_type": "image/png",
+                        "url": "https://example.test/workloads/artifact/abc123/0?sig=signed",
+                        "download_url": "https://example.test/workloads/artifact/abc123/0?download=1&sig=signed",
+                        "inline_markdown": "![image.png](https://example.test/workloads/artifact/abc123/0?sig=signed)",
+                    }],
+                    "media_artifact_contract": {"version": 1, "primary_field": "inline_markdown"},
+                },
+            }),
+        )
+
+        assert result is not None
+        assert result["success"] is True
+        assert result["status"]["job"]["artifacts"][0]["inline_markdown"].startswith("![image.png]")
+        assert result["status"]["media_artifacts"][0]["download_url"].startswith("https://example.test/")
+        assert "prompt" not in result
+        assert "raw_path" not in json.dumps(result)
+
+    def test_detects_artifacts_from_non_media_tool_but_bounds_payload(self):
+        result = _bounded_media_tool_result(
+            "handoff_profile",
+            {
+                "result": {
+                    "media_artifacts": [{
+                        "artifact_id": "abc123:0",
+                        "filename": "image.png",
+                        "url": "https://example.test/workloads/artifact/abc123/0?sig=signed",
+                        "download_url": "https://example.test/workloads/artifact/abc123/0?download=1&sig=signed",
+                        "inline_markdown": "![image.png](https://example.test/workloads/artifact/abc123/0?sig=signed)",
+                    }],
+                    "giant": "x" * 100_000,
+                }
+            },
+        )
+
+        assert result is not None
+        encoded = json.dumps(result)
+        assert "/workloads/artifact/abc123/0" in encoded
+        assert "giant" not in encoded
+        assert len(encoded.encode("utf-8")) < 16_384
+
+    def test_preserves_async_media_submission_status_url(self):
+        result = _bounded_media_tool_result(
+            "media_generate",
+            json.dumps({
+                "success": True,
+                "submission": {
+                    "prompt_id": "prompt-123",
+                    "status_url": "https://example.test/workloads/status/prompt-123?exp=999&sig=signed",
+                    "job": {
+                        "prompt_id": "prompt-123",
+                        "status": "submitted",
+                        "status_url": "https://example.test/workloads/status/prompt-123?exp=999&sig=signed",
+                    },
+                },
+            }),
+        )
+
+        assert result is not None
+        assert result["submission"]["prompt_id"] == "prompt-123"
+        assert result["submission"]["status_url"].startswith("https://example.test/workloads/status/prompt-123")
+        assert result["submission"]["job"]["status_url"].startswith("https://example.test/workloads/status/prompt-123")
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1333,74 @@ class TestChatCompletionsEndpoint:
             assert len(pairs) == 2, f"expected 2 events (running+completed), got {pairs}"
             assert pairs[0] == ("running", "call_terminal_1"), pairs
             assert pairs[1] == ("completed", "call_terminal_1"), pairs
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_complete_includes_bounded_media_result(self, adapter):
+        """Media tool completions carry the artifact manifest for early renderers."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                result = _json.dumps({
+                    "success": True,
+                    "status": {
+                        "media_artifacts": [{
+                            "artifact_id": "abc123:0",
+                            "filename": "image.png",
+                            "url": "https://example.test/workloads/artifact/abc123/0?sig=signed",
+                            "download_url": "https://example.test/workloads/artifact/abc123/0?download=1&sig=signed",
+                            "inline_markdown": "![image.png](https://example.test/workloads/artifact/abc123/0?sig=signed)",
+                        }],
+                        "media_artifact_contract": {"version": 1, "primary_field": "inline_markdown"},
+                    },
+                    "prompt": "must not be forwarded on progress channel",
+                })
+                if ts_cb:
+                    ts_cb("call_media_1", "media_generate", {"workflow_id": "gpu0-media-image"})
+                if tc_cb:
+                    tc_cb("call_media_1", "media_generate", {"workflow_id": "gpu0-media-image"}, result)
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "make image"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        completed = None
+        lines = body.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != "event: hermes.tool.progress":
+                continue
+            for follow in lines[i + 1: i + 4]:
+                if follow.startswith("data: "):
+                    payload = _json.loads(follow[len("data: "):])
+                    if payload.get("status") == "completed":
+                        completed = payload
+                    break
+
+        assert completed is not None
+        assert completed["tool"] == "media_generate"
+        assert completed["toolCallId"] == "call_media_1"
+        assert completed["result"]["status"]["media_artifacts"][0]["inline_markdown"].startswith("![image.png]")
+        assert "prompt" not in completed["result"]
 
     @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):

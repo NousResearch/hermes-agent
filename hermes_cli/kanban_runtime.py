@@ -92,8 +92,14 @@ def build_kanban_terminal_runtime(
     task_id: str,
     workspace_kind: str,
     workspace: str | os.PathLike[str],
+    authorized_roots: Iterable[str | os.PathLike[str]] | None = None,
 ) -> dict[str, Any]:
-    """Build the dispatcher-owned runtime envelope for one task workspace."""
+    """Build the dispatcher-owned runtime envelope for one task workspace.
+
+    ``authorized_roots`` is provenance, not another workspace coordinate: the
+    dispatcher derives it from existing board/project authority.  Docker later
+    requires every physical bind source to remain inside one of these roots.
+    """
     task_id = str(task_id or "").strip()
     if not task_id:
         raise KanbanRuntimeError("task_id is required")
@@ -102,6 +108,11 @@ def build_kanban_terminal_runtime(
         raise KanbanRuntimeError(f"unsupported workspace kind: {workspace_kind!r}")
 
     ws = _canonical_existing_dir(workspace, label="kanban workspace")
+    roots: list[Path] = []
+    for value in authorized_roots or []:
+        root = _canonical_existing_dir(value, label="authorized workspace root")
+        if root not in roots:
+            roots.append(root)
     mounts: list[dict[str, Any]] = [
         {
             "source": str(ws),
@@ -139,6 +150,7 @@ def build_kanban_terminal_runtime(
         "task_id": task_id,
         "workspace_kind": kind,
         "workspace": str(ws),
+        "authorized_roots": [str(root) for root in roots],
         "container_cwd": _WORKSPACE_TARGET,
         "mounts": mounts,
     }
@@ -192,6 +204,17 @@ def validate_kanban_terminal_runtime(
                 f"runtime workspace mismatch: envelope={workspace} expected={expected}"
             )
 
+    raw_authorized_roots = runtime.get("authorized_roots", [])
+    if not isinstance(raw_authorized_roots, list):
+        raise KanbanRuntimeError("runtime authorized_roots must be a list")
+    authorized_roots: list[Path] = []
+    for idx, value in enumerate(raw_authorized_roots):
+        root = _canonical_existing_dir(
+            str(value or ""), label=f"authorized workspace root #{idx}"
+        )
+        if root not in authorized_roots:
+            authorized_roots.append(root)
+
     if runtime.get("container_cwd") != _WORKSPACE_TARGET:
         raise KanbanRuntimeError(
             f"runtime container_cwd must be {_WORKSPACE_TARGET!r}"
@@ -205,9 +228,9 @@ def validate_kanban_terminal_runtime(
     workspace_mounts = 0
     git_common_mounts = 0
     # Recompute worktree metadata from the validated workspace instead of
-    # trusting an envelope-provided path.  This is the authorization boundary:
-    # runtime mounts may expose only the exact task workspace plus the exact
-    # Git common directory that Git itself says this linked worktree requires.
+    # trusting an envelope-provided path.  This validates mount SHAPE only;
+    # dispatcher-derived provenance containment is enforced at Docker
+    # consumption before any remote-host path translation.
     expected_git_common: Path | None = None
     expected_git_common_needs_mount = False
     if kind == "worktree":
@@ -290,6 +313,7 @@ def validate_kanban_terminal_runtime(
         "task_id": task_id,
         "workspace_kind": kind,
         "workspace": str(workspace),
+        "authorized_roots": [str(root) for root in authorized_roots],
         "container_cwd": _WORKSPACE_TARGET,
         "mounts": normalized_mounts,
     }
@@ -383,20 +407,54 @@ def translate_host_path(
     return str(src)
 
 
+def _path_within_authority(path: Path, roots: Iterable[Path]) -> bool:
+    """Return whether *path* is equal to or below one trusted authority root."""
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def translate_runtime_mounts(
     runtime: Mapping[str, Any],
     *,
     path_map: Iterable[Mapping[str, Any]] | None,
     docker_host: str | None,
 ) -> list[dict[str, Any]]:
-    """Translate validated runtime mounts into Docker-host mount records."""
+    """Authorize local bind sources, then translate them for the Docker host."""
     normalized = validate_kanban_terminal_runtime(runtime)
+    authorized_roots = [Path(value) for value in normalized["authorized_roots"]]
+    if not authorized_roots:
+        raise KanbanRuntimeError(
+            "Kanban Docker runtime has no authorized workspace roots; "
+            "refusing host bind mounts"
+        )
+
+    workspace = Path(normalized["workspace"])
+    if not _path_within_authority(workspace, authorized_roots):
+        raise KanbanRuntimeError(
+            f"runtime workspace {workspace} is outside authorized workspace roots"
+        )
+
     translated: list[dict[str, Any]] = []
     for mount in normalized["mounts"]:
+        # Authorize the canonical LOCAL source before any remote-host path
+        # translation.  That includes worktree Git administrative state: a
+        # valid task workspace must not be able to smuggle an unrelated common
+        # Git directory into the container.
+        source = Path(mount["source"])
+        if not _path_within_authority(source, authorized_roots):
+            raise KanbanRuntimeError(
+                f"runtime mount source {source} ({mount['purpose']}) is outside "
+                "authorized workspace roots"
+            )
         translated.append(
             {
                 "source": translate_host_path(
-                    mount["source"], path_map=path_map, docker_host=docker_host
+                    source, path_map=path_map, docker_host=docker_host
                 ),
                 "target": mount["target"],
                 "read_only": mount["read_only"],

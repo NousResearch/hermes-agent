@@ -10706,6 +10706,118 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+
+def _canonical_mount_authority_root(value: str | os.PathLike[str]) -> Optional[Path]:
+    """Return a safe existing authority root, or ``None`` when unusable."""
+    try:
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            return None
+        root = raw.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir() or root == Path(root.anchor):
+        return None
+    return root
+
+
+def _workspace_mount_authority_roots(
+    task: Task,
+    workspace: str | os.PathLike[str],
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
+    """Derive Docker bind authority from existing Kanban/Project state.
+
+    This deliberately does not make an arbitrary absolute task path trusted.
+    Authority comes only from state Hermes already treats as operator/project
+    configuration:
+
+    * auto-generated scratch: that exact task directory only;
+    * a task- or board-bound Project: its configured folders;
+    * otherwise: the board's configured ``default_workdir`` (for worktrees,
+      the owning Git toplevel so the required common Git metadata stays inside
+      the same authority root).
+
+    No new external-directory grant surface is introduced here.  If none of the
+    existing authorities covers the task, Docker consumption fails closed while
+    non-Docker Kanban behavior remains unchanged.
+    """
+    ws = _canonical_mount_authority_root(workspace)
+    if ws is None:
+        return []
+
+    board_slug = board if board else get_current_board()
+    meta = read_board_metadata(board_slug)
+    kind = task.workspace_kind or "scratch"
+
+    # Board-generated scratch is intrinsically task-scoped authority.  Authorize
+    # the exact task directory, never the board's whole workspaces root, so a
+    # sibling task cannot become a valid bind merely by sharing the board.
+    if kind == "scratch":
+        scratch_root = _canonical_mount_authority_root(
+            workspaces_root(board=board_slug)
+        )
+        if scratch_root is not None:
+            try:
+                generated = (scratch_root / task.id).resolve(strict=True)
+                generated.relative_to(scratch_root)
+            except (OSError, RuntimeError, ValueError):
+                generated = None
+            if generated is not None and ws == generated:
+                return [str(ws)]
+
+    effective_project_id = str(
+        task.project_id or meta.get("project_id") or ""
+    ).strip()
+    if effective_project_id:
+        try:
+            from hermes_cli import projects_db as project_db
+
+            with project_db.connect_closing() as project_conn:
+                project = project_db.get_project(project_conn, effective_project_id)
+        except Exception as exc:  # fail closed, but leave an operator diagnostic
+            _log.warning(
+                "kanban mount authority: could not resolve project %r: %s",
+                effective_project_id,
+                exc,
+            )
+            return []
+        if project is None:
+            _log.warning(
+                "kanban mount authority: project %r is not available",
+                effective_project_id,
+            )
+            return []
+
+        candidates: list[str] = []
+        if project.primary_path:
+            candidates.append(project.primary_path)
+        candidates.extend(folder.path for folder in project.folders)
+        roots: list[str] = []
+        for candidate in candidates:
+            root = _canonical_mount_authority_root(candidate)
+            if root is not None and str(root) not in roots:
+                roots.append(str(root))
+        # A project-bound task never falls back to a broader board default:
+        # doing so would let lower-specificity config widen project authority.
+        return roots
+
+    board_default = str(meta.get("default_workdir") or "").strip()
+    if not board_default:
+        return []
+    root = _canonical_mount_authority_root(board_default)
+    if root is None:
+        return []
+    if kind == "worktree":
+        repo_root = _git_toplevel(root)
+        if repo_root is None:
+            return []
+        root = _canonical_mount_authority_root(repo_root)
+        if root is None:
+            return []
+    return [str(root)]
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -10778,6 +10890,9 @@ def _default_spawn(
             task_id=task.id,
             workspace_kind=task.workspace_kind or "scratch",
             workspace=workspace,
+            authorized_roots=_workspace_mount_authority_roots(
+                task, workspace, board=board
+            ),
         )
     )
     # Tag the worker's session so it lands in state.db as `kanban`, not as an

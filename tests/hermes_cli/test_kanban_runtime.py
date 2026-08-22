@@ -187,7 +187,10 @@ def test_translate_runtime_mounts_maps_workspace_and_git_metadata(tmp_path: Path
     _git("-C", str(repo), "worktree", "add", "-b", "feature/w", str(wt))
 
     runtime = build_kanban_terminal_runtime(
-        task_id="t_w", workspace_kind="worktree", workspace=wt
+        task_id="t_w",
+        workspace_kind="worktree",
+        workspace=wt,
+        authorized_roots=[tmp_path / "projects"],
     )
     mounts = translate_runtime_mounts(
         runtime,
@@ -212,3 +215,44 @@ def test_json_is_deterministic(tmp_path: Path):
     )
     raw = encode_kanban_terminal_runtime(runtime)
     assert raw == json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.parametrize("outside_name", ["opt-data", ".hermes", "sibling-project"])
+def test_runtime_authority_rejects_self_consistent_outside_workspace(
+    tmp_path: Path, outside_name: str
+):
+    project = tmp_path / "project"
+    outside = tmp_path / outside_name
+    project.mkdir()
+    outside.mkdir()
+
+    # Envelope and expected workspace agree.  That is intentionally not enough:
+    # physical Docker bind authority comes from the independent project root.
+    raw = encode_kanban_terminal_runtime(
+        build_kanban_terminal_runtime(
+            task_id="t_outside",
+            workspace_kind="dir",
+            workspace=outside,
+            authorized_roots=[project],
+        )
+    )
+    runtime = decode_kanban_terminal_runtime(
+        raw, expected_task_id="t_outside", expected_workspace=outside
+    )
+    with pytest.raises(KanbanRuntimeError, match="outside authorized workspace roots"):
+        translate_runtime_mounts(runtime, path_map=[], docker_host=None)
+
+
+def test_runtime_authority_allows_project_child(tmp_path: Path):
+    project = tmp_path / "project"
+    workspace = project / "task"
+    workspace.mkdir(parents=True)
+    runtime = build_kanban_terminal_runtime(
+        task_id="t_allowed",
+        workspace_kind="dir",
+        workspace=workspace,
+        authorized_roots=[project],
+    )
+    mounts = translate_runtime_mounts(runtime, path_map=[], docker_host=None)
+    assert mounts[0]["source"] == str(workspace.resolve())
+    assert mounts[0]["target"] == "/workspace"

@@ -136,6 +136,45 @@ def _normalize_runtime_mounts(runtime_mounts: list[dict] | None) -> list[dict[st
     return normalized
 
 
+
+_MOUNT_CAPABLE_EXTRA_ARG_FLAGS = frozenset({
+    "-v",
+    "--volume",
+    "--mount",
+    "--volumes-from",
+})
+
+
+def _normalize_docker_extra_args(extra_args: list | None) -> list[str]:
+    """Preserve the historical extra-arg surface while dropping bad types."""
+    validated: list[str] = []
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+            continue
+        validated.append(arg)
+    return validated
+
+
+def _mount_capable_extra_args(extra_args: list[str]) -> list[str]:
+    """Return Docker run args that can add host/volume filesystem mounts."""
+    collisions: list[str] = []
+    for arg in extra_args:
+        if arg == "-v" or arg.startswith("-v="):
+            collisions.append(arg)
+            continue
+        # Docker/pflag also accepts a short option with its value attached.
+        if arg.startswith("-v") and not arg.startswith("--") and len(arg) > 2:
+            collisions.append(arg)
+            continue
+        if any(
+            arg == flag or arg.startswith(f"{flag}=")
+            for flag in _MOUNT_CAPABLE_EXTRA_ARG_FLAGS
+            if flag != "-v"
+        ):
+            collisions.append(arg)
+    return collisions
+
 def _runtime_mount_args(runtime_mounts: list[dict] | None) -> tuple[list[str], set[str]]:
     """Render strict Docker ``--mount type=bind`` argv for runtime mounts.
 
@@ -957,6 +996,19 @@ class DockerEnvironment(BaseEnvironment):
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._runtime_mounts = _normalize_runtime_mounts(runtime_mounts)
+        # Validate profile/user extra args BEFORE Docker availability/cgroup
+        # probes.  When task runtime mounts are authoritative, no lower-priority
+        # Docker flag may add or inherit another filesystem mount.  Benign
+        # extra args retain their historical last-wins position below.
+        validated_extra = _normalize_docker_extra_args(extra_args)
+        if self._runtime_mounts:
+            mount_extra = _mount_capable_extra_args(validated_extra)
+            if mount_extra:
+                raise ValueError(
+                    "docker_extra_args cannot add host/volume mounts while "
+                    "task-scoped runtime mounts are active: "
+                    + ", ".join(repr(arg) for arg in mount_extra)
+                )
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
@@ -988,7 +1040,7 @@ class DockerEnvironment(BaseEnvironment):
         # no controller delegation required). Skip when the user already sets
         # it via docker_extra_args, or opted out with an empty/"0" value.
         shm = str(shm_size or "").strip()
-        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+        if shm and shm != "0" and not _extra_args_set_shm_size(validated_extra):
             resource_args.extend(["--shm-size", shm])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
@@ -1387,14 +1439,9 @@ class DockerEnvironment(BaseEnvironment):
         )
 
         logger.info("Docker volume_args: %s", volume_args)
-        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
-        # Appended last so they can override defaults if needed.
-        validated_extra = []
-        for arg in (extra_args or []):
-            if not isinstance(arg, str):
-                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
-                continue
-            validated_extra.append(arg)
+        # User-supplied benign extra Docker run flags keep their historical
+        # last-wins position. Mount-capable forms were rejected before any
+        # Docker call when task-scoped runtime mounts are active.
         if egress_env_overrides:
             _extra_collisions = _extra_args_egress_collisions(
                 validated_extra, _critical_egress_names,

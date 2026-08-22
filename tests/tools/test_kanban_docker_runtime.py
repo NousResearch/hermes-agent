@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from hermes_cli.kanban_runtime import (
     KANBAN_TERMINAL_RUNTIME_ENV,
     build_kanban_terminal_runtime,
@@ -12,7 +14,10 @@ from hermes_cli.kanban_runtime import (
 
 def _pin_kanban_worker(monkeypatch, workspace: Path, task_id: str = "t_runtime"):
     runtime = build_kanban_terminal_runtime(
-        task_id=task_id, workspace_kind="dir", workspace=workspace
+        task_id=task_id,
+        workspace_kind="dir",
+        workspace=workspace,
+        authorized_roots=[workspace.parent],
     )
     monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
@@ -116,3 +121,79 @@ def test_remote_worker_translates_runtime_mount(monkeypatch, tmp_path):
 
     cfg = terminal_tool._get_env_config()
     assert cfg["docker_runtime_mounts"][0]["source"] == "/mnt/projects/task"
+
+
+
+@pytest.mark.parametrize("outside_name", ["opt-data", ".hermes", "sibling-project"])
+def test_agreed_runtime_workspace_outside_authority_fails_closed(
+    monkeypatch, tmp_path, outside_name
+):
+    from tools import terminal_tool
+
+    project = tmp_path / "project"
+    outside = tmp_path / outside_name
+    project.mkdir()
+    outside.mkdir()
+    runtime = build_kanban_terminal_runtime(
+        task_id="t_outside",
+        workspace_kind="dir",
+        workspace=outside,
+        authorized_roots=[project],
+    )
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_outside")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(outside.resolve()))
+    monkeypatch.setenv(
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        encode_kanban_terminal_runtime(runtime),
+    )
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_HOST_PATH_MAP", "[]")
+
+    with pytest.raises(RuntimeError, match="outside authorized workspace roots"):
+        terminal_tool._get_env_config()
+
+
+def test_profile_docker_extra_mounts_reach_constructor_and_fail_before_docker(
+    monkeypatch, tmp_path
+):
+    from tools import terminal_tool
+    from tools.environments import docker as docker_env
+
+    ws = tmp_path / "project" / "task"
+    ws.mkdir(parents=True)
+    _pin_kanban_worker(monkeypatch, ws, task_id="t_extra_mounts")
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    attacks = [
+        "--mount",
+        "type=bind,src=/opt/data,dst=/host-data",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+    ]
+    monkeypatch.setenv("TERMINAL_DOCKER_EXTRA_ARGS", json.dumps(attacks))
+    monkeypatch.setenv("TERMINAL_DOCKER_HOST_PATH_MAP", "[]")
+
+    cfg = terminal_tool._get_env_config()
+    # Preserve the operator/profile surface; enforcement belongs at physical
+    # Docker construction where runtime_mounts are known to be authoritative.
+    assert cfg["docker_extra_args"] == attacks
+
+    def must_not_reach_docker():
+        pytest.fail("Docker availability/probe must not run before mount-arg rejection")
+
+    monkeypatch.setattr(docker_env, "_ensure_docker_available", must_not_reach_docker)
+    monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+
+    with pytest.raises(ValueError, match="task-scoped runtime mounts"):
+        terminal_tool._create_environment(
+            env_type="docker",
+            image=cfg["docker_image"],
+            cwd=cfg["cwd"],
+            timeout=60,
+            container_config=terminal_tool._container_config_from_config(cfg),
+            task_id=terminal_tool._resolve_container_task_id(None),
+            host_cwd=cfg["host_cwd"],
+        )

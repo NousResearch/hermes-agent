@@ -616,3 +616,39 @@ def test_mention_detection_text_ignores_quoted_blockkit_mention():
         ],
     }
     assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+
+
+def test_mention_detection_text_requires_opt_in_for_legacy_attachments():
+    """Attachment mentions are routing input only for verified bot senders."""
+    event = {
+        "text": "",
+        "attachments": [
+            {
+                "title": "Triggered: API failures",
+                "text": f"Investigate this alert <@{BOT_USER_ID}>",
+            }
+        ],
+    }
+
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+    assert f"<@{BOT_USER_ID}>" in _slack_mention_detection_text(
+        event, include_attachments=True
+    )
+
+
+def test_mention_detection_text_ignores_unfurl_attachment_mentions():
+    """A link preview cannot manufacture an attachment routing mention."""
+    event = {
+        "text": "please review",
+        "attachments": [
+            {
+                "is_msg_unfurl": True,
+                "fallback": f"quoted <@{BOT_USER_ID}>",
+                "text": f"quoted <@{BOT_USER_ID}>",
+            }
+        ],
+    }
+
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(
+        event, include_attachments=True
+    )

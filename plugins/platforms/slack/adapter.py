@@ -389,18 +389,67 @@ def _collect_slack_block_mentions(blocks: list) -> list:
     return mentions
 
 
-def _slack_mention_detection_text(event: dict) -> str:
+_SLACK_USER_MENTION_TOKEN_RE = re.compile(
+    r"<@[A-Za-z0-9_-]+(?:\|[^>\n]*)?>"
+)
+
+
+def _collect_slack_attachment_mentions(attachments: list) -> list:
+    """Return explicit user mentions authored in legacy attachment content.
+
+    Third-party Slack apps such as Datadog and PagerDuty commonly put their
+    entire notification in ``attachments`` while leaving top-level ``text``
+    empty. Only inspect authored text/fields and nested blocks here; omit
+    ``fallback`` and link-unfurl metadata so a human-shared preview cannot
+    manufacture a routing mention.
+    """
+    mentions: list[str] = []
+
+    def _append_text(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        for match in _SLACK_USER_MENTION_TOKEN_RE.findall(value):
+            if match not in mentions:
+                mentions.append(match)
+
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict) or attachment.get("is_msg_unfurl"):
+            continue
+        for key in ("pretext", "title", "text"):
+            _append_text(attachment.get(key))
+        for field in attachment.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            _append_text(field.get("title"))
+            _append_text(field.get("value"))
+        nested_blocks = attachment.get("blocks")
+        if nested_blocks:
+            for mention in _collect_slack_block_mentions(nested_blocks):
+                if mention not in mentions:
+                    mentions.append(mention)
+    return mentions
+
+
+def _slack_mention_detection_text(
+    event: dict, *, include_attachments: bool = False
+) -> str:
     """Return the text used for @mention detection on a Slack message event.
 
     Combines the flat top-level ``text`` with any ``<@UID>`` mentions recovered
     from non-quoted Block Kit blocks (#52387), so a genuine Block-Kit-only
     mention reaches the gates while quoted/forwarded mentions stay ignored.
+    Legacy attachment mentions are opt-in because they are safe routing input
+    only after the sender has independently been identified as a bot/app.
     """
     flat = event.get("text", "") or ""
     blocks = event.get("blocks")
-    if not blocks:
-        return flat
-    mentions = _collect_slack_block_mentions(blocks)
+    mentions = _collect_slack_block_mentions(blocks) if blocks else []
+    if include_attachments:
+        for mention in _collect_slack_attachment_mentions(
+            event.get("attachments") or []
+        ):
+            if mention not in mentions:
+                mentions.append(mention)
     extra = [m for m in mentions if m not in flat]
     if not extra:
         return flat
@@ -5847,12 +5896,16 @@ class SlackAdapter(BasePlatformAdapter):
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
-                # Include Block-Kit-only mentions, not just the flat text (#52387)
-                text_check = _slack_mention_detection_text(event)
+                # Bot apps often author the entire notification inside legacy
+                # attachments. The sender is already independently classified
+                # as a bot here, so those explicit mentions are safe to route.
+                text_check = _slack_mention_detection_text(
+                    event, include_attachments=True
+                )
                 if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
                     logger.debug(
                         "[Slack] Dropping bot message under allow_bots=mentions: "
-                        "no <@%s> mention in flat text or blocks",
+                        "no <@%s> mention in flat text, blocks, or attachments",
                         self._bot_user_id,
                     )
                     return
@@ -6121,8 +6174,15 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        # Detect mentions authored only inside Block Kit blocks too (#52387)
-        routing_text = _slack_mention_detection_text(event) or original_text or ""
+        # Attachment mentions count only after bot/app authorship has been
+        # established; human-authored unfurls remain inert routing context.
+        routing_text = (
+            _slack_mention_detection_text(
+                event, include_attachments=sender_is_bot
+            )
+            or original_text
+            or ""
+        )
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text)

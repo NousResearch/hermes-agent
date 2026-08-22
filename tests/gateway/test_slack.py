@@ -1931,6 +1931,55 @@ class TestMessageRouting:
 
         adapter.handle_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_allow_bots_mentions_accepts_bot_attachment_mention(self, adapter):
+        """Datadog-style attachment-only alerts can explicitly summon the bot."""
+        adapter.config.extra["allow_bots"] = "mentions"
+        event = {
+            "text": "",
+            "user": "U_DATADOG_BOT",
+            "bot_id": "B_DATADOG",
+            "app_id": "A_DATADOG",
+            "subtype": "bot_message",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+            "attachments": [
+                {
+                    "title": "Triggered: API failures",
+                    "title_link": "https://app.datadoghq.com/monitors/123",
+                    "text": "Service is failing. <@U_BOT>",
+                }
+            ],
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert "Triggered: API failures" in msg_event.text
+        assert "Service is failing" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_human_attachment_mention_does_not_route(self, adapter):
+        """Human attachments remain inert even if their text has a mention."""
+        event = {
+            "text": "please review",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+            "attachments": [
+                {
+                    "text": "Copied alert text <@U_BOT>",
+                }
+            ],
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_message_edit_with_new_mention_processed(self, adapter):

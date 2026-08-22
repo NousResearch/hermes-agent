@@ -230,6 +230,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/media/media-gif-search',
+                    'user-guide/skills/bundled/media/media-x-research-mcp-api',
                     'user-guide/skills/bundled/media/media-songsee',
                     'user-guide/skills/bundled/media/media-youtube-content',
                   ],

@@ -2615,6 +2615,11 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Reviewer used when kanban_request_review omits reviewer=. It must name
+        # an installed profile other than the implementer; when unset or
+        # unavailable Hermes deterministically chooses any installed alternative.
+        # Single-profile installations fall back to self-review.
+        "default_reviewer": "",
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

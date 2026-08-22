@@ -342,6 +342,7 @@ def _fire_dispatch_tick_hook(
             result.auto_assigned_default,
             result.respawn_guarded,
             result.skipped_per_profile_capped,
+            result.skipped_review_self_capped,
             result.skipped_unassigned,
             result.skipped_nonspawnable,
         )):
@@ -6487,6 +6488,33 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
+def _resolve_implicit_reviewer(implementer: Optional[str]) -> Optional[str]:
+    """Choose a real reviewer profile distinct from the implementer.
+
+    ``kanban.default_reviewer`` wins when it names an installed profile other
+    than the implementer. Otherwise use the first installed alternative.
+    Single-profile installations deliberately fall back to self-review; the
+    dispatcher reports that capped edge case in a dedicated diagnostic bucket.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.profiles import list_profile_names, profile_exists
+
+        kanban_cfg = (load_config().get("kanban") or {})
+        configured = (kanban_cfg.get("default_reviewer") or "").strip()
+        if configured:
+            configured = _canonical_assignee(configured)
+            if configured != implementer and profile_exists(configured):
+                return configured
+        for candidate in list_profile_names():
+            candidate = _canonical_assignee(candidate)
+            if candidate != implementer and profile_exists(candidate):
+                return candidate
+    except Exception as exc:
+        _log.debug("kanban review: implicit reviewer resolution failed: %s", exc)
+    return implementer
+
+
 def request_review(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6585,6 +6613,8 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
                 reviewer = prior_reviewer
+        if reviewer is None and trow["status"] == "running":
+            reviewer = _resolve_implicit_reviewer(implementer)
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
@@ -8049,6 +8079,11 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_review_self_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    """Review tasks deferred because their reviewer is also the implementer
+    and that profile is already at its concurrency cap. Unlike ordinary cap
+    deferrals this can starve indefinitely on a single-profile installation,
+    so it is surfaced as a distinct operator-actionable diagnostic."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -10332,9 +10367,26 @@ def _dispatch_once_locked(
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)
             if current >= _per_profile_cap:
-                result.skipped_per_profile_capped.append(
-                    (row["id"], row["assignee"], current)
+                review_event = conn.execute(
+                    "SELECT payload FROM task_events "
+                    "WHERE task_id = ? AND kind = 'review_requested' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                try:
+                    review_payload = (
+                        json.loads(review_event["payload"])
+                        if review_event and review_event["payload"]
+                        else {}
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    review_payload = {}
+                bucket = (
+                    result.skipped_review_self_capped
+                    if review_payload.get("implementer") == row["assignee"]
+                    else result.skipped_per_profile_capped
                 )
+                bucket.append((row["id"], row["assignee"], current))
                 continue
         guard_reason = check_respawn_guard(conn, row["id"], lane="review")
         if guard_reason is not None:

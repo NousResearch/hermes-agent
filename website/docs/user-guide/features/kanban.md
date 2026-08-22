@@ -229,6 +229,9 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  default_reviewer: verifier       # optional: reviewer used when a worker omits
+                                   # reviewer=. Otherwise Hermes chooses any
+                                   # installed profile except the implementer.
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`

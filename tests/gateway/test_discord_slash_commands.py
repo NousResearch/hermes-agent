@@ -165,6 +165,7 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "/reset"
     assert event.source.chat_id == "123"
+    assert event.source.guild_id == "456"
     interaction.edit_original_response.assert_not_awaited()
     interaction.delete_original_response.assert_not_awaited()
 
@@ -395,7 +396,22 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.guild_id == "1"
     assert "TestGuild" in event.source.chat_name
+
+
+def test_build_slash_event_uses_interaction_guild_id(adapter):
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    event = adapter._build_slash_event(interaction, "/reset")
+
+    assert event.source.guild_id == "456"
+    assert event.source.chat_id == "123"
 
 
 # ------------------------------------------------------------------

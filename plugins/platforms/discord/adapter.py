@@ -6386,6 +6386,15 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
+    def _interaction_guild_id(self, interaction: discord.Interaction) -> Optional[str]:
+        """Resolve guild id from a slash interaction (matches message path)."""
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            channel = getattr(interaction, "channel", None)
+            guild = getattr(channel, "guild", None) if channel else None
+            guild_id = getattr(guild, "id", None) if guild else None
+        return str(guild_id) if guild_id else None
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -6418,6 +6427,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -6512,6 +6522,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))

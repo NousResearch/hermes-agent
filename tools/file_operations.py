@@ -2995,7 +2995,7 @@ class ShellFileOperations(FileOperations):
         # explicit hidden-root searches.
         pagination_expr = ""
         if not has_hidden_path_ancestor:
-            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
+            pagination_expr = f" | tail -n +{offset + 1} | command head -n {limit}"
 
         cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
@@ -3061,10 +3061,12 @@ class ShellFileOperations(FileOperations):
 
         fetch_limit = limit + offset
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
+        # ``command`` bypasses aliases and functions restored in terminal
+        # snapshots, which must not silently alter search pagination.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_native_tool_arg(path)} 2>/dev/null "
-            f"| head -n {fetch_limit}"
+            f"| command head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
@@ -3075,7 +3077,7 @@ class ShellFileOperations(FileOperations):
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
                 f"{self._escape_native_tool_arg(path)} 2>/dev/null "
-                f"| head -n {fetch_limit}"
+                f"| command head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -3167,7 +3169,8 @@ class ShellFileOperations(FileOperations):
         # For context mode, rg emits separator lines ("--") between groups,
         # so we grab generously and filter in Python.
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
-        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+        # Bypass aliases and functions restored in terminal snapshots.
+        cmd_parts.extend(["|", "command", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so rg's exit status propagates through `| head`.
         # Without it the pipeline reports head's status (0), masking rg's
@@ -3315,7 +3318,8 @@ class ShellFileOperations(FileOperations):
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+        # Bypass aliases and functions restored in terminal snapshots.
+        cmd_parts.extend(["|", "command", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`
         # (without it the pipeline reports head's 0, masking grep's error 2).

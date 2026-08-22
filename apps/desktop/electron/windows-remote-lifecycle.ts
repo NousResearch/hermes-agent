@@ -33,11 +33,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'if($cmd){$candidates+=$cmd.Source}',
     '$candidates+=(Join-Path $hermesHome "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidates+=(Join-Path $HOME "hermes-agent\\.venv\\Scripts\\hermes.exe")',
-    '$hermes=$candidates|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf}|Select-Object -First 1',
-    'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
-    'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
-    '$python=Join-Path (Split-Path $hermes) "python.exe"',
-    'if(-not (Test-Path -LiteralPath $python -PathType Leaf)){throw "The remote Hermes Python runtime was not found."}',
+    '$runtime=$candidates|ForEach-Object{$hermes=$_;$python=Join-Path (Split-Path $hermes) "python.exe";if((Test-Path -LiteralPath $hermes -PathType Leaf) -and (Test-Path -LiteralPath $python -PathType Leaf)){[pscustomobject]@{hermes=$hermes;python=$python}}}|Select-Object -First 1',
+    'if(-not $runtime){throw "Hermes and its Python runtime were not found on the remote Windows host."}',
+    '$hermes=$runtime.hermes',
+    '$python=$runtime.python',
+    'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not paired with a Python runtime."}',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
@@ -50,6 +50,20 @@ const TRANSPORT_KINDS = new Set([
   SSH_ERROR.TIMEOUT,
   SSH_ERROR.UNREACHABLE
 ])
+
+function powerShellErrorDetail(value) {
+  const raw = String(value || '')
+  const errors = [...raw.matchAll(/<S S="Error">([\s\S]*?)<\/S>/g)].map(match => match[1])
+  const detail = errors.length ? errors.join(' ') : raw
+
+  return detail
+    .replace(/_x([0-9a-fA-F]{4})_/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
 
 async function detectRemotePlatform(ssh, explicitHermesPath = '') {
   try {
@@ -75,7 +89,7 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
     }
 
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
-    const detail = redactSecrets(String(cause?.message || cause || ''))
+    const detail = redactSecrets(powerShellErrorDetail(cause?.message || cause || ''))
       // eslint-disable-next-line no-control-regex -- deliberately strip control chars from remote output
       .replace(/[\x00-\x1f\x7f]/g, ' ')
       .trim()

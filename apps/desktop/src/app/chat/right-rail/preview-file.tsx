@@ -427,6 +427,444 @@ const MARKDOWN_COMPONENTS = {
   img: MarkdownImage,
   a: MarkdownLink
 }
+// --- Reading-position preservation (rendered markdown view) ---------------
+// A raw scrollTop is the wrong anchor when an edit inserts or removes lines
+// above the viewport: the same pixel offset then points at different text.
+// Instead we capture WHAT the user was reading (text of the first visible
+// block + how far into it the viewport top sits) and after the reload search
+// the new DOM for that text. Shorter prefix fallbacks tolerate small edits
+// inside the anchored block itself; taking the topmost match biases to the
+// nearest unchanged block above, which lands the viewport on the change.
+
+interface ScrollAnchor {
+  fraction: number
+  prefix: string
+  scrollTop: number
+}
+
+const ANCHOR_SELECTOR = 'p, li, h1, h2, h3, h4, pre, blockquote, tr'
+
+function normalizeAnchorText(value: string | null) {
+  return (value || '').replace(/\s+/g, ' ').trim()
+}
+
+function captureScrollAnchor(scroller: HTMLElement): ScrollAnchor | null {
+  const viewportTop = scroller.getBoundingClientRect().top
+  const blocks = Array.from(scroller.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR))
+
+  for (const block of blocks) {
+    const rect = block.getBoundingClientRect()
+
+    if (rect.bottom <= viewportTop + 1) {
+      continue
+    }
+
+    const text = normalizeAnchorText(block.textContent)
+
+    if (!text) {
+      continue
+    }
+
+    const fraction =
+      rect.height > 0 ? Math.min(1, Math.max(0, (viewportTop - rect.top) / rect.height)) : 0
+
+    return { fraction, prefix: text.slice(0, 80), scrollTop: scroller.scrollTop }
+  }
+
+  return null
+}
+
+function restoreScrollAnchor(scroller: HTMLElement, anchor: ScrollAnchor): boolean {
+  const blocks = Array.from(scroller.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR))
+  const prefixes = [anchor.prefix, anchor.prefix.slice(0, 40), anchor.prefix.slice(0, 20)]
+  const scrollerTop = scroller.getBoundingClientRect().top
+
+  for (const prefix of prefixes) {
+    if (!prefix) {
+      continue
+    }
+
+    for (const block of blocks) {
+      if (!normalizeAnchorText(block.textContent).startsWith(prefix)) {
+        continue
+      }
+
+      const rect = block.getBoundingClientRect()
+      const blockTop = rect.top - scrollerTop + scroller.scrollTop
+      const target = blockTop + anchor.fraction * rect.height
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+
+      scroller.scrollTop = Math.min(target, max)
+
+      return true
+    }
+  }
+
+  return false
+}
+
+// First line (1-based, in the new text) where old and new differ - a plain
+// common-prefix walk, no git needed.
+function firstChangedLine(oldText: string, newText: string): number {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const maxPrefix = Math.min(oldLines.length, newLines.length)
+  let prefix = 0
+
+  while (prefix < maxPrefix && oldLines[prefix] === newLines[prefix]) {
+    prefix += 1
+  }
+
+  return Math.min(prefix + 1, Math.max(1, newLines.length))
+}
+
+export interface ChangedLineSpan {
+  /** First changed line (1-based, in the NEW text); null when only lines
+   * were deleted (the change has no new-text position). */
+  line: number | null
+  /** Last changed/new line of the span, inclusive (1-based, new text). */
+  endLine: number
+  /** True when the span contains at least one inserted/modified line (a
+   * place the preview can scroll TO); pure deletions only mark context. */
+  hasNew: boolean
+}
+
+/** Changed regions between two texts, as consecutive 1-based line spans in
+ *  the NEW text. A plain common-prefix + common-suffix walk sandwiches the
+ *  differing middle; runs of blank separator lines inside it split the
+ *  middle into separate spans so the jump button can cycle change 1, 2, 3…
+ *  Pure-deletion gaps between insertions are merged into the nearest span
+ *  rather than emitted as unjumpable noise. */
+export function changedLineSpans(oldText: string, newText: string): ChangedLineSpan[] {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const maxPrefix = Math.min(oldLines.length, newLines.length)
+  let prefix = 0
+
+  while (prefix < maxPrefix && oldLines[prefix] === newLines[prefix]) {
+    prefix += 1
+  }
+
+  const maxSuffix = Math.min(oldLines.length - prefix, newLines.length - prefix)
+  let suffix = 0
+
+  while (suffix < maxSuffix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) {
+    suffix += 1
+  }
+
+  // 1-based, inclusive [start, end] of the differing middle in the NEW text.
+  const start = prefix + 1
+  const end = newLines.length - suffix
+
+  if (start > end) {
+    return []
+  }
+
+  // Split the middle on runs of >=2 blank lines (paragraph boundaries).
+  const spans: { end: number; start: number }[] = []
+  let spanStart = 0
+  let blanks = 0
+
+  for (let i = start; i <= end; i += 1) {
+    if (!newLines[i - 1].trim()) {
+      blanks += 1
+
+      continue
+    }
+
+    // Non-blank line after a blank separator: close the pending span. A
+    // markdown paragraph break is exactly ONE empty line in the array.
+    if (blanks >= 1 && spanStart > 0) {
+      spans.push({ end: i - 1 - blanks, start: spanStart })
+      spanStart = 0
+    }
+
+    blanks = 0
+
+    if (spanStart === 0) {
+      spanStart = i
+    }
+  }
+
+  if (spanStart > 0 && spanStart <= end) {
+    spans.push({ end, start: spanStart })
+  }
+
+  // Mark each span by whether it contains at least one new-text line that
+  // differs from the old text at the aligned position. Cheap alignment: a
+  // line is "new" when it does not appear anywhere in the old middle.
+  const oldMiddle = new Set(oldLines.slice(prefix, oldLines.length - suffix))
+
+  return spans.map(span => {
+    const hasNew = newLines
+      .slice(span.start - 1, span.end)
+      .some(line => !oldMiddle.has(line))
+
+    return { endLine: span.end, hasNew, line: hasNew ? span.start : null }
+  })
+}
+
+// ---- Cross-view (rendered preview <-> source) position mapping ----
+// Rendered blocks and source lines share no coordinates, so mapping goes
+// through normalized TEXT: a paragraph/heading/list line in the source is,
+// after stripping markdown markers, the same words as the rendered block.
+// Markdown whose rendered form has no shared text (tables, KaTeX math,
+// frontmatter) degrades to a fractional scroll position instead of
+// pretending to be exact - same philosophy as the reload scroll anchor.
+
+/** Strip markdown syntax from a source line, keeping its visible words. */
+export function normalizeForCrossView(raw: string): string {
+  return raw
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^>\s?>?\s?/, '')
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .replace(/^\|\s*/, '')
+    .replace(/\s*\|\s*/g, ' ')
+    .replace(/[*_`~]/g, '')
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function usableCrossViewText(normalized: string): boolean {
+  return normalized.length >= 8 && !normalized.startsWith('---')
+}
+
+export interface CrossViewAnchor {
+  /** Overall document fraction (0..1) - the fallback when text matches. */
+  fraction: number
+  /** Normalized text prefix of the anchor block/line, or null when the
+   * surrounding markdown has no text that renders identically. */
+  prefix: string | null
+  /** Source line captured with the anchor (source-side captures only) -
+   * lets a later source-side restore skip text matching entirely. */
+  line?: number | null
+}
+
+/** Find a source line near `line` (walking outward) whose visible text can
+ * anchor a cross-view match. Returns a fraction fallback either way. */
+export function anchorNearLine(lines: string[], line: number): CrossViewAnchor {
+  const total = lines.length
+  const fallbackFraction = Math.min(1, Math.max(0, (line - 1) / Math.max(1, total - 1)))
+
+  for (let radius = 0; radius <= 12; radius += 1) {
+    for (const candidate of radius === 0 ? [line] : [line + radius, line - radius]) {
+      if (candidate < 1 || candidate > total) {
+        continue
+      }
+
+      const normalized = normalizeForCrossView(lines[candidate - 1])
+
+      if (usableCrossViewText(normalized)) {
+        return {
+          fraction: Math.min(1, Math.max(0, (candidate - 1) / Math.max(1, total - 1))),
+          prefix: normalized.slice(0, 80)
+        }
+      }
+    }
+  }
+
+  return { fraction: fallbackFraction, prefix: null }
+}
+
+/** Find the first source line whose visible text matches `prefix` (the
+ * rendered-block text walks backwards through the same normalization). */
+export function lineForCrossViewPrefix(lines: string[], prefix: string): number | null {
+  const target = normalizeForCrossView(prefix).slice(0, 40)
+
+  if (target.length < 8) {return null}
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const normalized = normalizeForCrossView(lines[index])
+
+    if (usableCrossViewText(normalized) && (normalized.startsWith(target) || normalized.includes(target.slice(0, 20)))) {
+      return index + 1
+    }
+  }
+
+  return null
+}
+
+/** Find the rendered preview block (inside the scroller) whose text matches
+ *  `prefix` (a normalized source-line prefix). */
+export function previewBlockForPrefix(scroller: HTMLElement, prefix: string): HTMLElement | null {
+  const target = normalizeAnchorText(prefix).slice(0, 40)
+
+  if (target.length < 8) {return null}
+
+  const blocks = Array.from(scroller.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR))
+
+  for (const block of blocks) {
+    const text = normalizeAnchorText(block.textContent)
+
+    if (text.length >= 8 && (text.startsWith(target) || text.includes(target.slice(0, 20)))) {
+      return block
+    }
+  }
+
+  return null
+}
+
+/** Plain-text version of a copied selection from the rendered preview.
+ *  KaTeX renders each equation twice: a visually-correct HTML tree and a
+ *  hidden MathML tree that carries the original LaTeX in <annotation>.
+ *  Chromium serializes that MathML into the plain-text clipboard with every
+ *  symbol on its own line - pasting that into the composer gives the agent
+ *  one-glyph-per-line garbage.
+ *
+ *  Walk the selection Range over the LIVE dom (not the cloned fragment - a
+ *  partially-selected equation clones only half the tree, which no longer
+ *  contains the annotation): plain text nodes are sliced precisely to the
+ *  character offsets of the selection, while any .katex the selection
+ *  touches is emitted whole as its LaTeX source (an equation has no
+ *  character-level mapping back to its source, so "touched" is the finest
+ *  possible granularity). Output is squeezed onto one line: every run of
+ *  whitespace (newlines, tabs, ...) becomes a single space, LaTeX is
+ *  emitted bare with no $ / $$ delimiters. */
+export function selectionTextWithMath(root: HTMLElement): string {
+  const doc = root.ownerDocument
+  const selection = doc.getSelection()
+
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return ''
+  }
+
+  // Always walk the ranges (never selection.toString()): the walker gives
+  // exact character slices, consistent block-boundary spaces, and works
+  // identically whether or not the selection touches math.
+  let out = ''
+
+  for (let i = 0; i < selection.rangeCount; i++) {
+    out += rangeTextWithMath(selection.getRangeAt(i))
+  }
+
+  return squeezeWhitespace(out)
+}
+
+function squeezeWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function katexAncestorOf(node: Node): Element | null {
+  let cur: Node | null = node
+
+  while (cur) {
+    if (cur instanceof Element && cur.classList.contains('katex')) {return cur}
+    cur = cur.parentNode
+  }
+
+  return null
+}
+
+const BLOCK_TAGS = new Set(['P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'BLOCKQUOTE', 'TR', 'TABLE', 'UL', 'OL'])
+
+function blockAncestorOf(node: Node): Element | null {
+  let cur: Node | null = node.parentNode
+
+  while (cur) {
+    if (cur instanceof Element && BLOCK_TAGS.has(cur.tagName)) {return cur}
+    cur = cur.parentNode
+  }
+
+  return null
+}
+
+/** One range -> text: precise slices for plain text nodes, whole-LaTeX for
+ *  any touched .katex, a separator space whenever the walk crosses a block
+ *  boundary (so two adjacent paragraphs don't fuse into one word). */
+function rangeTextWithMath(range: Range): string {
+  const doc = range.commonAncestorContainer.ownerDocument!
+  const emitted = new Set<Element>()
+  let out = ''
+  let lastBlock: Element | null = null
+  let lastEndedWithSpace = true
+
+  const append = (chunk: string) => {
+    if (!chunk) {return}
+
+    if (out && !lastEndedWithSpace && !/^\s/.test(chunk)) {out += ' '}
+    out += chunk
+    lastEndedWithSpace = /\s$/.test(chunk)
+  }
+
+  const emitTextNode = (node: Text) => {
+    const data = node.data
+    let from = 0
+    let to = data.length
+
+    if (node === range.startContainer) {from = range.startOffset}
+
+    if (node === range.endContainer) {to = range.endOffset}
+
+    if (to <= from) {return}
+
+    const block = blockAncestorOf(node)
+
+    if (block !== lastBlock) {
+      append(' ')
+      lastBlock = block
+    }
+
+    append(data.slice(from, to))
+  }
+
+  const emitKatex = (katex: Element) => {
+    if (emitted.has(katex)) {return}
+    emitted.add(katex)
+
+    const latex = katex.querySelector('annotation')?.textContent?.trim()
+
+    append(' ')
+    append(latex || (katex.textContent ?? '').trim())
+    append(' ')
+  }
+
+  // Selection inside a single text node (commonAncestorContainer is a Text):
+  // a TreeWalker never visits its own root, so handle it directly.
+  const anc = range.commonAncestorContainer
+
+  if (anc.nodeType === Node.TEXT_NODE) {
+    const katex = katexAncestorOf(anc)
+
+    if (katex) {
+      emitKatex(katex)
+    } else {
+      emitTextNode(anc as Text)
+    }
+
+    return out
+  }
+
+  const walker = doc.createTreeWalker(anc, NodeFilter.SHOW_TEXT)
+  let node: Node | null
+
+  while ((node = walker.nextNode())) {
+    if (!range.intersectsNode(node)) {continue}
+
+    const textNode = node as Text
+    const katex = katexAncestorOf(textNode)
+
+    if (katex) {
+      emitKatex(katex)
+
+      continue
+    }
+
+    emitTextNode(textNode)
+  }
+
+  return out
+}
+
+function scrollPreviewBlockIntoView(scroller: HTMLElement, block: HTMLElement) {
+  const scrollerTop = scroller.getBoundingClientRect().top
+  const blockTop = block.getBoundingClientRect().top - scrollerTop + scroller.scrollTop
+  const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+
+  scroller.scrollTop = Math.min(Math.max(0, blockTop - 8), max)
+}
+
 
 export function MarkdownPreview({ text }: { text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
@@ -550,7 +988,19 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
 /** Windowed, Shiki-highlighted source. The gutter's line selection produces a
  *  `path:line` composer ref, so it is inert without a `filePath` (artifact
  *  content has no path to reference lines against). */
-export function SourceView({ filePath, language, text }: { filePath?: string; language: string; text: string }) {
+export function SourceView({
+  filePath,
+  language,
+  scrollNonce,
+  scrollToLine,
+  text
+}: {
+  filePath?: string
+  language: string
+  scrollNonce?: number
+  scrollToLine?: number
+  text: string
+}) {
   const { t } = useI18n()
   const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
   const lastChunk = chunks.at(-1)
@@ -629,8 +1079,31 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [filePath, selection])
 
+  // "Jump to change": scroll so `scrollToLine` sits a couple of context lines
+  // below the viewport top. Rows are fixed-height (SOURCE_LINE_PX), so this is
+  // exact. Fires on prop change; double rAF so layout has settled.
+  useEffect(() => {
+    if (!scrollToLine || scrollToLine < 1) {return}
+
+    const target = Math.max(0, (scrollToLine - 3) * SOURCE_LINE_PX)
+    let f1 = 0
+    let f2 = 0
+    f1 = requestAnimationFrame(() => {
+      f2 = requestAnimationFrame(() => {
+        if (scrollerRef.current) {
+          scrollerRef.current.scrollTop = target
+        }
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(f1)
+      cancelAnimationFrame(f2)
+    }
+  }, [scrollToLine, scrollNonce, text])
+
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+    <div className="h-full overflow-auto" data-source-scroller onScroll={onScroll} ref={scrollerRef}>
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
         {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (
@@ -706,10 +1179,50 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [saveError, setSaveError] = useState<null | string>(null)
   const [conflict, setConflict] = useState(false)
   const [selfReload, setSelfReload] = useState(0)
+
+  // Where to jump when the user clicks "jump to change": ALL changed regions
+  // (the jump button cycles through them, then back to the original reading
+  // position) plus a click counter so each click re-fires the scroll, plus
+  // per-change cross-view anchors (text prefix + fraction) so the rendered
+  // preview can scroll to the same change without switching views. null =
+  // nothing changed since open / last file switch.
+  const [jumpTarget, setJumpTarget] = useState<{
+    /** Changes in document order; jumps walk this list. */
+    changes: { anchor: CrossViewAnchor; line: number }[]
+    /** Next change index to jump to (0-based). When it reaches length, the
+     * next click restores the original position and wraps to 0. */
+    index: number
+    nonce: number
+    /** Where the user was when the change arrived - restored after the last
+     * change in the cycle. In whichever scroller is live at restore time. */
+    original: CrossViewAnchor | null
+    originalScrollTop: number
+  } | null>(null)
+
+  // Line-exact scroll request consumed by SourceView (fires on nonce bump even
+  // when the line is unchanged). Serves both "jump to change" (source view)
+  // and rendered->source position sync.
+  const [scrollRequest, setScrollRequest] = useState<{ line: number; nonce: number } | null>(null)
+  // Position to restore in the view the user is switching TO (captured from
+  // the view they are leaving). Cleared once applied.
+  const pendingViewAnchorRef = useRef<CrossViewAnchor | null>(null)
   // For the bare-`e` shortcut: the read-view root (to detect focus-within) and a
-  // hover flag (no state — only the keydown handler reads it).
+  // hover flag (no state - only the keydown handler reads it).
   const readViewRef = useRef<HTMLDivElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
   const hoverRef = useRef(false)
+  // Text-anchor scroll preservation: on reload we capture the text of the
+  // first visible block + how far into it the viewport top sits, then after
+  // the new content mounts we search for that text and restore the position.
+  // A raw pixel scrollTop is the wrong anchor when the edit inserts or
+  // removes lines above the viewport - the anchor tracks *what* the user was
+  // reading, not *where*.
+  const scrollAnchorRef = useRef<ScrollAnchor | null>(null)
+  // Text shown before the latest reload - the "old" side of the line compare.
+  const lastTextRef = useRef<string | undefined>(undefined)
+  // Current view mode for async load()/restore paths (effect closures would
+  // otherwise see a stale render's mode).
+  const modeRef = useRef<PreviewViewMode | null>(null)
   const connection = useStore($connection)
   const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
@@ -726,7 +1239,22 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     setConflict(false)
     draftRef.current = ''
     baselineRef.current = ''
-  }, [filePath, reloadKey])
+    // This effect now runs ONLY on a file switch (see deps), so wiping the
+    // baseline here is correct again. An external reload (reloadKey bump from
+    // the file watcher / manual refresh) must KEEP lastTextRef: the load
+    // effect compares it against the new text to decide whether to show the
+    // "jump to change" button. Wiping it on reloadKey raced ahead of that
+    // compare and the button could never appear.
+    lastTextRef.current = undefined
+    scrollAnchorRef.current = null
+    setJumpTarget(null)
+    // A file switch must also drop the loaded state (text/dataUrl/diff):
+    // the blob effect for PDFs keys on state.dataUrl, and a stale value that
+    // happens to equal the new one (same bytes) would skip rebuilding the
+    // object URL. Reload-triggered refreshes (reloadKey) deliberately do NOT
+    // come through here - they keep showing the old content while reloading.
+    setState({ loading: true })
+  }, [filePath])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -735,6 +1263,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     let active = true
 
@@ -766,10 +1295,66 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           return
         }
 
+        // Capture what the user is reading (text anchor, not pixels) before the
+        // new content replaces the old, and remember the old text so the
+        // "jump to change" button can compute the first differing line.
+        if (scrollerRef.current) {
+          scrollAnchorRef.current = captureScrollAnchor(scrollerRef.current)
+        }
+
         const result = await readTextPreview(filePath)
 
         if (active) {
           const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+
+          // Old text for the change-detect (jump button). Skip the very first
+          // load (nothing was shown yet) and file switches (reset effect
+          // clears the ref). Read from a ref, not closure state - this effect
+          // closure can be older than the latest render.
+          const previous = lastTextRef.current
+
+          if (previous !== undefined && previous !== result.text) {
+            const newLines = result.text.split('\n')
+
+            const spans = changedLineSpans(previous, result.text)
+              .filter(span => span.line !== null)
+              .map(span => ({
+                anchor: anchorNearLine(newLines, span.line as number),
+                line: span.line as number
+              }))
+
+            // Fall back to the first differing line when the span walk
+            // found nothing jumpable (pure deletions at the tail, etc.).
+            if (spans.length === 0) {
+              const line = firstChangedLine(previous, result.text)
+
+              spans.push({ anchor: anchorNearLine(newLines, line), line })
+            }
+
+            // Where the user is right now becomes the "restore" target after
+            // the last change in the cycle.
+            const currentScroller = scrollerRef.current
+
+            const original =
+              modeRef.current === 'rendered'
+                ? (currentScroller ? captureScrollAnchor(currentScroller) : null)
+                : null
+
+            setJumpTarget({
+              changes: spans,
+              index: 0,
+              nonce: 0,
+              original: original
+                ? {
+                    fraction:
+                      original.scrollTop /
+                      Math.max(1, currentScroller!.scrollHeight - currentScroller!.clientHeight),
+                    prefix: original.prefix
+                  }
+                : null,
+              originalScrollTop: currentScroller ? currentScroller.scrollTop : 0
+            })
+          }
 
           setState({
             binary: result.binary,
@@ -779,6 +1364,10 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             text: shouldBlock ? undefined : result.text,
             truncated: result.truncated
           })
+
+          if (!shouldBlock) {
+            lastTextRef.current = result.text
+          }
 
           // Best-effort: fetch the file's working-tree-vs-HEAD diff so the
           // preview can offer a DIFF view when there are uncommitted changes.
@@ -854,6 +1443,135 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     return () => URL.revokeObjectURL(objectUrl)
   }, [isPdf, state.dataUrl])
+
+  // Restore the reading position after a content reload. The anchor holds the
+  // text of the first visible block (not pixels), so inserted/deleted lines
+  // above the viewport no longer shift what the user was reading. Runs after
+  // the new content paints (two rAFs); falls back to the old pixel scrollTop
+  // when the anchored text is gone entirely (heavy rewrite around the user).
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (state.loading) {return}
+    const anchor = scrollAnchorRef.current
+
+    if (!anchor) {return}
+    scrollAnchorRef.current = null
+
+    let f1 = 0
+    let f2 = 0
+    f1 = requestAnimationFrame(() => {
+      f2 = requestAnimationFrame(() => {
+        const scroller = scrollerRef.current
+
+        if (!scroller) {return}
+
+        const restored = restoreScrollAnchor(scroller, anchor)
+
+        if (!restored) {
+          const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+          scroller.scrollTop = Math.min(anchor.scrollTop, max)
+        }
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(f1)
+      cancelAnimationFrame(f2)
+    }
+  }, [state.loading, state.text])
+
+  // ---- View-switch position sync (rendered <-> source) ----
+  // When the user switches views, capture where they were (as a CrossViewAnchor
+  // - normalized text prefix + fraction) from the view they leave, and restore
+  // it in the view they enter. Same text-matching philosophy as the reload
+  // anchor: exact for text-bearing blocks, fractional fallback otherwise.
+
+  /** The preview block currently at the top of the viewport, as an anchor. */
+  const capturePreviewAnchor = useCallback((): CrossViewAnchor | null => {
+    const scroller = scrollerRef.current
+
+    if (!scroller || !scroller.scrollHeight) {return null}
+
+    const captured = captureScrollAnchor(scroller)
+
+    if (!captured) {return null}
+
+    return { fraction: captured.scrollTop / Math.max(1, scroller.scrollHeight - scroller.clientHeight), prefix: captured.prefix }
+  }, [])
+
+  /** The source line currently at the top of the viewport, as an anchor. */
+  const captureSourceAnchor = useCallback((): CrossViewAnchor | null => {
+    // The source view scrolls inside its OWN container (nested one level
+    // below the outer preview scroller, which stays at scrollTop 0 there).
+    // Reading the outer one made every source->rendered switch land at the
+    // document top. Prefer the tagged inner container; fall back for safety.
+    const outer = scrollerRef.current
+    const inner = outer?.querySelector<HTMLElement>('[data-source-scroller]') ?? outer
+    const text = state.text
+
+    if (!inner || !text) {return null}
+
+    const lines = text.split('\n')
+    const topLine = Math.floor(inner.scrollTop / SOURCE_LINE_PX) + 1
+    const safeTop = Math.min(topLine, lines.length)
+
+    return { ...anchorNearLine(lines, safeTop), line: safeTop }
+  }, [state.text])
+
+  /** Apply a pending anchor to whichever view just became visible. */
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    const anchor = pendingViewAnchorRef.current
+
+    if (!anchor || state.loading || !state.text) {return}
+    pendingViewAnchorRef.current = null
+
+    let f1 = 0
+    let f2 = 0
+    f1 = requestAnimationFrame(() => {
+      f2 = requestAnimationFrame(() => {
+        const scroller = scrollerRef.current
+
+        if (!scroller) {return}
+
+        if (modeRef.current === 'rendered') {
+          const block = anchor.prefix ? previewBlockForPrefix(scroller, anchor.prefix) : null
+
+          if (block) {
+            scrollPreviewBlockIntoView(scroller, block)
+          } else {
+            const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+            scroller.scrollTop = anchor.fraction * max
+          }
+        } else if (modeRef.current === 'source') {
+          const line = anchor.prefix ? lineForCrossViewPrefix((state.text ?? '').split('\n'), anchor.prefix) : null
+
+          // Text match failed (math/table-heavy region) or no prefix: fall
+          // back to the fractional position mapped onto line count. Without
+          // this the freshly remounted source view just sat at the top and
+          // the second switch looked like "positioning failed".
+          const fallback =
+            anchor.fraction > 0 || anchor.line != null
+              ? Math.max(1, Math.round(anchor.fraction * ((state.text ?? '').split('\n').length - 2)) + 1)
+              : null
+
+          const target = line ?? anchor.line ?? fallback
+
+          if (target) {
+            setScrollRequest({ line: target, nonce: Date.now() })
+          }
+        }
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(f1)
+      cancelAnimationFrame(f2)
+    }
+    // Fires when the user picks a view (userMode) or content settles; reads
+    // the live mode from modeRef. modeRef is a ref - always current.
+     
+  }, [userMode, state.loading, state.text])
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
@@ -1036,7 +1754,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
-  if (state.loading) {
+  if (state.loading && state.text === undefined && state.dataUrl === undefined) {
     return <PageLoader label={t.preview.loading} />
   }
 
@@ -1115,6 +1833,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
     const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    modeRef.current = mode
 
     return (
       <div
@@ -1135,23 +1854,137 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         <PreviewModeSwitcher
           active={mode}
           modes={modes}
-          onSelect={setUserMode}
+          onSelect={next => {
+            // Capture where the user is (from the view being left) before
+            // switching, so the new view can restore the same position. Diff
+            // has no meaningful cross-view position - skip the capture.
+            if (next !== mode && state.text) {
+              if (mode === 'rendered') {
+                pendingViewAnchorRef.current = capturePreviewAnchor()
+              } else if (mode === 'source') {
+                pendingViewAnchorRef.current = captureSourceAnchor()
+              } else {
+                pendingViewAnchorRef.current = null
+              }
+            }
+
+            setUserMode(next)
+          }}
           trailing={
-            canEdit ? (
-              <Tip label={`${t.preview.edit} (e)`}>
-                <button
-                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                  onClick={beginEdit}
-                  type="button"
-                >
-                  <Pencil className="size-3" />
-                  {t.preview.edit}
-                </button>
-              </Tip>
-            ) : null
+            <>
+              {jumpTarget && (
+                <Tip label={t.preview.jumpToChangeTitle}>
+                  <button
+                    className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+                    onClick={() => {
+                      // Cycle through the changes: click 1 -> change 1, click
+                      // 2 -> change 2, …; after the last change the next click
+                      // restores where the user was when the change arrived,
+                      // then the cycle restarts. In the rendered preview the
+                      // change's anchor text is matched against a rendered
+                      // block (fractional fallback); in the source view it
+                      // scrolls line-exact.
+                      const target = jumpTarget
+                      const restore = target.index >= target.changes.length
+                      const change = restore ? null : target.changes[target.index]
+
+                      if (restore) {
+                        // Back to the original reading position.
+                        if (modeRef.current === 'rendered') {
+                          const scroller = scrollerRef.current
+
+                          if (scroller) {
+                            if (target.original?.prefix) {
+                              const block = previewBlockForPrefix(scroller, target.original.prefix)
+
+                              if (block) {
+                                scrollPreviewBlockIntoView(scroller, block)
+                              } else {
+                                const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+                                scroller.scrollTop = target.original.fraction * max
+                              }
+                            } else {
+                              scroller.scrollTop = target.originalScrollTop
+                            }
+                          }
+                        } else if (modeRef.current === 'source' && target.original) {
+                          const line = lineForCrossViewPrefix((state.text ?? '').split('\n'), target.original.prefix ?? '')
+
+                          if (line) {
+                            setScrollRequest({ line, nonce: Date.now() })
+                          }
+                        }
+                      } else if (change) {
+                        if (modeRef.current === 'rendered') {
+                          const scroller = scrollerRef.current
+
+                          if (!scroller) {return}
+
+                          const block = change.anchor.prefix ? previewBlockForPrefix(scroller, change.anchor.prefix) : null
+
+                          if (block) {
+                            scrollPreviewBlockIntoView(scroller, block)
+                          } else {
+                            const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+                            scroller.scrollTop = change.anchor.fraction * max
+                          }
+                        } else if (modeRef.current === 'source') {
+                          setScrollRequest({ line: change.line, nonce: Date.now() })
+                        } else {
+                          // diff view: jump there means switching to source.
+                          setUserMode('source')
+                          setScrollRequest({ line: change.line, nonce: Date.now() })
+                        }
+                      }
+
+                      setJumpTarget(prev =>
+                        prev ? { ...prev, index: (prev.index + 1) % (prev.changes.length + 1), nonce: prev.nonce + 1 } : prev
+                      )
+                    }}
+                    type="button"
+                  >
+                    ↓
+                    <span>
+                      {jumpTarget.index >= jumpTarget.changes.length
+                        ? t.preview.backToReading
+                        : `${t.preview.jumpToChange} ${jumpTarget.index + 1}/${jumpTarget.changes.length}`}
+                    </span>
+                  </button>
+                </Tip>
+              )}
+              {canEdit ? (
+                <Tip label={`${t.preview.edit} (e)`}>
+                  <button
+                    className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+                    onClick={beginEdit}
+                    type="button"
+                  >
+                    <Pencil className="size-3" />
+                    {t.preview.edit}
+                  </button>
+                </Tip>
+              ) : null}
+            </>
           }
         />
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div
+          className="min-h-0 flex-1 overflow-auto"
+          onCopy={
+            mode === 'rendered'
+              ? event => {
+                  // Rebuild the copied text with LaTeX sources in place of
+                  // Chromium's one-glyph-per-line MathML serialization.
+                  const text = selectionTextWithMath(event.currentTarget)
+
+                  if (text) {
+                    event.clipboardData.setData('text/plain', text)
+                    event.preventDefault()
+                  }
+                }
+              : undefined
+          }
+          ref={scrollerRef}
+        >
           {mode === 'rendered' ? (
             <MarkdownPreview text={state.text} />
           ) : mode === 'diff' ? (
@@ -1166,6 +1999,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             <SourceView
               filePath={filePath}
               language={shikiLanguageForFilename(filePath) || state.language || 'text'}
+              scrollNonce={scrollRequest?.nonce}
+              scrollToLine={scrollRequest ? scrollRequest.line : undefined}
               text={state.text}
             />
           )}

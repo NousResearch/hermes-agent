@@ -2181,6 +2181,10 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                         current_url = next_url
                         continue
+                    if 300 <= response.status < 400:
+                        raise ValueError(
+                            f"Unsupported media redirect status: {response.status}"
+                        )
                     response.raise_for_status()
                     return await response.read(), current_url
             raise ValueError("Too many media URL redirects")

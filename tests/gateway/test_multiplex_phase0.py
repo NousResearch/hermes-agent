@@ -172,3 +172,80 @@ class TestSessionStoreUnmultiplexedRecovery:
         assert recovered.session_id == "sess-coder"
         assert recovered.session_key == "agent:main:telegram:dm:99"
         assert store._db.reopened == ["sess-coder"]
+
+
+class TestSessionStoreMultiplexedRecovery:
+    """When multiplexing is on, the peer-tuple fallback in the DB must not
+    recover a session belonging to another profile namespace."""
+
+    def _store(self, tmp_path, **cfg_kw):
+        config = GatewayConfig(**cfg_kw)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        return store
+
+    def test_rejects_other_profile_via_peer_fallback(self, tmp_path):
+        """Multiplexed: a row with a different profile namespace is rejected."""
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store(tmp_path, multiplex_profiles=True)
+        store._db = _RecoveringDB(row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        # Requesting key for the 'default' profile, but the recovered row is 'coder'.
+        recovered = store._recover_session_from_db(
+            session_key="agent:main:telegram:dm:99",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+    def test_allows_same_profile_via_peer_fallback(self, tmp_path):
+        """Multiplexed: a row with the same profile namespace is accepted."""
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store(tmp_path, multiplex_profiles=True)
+        store._db = _RecoveringDB(row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        recovered = store._recover_session_from_db(
+            session_key="agent:coder:telegram:dm:99",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-coder"
+        assert recovered.session_key == "agent:coder:telegram:dm:99"
+        assert store._db.reopened == ["sess-coder"]
+
+    def test_allows_legacy_key_when_multiplexed(self, tmp_path):
+        """Multiplexed: a legacy (agent:main) row is still accessible when
+        the requested key is also legacy (default profile)."""
+        row = {
+            "id": "sess-legacy",
+            "started_at": 1700000000,
+            "session_key": "agent:main:telegram:dm:99",
+        }
+        store = self._store(tmp_path, multiplex_profiles=True)
+        store._db = _RecoveringDB(row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        recovered = store._recover_session_from_db(
+            session_key="agent:main:telegram:dm:99",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-legacy"
+        assert store._db.reopened == ["sess-legacy"]

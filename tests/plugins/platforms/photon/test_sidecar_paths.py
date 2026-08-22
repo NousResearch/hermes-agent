@@ -9,11 +9,22 @@ volume when a runtime install is unavoidable.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 import plugins.platforms.photon.sidecar_paths as sidecar_paths
+
+
+def test_mirror_inventory_includes_local_index_imports() -> None:
+    """A mirrored index must retain every sibling module it imports."""
+    index = (sidecar_paths.SOURCE_SIDECAR_DIR / "index.mjs").read_text(
+        encoding="utf-8"
+    )
+    local_imports = set(re.findall(r'from ["\']\./([^"\']+\.mjs)["\']', index))
+
+    assert local_imports <= set(sidecar_paths._MIRROR_FILES)
 
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:

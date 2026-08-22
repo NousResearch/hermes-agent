@@ -1669,10 +1669,12 @@ class TestApprovalPromptRedaction:
                         return_value=True):
                 with _patch("tools.approval._get_approval_mode",
                             return_value="manual"):
-                    # No gateway notify callback registered -> pending fallback.
+                    # No gateway notify callback registered -> terminal block.
                     result = check_execute_code_guard(code, "local")
 
-        assert result.get("status") == "pending_approval"
+        assert result.get("outcome") == "no_responder"
+        assert result.get("status") != "pending_approval"
+        assert result.get("approval_pending") is not True
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]

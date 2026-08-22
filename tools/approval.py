@@ -342,6 +342,37 @@ def _should_fall_through_to_cli_approval(
     """
     return bool(is_cli and approval_callback is not None and notify_cb is None)
 
+
+def _no_responder_block_result(
+    *,
+    pattern_key: str,
+    description: str,
+    command: str | None = None,
+) -> dict:
+    """Terminate a non-interactive approval request that has no responder.
+
+    Returned when no gateway notify callback is registered and the CLI
+    fall-through does not apply: no process can ever consume or resolve
+    this request, so it fails closed immediately instead of queuing a
+    pending record nobody can answer.
+    """
+    result = {
+        "approved": False,
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": "no_responder",
+        "user_consent": False,
+        "message": (
+            f"BLOCKED: Action requires approval ({description}), but no user "
+            "or approval responder is available. The user has NOT consented "
+            "to this action. Do NOT retry it, do NOT rephrase it, and do NOT "
+            "attempt the same outcome via a different path."
+        ),
+    }
+    if command is not None:
+        result["command"] = command
+    return result
+
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
 # active profile home path such as /home/hermes/.hermes/config.yaml. The
@@ -3620,24 +3651,11 @@ def _run_approval_gate(
             approval_callback=approval_callback,
             notify_cb=notify_cb,
         ):
-            # No notify callback (e.g. API server without an attached chat):
-            # queue for /approve /deny review, agent sees approval_required.
-            submit_pending(session_key, {
-                "command": display_target,
-                "pattern_key": pattern_key,
-                "description": description,
-            })
-            return {
-                "approved": False,
-                "pattern_key": pattern_key,
-                "status": "approval_required",
-                "command": display_target,
-                "description": description,
-                "message": (
-                    f"⚠️ This action is potentially dangerous ({description}). "
-                    f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
-                ),
-            }
+            return _no_responder_block_result(
+                pattern_key=pattern_key,
+                description=description,
+                command=display_target,
+            )
 
     _fire_approval_hook(
         "pre_approval_request",
@@ -3807,8 +3825,8 @@ def request_tool_approval(
     or bypass this — the tool call is intercepted before execution.
 
     It reuses the existing approval primitives (session/permanent allowlist,
-    ``prompt_dangerous_approval`` for CLI, ``submit_pending`` for the gateway
-    callback, ``[o]nce/[s]ession/[a]lways/[d]eny``, timeout fail-closed) so
+    ``prompt_dangerous_approval`` for CLI, the gateway notify callback,
+    ``[o]nce/[s]ession/[a]lways/[d]eny``, timeout fail-closed) so
     behavior is identical to a dangerous-command match — only the trigger
     (a plugin rule on any tool) differs.
 
@@ -4858,46 +4876,25 @@ def check_all_command_guards(command: str, env_type: str,
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
-        # Fallback: no gateway callback registered (e.g. cron, batch).
+        # Fallback: no gateway callback registered (e.g. API server, batch).
         # Interactive CLI with a Dangerous Command callback should still
         # paint the local panel — ask-mode often leaks into CLI via
-        # importing gateway.run, and returning pending_approval here makes
-        # the agent look "auto-blocked" with no Approve/Deny UI.
+        # importing gateway.run; this path now fails closed when no responder
+        # is available.
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli,
             approval_callback=approval_callback,
             notify_cb=notify_cb,
         ):
-            # Return approval_required for backward compat. Redact secrets in the
-            # user-facing copy — the raw `command` is preserved for execution and
-            # the allowlist keys off pattern_key, so redaction is display-only.
+            # No responder can consume this request, so fail closed immediately.
             from agent.redact import redact_sensitive_text
             _disp_command = redact_sensitive_text(command)
             _disp_combined_desc = redact_sensitive_text(combined_desc)
-            pending_data = {
-                "command": _disp_command,
-                "pattern_key": primary_key,
-                "pattern_keys": all_keys,
-                "description": _disp_combined_desc,
-            }
-            if smart_denied_for_owner:
-                pending_data.update(smart_denied=True, allow_permanent=False)
-            submit_pending(session_key, pending_data)
-            result = {
-                "approved": False,
-                "pattern_key": primary_key,
-                "status": "pending_approval",
-                "approval_pending": True,
-                "command": _disp_command,
-                "description": _disp_combined_desc,
-                "message": (
-                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
-                    "STOP: do NOT re-run, rephrase, or re-issue this command — each "
-                    "variant sends the user ANOTHER approval card. Wait for the "
-                    "user's decision; if this turn must end, report that approval "
-                    "is pending."
-                ),
-            }
+            result = _no_responder_block_result(
+                pattern_key=primary_key,
+                description=_disp_combined_desc,
+                command=_disp_command,
+            )
             if smart_denied_for_owner:
                 result.update(smart_denied=True, allow_permanent=False)
             return result
@@ -5152,7 +5149,6 @@ def check_execute_code_guard(code: str, env_type: str,
     # persistence keys off pattern_key, so the allowlist is unaffected.
     from agent.redact import redact_sensitive_text
     display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
     display_description = redact_sensitive_text(description)
 
     transport_attempt = _present_with_selected_transport(
@@ -5304,33 +5300,15 @@ def check_execute_code_guard(code: str, env_type: str,
                 "description": description,
             }
 
-        # No gateway callback registered (e.g. ask-mode without a notifier):
-        # surface a pending approval for backward compatibility.
-        pending_data = {
-            "command": display_command,
-            "pattern_key": pattern_key,
-            "pattern_keys": [pattern_key],
-            "description": display_description,
-        }
-        if smart_denied_for_owner:
-            pending_data.update(smart_denied=True, allow_permanent=False)
-        submit_pending(session_key, pending_data)
-        result = {
-            "approved": False,
-            "pattern_key": pattern_key,
-            "status": "pending_approval",
-            "approval_pending": True,
-            "command": display_command,
-            "description": display_description,
-            "message": (
-                f"⚠️ {display_description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{display_code}\n```\n\n"
-                "STOP: do NOT re-run, rephrase, or re-issue this code — each "
-                "variant sends the user ANOTHER approval card. Wait for the "
-                "user's decision; if this turn must end, report that approval "
-                "is pending."
-            ),
-        }
+        # No responder can exist here: no gateway notify callback is
+        # registered and the CLI fall-through does not apply (headless).
+        # Fail closed immediately instead of queueing a pending_approval
+        # that nobody can ever resolve.
+        result = _no_responder_block_result(
+            pattern_key=pattern_key,
+            description=display_description,
+            command=display_command,
+        )
         if smart_denied_for_owner:
             result.update(smart_denied=True, allow_permanent=False)
         return result

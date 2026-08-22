@@ -438,13 +438,8 @@ class TestFallbackNoCallback:
     def setup_method(self):
         _clear_approval_state()
 
-    def test_no_callback_returns_approval_required(self):
-        """Without a registered callback, the fallback returns pending_approval.
-
-        PR #6d495d9e7 renamed the LLM-visible status from ``approval_required``
-        to ``pending_approval`` to make the state distinguishable from a
-        failed tool call.
-        """
+    def test_no_callback_returns_terminal_block(self):
+        """Without a registered callback, headless approval fails closed."""
         from tools.approval import check_all_command_guards
 
         os.environ["HERMES_EXEC_ASK"] = "1"
@@ -456,8 +451,9 @@ class TestFallbackNoCallback:
             os.environ.pop("HERMES_SESSION_KEY", None)
 
         assert result["approved"] is False
-        assert result.get("status") == "pending_approval"
-        assert result.get("approval_pending") is True
+        assert result.get("outcome") == "no_responder"
+        assert result.get("status") != "pending_approval"
+        assert result.get("approval_pending") is not True
 
 
 # ------------------------------------------------------------------

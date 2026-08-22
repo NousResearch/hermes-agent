@@ -417,7 +417,7 @@ class TestDockerHostBindApproval:
                                          has_host_access=True)
         # Must NOT take the silent container fast-path.
         assert res.get("approved") is not True
-        assert res.get("status") == "pending_approval"
+        assert res.get("outcome") == "no_responder"
 
     def test_execute_code_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker execute_code still bypasses the guard."""
@@ -437,7 +437,7 @@ class TestDockerHostBindApproval:
             "import os; os.system('rm -rf /workspace')", "docker",
             has_host_access=True)
         assert res.get("approved") is not True
-        assert res.get("status") == "pending_approval"
+        assert res.get("outcome") == "no_responder"
 
     def test_execute_code_vercel_sandbox_always_skips(self, monkeypatch):
         """vercel_sandbox has no host-bind concept and stays always-skipped."""

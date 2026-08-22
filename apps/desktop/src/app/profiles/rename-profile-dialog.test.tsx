@@ -18,7 +18,9 @@ afterEach(() => {
 })
 
 vi.mock('@/hermes', () => ({
-  renameProfile: vi.fn(async () => ({ name: 'renamed', ok: true, path: '/x' }))
+  renameProfile: vi.fn(async () => ({ name: 'renamed', ok: true, path: '/x' })),
+  // store/profile subscribes at import time and routes the active profile here.
+  setApiRequestProfile: vi.fn()
 }))
 
 vi.mock('@/store/gateway', () => ({

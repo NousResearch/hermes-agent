@@ -22,6 +22,7 @@ const wipeSessionListsForGatewaySwitch = vi.fn()
 vi.mock('@/store/session', () => ({ $connection }))
 vi.mock('@/store/gateway-switch', () => ({ wipeSessionListsForGatewaySwitch }))
 vi.mock('@/store/profile', () => ({
+  $profileGlyphs: atom<Record<string, string>>({}),
   $activeGatewayProfile,
   $newChatProfile,
   $showAllProfiles,

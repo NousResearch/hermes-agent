@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { describe, expect, it, vi } from 'vitest'
 
 // The store wires itself to gateway/profile atoms and the REST layer at import
@@ -17,6 +18,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/profile', () => ({
+  $profileGlyphs: atom<Record<string, string>>({}),
   $activeGatewayProfile: { get: () => 'default', listen: () => () => {} },
   normalizeProfileKey: (name: string | null | undefined) => (name ?? '').trim() || 'default'
 }))

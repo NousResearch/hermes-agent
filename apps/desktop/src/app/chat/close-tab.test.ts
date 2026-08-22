@@ -18,6 +18,7 @@ vi.mock('@/store/session-states', () => ({
 }))
 
 vi.mock('@/store/profile', () => ({
+  $profileGlyphs: atom<Record<string, string>>({}),
   // The layout store reads the sidebar's profile scope; this suite only cares
   // about the fresh-session call.
   $showAllProfiles: atom(false),

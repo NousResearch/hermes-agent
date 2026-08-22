@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -17,7 +18,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { PROFILE_GLYPHS } from '@/lib/profile-glyphs'
 import { slug } from '@/lib/sanitize'
+import { cn } from '@/lib/utils'
+import { setProfileGlyph } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -26,9 +30,10 @@ export function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
 }
 
-// Self-contained create flow (name + clone toggle + optional SOUL.md). Owns the
-// createProfile/updateProfileSoul calls so every caller just refreshes/selects
-// via onCreated. SOUL left blank keeps the cloned/blank persona untouched.
+// Self-contained create flow (name + glyph + clone toggle + optional SOUL.md).
+// Owns the createProfile/updateProfileSoul calls so every caller just
+// refreshes/selects via onCreated. SOUL left blank keeps the cloned/blank
+// persona untouched; the glyph stays auto (initial / home mark) when unset.
 export function CreateProfileDialog({
   onClose,
   onCreated,
@@ -44,6 +49,7 @@ export function CreateProfileDialog({
   const p = t.profiles
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState<null | string>('default')
+  const [glyph, setGlyph] = useState<null | string>(null)
   const [soul, setSoul] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
@@ -55,6 +61,7 @@ export function CreateProfileDialog({
 
     setName('')
     setCloneFrom('default')
+    setGlyph(null)
     setSoul('')
     setError(null)
     setStatus('idle')
@@ -78,6 +85,10 @@ export function CreateProfileDialog({
 
     try {
       await createProfile({ name: trimmed, clone_from: cloneFrom })
+
+      // Persist the picked glyph before onCreated so the rail's refresh already
+      // paints the chosen mark instead of flashing the auto one.
+      setProfileGlyph(trimmed, glyph)
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
@@ -112,6 +123,41 @@ export function CreateProfileDialog({
               value={name}
             />
             <FieldHint error={invalid}>{p.nameHint}</FieldHint>
+          </Field>
+
+          <Field label={p.glyphLabel} optional optionalLabel={p.soulOptional}>
+            <div aria-label={p.glyphLabel} className="flex flex-wrap gap-1" role="group">
+              <button
+                aria-label={p.glyphAuto}
+                aria-pressed={!glyph}
+                className={cn(
+                  'grid size-6 place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                  !glyph && 'bg-(--ui-control-active-background) text-foreground'
+                )}
+                onClick={() => setGlyph(null)}
+                title={p.glyphAuto}
+                type="button"
+              >
+                <Codicon name="sync" size="0.875rem" />
+              </button>
+              {PROFILE_GLYPHS.map(id => (
+                <button
+                  aria-label={id}
+                  aria-pressed={glyph === id}
+                  className={cn(
+                    'grid size-6 place-items-center rounded-md text-(--ui-text-secondary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                    glyph === id && 'bg-(--ui-control-active-background) text-foreground'
+                  )}
+                  key={id}
+                  onClick={() => setGlyph(id)}
+                  title={id}
+                  type="button"
+                >
+                  <Codicon name={id} size="0.875rem" />
+                </button>
+              ))}
+            </div>
+            <FieldHint>{p.glyphHint}</FieldHint>
           </Field>
 
           <Field htmlFor="new-profile-clone-from" label={p.cloneFrom}>

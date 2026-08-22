@@ -11,9 +11,10 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
+import { resolveProfileGlyph } from '@/lib/profile-glyphs'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
+import { $profileColors, $profileGlyphs, profileLabel, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -202,6 +203,7 @@ function ProfileRow({
   profile: ProfileInfo
 }) {
   const colors = useStore($profileColors)
+  const glyphs = useStore($profileGlyphs)
 
   return (
     <PanelListRow
@@ -210,6 +212,7 @@ function ProfileRow({
         <ProfileGlyph
           aria-hidden="true"
           color={resolveProfileColor(profile.name, colors)}
+          glyph={resolveProfileGlyph(profile.name, glyphs)}
           isDefault={profile.is_default}
           name={profile.name}
         />

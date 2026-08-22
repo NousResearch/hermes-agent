@@ -3,25 +3,31 @@ import { cn } from '@/lib/utils'
 
 import { Codicon } from './codicon'
 
-/** A profile's mark, in one place: the default profile is the `home` icon (it
- *  has no color of its own and an initial would read as just another named
- *  profile); every other profile is a soft tint of its color carrying its
- *  initial. Presentational — callers resolve the color from `$profileColors`. */
+/** A profile's mark, in one place: an explicit glyph override wins (#79233);
+ *  absent one, the default profile is the `home` icon (it has no color of its
+ *  own and an initial would read as just another named profile) and every other
+ *  profile is a soft tint of its color carrying its initial. Presentational —
+ *  callers resolve color from `$profileColors` and glyph from `$profileGlyphs`. */
 export function ProfileGlyph({
   className,
   color,
+  glyph,
   isDefault,
   name,
   ...props
 }: Omit<React.ComponentProps<'span'>, 'color'> & {
   color: null | string
+  /** Codicon name override; wins over both built-in marks when set. */
+  glyph?: null | string
   isDefault: boolean
   name: string
 }) {
-  if (isDefault) {
+  const mark = glyph?.trim() || (isDefault ? 'home' : null)
+
+  if (mark) {
     return (
       <span className={cn('grid size-4 shrink-0 place-items-center', className)} {...props}>
-        <Codicon className="text-(--ui-text-quaternary)" name="home" size="0.75rem" />
+        <Codicon className="text-(--ui-text-quaternary)" name={mark} size="0.75rem" />
       </span>
     )
   }

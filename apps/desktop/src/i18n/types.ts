@@ -1531,6 +1531,8 @@ export interface Translations {
     allProfiles: string
     showAllProfiles: string
     switchToProfile: (name: string) => string
+    setDefaultProfile: string
+    clearDefaultProfile: string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
     manageProfiles: string
@@ -1551,6 +1553,9 @@ export interface Translations {
     rename: string
     renameMenu: string
     editSoul: string
+    glyphLabel: string
+    glyphAuto: string
+    glyphHint: string
     copySetup: string
     copying: string
     modelLabel: string

@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // A failed hub action (non-zero subprocess exit) must REJECT so callers toast
@@ -30,6 +31,7 @@ vi.mock('@/store/activity', () => ({
 // hub-actions subscribes to the active gateway profile at module scope (its
 // per-profile state wipe); a minimal stub keeps this test off the real store.
 vi.mock('@/store/profile', () => ({
+  $profileGlyphs: atom<Record<string, string>>({}),
   $activeGatewayProfile: { subscribe: vi.fn() },
   normalizeProfileKey: (value: unknown) => String(value ?? '') || 'default'
 }))

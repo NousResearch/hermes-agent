@@ -82,6 +82,15 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
 
 
 
+def test_configurable_toolsets_include_xai_code_interpreter_default_off():
+    assert any(
+        ts_key == "xai_code_interpreter"
+        for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+    )
+    assert "xai_code_interpreter" in _DEFAULT_OFF_TOOLSETS
+    assert "xai_code_interpreter" in TOOL_CATEGORIES
+
+
 def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
     """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
 

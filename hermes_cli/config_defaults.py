@@ -3377,6 +3377,15 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # xAI Code Interpreter — server-side Python sandbox via Responses
+    # API code_interpreter. Separate from local execute_code. Enable in
+    # `hermes tools` → xAI Code Interpreter.
+    "xai_code_interpreter": {
+        "model": "grok-4.5",
+        "timeout_seconds": 180,
+        "retries": 2,
+    },
+
     # =========================================================================
     # External secret sources
     # =========================================================================

@@ -109,9 +109,15 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
         model = "test-model"
         provider = "test-provider"
         base_url = "http://example.invalid"
+        api_key = "test-key"
         api_mode = "chat_completions"
         platform = "cli"
         session_id = "parent-session"
+        client = None
+        _client_kwargs = {
+            "api_key": "test-key",
+            "base_url": "http://example.invalid",
+        }
 
     child = delegate_tool._build_child_agent(
         task_index=0,

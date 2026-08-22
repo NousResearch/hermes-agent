@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -38,7 +39,7 @@ def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
-    parent.api_key="***"
+    parent.api_key = "***"
     parent.provider = "openrouter"
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
@@ -54,6 +55,11 @@ def _make_mock_parent(depth=0):
     parent._print_fn = None
     parent.tool_progress_callback = None
     parent.thinking_callback = None
+    parent.client = None
+    parent._client_kwargs = {
+        "api_key": parent.api_key,
+        "base_url": parent.base_url,
+    }
     return parent
 
 
@@ -267,9 +273,14 @@ class TestDelegateTask(unittest.TestCase):
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
-        parent.api_key="***"
+        parent.api_key = "codex-primary-key"
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
+        parent.client = None
+        parent._client_kwargs = {
+            "api_key": "codex-primary-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -287,7 +298,341 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+            self.assertEqual(kwargs["model"], parent.model)
 
+    def test_nous_child_rederives_api_mode_from_model(self):
+        """Portal is dual-wire — same provider + different model prefix must
+        not inherit the parent's Messages/chat_completions mode verbatim."""
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://inference-api.nousresearch.com/v1"
+        parent.api_key = "portal-jwt"
+        parent.provider = "nous"
+        parent.api_mode = "anthropic_messages"
+        parent.model = "anthropic/claude-opus-4.8"
+        parent._anthropic_base_url = "https://inference-api.nousresearch.com/v1"
+        parent._anthropic_api_key = "portal-jwt"
+        parent._client_kwargs = {
+            "api_key": "portal-jwt",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Stay on chat completions",
+                context=None,
+                toolsets=None,
+                model="hermes-4-405b",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "nous")
+            self.assertEqual(kwargs["model"], "hermes-4-405b")
+            self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            parent.api_mode = "chat_completions"
+            parent.model = "hermes-4-405b"
+            parent._client_kwargs = {
+                "api_key": "portal-jwt",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+            _build_child_agent(
+                task_index=0,
+                goal="Move onto Messages",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-opus-4.8",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["api_mode"], "anthropic_messages")
+
+
+class TestDelegateFallbackRuntimeInheritance(unittest.TestCase):
+    """#90009: child must inherit the parent's live paired runtime identity."""
+
+    CODEX_BASE = "https://chatgpt.com/backend-api/codex"
+    ANTHROPIC_BASE = "https://api.anthropic.com"
+    CODEX_KEY = "codex-primary-key-0001"
+    ANTHROPIC_KEY = "sk-ant-oat01-fallback-token"
+
+    @staticmethod
+    def _make_codex_agent(fallback_model):
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "agent.context_compressor.get_model_context_length",
+                return_value=200_000,
+            ),
+        ):
+            agent = AIAgent(
+                api_key=TestDelegateFallbackRuntimeInheritance.CODEX_KEY,
+                base_url=TestDelegateFallbackRuntimeInheritance.CODEX_BASE,
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=fallback_model,
+            )
+            agent.client = MagicMock()
+            agent.client.base_url = TestDelegateFallbackRuntimeInheritance.CODEX_BASE
+            agent.client.api_key = TestDelegateFallbackRuntimeInheritance.CODEX_KEY
+            return agent
+
+    @staticmethod
+    def _mock_anthropic_fallback_client():
+        mock = MagicMock()
+        mock.base_url = TestDelegateFallbackRuntimeInheritance.ANTHROPIC_BASE
+        mock.api_key = TestDelegateFallbackRuntimeInheritance.ANTHROPIC_KEY
+        return mock
+
+    @staticmethod
+    def _build_child(parent):
+        return _build_child_agent(
+            task_index=0,
+            goal="test",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=5,
+            parent_agent=parent,
+            task_count=1,
+        )
+
+    @staticmethod
+    def _assert_full_runtime_tuple(testcase, kwargs, *, provider, model, base_url, api_key, api_mode):
+        testcase.assertEqual(kwargs["provider"], provider)
+        testcase.assertEqual(kwargs["model"], model)
+        testcase.assertEqual(kwargs["base_url"], base_url)
+        testcase.assertEqual(kwargs["api_key"], api_key)
+        testcase.assertEqual(kwargs["api_mode"], api_mode)
+
+    def test_fallback_then_delegate_inherits_complete_anthropic_runtime(self):
+        """Real fallback machinery → delegate inherits coherent anthropic tuple."""
+        agent = self._make_codex_agent(
+            {"provider": "anthropic", "model": "claude-sonnet-5"},
+        )
+        mock_client = self._mock_anthropic_fallback_client()
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "claude-sonnet-5"),
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ), patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            assert agent._try_activate_fallback() is True
+
+            self._build_child(agent)
+
+            _, kwargs = MockAgent.call_args
+            self._assert_full_runtime_tuple(
+                self,
+                kwargs,
+                provider="anthropic",
+                model="claude-sonnet-5",
+                base_url=self.ANTHROPIC_BASE,
+                api_key=self.ANTHROPIC_KEY,
+                api_mode="anthropic_messages",
+            )
+
+    def test_restore_then_delegate_inherits_complete_primary_runtime(self):
+        """Primary → fallback → restore → delegate matches restored primary tuple."""
+        agent = self._make_codex_agent(
+            {"provider": "anthropic", "model": "claude-sonnet-5"},
+        )
+        primary_provider = agent.provider
+        primary_model = agent.model
+        primary_base = agent.base_url
+        primary_key = agent.api_key
+        primary_mode = agent.api_mode
+
+        mock_client = self._mock_anthropic_fallback_client()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "claude-sonnet-5"),
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            self._build_child(agent)
+
+            _, kwargs = MockAgent.call_args
+            self._assert_full_runtime_tuple(
+                self,
+                kwargs,
+                provider=primary_provider,
+                model=primary_model,
+                base_url=primary_base,
+                api_key=primary_key,
+                api_mode=primary_mode,
+            )
+
+    def test_corrupted_parent_runtime_fails_closed_without_constructing_child(self):
+        """Split-brain parent (codex surface + anthropic key, no paired source) is rejected."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openai-codex"
+        parent.model = "gpt-5.6-sol"
+        parent.base_url = self.CODEX_BASE
+        parent.api_key = self.ANTHROPIC_KEY
+        parent.api_mode = "codex_responses"
+        parent._client_kwargs = {}
+        parent.client = None
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            with self.assertRaises(ValueError) as ctx:
+                self._build_child(parent)
+
+            MockAgent.assert_not_called()
+            msg = str(ctx.exception).lower()
+            self.assertIn("cannot delegate", msg)
+            self.assertNotIn(self.ANTHROPIC_KEY, str(ctx.exception))
+
+    @staticmethod
+    @contextmanager
+    def _agent_init_patches():
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "agent.context_compressor.get_model_context_length",
+                return_value=200_000,
+            ),
+        ):
+            yield
+
+    def _construct_real_child(self, parent):
+        """Build a real AIAgent child and return (child, constructor kwargs)."""
+        from run_agent import AIAgent as RealAgent
+
+        captured: dict = {}
+
+        def _construct(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            captured["child"] = RealAgent(*args, **kwargs)
+            return captured["child"]
+
+        with self._agent_init_patches(), patch(
+            "run_agent.AIAgent", side_effect=_construct
+        ):
+            self._build_child(parent)
+
+        return captured["child"], captured["kwargs"]
+
+    def test_bedrock_converse_parent_delegates_native_runtime(self):
+        """Bedrock Converse parent (boto3, empty _client_kwargs) still delegates."""
+        from run_agent import AIAgent
+
+        region = "us-west-2"
+        canonical = f"https://bedrock-runtime.{region}.amazonaws.com"
+        with self._agent_init_patches():
+            parent = AIAgent(
+                api_key="aws-sdk",
+                base_url=canonical,
+                provider="bedrock",
+                model="amazon.nova-pro-v1:0",
+                api_mode="bedrock_converse",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        self.assertEqual(parent.provider, "bedrock")
+        self.assertEqual(parent.api_mode, "bedrock_converse")
+        self.assertEqual(parent._bedrock_region, region)
+        self.assertIsNone(parent.client)
+        self.assertEqual(parent._client_kwargs, {})
+
+        child, kwargs = self._construct_real_child(parent)
+
+        self._assert_full_runtime_tuple(
+            self,
+            kwargs,
+            provider="bedrock",
+            model="amazon.nova-pro-v1:0",
+            base_url=canonical,
+            api_key="aws-sdk",
+            api_mode="bedrock_converse",
+        )
+        self.assertEqual(child.provider, "bedrock")
+        self.assertEqual(child.api_mode, "bedrock_converse")
+        self.assertEqual(child.base_url, canonical)
+        self.assertEqual(child._bedrock_region, region)
+        self.assertIsNone(child.client)
+        self.assertEqual(child._client_kwargs, {})
+
+    def test_moa_parent_delegates_virtual_runtime(self):
+        """MoA parent is a virtual runtime; children inherit the sentinel tuple."""
+        from run_agent import AIAgent
+
+        with self._agent_init_patches():
+            parent = AIAgent(
+                api_key="moa-virtual-provider",
+                base_url="moa://local",
+                provider="moa",
+                model="review",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        self.assertEqual(parent.provider, "moa")
+        self.assertEqual(parent.api_mode, "chat_completions")
+        self.assertEqual(parent.base_url, "moa://local")
+        self.assertEqual(parent._client_kwargs, {})
+        self.assertIsNotNone(parent.client)
+        self.assertFalse(hasattr(parent.client, "api_key"))
+        self.assertFalse(hasattr(parent.client, "base_url"))
+
+        child, kwargs = self._construct_real_child(parent)
+
+        self._assert_full_runtime_tuple(
+            self,
+            kwargs,
+            provider="moa",
+            model="review",
+            base_url="moa://local",
+            api_key="moa-virtual-provider",
+            api_mode="chat_completions",
+        )
+        self.assertEqual(child.provider, "moa")
+        self.assertEqual(child.api_mode, "chat_completions")
+        self.assertEqual(child.base_url, "moa://local")
+        self.assertEqual(child.api_key, "moa-virtual-provider")
+        self.assertEqual(child._client_kwargs, {})
+        self.assertIsNotNone(child.client)
+        self.assertFalse(hasattr(child.client, "api_key"))
+
+
+class TestDelegateTaskSessionDb(unittest.TestCase):
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
         """#81267: children must not share the parent's SessionDB object.
 
@@ -413,55 +758,6 @@ class TestDelegateTask(unittest.TestCase):
                     child_db.close()
                 parent_db.close()
 
-    def test_nous_child_rederives_api_mode_from_model(self):
-        """Portal is dual-wire — same provider + different model prefix must
-        not inherit the parent's Messages/chat_completions mode verbatim."""
-        parent = _make_mock_parent(depth=0)
-        parent.base_url = "https://inference-api.nousresearch.com/v1"
-        parent.api_key = "portal-jwt"
-        parent.provider = "nous"
-        parent.api_mode = "anthropic_messages"
-        parent.model = "anthropic/claude-opus-4.8"
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-
-            _build_child_agent(
-                task_index=0,
-                goal="Stay on chat completions",
-                context=None,
-                toolsets=None,
-                model="hermes-4-405b",
-                max_iterations=10,
-                parent_agent=parent,
-                task_count=1,
-            )
-
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["provider"], "nous")
-            self.assertEqual(kwargs["model"], "hermes-4-405b")
-            self.assertEqual(kwargs["api_mode"], "chat_completions")
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-            parent.api_mode = "chat_completions"
-            parent.model = "hermes-4-405b"
-
-            _build_child_agent(
-                task_index=0,
-                goal="Move onto Messages",
-                context=None,
-                toolsets=None,
-                model="anthropic/claude-opus-4.8",
-                max_iterations=10,
-                parent_agent=parent,
-                task_count=1,
-            )
-
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["api_mode"], "anthropic_messages")
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
@@ -1710,9 +2006,15 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.platform = "cli"
                 m.enabled_toolsets = ["terminal", "file", "delegation"]
                 m.api_key = "***"
-                m.base_url = ""
-                m.provider = None
-                m.api_mode = None
+                m.base_url = "https://openrouter.ai/api/v1"
+                m.provider = "openrouter"
+                m.api_mode = "chat_completions"
+                m.model = "anthropic/claude-sonnet-4"
+                m._client_kwargs = {
+                    "api_key": "***",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+                m.client = None
                 m.providers_allowed = None
                 m.providers_ignored = None
                 m.providers_order = None

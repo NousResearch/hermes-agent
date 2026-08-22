@@ -1575,6 +1575,103 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+_BEDROCK_SENTINEL_API_KEY = "aws-sdk"
+_MOA_VIRTUAL_PROVIDER = "moa"
+_MOA_VIRTUAL_BASE_URL = "moa://local"
+_MOA_VIRTUAL_API_KEY = "moa-virtual-provider"
+_BEDROCK_REGION_RE = re.compile(r"bedrock-runtime\.([a-z0-9-]+)\.")
+
+
+def _canonical_bedrock_runtime_url(region: str) -> str:
+    return f"https://bedrock-runtime.{region}.amazonaws.com"
+
+
+def _bedrock_region_from_parent(parent_agent) -> str:
+    """Region for native Bedrock identity. Matches ``agent_init`` defaults."""
+    region = str(getattr(parent_agent, "_bedrock_region", None) or "").strip()
+    if region:
+        return region
+    match = _BEDROCK_REGION_RE.search(str(getattr(parent_agent, "base_url", "") or ""))
+    if match:
+        return match.group(1)
+    return "us-east-1"
+
+
+def _snapshot_parent_delegation_runtime(parent_agent) -> dict[str, Any]:
+    """Return the parent's live backend identity for child inheritance (#90009).
+
+    Api-mode-aware: credential-bearing OpenAI/Anthropic endpoints are read
+    from the paired stores ``try_activate_fallback`` /
+    ``restore_primary_runtime`` update atomically. Native/virtual runtimes
+    (Bedrock Converse, MoA) use their own identity semantics — never
+    independent ``provider`` / ``base_url`` / ``api_key`` surface attrs and
+    never a generic credential-format heuristic.
+    """
+    provider = getattr(parent_agent, "provider", None)
+    model = getattr(parent_agent, "model", None)
+    api_mode = getattr(parent_agent, "api_mode", None)
+    provider_norm = (provider or "").strip().lower()
+
+    if api_mode == "anthropic_messages":
+        base_url = getattr(parent_agent, "_anthropic_base_url", None)
+        api_key = getattr(parent_agent, "_anthropic_api_key", None)
+        if not base_url or not api_key:
+            raise ValueError(
+                "Cannot delegate: parent anthropic_messages runtime is "
+                "incomplete (_anthropic_base_url / _anthropic_api_key missing)."
+            )
+    elif api_mode == "bedrock_converse":
+        # Native boto3 runtime. AWS auth is resolved by the SDK at call
+        # time; the child must reconstruct the same Bedrock identity, not
+        # demand OpenAI client credentials and not copy real AWS keys.
+        region = _bedrock_region_from_parent(parent_agent)
+        provider = "bedrock"
+        base_url = _canonical_bedrock_runtime_url(region)
+        api_key = _BEDROCK_SENTINEL_API_KEY
+    elif provider_norm == _MOA_VIRTUAL_PROVIDER:
+        # Virtual aggregator. agent_init / switch_model write this sentinel
+        # tuple as one unit; the facade is not an OpenAI client.
+        provider = _MOA_VIRTUAL_PROVIDER
+        api_mode = "chat_completions"
+        base_url = _MOA_VIRTUAL_BASE_URL
+        api_key = _MOA_VIRTUAL_API_KEY
+    else:
+        kwargs_obj = getattr(parent_agent, "_client_kwargs", None)
+        kwargs: dict[str, Any] = kwargs_obj if isinstance(kwargs_obj, dict) else {}
+        client = getattr(parent_agent, "client", None)
+
+        if kwargs.get("base_url") and kwargs.get("api_key"):
+            base_url = _normalized_runtime_url(kwargs["base_url"]) or None
+            api_key = kwargs["api_key"]
+        elif client is not None:
+            base_url = _normalized_runtime_url(getattr(client, "base_url", "")) or None
+            api_key = getattr(client, "api_key", None)
+            if not base_url or not api_key:
+                raise ValueError(
+                    "Cannot delegate: parent OpenAI client is missing base_url "
+                    "or api_key."
+                )
+        else:
+            raise ValueError(
+                "Cannot delegate: parent runtime has no paired OpenAI "
+                "credentials (_client_kwargs or client). Refusing to inherit "
+                "independent provider/base_url/api_key fields."
+            )
+
+    if not provider or not model:
+        raise ValueError(
+            "Cannot delegate: parent provider or model is unavailable."
+        )
+
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_mode": api_mode,
+    }
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1708,13 +1805,37 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
-    # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
-    parent_api_key = getattr(parent_agent, "api_key", None)
-    if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
-        parent_api_key = parent_agent._client_kwargs.get("api_key")
+    # Resolve effective credentials: config override > parent inherit
+    inherited_runtime = (
+        _snapshot_parent_delegation_runtime(parent_agent)
+        if override_provider is None
+        and override_base_url is None
+        and override_api_key is None
+        else None
+    )
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    effective_model = model or (
+        (inherited_runtime or {}).get("model")
+        if inherited_runtime
+        else getattr(parent_agent, "model", None)
+    )
+    if inherited_runtime:
+        effective_provider = inherited_runtime.get("provider")
+        effective_base_url = inherited_runtime.get("base_url")
+        effective_api_key = inherited_runtime.get("api_key")
+        inherited_api_mode = inherited_runtime.get("api_mode")
+    else:
+        parent_api_key = getattr(parent_agent, "api_key", None)
+        if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+            parent_api_key = parent_agent._client_kwargs.get("api_key")
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or parent_agent.base_url
+        if not override_base_url:
+            effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
+        effective_api_key = override_api_key or parent_api_key
+        inherited_api_mode = getattr(parent_agent, "api_mode", None)
+
+    effective_model_for_cb = effective_model
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
@@ -1751,13 +1872,6 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    if not override_base_url:
-        effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
-    effective_api_key = override_api_key or parent_api_key
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1780,7 +1894,7 @@ def _build_child_agent(
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
-        effective_api_mode = getattr(parent_agent, "api_mode", None)
+        effective_api_mode = inherited_api_mode
     # Defensive: validate trusted delegation.command exists on PATH before
     # honoring it. An explicitly pinned transport that cannot run must fail
     # the spawn loudly (#80450) — silently falling back to the default

@@ -60,6 +60,42 @@ logger = logging.getLogger(__name__)
 # Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
 # transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
+_GROUP_ADMIN_JID = re.compile(
+    r"^(?P<identifier>[0-9]{1,32})(?::[0-9]{1,3})?@(?:s\.whatsapp\.net|c\.us|lid)$",
+    re.IGNORECASE,
+)
+
+
+def _group_admin_identifiers(extra: dict[str, Any]) -> set[str]:
+    """Return exact configured user principals in Hermes' canonical ID space."""
+    from gateway.whatsapp_identity import canonical_whatsapp_identifier
+
+    result: set[str] = set()
+    configured = extra.get("group_admin_users", [])
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    if not isinstance(configured, list):
+        return result
+    for raw in configured:
+        value = str(raw).strip()
+        if not _GROUP_ADMIN_JID.fullmatch(value):
+            continue
+        canonical = canonical_whatsapp_identifier(value)
+        if canonical:
+            result.add(canonical)
+    return result
+
+
+def _is_group_admin_source(source: Any, extra: dict[str, Any]) -> bool:
+    """Authorize only an exact configured principal in its direct-message chat."""
+    if getattr(source, "chat_type", None) != "dm":
+        return False
+    from gateway.whatsapp_identity import canonical_whatsapp_identifier
+
+    user = canonical_whatsapp_identifier(getattr(source, "user_id", ""))
+    chat = canonical_whatsapp_identifier(getattr(source, "chat_id", ""))
+    admins = _group_admin_identifiers(extra)
+    return bool(user and chat and user == chat and user in admins)
 
 
 def _listener_pids_on_port(port: int) -> list:
@@ -487,6 +523,30 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
+    def toolsets_for_source(self, source) -> Optional[list[str]]:
+        """Expose group administration only to an exact configured DM owner.
+
+        Resolve the platform's ordinary toolsets first so this per-source
+        override cannot accidentally drop existing capabilities. The group
+        toolset is default-off and platform-restricted; authorized DMs add it
+        for this turn, while every other source has it removed even if someone
+        hand-edited it into the platform list.
+        """
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import _get_platform_tools
+
+            configured = set(_get_platform_tools(load_config() or {}, "whatsapp"))
+        except Exception:
+            configured = set()
+        configured.discard("whatsapp_group_admin")
+        if _is_group_admin_source(source, self.config.extra):
+            configured.add("whatsapp_group_admin")
+        # GatewayRunner historically treats [] as "no override". no_mcp is a
+        # recognized zero-capability sentinel and preserves an explicit empty
+        # selection without falling back to a hand-edited unsafe list.
+        return sorted(configured) if configured else ["no_mcp"]
+
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
@@ -715,10 +775,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "WHATSAPP_DEBUG", "WHATSAPP_FORWARD_OWNER_MESSAGES",
                 "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
                 "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
+                # Fail-closed, loopback-only group administration. The token
+                # is injected into the child environment and is never placed
+                # in argv or logs.
+                "WHATSAPP_GROUP_CONTROL_TOKEN",
             ):
                 _v = _wenv(_key)
                 if _v:
                     bridge_env[_key] = _v
+            # Behavioral group-control policy is configured in config.yaml;
+            # only the bearer credential lives in .env. The bridge receives
+            # these values as an internal transport detail.
+            _group_participants = self.config.extra.get("group_allowed_participants", [])
+            if isinstance(_group_participants, str):
+                _group_participants = _group_participants.split(",")
+            if isinstance(_group_participants, list) and _group_participants:
+                bridge_env["WHATSAPP_GROUP_ALLOWED_PARTICIPANTS"] = ",".join(
+                    str(value).strip() for value in _group_participants if str(value).strip()
+                )
+            _group_state = self.config.extra.get("group_operation_state")
+            if _group_state:
+                bridge_env["WHATSAPP_GROUP_OPERATION_STATE"] = str(_group_state)
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges

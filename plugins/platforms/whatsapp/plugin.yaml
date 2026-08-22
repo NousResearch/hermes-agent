@@ -9,6 +9,8 @@ description: >
   Supports DM/group policies, mention gating, free-response chats, and
   per-user allowlists.
 author: NousResearch
+provides_tools:
+  - whatsapp_create_group
 requires_env:
   - name: WHATSAPP_ENABLED
     description: "Enable the WhatsApp adapter (requires the Node.js bridge running)"
@@ -31,3 +33,7 @@ optional_env:
     description: "Display name for the WhatsApp home channel"
     prompt: "Home channel display name"
     password: false
+  - name: WHATSAPP_GROUP_CONTROL_TOKEN
+    description: "Private bearer token for the loopback-only group control endpoint"
+    prompt: "Group control token (empty disables group creation)"
+    password: true

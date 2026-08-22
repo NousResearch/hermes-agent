@@ -240,6 +240,36 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 
 ---
 
+## Optional Group Creation
+
+Hermes can create a WhatsApp group through a disabled-by-default administrative
+tool. Enable it only for exact direct-message principals and a bounded set of
+participants:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        group_admin_users:
+          - "15551234567@s.whatsapp.net"
+        group_allowed_participants:
+          - "15551234567@s.whatsapp.net"
+```
+
+Generate a private bearer credential (for example with
+`openssl rand -base64 32`) and store it as `WHATSAPP_GROUP_CONTROL_TOKEN` in
+`~/.hermes/.env`. Restart the gateway after both settings are present.
+
+The tool is exposed only when the sender and DM chat resolve to the same exact
+configured admin. It is never exposed in group chats. Every request must repeat
+the exact subject and participant list as confirmation and supply a stable
+idempotency key. An ambiguous or timed-out create is recorded as uncertain and
+is not retried automatically.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |

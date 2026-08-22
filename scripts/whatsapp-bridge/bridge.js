@@ -34,6 +34,12 @@ import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
+  GroupOperationStore,
+  authorizeGroupControl,
+  executeGroupCreate,
+  parseParticipantAllowlist,
+} from './group_control.js';
+import {
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
@@ -86,6 +92,20 @@ const SEND_READ_RECEIPTS =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const GROUP_CONTROL_TOKEN = String(process.env.WHATSAPP_GROUP_CONTROL_TOKEN || '').trim();
+const GROUP_ALLOWED_PARTICIPANTS = parseParticipantAllowlist(
+  process.env.WHATSAPP_GROUP_ALLOWED_PARTICIPANTS || '',
+);
+const GROUP_OPERATION_STATE = process.env.WHATSAPP_GROUP_OPERATION_STATE
+  || path.join(path.dirname(SESSION_DIR), 'group-operations.json');
+const GROUP_CONTROL_ENABLED = Boolean(
+  GROUP_CONTROL_TOKEN
+  && GROUP_CONTROL_TOKEN.length >= 32
+  && GROUP_CONTROL_TOKEN.length <= 512
+  && GROUP_ALLOWED_PARTICIPANTS.size > 0
+);
+const groupOperationStore = new GroupOperationStore(GROUP_OPERATION_STATE);
+let groupControlQueue = Promise.resolve();
 // Cache directories: the Python gateway passes the profile-aware paths via
 // env (HERMES_HOME-aware, new cache/ layout).  Fall back to the legacy
 // hardcoded locations for bridges launched outside the gateway.
@@ -780,7 +800,7 @@ async function startSocket() {
 
 // HTTP server
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '16kb' }));
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
@@ -1103,6 +1123,38 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Authenticated, disabled-by-default group administration. This endpoint is
+// deliberately absent from ordinary send APIs and remains loopback-only with
+// the rest of the bridge. Requests are serialized so subject checks and
+// idempotency reservations cannot race each other.
+app.post('/groups/create', async (req, res) => {
+  if (!GROUP_CONTROL_ENABLED) {
+    return res.status(404).json({ error: 'Group control is disabled' });
+  }
+  if (!authorizeGroupControl(req.headers.authorization, GROUP_CONTROL_TOKEN)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const run = async () => executeGroupCreate({
+    body: req.body,
+    allowedParticipants: GROUP_ALLOWED_PARTICIPANTS,
+    store: groupOperationStore,
+    listGroups: () => sock.groupFetchAllParticipating(),
+    createGroup: (subject, participants) => sock.groupCreate(subject, participants),
+  });
+  const task = groupControlQueue.then(run, run);
+  groupControlQueue = task.catch(() => {});
+  try {
+    const result = await task;
+    return res.status(result.httpStatus).json(result.body);
+  } catch {
+    return res.status(500).json({ error: 'Group control failed' });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -1111,6 +1163,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    groupControlEnabled: GROUP_CONTROL_ENABLED,
   });
 });
 

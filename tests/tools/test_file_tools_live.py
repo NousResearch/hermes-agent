@@ -149,6 +149,16 @@ class TestReadFile:
 # ── write_file ───────────────────────────────────────────────────────────
 
 class TestWriteFile:
+    def test_total_lines_no_trailing_newline(self, ops, tmp_path):
+        f = tmp_path / "no_trailing_lf.txt"
+        f.write_bytes(b"alpha\nbravo\ncharlie")
+        result = ops.read_file(str(f))
+        assert result.error is None
+        assert "alpha" in result.content
+        assert "charlie" in result.content
+        assert result.total_lines == 3
+        _assert_clean(result.content)
+
     def test_write_and_verify(self, ops, tmp_path):
         path = str(tmp_path / "written.txt")
         result = ops.write_file(path, SIMPLE_CONTENT)

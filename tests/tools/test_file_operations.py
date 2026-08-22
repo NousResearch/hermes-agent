@@ -375,6 +375,88 @@ class TestShellFileOpsHelpers:
         assert "\x07" not in result.content
         assert "1|print('ok')" in result.content
 
+    def _read_side_effect(self, content, wc_lines, last_hex):
+        """Stub shell responses for read_file meta probe + content path."""
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or (
+                command.startswith("wc -c") and " < " in command
+            ):
+                return {"output": f"{len(content)}\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                import base64 as b64
+                return {
+                    "output": b64.b64encode(content.encode()).decode() + "\n",
+                    "returncode": 0,
+                }
+            if command.startswith("head -c"):
+                return {"output": content[:1000], "returncode": 0}
+            if command.startswith("sed -n"):
+                # cut always NL-terminates page output
+                out = content if content.endswith("\n") else content + "\n"
+                return {"output": out, "returncode": 0}
+            # Combined meta: `wc -l < path; tail -c 1 path | od ...`
+            if "wc -l <" in command and "od " in command:
+                return {"output": f"{wc_lines}\n{last_hex}\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": f"{wc_lines}\n", "returncode": 0}
+            if command.startswith("tail -c 1") and "od " in command:
+                return {"output": f"{last_hex}\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        return side_effect
+
+    def test_no_trailing_newline_counts_final_line(self, mock_env):
+        """wc -l undercounts when the final line has no trailing newline."""
+        content = "alpha\nbravo\ncharlie"  # 3 lines, no final LF
+        mock_env.execute.side_effect = self._read_side_effect(content, wc_lines=2, last_hex="65")
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/no_nl.txt")
+        assert result.error is None, result
+        assert result.total_lines == 3
+
+    def test_trailing_newline_does_not_double_count(self, mock_env):
+        """Files that already end in LF must keep wc -l's count."""
+        content = "alpha\nbravo\ncharlie\n"
+        mock_env.execute.side_effect = self._read_side_effect(content, wc_lines=3, last_hex="0a")
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/with_nl.txt")
+        assert result.error is None, result
+        assert result.total_lines == 3
+
+    def test_empty_file_total_lines_zero(self, mock_env):
+        """size-0 files must stay at total_lines == 0 (no +1, no crash)."""
+        content = ""
+
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or (
+                command.startswith("wc -c") and " < " in command
+            ):
+                return {"output": "0\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                return {"output": "\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "", "returncode": 0}
+            # empty file skips meta probe entirely
+            if "wc -l" in command:
+                raise AssertionError(f"unexpected wc probe on empty file: {command}")
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/empty.txt")
+        assert result.error is None or result.content == "" or result.total_lines == 0
+        assert result.total_lines == 0
+
+    def test_single_line_no_trailing_newline(self, mock_env):
+        """Single-line file without LF is one logical line (wc -l=0 → +1)."""
+        content = "x"
+        mock_env.execute.side_effect = self._read_side_effect(content, wc_lines=0, last_hex="78")
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/one_line.txt")
+        assert result.error is None, result
+        assert result.total_lines == 1
+
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (
             "__HERMES_FENCE_a9f7b3__\x07'\n"

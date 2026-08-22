@@ -1593,15 +1593,44 @@ class ShellFileOperations(FileOperations):
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
-        try:
-            total_lines = int(wc_output.strip())
-        except ValueError:
+        # Get total line count + last-byte probe in one shell round-trip.
+        # wc -l counts newline characters (0x0a), not logical lines. A file
+        # whose final line has no trailing LF therefore has one more line of
+        # content than wc -l reports. Only LF (0x0a) is treated as a line
+        # terminator here — a bare CR (0x0d, legacy Mac) is not, so such a
+        # final byte still triggers the +1 correction (same as "no LF").
+        escaped = self._escape_shell_arg(path)
+        if file_size > 0:
+            meta_cmd = (
+                f"wc -l < {escaped}; "
+                f"tail -c 1 {escaped} | od -An -tx1 | tr -d ' \n\t\r'"
+            )
+            meta_result = self._exec(meta_cmd)
+            meta_out = _strip_terminal_fence_leaks(meta_result.stdout)
+            meta_lines = [ln.strip() for ln in meta_out.splitlines() if ln.strip() != ""]
+            try:
+                total_lines = int(meta_lines[0]) if meta_lines else 0
+            except ValueError:
+                total_lines = 0
+            last_byte = meta_lines[1].lower() if len(meta_lines) > 1 else ""
+            if last_byte and last_byte != "0a":
+                total_lines += 1
+            elif not last_byte:
+                # od/BusyBox reduced builds may yield empty output; keep the
+                # uncorrected wc -l count but make the degraded mode visible.
+                try:
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        "read_file last-byte probe empty for %s (file_size=%s); "
+                        "total_lines left at wc -l=%s",
+                        path, file_size, total_lines,
+                    )
+                except Exception:
+                    pass
+        else:
             total_lines = 0
-        
+            last_byte = "0a"  # empty file: no content lines, no phantom strip
+
         # Check if truncated
         truncated = total_lines > end_line
         hint = None
@@ -1611,12 +1640,9 @@ class ShellFileOperations(FileOperations):
         # ``cut`` (unlike sed -n p) always newline-terminates its output,
         # so a file whose final line has no trailing newline would grow a
         # phantom empty last line. Only possible when this page reaches the
-        # file's final line; probe the last byte and strip the artifact.
+        # file's final line; reuse last_byte from the meta probe above.
         if not truncated and read_output.endswith('\n'):
-            tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)} | wc -l"
-            tail_result = self._exec(tail_cmd)
-            tail_output = _strip_terminal_fence_leaks(tail_result.stdout)
-            if tail_result.exit_code == 0 and tail_output.strip() == "0":
+            if last_byte and last_byte != "0a":
                 read_output = read_output[:-1]
 
         # Ambiguous-silence guards: an empty content string is

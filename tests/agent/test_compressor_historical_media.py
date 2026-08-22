@@ -107,6 +107,114 @@ class TestStripHistoricalMedia:
         # Second pass is a no-op — no images left before the anchor.
         assert second is first
 
+    def test_strips_stale_tool_result_images_when_no_user_image_exists(self):
+        """#89938: vision_analyze results are the only images in the session.
+
+        Before this rule the anchor stayed at -1 and the list came back
+        untouched, so every base64 blob rode along on every request.
+        """
+        msgs = [
+            {"role": "user", "content": "look at these"},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "c", "content": [TEXT, IMG_URL]},
+        ]
+        out = _strip_historical_media(msgs)
+
+        assert not _content_has_images(out[1]["content"])
+        assert not _content_has_images(out[2]["content"])
+        # The newest tool image is what the model is reasoning about.
+        assert _content_has_images(out[3]["content"])
+
+    def test_first_message_user_image_no_longer_blocks_tool_stripping(self):
+        """#89938's other half: ``anchor <= 0`` used to return early.
+
+        One attachment on the opening message plus a run of vision tool calls
+        is the exact reproduction in the report - and the old early return
+        meant the 413 recovery compaction freed nothing.
+        """
+        msgs = [
+            {"role": "user", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
+        ]
+        out = _strip_historical_media(msgs)
+
+        # The opening attachment keeps today's treatment: nothing precedes it.
+        assert _content_has_images(out[0]["content"])
+        assert not _content_has_images(out[1]["content"])
+        assert _content_has_images(out[2]["content"])
+
+    def test_newest_tool_image_survives_inside_the_protected_tail(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
+        ]
+        out = _strip_historical_media(msgs)
+
+        # The user anchor is index 1, so nothing before it changes and the
+        # anchor itself is kept byte-for-byte (test_compressor_zero_user_guard
+        # depends on that).
+        assert out[1] is msgs[1]
+        assert not _content_has_images(out[2]["content"])
+        assert _content_has_images(out[3]["content"])
+
+    def test_tool_image_before_the_user_anchor_is_still_stripped(self):
+        """Rule 1 keeps precedence over rule 2 where the two disagree."""
+        msgs = [
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": [TEXT, IMG_URL]},
+        ]
+        out = _strip_historical_media(msgs)
+
+        # Index 0 is the newest *tool* image, but it sits before the user
+        # anchor, which has always stripped it. That must not regress.
+        assert not _content_has_images(out[0]["content"])
+        assert _content_has_images(out[2]["content"])
+
+    def test_unchanged_when_nothing_carries_images(self):
+        msgs = [
+            {"role": "user", "content": [TEXT]},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT]},
+        ]
+        assert _strip_historical_media(msgs) is msgs
+
+    def test_single_tool_image_is_left_alone(self):
+        msgs = [
+            {"role": "user", "content": "look"},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+        ]
+        assert _strip_historical_media(msgs) is msgs
+
+    def test_idempotent_over_tool_images(self):
+        msgs = [
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
+        ]
+        first = _strip_historical_media(msgs)
+        assert first is not msgs
+        assert _strip_historical_media(first) is first
+
+    def test_stripped_tool_message_drops_its_api_content_sidecar(self):
+        """Replaying the sidecar would resend the bytes the strip removed."""
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "a",
+                "content": [TEXT, IMG_URL],
+                "api_content": "the exact multimodal bytes sent last turn",
+            },
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, IMG_URL]},
+        ]
+        out = _strip_historical_media(msgs)
+
+        assert "api_content" not in out[0]
+        # The input list is never mutated.
+        assert "api_content" in msgs[0]
+
     def test_non_dict_messages_pass_through(self):
         msgs = [
             "not-a-dict",  # shouldn't crash
@@ -166,3 +274,56 @@ class TestCompressIntegration:
             assert not _content_has_images(m.get("content")), (
                 f"Stale image in {m.get('role')!r} message after compression"
             )
+
+    def test_compress_frees_stale_vision_tool_results(self, compressor):
+        """#89938 end to end: the 413 recovery compaction must free bytes.
+
+        The reported session had one attachment on the opening message and a
+        run of ``vision_analyze`` results after it. ``anchor <= 0`` made this
+        pass a no-op, so every recovery compaction returned a body that was
+        still multi-MB and the provider answered 413 again - seven times in
+        thirteen minutes.
+        """
+
+        def call(idx: str):
+            return [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": idx,
+                            "type": "function",
+                            "function": {"name": "vision_analyze", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": idx, "content": [TEXT, IMG_URL]},
+            ]
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": [TEXT, IMG_URL]},  # the ONLY user image, first
+            *call("a"),
+            *call("b"),
+            {"role": "user", "content": "and this one?"},
+            *call("c"),
+        ]
+        with patch.object(compressor, "_generate_summary", return_value="SUMMARY TEXT"):
+            out = compressor.compress(msgs, current_tokens=60_000)
+
+        with_images = [m for m in out if isinstance(m, dict) and _content_has_images(m.get("content"))]
+        # Exactly one survivor: the newest vision result. The opening
+        # attachment is protect_first_n material and may or may not survive
+        # the summary window, so assert on what must NOT be there instead.
+        assert len(with_images) <= 2
+        stale_tool_images = [
+            m for m in out
+            if isinstance(m, dict)
+            and m.get("role") == "tool"
+            and _content_has_images(m.get("content"))
+            and m.get("tool_call_id") != "c"
+        ]
+        assert stale_tool_images == [], (
+            "vision_analyze results a, b still carry base64 after compression"
+        )

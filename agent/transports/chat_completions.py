@@ -28,6 +28,126 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _strip_enclosing_markdown_fence(text: str) -> str:
+    """Strip a markdown code fence that wraps the entire ``text``, if present.
+
+    Handles both a well-formed fence (opening ```` ``` ```` or ```` ```json
+    ```` on its own line, matching closing ```` ``` ````) and the malformed
+    case where the model never emits a closing fence at all. Leaves ``text``
+    unchanged if it isn't a whole-string fence (e.g. a fence embedded in a
+    longer prose reply).
+    """
+    if not text.startswith("```"):
+        return text
+    first_newline = text.find("\n")
+    if first_newline == -1:
+        return text
+    opening = text[3:first_newline].strip()
+    if opening and not opening.isalnum():
+        return text
+    body = text[first_newline + 1:]
+    if body.endswith("```"):
+        body = body[: -3]
+    return body.strip()
+
+
+def _recover_calls_before_trailing_narrative(
+    calls: list["ToolCall"], text: str, ws_start: int, idx: int
+) -> list["ToolCall"] | None:
+    """Called when decoding stops before consuming all of ``text``.
+
+    If at least one valid call was already parsed and the unparsed
+    remainder is separated from it by a blank line, keep the calls parsed
+    so far and drop the remainder as hallucinated narrative. Otherwise
+    there's nothing safe to recover — bail out entirely, matching the
+    strict all-or-nothing behavior this replaces.
+    """
+    if not calls:
+        return None
+    if text[ws_start:idx].count("\n") < 2:
+        return None
+    return calls
+
+
+def _parse_leaked_tool_calls(content: Any) -> list["ToolCall"] | None:
+    """Recover tool call(s) a model emitted as raw JSON in ``content``
+    instead of the structured ``tool_calls`` field.
+
+    Ollama's OpenAI-compatible endpoint doesn't reliably populate
+    ``tool_calls`` for some local models (hermes-agent#5867): the model
+    still decides to call a tool and formats the call correctly, but the
+    endpoint returns it as plain text — one or more concatenated JSON
+    objects shaped ``{"name": ..., "arguments": {...}}`` (optionally with a
+    literal ``"type": "function"`` key, mirroring the real tool-call object
+    shape), whitespace separated, with no enclosing array, ``arguments``
+    omitted for zero-arg calls. Reproduced live against qwen2.5-coder:7b.
+
+    Deliberately strict: the *entire* stripped content must decode as a
+    sequence of such objects with nothing else around them, so this never
+    misfires on ordinary prose that happens to contain a JSON fragment.
+
+    Also recovers a narrower variant where the model wraps the leaked call
+    in a markdown code fence (```` ```json ... ``` ````) — including the
+    malformed case where the closing fence is missing entirely. Only a
+    fence wrapping the *whole* content is stripped, so a code block that's
+    part of a longer prose reply is left alone.
+
+    A third variant: one or more well-formed leaked calls followed by a
+    hallucinated narrative paragraph (e.g. a fake "task delegated"
+    confirmation, or — seen live — a fabricated ``[OUT-OF-BAND USER
+    MESSAGE]`` marker mimicking Hermes's own trusted channel). That
+    trailing text is discarded, never surfaced as real content. Only
+    recovered when it's separated from the last valid call by a blank
+    line (a real paragraph break): text that continues in the same
+    paragraph (no blank line) is left alone and treated as ordinary prose
+    that merely starts with JSON-like syntax, preserving the same
+    false-positive guarantee as the exact-match case above.
+    """
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text:
+        return None
+    text = _strip_enclosing_markdown_fence(text)
+
+    decoder = json.JSONDecoder()
+    calls: list[ToolCall] = []
+    idx = 0
+    length = len(text)
+    while idx < length:
+        ws_start = idx
+        while idx < length and text[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except (json.JSONDecodeError, ValueError):
+            return _recover_calls_before_trailing_narrative(calls, text, ws_start, idx)
+        if not isinstance(obj, dict) or not isinstance(obj.get("name"), str):
+            return _recover_calls_before_trailing_narrative(calls, text, ws_start, idx)
+        arguments = obj.get("arguments", {})
+        if not isinstance(arguments, dict):
+            return _recover_calls_before_trailing_narrative(calls, text, ws_start, idx)
+        extra_keys = set(obj.keys()) - {"name", "arguments"}
+        if extra_keys and not (extra_keys == {"type"} and obj.get("type") == "function"):
+            # Exact match on {name, arguments} or {name, arguments, type:
+            # "function"} — the latter is the literal shape of a real
+            # OpenAI tool-call object, a common leak variant. Anything else
+            # still falls through to narrative recovery / rejection so the
+            # false-positive guarantee is unchanged.
+            return _recover_calls_before_trailing_narrative(calls, text, ws_start, idx)
+        calls.append(
+            ToolCall(
+                id=None,
+                name=obj["name"],
+                arguments=json.dumps(arguments, ensure_ascii=False),
+            )
+        )
+        idx = end
+    return calls or None
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -938,6 +1058,16 @@ class ChatCompletionsTransport(ProviderTransport):
                     )
                 )
 
+        # Ollama /v1 fallback: the endpoint sometimes leaves tool_calls
+        # empty and puts the call as raw JSON in content instead. See
+        # _parse_leaked_tool_calls for the observed shape (hermes-agent#5867).
+        content_had_leaked_tool_calls = False
+        if not tool_calls:
+            leaked = _parse_leaked_tool_calls(getattr(msg, "content", None))
+            if leaked is not None:
+                tool_calls = leaked
+                content_had_leaked_tool_calls = True
+
         usage = None
         if hasattr(response, "usage") and response.usage:
             u = response.usage
@@ -977,6 +1107,10 @@ class ChatCompletionsTransport(ProviderTransport):
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
         content = getattr(msg, "content", None)
+        if content_had_leaked_tool_calls:
+            content = None
+            if finish_reason in (None, "stop"):
+                finish_reason = "tool_calls"
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

@@ -309,8 +309,11 @@ class LSPService:
             return
         try:
             # Outer join budget must exceed the inner wait budget or a
-            # slow-but-alive server gets falsely marked broken.
-            t = max(8.0, self._wait_timeout + 3.0)
+            # slow-but-alive server gets falsely marked broken.  The
+            # floor keeps the default behavior (8s with default config)
+            # while letting larger user-configured wait_timeout values
+            # scale the join budget instead of capping it at 8s.
+            t = max(DIAGNOSTICS_DOCUMENT_WAIT + 3.0, self._wait_timeout + 3.0)
             diags = self._loop.run(self._snapshot_async(file_path), timeout=t)
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
         except Exception as e:  # noqa: BLE001
@@ -483,7 +486,9 @@ class LSPService:
             return []
         try:
             version = await client.open_file(file_path, language_id=language_id_for(file_path))
-            fresh = await client.wait_for_diagnostics(file_path, version, mode=self._wait_mode)
+            fresh = await client.wait_for_diagnostics(
+                file_path, version, mode=self._wait_mode, timeout=self._wait_timeout
+            )
         except Exception as e:  # noqa: BLE001
             logger.debug("snapshot open/wait failed: %s", e)
             return []

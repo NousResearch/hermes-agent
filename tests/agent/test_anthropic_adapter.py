@@ -11,6 +11,7 @@ import pytest
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
+    _is_github_copilot_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
@@ -1233,7 +1234,91 @@ class TestThinkingBlockSignatureManagement:
     """Tests for the thinking block handling strategy:
     strip from old turns, preserve latest signed, downgrade unsigned."""
 
+    @staticmethod
+    def _signed_tool_turn():
+        return [
+            {"role": "user", "content": "Inspect the file"},
+            {
+                "role": "assistant",
+                "content": "I'll inspect it.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Need the exact contents.",
+                        "signature": "signed-thinking",
+                    }
+                ],
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Need the exact contents.",
+                        "signature": "signed-thinking",
+                    },
+                    {"type": "text", "text": "I'll inspect it."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read_file",
+                        "input": {"path": "a.txt"},
+                    },
+                ],
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"a.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_1",
+                "name": "read_file",
+                "content": "contents",
+            },
+        ]
 
+    def _assistant_blocks(self, base_url):
+        _, converted = convert_messages_to_anthropic(
+            self._signed_tool_turn(),
+            base_url=base_url,
+            model="claude-opus-test",
+        )
+        assistant = next(m for m in converted if m["role"] == "assistant")
+        return assistant["content"]
+
+    def test_copilot_host_detection_is_hostname_safe(self):
+        assert _is_github_copilot_anthropic_endpoint(
+            "https://api.githubcopilot.com"
+        )
+        assert _is_github_copilot_anthropic_endpoint(
+            "https://enterprise.githubcopilot.com/v1"
+        )
+        assert not _is_github_copilot_anthropic_endpoint(
+            "https://evil.example/githubcopilot.com/v1"
+        )
+        assert not _is_github_copilot_anthropic_endpoint(
+            "https://githubcopilot.com.evil.example/v1"
+        )
+
+    def test_copilot_replays_signed_thinking_before_tool_use(self):
+        blocks = self._assistant_blocks("https://api.githubcopilot.com")
+
+        assert [b["type"] for b in blocks] == ["thinking", "text", "tool_use"]
+        assert blocks[0] == {
+            "type": "thinking",
+            "thinking": "Need the exact contents.",
+            "signature": "signed-thinking",
+        }
+
+    def test_generic_third_party_still_strips_signed_thinking(self):
+        blocks = self._assistant_blocks("https://proxy.example.com/anthropic")
+
+        assert all(b.get("type") != "thinking" for b in blocks)
+        assert [b["type"] for b in blocks] == ["text", "tool_use"]
 
 
     def test_redacted_thinking_with_data_preserved(self):

@@ -56,6 +56,51 @@ def test_sibling_returns_empty_for_non_thread_source():
     assert runner._sibling_thread_run_keys(nonthread, "agent:main:discord:group:chan1:userA") == []
 
 
+def test_sibling_matches_under_a_named_profile():
+    """The prefix must follow the caller's namespace, not a hardcoded ``main``.
+
+    ``_session_key_namespace`` puts a named profile in the namespace slot
+    (``agent:coder:...``), so a hardcoded ``agent:main`` prefix matched nothing
+    and ``/stop`` silently left the sibling's run alive under every profile
+    except the default one.
+    """
+    runner = object.__new__(GatewayRunner)
+    own = build_session_key(
+        _thread_source("userA"), thread_sessions_per_user=True, profile="coder"
+    )
+    sibling = build_session_key(
+        _thread_source("userB"), thread_sessions_per_user=True, profile="coder"
+    )
+    # Same chat+thread but a DIFFERENT profile must stay isolated.
+    other_profile = build_session_key(
+        _thread_source("userB"), thread_sessions_per_user=True, profile="writer"
+    )
+    # An unrelated thread whose id merely starts with this one.
+    other_thread = build_session_key(
+        _thread_source("userB", thread_id="thr11"),
+        thread_sessions_per_user=True,
+        profile="coder",
+    )
+    assert own.startswith("agent:coder:")
+    runner._running_agents = {
+        own: _FakeAgent(),
+        sibling: _FakeAgent(),
+        other_profile: _FakeAgent(),
+        other_thread: _FakeAgent(),
+    }
+    assert runner._sibling_thread_run_keys(_thread_source("userA"), own) == [sibling]
+
+
+def test_sibling_default_profile_prefix_is_unchanged():
+    """The default profile keeps the byte-identical ``agent:main`` behaviour."""
+    runner = object.__new__(GatewayRunner)
+    own = _per_user_key("userA")
+    sibling = _per_user_key("userB")
+    assert own.startswith("agent:main:")
+    runner._running_agents = {own: _FakeAgent(), sibling: _FakeAgent()}
+    assert runner._sibling_thread_run_keys(_thread_source("userA"), own) == [sibling]
+
+
 # ---------------------------------------------------------------------------
 # _handle_stop_command fallback path
 # ---------------------------------------------------------------------------

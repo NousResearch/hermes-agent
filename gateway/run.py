@@ -21216,7 +21216,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Only applies when the message originates in a thread.  In per-user
         thread mode (``thread_sessions_per_user=True``) each participant gets
         an isolated session key of the form
-        ``agent:main:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``,
+        ``agent:{ns}:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``
+        (``{ns}`` being ``main`` on the default profile, or the profile name
+        under multi-profile multiplexing),
         so a run started by another user is invisible to the caller's own
         ``/stop``.  This returns the keys of any *actually running* agents
         (not the pending sentinel, not the caller's own key) whose key shares
@@ -21231,13 +21233,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return []
         platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
+        # Take the namespace slot from the caller's OWN key rather than
+        # hardcoding ``main``.  ``_session_key_namespace`` puts the profile in
+        # that slot (``agent:coder:...``) under multi-profile multiplexing, so
+        # a hardcoded ``agent:main`` prefix matched nothing for any named
+        # profile — ``/stop`` silently reported no sibling runs and left the
+        # other participants' runs alive.  Siblings share the caller's
+        # namespace by definition, so deriving it also keeps profiles
+        # isolated: a /stop in one profile must not reach another's runs.
+        own_parts = str(own_key or "").split(":")
+        namespace = (
+            own_parts[1]
+            if len(own_parts) > 1 and own_parts[0] == "agent" and own_parts[1]
+            else "main"
+        )
         # Prefix that every per-user key in this thread shares, up to and
         # including the thread_id segment.  Matching either the exact
         # shared-thread key or any key with a further (user_id) segment
         # (prefix + ":") avoids cross-matching an unrelated thread whose id
         # merely starts with this one.
         prefix = ":".join(
-            ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
+            [f"agent:{namespace}", platform, chat_type, str(chat_id), str(thread_id)]
         )
         matches = []
         for key, agent in self._running_agent_items():

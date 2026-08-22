@@ -1119,6 +1119,10 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
+            # Custom titling instructions; when set, replaces the built-in
+            # prompt template wholesale. JSON response format + word guard
+            # still apply.
+            "system_prompt": "",
         },
         "memory_query_rewrite": {
             "provider": "auto",

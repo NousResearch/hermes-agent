@@ -1193,6 +1193,29 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
 `/title` and `hermes sessions rename`.
 
+To customize how titles are written (e.g. for a legal, medical, or team-specific
+vocabulary), set `auxiliary.title_generation.system_prompt`. When present it
+replaces the built-in titling instructions wholesale:
+
+```yaml
+auxiliary:
+  title_generation:
+    system_prompt: |
+      You name chat sessions for a legal practice. Given the user's opening
+      message, write a title that helps them find this conversation again.
+      Rules:
+      - 4 to 8 words, sentence case
+      - Include matter names or case references when provided
+      - Keep dates, statute numbers, and legal terms exact
+      - No trailing punctuation, no quotes
+      Reply with JSON only: {"title": "..."}
+```
+
+The response is still constrained to a single `title` field and still passes
+the answer-shaped-output guard, so a misconfigured prompt degrades to no title
+rather than a broken one. `auxiliary.title_generation.language` is ignored while
+a custom prompt is set — bake the language rule into your prompt text.
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, web extraction) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:

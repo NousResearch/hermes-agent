@@ -9,6 +9,7 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _title_system_prompt,
 )
 from hermes_state import SessionDB
 
@@ -597,3 +598,71 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestTitleSystemPrompt:
+    """auxiliary.title_generation.system_prompt overrides the built-in template."""
+
+    def _cfg(self, prompt):
+        return {"auxiliary": {"title_generation": {"system_prompt": prompt}}}
+
+    def test_reads_configured_prompt(self):
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg("  Name it like a lawyer.  ")):
+            assert _title_system_prompt() == "Name it like a lawyer."
+
+    def test_empty_means_default_template(self):
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg("")):
+            assert _title_system_prompt() == ""
+
+    def test_missing_key_means_default_template(self):
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert _title_system_prompt() == ""
+
+    def test_non_string_ignored(self):
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg(12345)):
+            assert _title_system_prompt() == ""
+
+    def test_config_error_falls_back_to_default(self):
+        with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad")):
+            assert _title_system_prompt() == ""
+
+    def test_generate_title_uses_custom_prompt_verbatim(self):
+        custom = "You name cases. Reply with JSON only: {\"title\": \"...\"}"
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Smith v Jones filing"}'
+            return resp
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=self._cfg(custom)), \
+             patch("hermes_cli.config.load_config", return_value=self._cfg(custom)), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title(user_message="we filed the motion today")
+
+        assert title == "Smith v Jones filing"
+        system_msg = captured["messages"][0]["content"]
+        assert system_msg == custom
+        assert "_TITLE_PROMPT_TEMPLATE" not in repr(system_msg)
+        # Built-in template markers absent when a custom prompt is set.
+        assert "Good:" not in system_msg
+
+    def test_default_template_used_when_no_custom_prompt(self):
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Login button fix"}'
+            return resp
+
+        with patch("hermes_cli.config.load_config_readonly", return_value={}), \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title(user_message="fix the login button")
+
+        system_msg = captured["messages"][0]["content"]
+        assert "You name chat sessions" in system_msg

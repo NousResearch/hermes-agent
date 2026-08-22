@@ -167,6 +167,28 @@ def _title_language() -> str:
         return ""
 
 
+def _title_system_prompt() -> str:
+    """Return a user-configured system prompt override, or empty for default.
+
+    ``auxiliary.title_generation.system_prompt`` replaces the built-in
+    _TITLE_PROMPT_TEMPLATE entirely when set. The JSON response format and the
+    answer-shaped-output guard still apply — only the instructions change.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        value = (
+            (load_config_readonly() or {}).get("auxiliary")
+            or {}
+        ).get("title_generation", {}).get("system_prompt", "")
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+    except Exception:
+        logger.debug("Failed to read title_generation.system_prompt", exc_info=True)
+        return ""
+
+
 def _auto_title_enabled() -> bool:
     """Return whether automatic session title generation is enabled."""
     try:
@@ -384,15 +406,23 @@ def generate_title(
     if not user_snippet.strip():
         return None
 
-    language = _title_language()
-    language_rule = (
-        _LANGUAGE_RULE_PINNED.format(language=language)
-        if language
-        else _LANGUAGE_RULE_MATCH_USER
-    )
-    # Placeholder substitution, not str.format: the prompt embeds literal JSON
-    # braces as few-shot examples, which format() would try to interpolate.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace("__LANGUAGE_RULE__", language_rule)
+    custom_prompt = _title_system_prompt()
+    if custom_prompt:
+        # User-authored prompt replaces the template wholesale. The response
+        # format below still constrains output to {"title": "..."} and the
+        # answer-shaped guard still applies, so a misconfigured prompt degrades
+        # to no-title rather than a broken title.
+        prompt = custom_prompt
+    else:
+        language = _title_language()
+        language_rule = (
+            _LANGUAGE_RULE_PINNED.format(language=language)
+            if language
+            else _LANGUAGE_RULE_MATCH_USER
+        )
+        # Placeholder substitution, not str.format: the prompt embeds literal
+        # JSON braces as few-shot examples, which format() would interpolate.
+        prompt = _TITLE_PROMPT_TEMPLATE.replace("__LANGUAGE_RULE__", language_rule)
 
     messages = [
         {"role": "system", "content": prompt},

@@ -394,6 +394,104 @@ class TestMattermostMentionBehavior:
             assert self.adapter.handle_message.called
 
 
+class TestMattermostChannelAndDMAllowlists:
+    """Per-channel and DM sender allowlists in upstream config vocabulary.
+
+    ``platforms.mattermost.extra.groups.<channel_id>.allow_from`` narrows a
+    channel; ``platforms.mattermost.extra.allow_from`` narrows DMs. The two are
+    independent, and an unset allowlist inherits existing behavior (no new
+    denial) — only an explicitly configured allowlist restricts senders.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _event(self, *, user_id="user_allowed", channel_type="D", channel_id="dm_1"):
+        # Non-DM posts must mention the bot to clear the default mention gate.
+        message = "synthetic" if channel_type == "D" else "@hermes-bot synthetic"
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps({
+                    "id": f"post_{user_id}_{channel_id}",
+                    "user_id": user_id,
+                    "channel_id": channel_id,
+                    "message": message,
+                }),
+                "channel_type": channel_type,
+                "sender_name": "@synthetic",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_per_channel_allow_passes_listed_sender(self):
+        self.adapter.config.extra.update({
+            "groups": {"agent_private": {"allow_from": ["user_allowed"]}},
+        })
+        await self.adapter._handle_ws_event(
+            self._event(channel_type="P", channel_id="agent_private")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_per_channel_allow_denies_unlisted_sender_and_other_channel(self):
+        self.adapter.config.extra.update({
+            "groups": {"agent_private": {"allow_from": ["user_allowed"]}},
+        })
+        # Unlisted sender in the restricted channel is dropped.
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_type="P", channel_id="agent_private")
+        )
+        assert not self.adapter.handle_message.called
+
+        # A channel with no configured allowlist inherits existing behavior.
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_type="P", channel_id="other_private")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dm_allow_passes_listed_and_denies_unlisted(self):
+        self.adapter.config.extra.update({"allow_from": ["user_allowed"]})
+
+        await self.adapter._handle_ws_event(self._event(user_id="user_allowed"))
+        assert self.adapter.handle_message.call_count == 1
+
+        await self.adapter._handle_ws_event(self._event(user_id="user_denied"))
+        assert self.adapter.handle_message.call_count == 1  # unchanged: denied
+
+    @pytest.mark.asyncio
+    async def test_dm_allowlist_does_not_restrict_channels(self):
+        # Asymmetry: a DM allowlist must not narrow channel access.
+        self.adapter.config.extra.update({"allow_from": ["user_allowed"]})
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_type="P", channel_id="any_channel")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unset_allowlist_inherits_existing_behavior(self):
+        # No allow_from / groups configured: DM and channel both pass unchanged.
+        await self.adapter._handle_ws_event(self._event(user_id="anyone"))
+        await self.adapter._handle_ws_event(
+            self._event(user_id="anyone", channel_type="P", channel_id="agent_private")
+        )
+        assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_normalized_id_set_from_comma_string(self):
+        # A comma-separated scalar with whitespace normalizes to a member set.
+        self.adapter.config.extra.update({"allow_from": " user_allowed , user_two "})
+        await self.adapter._handle_ws_event(self._event(user_id="user_two"))
+        assert self.adapter.handle_message.call_count == 1
+
+        await self.adapter._handle_ws_event(self._event(user_id="user_denied"))
+        assert self.adapter.handle_message.call_count == 1  # unchanged: denied
+
+
 # ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------

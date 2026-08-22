@@ -86,6 +86,71 @@ def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _normalized_id_set(value: Any) -> set[str]:
+    """Return a normalized set from a YAML list or comma-separated string."""
+    if isinstance(value, list):
+        return {str(item).strip() for item in value if str(item).strip()}
+    if isinstance(value, str):
+        return {item.strip() for item in value.split(",") if item.strip()}
+    return set()
+
+
+def _channel_group_cfg(groups: Dict[str, Any], channel_id: str) -> Optional[Dict[str, Any]]:
+    """Resolve the ``groups`` entry for *channel_id*.
+
+    Mirrors the WeCom-group lookup in ``gateway/authz_mixin.py``: an exact
+    channel-ID key wins, then a case-insensitive match, then a ``"*"`` catch-all.
+    """
+    group_cfg = groups.get(str(channel_id))
+    if not isinstance(group_cfg, dict):
+        lowered = str(channel_id).lower()
+        for key, value in groups.items():
+            if isinstance(key, str) and key.lower() == lowered and isinstance(value, dict):
+                group_cfg = value
+                break
+    if not isinstance(group_cfg, dict):
+        group_cfg = groups.get("*")
+    return group_cfg if isinstance(group_cfg, dict) else None
+
+
+def _intake_scope_allows(
+    extra: Dict[str, Any],
+    sender_id: str,
+    channel_type_raw: str,
+    channel_id: str,
+) -> bool:
+    """Enforce optional per-channel / DM sender allowlists at intake.
+
+    Uses upstream's existing config vocabulary — the top-level ``allow_from``
+    (DMs) and the WeCom-style ``groups.<channel_id>.allow_from`` (channels), the
+    same shapes ``gateway/authz_mixin.py`` reads. An unset (or empty) allowlist
+    inherits the existing platform-wide behavior — it adds no new denial — and
+    only an explicitly configured, non-empty allowlist narrows who may reach the
+    agent. DM and channel allowlists are independent, so DM access can be
+    restricted while channel access stays open (or vice versa) without a bespoke
+    gate. ``"*"`` allows any sender.
+    """
+    if not isinstance(extra, dict):
+        return True
+
+    if channel_type_raw == "D":
+        allowed = _normalized_id_set(extra.get("allow_from"))
+    else:
+        groups = extra.get("groups")
+        if not isinstance(groups, dict):
+            return True
+        group_cfg = _channel_group_cfg(groups, channel_id)
+        if group_cfg is None:
+            return True
+        allowed = _normalized_id_set(
+            group_cfg.get("allow_from", group_cfg.get("allowFrom"))
+        )
+
+    if not allowed:
+        return True  # unset/empty inherits existing behavior (no new denial)
+    return "*" in allowed or sender_id in allowed
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter runtime dependency is available."""
     try:
@@ -854,6 +919,28 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
 
+        # Resolve sender info up front so the optional per-channel / DM sender
+        # allowlists can gate intake before any further work.
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+
+        # Optional per-channel / DM sender allowlists, expressed in upstream's
+        # existing config vocabulary (config.yaml
+        # ``platforms.mattermost.extra.allow_from`` for DMs and
+        # ``.groups.<channel_id>.allow_from`` for channels — the same shapes
+        # gateway/authz_mixin.py reads). Unset inherits existing platform-wide
+        # behavior; an explicit allowlist narrows who may reach the agent.
+        if not _intake_scope_allows(
+            self.config.extra or {}, sender_id, channel_type_raw, channel_id
+        ):
+            logger.debug(
+                "Mattermost: ignoring sender outside configured allowlist "
+                "(type=%s channel=%s)",
+                channel_type_raw,
+                channel_id,
+            )
+            return
+
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
@@ -912,10 +999,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
-
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Thread support: if the post is in a thread, use root_id. In
         # thread mode, top-level channel posts are valid roots for progress.

@@ -1886,6 +1886,14 @@ def dump_api_request_debug(
         api_key = None
         try:
             api_key = getattr(agent.client, "api_key", None)
+            if not api_key:
+                # OAuth / setup-token credentials construct the Anthropic
+                # SDK client with auth_token= and leave api_key=None, so
+                # reading only api_key reports "Bearer None" for fully
+                # authenticated requests (#91319). The Entra-ID variant's
+                # auth_token is a documented sentinel — showing it masked
+                # keeps the dump honest about which auth surface is active.
+                api_key = getattr(agent.client, "auth_token", None)
         except Exception as e:
             _ra().logger.debug("Could not extract API key for debug dump: %s", e)
 

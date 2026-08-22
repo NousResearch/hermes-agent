@@ -2399,7 +2399,25 @@ class TestNewEndpoints:
 
     # --- Profiles ---
 
+    def test_profile_setup_command_uses_canonical_profile_flag(self):
+        from hermes_constants import get_hermes_home
 
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+
+        resp = self.client.get("/api/profiles/coder/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "hermes -p coder setup"
+
+    def test_profile_setup_command_uses_hermes_for_default_profile(self):
+        from hermes_constants import get_hermes_home
+
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/default/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "hermes setup"
 
     def test_profiles_create_builder_mcp_auth_is_profile_scoped(
         self, monkeypatch

@@ -25,11 +25,12 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            reactions: true            # false = no "seen" reaction on inbound messages
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
     BUZZ_CLI_PATH, BUZZ_CREDENTIALS_FILE, BUZZ_ALLOWED_USERS,
-    BUZZ_ALLOW_ALL_USERS
+    BUZZ_ALLOW_ALL_USERS, BUZZ_REACTIONS
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
 ``~/.hermes/.env``.  It is passed to the CLI via the subprocess
@@ -638,6 +639,16 @@ class BuzzAdapter(BasePlatformAdapter):
         """Buzz has no typing indicator API — no-op."""
         pass
 
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env.
+
+        Same contract as the Discord adapter and the generic hook in
+        ``gateway/platforms/base.py``: ``<PLATFORM>_REACTIONS``, default on.
+        Buzz shipped without this gate, so the "seen" reaction fired even for
+        a deployment that had turned reactions off on every other platform.
+        """
+        return os.getenv("BUZZ_REACTIONS", "true").lower() not in {"false", "0", "no"}
+
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Add a reaction to a message via buzz-cli.
 
@@ -1245,7 +1256,8 @@ class BuzzAdapter(BasePlatformAdapter):
         # Add a "seen" reaction after dispatching — signals to the user that
         # their message was received and is being processed.
         try:
-            await self.send_reaction(chat_id, message_id, "👀")
+            if self._reactions_enabled():
+                await self.send_reaction(chat_id, message_id, "👀")
         except Exception:
             logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
 
@@ -1316,6 +1328,8 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    if "reactions" in extra and not os.getenv("BUZZ_REACTIONS"):
+        os.environ["BUZZ_REACTIONS"] = str(extra["reactions"]).lower()
     return None
 
 

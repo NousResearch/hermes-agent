@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -23,6 +24,7 @@ check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
+_apply_yaml_config = _buzz_mod._apply_yaml_config
 _standalone_send = _buzz_mod._standalone_send
 
 # Real key pair (Chip's public identity — public information, not a secret)
@@ -42,6 +44,7 @@ _ENV_VARS = (
     "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
     "BUZZ_ALLOW_ALL_USERS",
+    "BUZZ_REACTIONS",
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
@@ -538,3 +541,77 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+# ── Reactions gate ────────────────────────────────────────────────────────
+
+
+class TestBuzzReactionsGate:
+    """The "seen" reaction must honor the per-platform reactions setting.
+
+    These drive the real ``_dispatch_message`` rather than calling the gate
+    helper directly: a correct helper whose call site never consults it would
+    pass a helper-only test while still reacting to every message.
+    """
+
+    async def _dispatch(self, adapter):
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        # Stub the base-class entry point (session plumbing outside this
+        # change); the wiring under test is the REAL _dispatch_message body,
+        # its gate, and whether send_reaction is reached.
+        adapter.handle_message = fake_handle_message
+        adapter._message_handler = fake_handle_message
+        adapter._channel_names[CHANNEL] = "general"
+        reacted = []
+
+        async def fake_reaction(chat_id, message_id, emoji):
+            reacted.append((chat_id, message_id, emoji))
+            return True
+
+        adapter.send_reaction = fake_reaction
+        await adapter._dispatch_message(
+            text="hello",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="alice",
+            message_id="evt1",
+            created_at=1000,
+        )
+        return handled, reacted
+
+    @pytest.mark.asyncio
+    async def test_seen_reaction_fires_by_default(self):
+        handled, reacted = await self._dispatch(_make_adapter())
+        assert reacted == [(CHANNEL, "evt1", "👀")]
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "0", "no"])
+    async def test_reactions_disabled_suppresses_the_seen_reaction(self, monkeypatch, value):
+        monkeypatch.setenv("BUZZ_REACTIONS", value)
+        handled, reacted = await self._dispatch(_make_adapter())
+        assert reacted == []
+        # The gate must only suppress the reaction, never the dispatch itself.
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_explicit_true_still_reacts(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_REACTIONS", "true")
+        _handled, reacted = await self._dispatch(_make_adapter())
+        assert len(reacted) == 1
+
+    def test_config_yaml_reactions_key_bridges_to_env(self):
+        _apply_yaml_config({}, {"extra": {"relay_url": "https://x", "reactions": False}})
+        assert os.environ.get("BUZZ_REACTIONS") == "false"
+
+    def test_env_wins_over_config(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_REACTIONS", "false")
+        _apply_yaml_config({}, {"extra": {"relay_url": "https://x", "reactions": True}})
+        assert os.environ.get("BUZZ_REACTIONS") == "false"
+
+    def test_absent_config_key_sets_nothing(self):
+        _apply_yaml_config({}, {"extra": {"relay_url": "https://x"}})
+        assert os.environ.get("BUZZ_REACTIONS") is None

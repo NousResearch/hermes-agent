@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agentkey
+description: Optional hosted AgentKey MCP for live-data search, extraction, and structured data tools.
+source: https://github.com/chainbase-labs/Agentkey
+
+# AgentKey ships a hosted Streamable HTTP MCP endpoint. Hermes connects
+# directly; no local subprocess, package install, or per-provider API keys are
+# configured by this catalog entry.
+transport:
+  type: http
+  url: https://api.agentkey.app/v1/mcp
+
+# AgentKey's hosted endpoint supports MCP OAuth. Hermes handles discovery,
+# browser authorization, token exchange, and refresh through the standard MCP
+# OAuth flow.
+auth:
+  type: oauth
+
+# Keep the default surface focused on AgentKey's discovery/execution control
+# plane. Users can enable any additional server-exposed tools after probing
+# with `hermes mcp configure agentkey`.
+tools:
+  default_enabled:
+    - list_tools
+    - find_tools
+    - describe_tool
+    - execute_tool
+
+post_install: |
+  On first connection Hermes will open a browser to authenticate with AgentKey.
+  After auth, restart your Hermes session so the AgentKey MCP tools are loaded.
+
+  The default tool selection keeps the dynamic discovery/execution surface
+  enabled. Re-run the checklist any time with:
+    hermes mcp configure agentkey

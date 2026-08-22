@@ -24722,7 +24722,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # watcher blocks the entire event loop on the same lock froze it for 90+
                 # seconds until the liveness watchdog force-exited. Moving this off the
                 # loop thread prevents the freeze.
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 active_loops = await loop.run_in_executor(None, list_active_loops)
 
                 now = time.time()
@@ -24774,7 +24774,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     mgr = LoopManager(session_id=sid)
                     if not mgr.is_due(now):
                         continue
-                    wakeup = mgr.fire_tick()
+                    # fire_tick() is a write (BEGIN IMMEDIATE) that acquires self._lock,
+                    # same contention source as list_meta_prefix(). Run it in an executor
+                    # to avoid blocking the event loop.
+                    wakeup = await loop.run_in_executor(None, mgr.fire_tick)
                     if not wakeup:
                         continue
                     try:
@@ -24794,7 +24797,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # path and never hit the post-turn completion hook —
                         # complete the tick immediately (caps + scheduling).
                         if wakeup.lstrip().startswith("/"):
-                            mgr.complete_tick("")
+                            # complete_tick() is a write (BEGIN IMMEDIATE) that acquires
+                            # self._lock, same contention source as list_meta_prefix().
+                            # Run it in an executor to avoid blocking the event loop.
+                            await loop.run_in_executor(None, mgr.complete_tick, "")
                     except Exception as exc:
                         logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
                         try:

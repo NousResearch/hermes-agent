@@ -41,7 +41,6 @@ const {
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
-  ensureActiveGatewayOpen,
   ensureGatewayForProfile,
   setPrimaryGateway
 } = await import('./gateway')
@@ -136,7 +135,7 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
 
     // No activation was published for the dead dial — $connection keeps the
     // primary's descriptor (set by setPrimaryGateway), never the unreachable
-    // secondary's.
+    // secondary's. (Also the #92265 shape: publish requires an OPEN socket.)
     expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
 
     // Once the backend is reachable again, retrying the switch activates and

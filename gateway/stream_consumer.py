@@ -218,6 +218,7 @@ class GatewayStreamConsumer:
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
+        on_before_final_delivery: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
     ):
@@ -237,6 +238,10 @@ class GatewayStreamConsumer:
         # Gateway callers use this to pause typing refreshes before a slow
         # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
         self._on_before_finalize = on_before_finalize
+        # Fired once before any turn-final content can become visible. This is
+        # separate because the finalize hook intentionally follows an initial
+        # preview send for adapters that require a final edit.
+        self._on_before_final_delivery = on_before_final_delivery
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
@@ -341,6 +346,12 @@ class GatewayStreamConsumer:
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
         self._before_finalize_notified = False
+        self._before_final_delivery_notified = False
+        # A tool/segment boundary separates visible preamble from the answer
+        # that follows tool progress.  Once armed, the first progressive frame
+        # of that post-tool segment must pass the same progress-drain barrier as
+        # the terminal finalize frame; waiting only for _DONE is too late.
+        self._post_segment_delivery_barrier_armed = False
 
     def _stream_is_message(self) -> bool:
         """Whether THIS chat's transport treats the stream as the message.
@@ -416,6 +427,20 @@ class GatewayStreamConsumer:
             return
         try:
             result = self._on_before_finalize()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            pass
+
+    async def _notify_before_final_delivery(self) -> None:
+        """Run the final-delivery barrier exactly once, swallowing hook errors."""
+        if self._before_final_delivery_notified:
+            return
+        self._before_final_delivery_notified = True
+        if self._on_before_final_delivery is None:
+            return
+        try:
+            result = self._on_before_final_delivery()
             if inspect.isawaitable(result):
                 await result
         except Exception:
@@ -986,6 +1011,12 @@ class GatewayStreamConsumer:
                     ):
                         await self._suppress_silence_marker()
                         return
+                    if (
+                        self._accumulated
+                        or self._message_id is not None
+                        or self._already_sent
+                    ):
+                        await self._notify_before_final_delivery()
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -1034,6 +1065,13 @@ class GatewayStreamConsumer:
                 ):
                     should_edit = False
                 if should_edit and self._accumulated:
+                    if (
+                        self._post_segment_delivery_barrier_armed
+                        and not got_segment_break
+                        and commentary_text is None
+                    ):
+                        await self._notify_before_final_delivery()
+                        self._post_segment_delivery_barrier_armed = False
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
                     if (
@@ -1202,7 +1240,11 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    if self._accumulated or self._message_id is not None or self._already_sent:
+                    if (
+                        self._accumulated
+                        or self._message_id is not None
+                        or self._already_sent
+                    ):
                         await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
@@ -1350,6 +1392,7 @@ class GatewayStreamConsumer:
                         ):
                             await self._flush_segment_tail_on_edit_failure()
                         self._reset_segment_state(preserve_no_edit=True)
+                    self._post_segment_delivery_barrier_armed = True
 
                 # Flush barrier satisfied: the buffered segment (if any) has now
                 # been finalized and delivered above, so wake the thread blocked

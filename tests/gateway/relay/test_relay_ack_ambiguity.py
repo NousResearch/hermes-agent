@@ -32,6 +32,7 @@ class AckLossTransport:
         self.ops = []
         self.lose_acks_for = set(lose_acks_for)
         self.lose_times = dict(lose_times or {})  # key -> remaining losses
+        self._identities = []
         self._n = 0
 
     def _lost(self, key):
@@ -93,6 +94,33 @@ class TestSealAckLoss:
 
 
 class TestFrameAckLoss:
+    @pytest.mark.asyncio
+    async def test_plain_send_preserves_transport_ambiguity(self):
+        """Relay send results expose ACK-loss ambiguity to gateway callers."""
+        adapter, _ = _connected_adapter()
+        adapter._transport = AckLossTransport(lose_acks_for=("send",))
+
+        result = await adapter.send("C1", "progress continuation")
+
+        assert result.success is False
+        assert result.ambiguous is True
+        assert result.error == "relay outbound timed out"
+
+    @pytest.mark.asyncio
+    async def test_explicit_platform_send_preserves_transport_ambiguity(self):
+        """Persisted/scheduled relay sends keep the same ambiguity contract."""
+        adapter, _ = _connected_adapter()
+        transport = AckLossTransport(lose_acks_for=("send",))
+        transport._identities = [("slack", "bot-1")]
+        adapter._transport = transport
+
+        result = await adapter.send_for_platform(
+            "slack", "C1", "progress continuation"
+        )
+
+        assert result.success is False
+        assert result.ambiguous is True
+
     @pytest.mark.asyncio
     async def test_lost_frame_ack_keeps_interception_armed(self):
         """THE round-2 regression: a timeout-shaped frame result must not

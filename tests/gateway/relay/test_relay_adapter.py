@@ -108,6 +108,36 @@ class _CaptureTransport:
         return {"success": True, "message_id": "m1"}
 
 
+class _AmbiguousEditTransport(_CaptureTransport):
+    async def send_outbound(self, action, *, platform=None):
+        self.sent = action
+        self.sent_platform = platform
+        return {
+            "success": False,
+            "message_id": action.get("message_id"),
+            "error": "relay outbound timed out",
+            "ambiguous": True,
+            "retryable": True,
+            "error_kind": "transient",
+        }
+
+
+@pytest.mark.asyncio
+async def test_edit_preserves_typed_relay_ack_ambiguity():
+    transport = _AmbiguousEditTransport()
+    adapter = RelayAdapter(
+        PlatformConfig(), make_desc(platform="slack"), transport=transport
+    )
+
+    result = await adapter.edit_message("C1", "171.01", "updated")
+
+    assert result.success is False
+    assert result.message_id == "171.01"
+    assert result.ambiguous is True
+    assert result.retryable is True
+    assert result.error_kind == "transient"
+
+
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
     from gateway.platforms.base import MessageEvent, MessageType
     from gateway.session import SessionSource

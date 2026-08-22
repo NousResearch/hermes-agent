@@ -31,6 +31,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time as _time
 from datetime import datetime
 from pathlib import Path
@@ -1987,6 +1988,126 @@ def _park_stashed_changes(stash_ref: str) -> None:
     print(f"  Restore manually with: git stash apply {stash_ref}")
 
 
+# How long an update prompt waits for an answer before taking its documented
+# default. Bounding these is the only portable answer to #92303: an unanswered
+# prompt is not the same thing as a closed stdin, and this module has no way to
+# tell the two apart up front.
+#
+# A Windows Scheduled Task launched with `-WindowStyle Hidden` gets a REAL
+# console. `sys.stdin.isatty()` is True, so every isatty-based guard here
+# (including `_non_interactive_update`) classifies it as interactive, and the
+# handle is open, so `input()` never raises EOFError either. It simply blocks
+# until something external kills the process: the report has a 44 minute hang
+# ending in exit code 0x40010004.
+#
+# Five minutes is chosen to be far longer than a human reading a four line
+# prompt and far shorter than "forever". It is a judgement call, not a derived
+# number; see the PR for the alternatives.
+_UPDATE_PROMPT_TIMEOUT_SECONDS = 300.0
+
+# Latched by the first prompt that goes unanswered. This is PROOF that nobody is
+# at the keyboard, as opposed to the inference every isatty check makes, so
+# later prompts in the same run can stop asking.
+#
+# It also closes a hazard the timeout would otherwise open: the reader thread
+# for a timed-out prompt is still parked on `input()`, so without the latch a
+# later prompt could arm a second reader and have its answer swallowed by the
+# first one.
+_prompt_proven_unattended = False
+
+
+def _reset_prompt_interactivity() -> None:
+    """Clear the unattended latch.
+
+    Called at the top of ``_cmd_update_impl`` so the latch scopes to one update
+    rather than to the interpreter.
+    """
+    global _prompt_proven_unattended
+    _prompt_proven_unattended = False
+
+
+def _read_line_with_timeout(
+    default: str,
+    timeout: Optional[float] = None,
+    read_fn=None,
+) -> tuple[str, bool]:
+    """Read one line from stdin, giving up after ``timeout`` seconds.
+
+    Returns ``(response, timed_out)``. On timeout the caller gets ``default``
+    and the unattended latch is set, so this is the detection as well as the
+    mitigation.
+
+    ``timeout <= 0`` restores today's unbounded blocking read, which is what
+    makes the old behaviour reachable from a test rather than only from a
+    revert.
+    """
+    global _prompt_proven_unattended
+
+    if read_fn is None:
+        read_fn = input
+    if timeout is None:
+        timeout = _UPDATE_PROMPT_TIMEOUT_SECONDS
+
+    if _prompt_proven_unattended:
+        # Already proven unattended by an earlier prompt this run. Do not ask,
+        # and in particular do not start a second reader on the same stdin.
+        return default, True
+
+    def _read() -> str:
+        try:
+            return read_fn()
+        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
+            # Callers already treat all three as "take the default"; keeping
+            # that here means the bounded path and the blocking path agree.
+            return default
+
+    if timeout <= 0:
+        return _read(), False
+
+    box: dict = {}
+
+    def _target() -> None:
+        try:
+            box["value"] = _read()
+        except Exception:
+            # A reader thread must never take the update down with it.
+            box["value"] = default
+
+    # daemon=True is load bearing: on timeout this thread stays blocked on
+    # stdin for the life of the process, and a non-daemon thread there would
+    # stop the interpreter from ever exiting, turning a bounded prompt back
+    # into the hang it was meant to fix.
+    thread = threading.Thread(
+        target=_target, name="hermes-update-prompt", daemon=True
+    )
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        _prompt_proven_unattended = True
+        return default, True
+    return box.get("value", default), False
+
+
+def _report_unanswered_prompt(what: str, consequence: str) -> None:
+    """Explain a timed-out prompt in the log an unattended run leaves behind.
+
+    Without this the scheduled-task transcript ends at a bare prompt line,
+    which is indistinguishable from a crash. #92303 asked for this even in the
+    do-nothing-else version of the fix.
+    """
+    print()
+    print(
+        "\u26a0 No answer to '%s' after %ds, so this run is being treated as "
+        "unattended." % (what, int(_UPDATE_PROMPT_TIMEOUT_SECONDS))
+    )
+    print("  %s" % consequence)
+    print(
+        "  Pass --yes (and --keep-stash where you want the stash left parked) "
+        "to skip these prompts in scripted runs."
+    )
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2005,15 +2126,19 @@ def _restore_stashed_changes(
         if input_fn is not None:
             response = input_fn("Restore local changes now? [Y/n]", "y")
         else:
-            try:
-                response = input().strip().lower()
-            except (EOFError, UnicodeDecodeError):
-                # Mirror the config-migration prompt's fix: don't let a
-                # terminal-encoding issue or a closed stdin crash the
-                # update mid-restore. Falls through to the existing
-                # skip-restore path below, which already explains how to
-                # restore manually from git stash.
-                response = "n"
+            # Bounded (#92303). The EOFError/UnicodeDecodeError handling
+            # this replaces now lives in _read_line_with_timeout, and the
+            # default is the same "n": fall through to the existing
+            # skip-restore path below, which already explains how to restore
+            # manually from git stash. That is also why a timeout here is
+            # safe: nothing is lost, the stash is still on disk.
+            response, timed_out = _read_line_with_timeout("n")
+            if timed_out:
+                _report_unanswered_prompt(
+                    "Restore local changes now?",
+                    "Not restoring. Your changes are preserved in git stash.",
+                )
+            response = (response or "").strip().lower()
         if response not in {"", "y", "yes"}:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
@@ -2296,13 +2421,28 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("ℹ Your fork is not tracking the official Hermes repository.")
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
-        try:
-            response = (
-                input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
+        # Bounded for the same reason as the stash prompt (#92303), and worth
+        # bounding even though that one is what got reported: this prompt runs
+        # EARLIER in the same update, so on a fork with no upstream remote an
+        # unattended run hangs here and never reaches the reported hang at all.
+        def _ask_upstream() -> str:
+            # Kept as its own reader so the exception path keeps the blank line
+            # it always printed, and the success path keeps NOT printing one.
+            # The helper would also default these to "n", but it cannot know
+            # about the spacing.
+            try:
+                return input("Add official repo as 'upstream' remote? [Y/n]: ")
+            except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
+                print()
+                return "n"
+
+        response, timed_out = _read_line_with_timeout("n", read_fn=_ask_upstream)
+        if timed_out:
+            _report_unanswered_prompt(
+                "Add official repo as 'upstream' remote?",
+                "Not adding it. The update continues without upstream sync.",
             )
-        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
-            print()
-            response = "n"
+        response = (response or "").strip().lower()
 
         if response in {"", "y", "yes"}:
             print("→ Adding upstream remote...")
@@ -5485,6 +5625,10 @@ def _rebuild_desktop_after_update(
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    # The unattended latch (#92303) describes THIS run. Clearing it here keeps
+    # it per-invocation rather than per-process, so a long-lived interpreter
+    # that updates twice does not carry one run's silence into the next.
+    _reset_prompt_interactivity()
     # A managed-runtime refresh can replace site-packages before the normal
     # ``.[all]`` install runs. Snapshot while the old environment can still
     # prove which optional backends the user had activated.
@@ -6913,7 +7057,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     .strip()
                     .lower()
                 )
-            elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+            elif _prompt_proven_unattended or not (
+                sys.stdin.isatty() and sys.stdout.isatty()
+            ):
+                # _prompt_proven_unattended (#92303): an earlier prompt in
+                # this run went unanswered, which is stronger evidence than
+                # isatty can give. Deliberately routed into this existing
+                # branch rather than given its own: the "auto" default and
+                # everything downstream of it are unchanged, so a better
+                # signal is all that is new here.
                 print("  ℹ Non-interactive session — applying safe config migrations.")
                 response = "auto"
             else:

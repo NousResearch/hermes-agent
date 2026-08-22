@@ -34,6 +34,7 @@ def _make_session(
     exit_code=None,
     output="",
     notify_on_complete=False,
+    origin_ui_session_id="",
 ) -> ProcessSession:
     s = ProcessSession(
         id=sid,
@@ -44,6 +45,7 @@ def _make_session(
         exit_code=exit_code,
         output_buffer=output,
         notify_on_complete=notify_on_complete,
+        origin_ui_session_id=origin_ui_session_id,
     )
     return s
 
@@ -109,6 +111,34 @@ class TestCompletionQueue:
         completion = registry.completion_queue.get_nowait()
         assert len(completion["output"]) == 2000
 
+    def test_completion_keeps_spawning_ui_session(self, registry):
+        s = _make_session(
+            notify_on_complete=True,
+            origin_ui_session_id="session-before-new",
+        )
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        completion = registry.completion_queue.get_nowait()
+        assert completion["task_id"] == "t1"
+        assert completion["origin_ui_session_id"] == "session-before-new"
+
+    def test_watch_match_keeps_task_and_spawning_ui_session(self, registry):
+        s = _make_session(
+            task_id="sa-1-routing",
+            origin_ui_session_id="session-before-new",
+        )
+        s.watch_patterns = ["READY"]
+
+        registry._check_watch_patterns(s, "READY\n")
+
+        notification = registry.completion_queue.get_nowait()
+        assert notification["task_id"] == "sa-1-routing"
+        assert notification["origin_ui_session_id"] == "session-before-new"
+
     def test_multiple_completions_queued(self, registry):
         """Multiple notify processes all push to the same queue."""
         for i in range(3):
@@ -138,13 +168,17 @@ class TestCompletionQueue:
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session(notify_on_complete=True)
+            s = _make_session(
+                notify_on_complete=True,
+                origin_ui_session_id="session-before-restart",
+            )
             registry._running[s.id] = s
             registry._write_checkpoint()
 
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
+            assert data[0]["origin_ui_session_id"] == "session-before-restart"
 
 
     def test_recover_defaults_false(self, registry, tmp_path):
@@ -161,6 +195,43 @@ class TestCheckpointNotify:
             assert recovered == 1
             s = registry.get("proc_live")
             assert s.notify_on_complete is False
+            assert s.origin_ui_session_id == ""
+
+    def test_recovery_keeps_origin_on_requeued_watcher(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_owned",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "agent:main:telegram:dm:123:456",
+            "origin_ui_session_id": "session-before-restart",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_user_id": "456",
+            "watcher_interval": 5,
+            "notify_on_complete": True,
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+
+        recovered = registry.get("proc_owned")
+        assert recovered.origin_ui_session_id == "session-before-restart"
+        assert registry.pending_watchers == [{
+            "session_id": "proc_owned",
+            "check_interval": 5,
+            "session_key": "agent:main:telegram:dm:123:456",
+            "origin_ui_session_id": "session-before-restart",
+            "platform": "telegram",
+            "chat_id": "123",
+            "user_id": "456",
+            "user_name": "",
+            "thread_id": "",
+            "message_id": "",
+            "notify_on_complete": True,
+            "parent_session_id": "",
+        }]
 
 
 # =========================================================================
@@ -312,6 +383,7 @@ def _silent_bg_harness(monkeypatch, tmp_path):
             watcher_thread_id="",
             watcher_message_id="",
             watcher_interval=0,
+            origin_ui_session_id=kwargs.get("origin_ui_session_id", ""),
         )
 
     monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
@@ -368,6 +440,40 @@ def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
         f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
     )
     assert result.get("notify_on_complete") is True
+
+
+def test_background_notify_captures_spawning_ui_session(monkeypatch, tmp_path):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.process_registry import process_registry
+
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    process_registry.pending_watchers = []
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="123",
+        user_id="456",
+        session_key="agent:main:telegram:dm:123:456",
+        ui_session_id="session-before-new",
+        async_delivery=True,
+    )
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="pytest tests/",
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert result["notify_on_complete"] is True
+    assert process_registry.pending_watchers[-1]["origin_ui_session_id"] == (
+        "session-before-new"
+    )
+    process_registry.pending_watchers = []
 
 
 def test_foreground_command_does_not_emit_hint(monkeypatch, tmp_path):

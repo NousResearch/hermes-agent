@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -83,6 +83,17 @@ def _completion_event(*, started_at, session_id="proc_reused"):
         "completion_reason": "exited",
         "output": "done\n",
     }
+
+
+class _AsyncSessionDB:
+    def __init__(self, store):
+        self._db = store._db
+
+    async def get_session(self, session_id):
+        return self._db.get_session(session_id)
+
+    async def get_compression_tip(self, session_id):
+        return self._db.get_compression_tip(session_id)
 
 
 def _stop_after_sleeps(monkeypatch, runner, count):
@@ -245,6 +256,67 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
     }))
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_completion_after_new_is_not_routed_to_current_session(
+    monkeypatch, tmp_path, isolated_registry
+):
+    """A chat-scoped key cannot identify the pre-/new spawning session."""
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="678",
+    )
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    origin = store.get_or_create_session(source)
+    current = store.reset_session(origin.session_key)
+    assert current is not None
+    assert current.session_id != origin.session_id
+
+    process = ProcessSession(
+        id="proc_origin",
+        command="echo done",
+        session_key=origin.session_key,
+        origin_ui_session_id=origin.session_id,
+        started_at=1.0,
+        exited=True,
+        exit_code=0,
+        output_buffer="done\n",
+        notify_on_complete=True,
+    )
+    isolated_registry._running[process.id] = process
+    isolated_registry._move_to_finished(process)
+    event = isolated_registry.completion_queue.get_nowait()
+
+    routed = []
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner.session_store = store
+    runner._session_db = _AsyncSessionDB(store)
+
+    async def _route_like_gateway(message_event):
+        active = store.get_or_create_session(message_event.source)
+        pinned = message_event.metadata.get("gateway_session_id", "")
+        routed.append(
+            await runner._resolve_async_delegation_session(active, pinned)
+            if pinned
+            else active
+        )
+
+    adapter.handle_message.side_effect = _route_like_gateway
+    await runner._inject_watch_notification("completion", event)
+
+    assert adapter.handle_message.await_args.args[0].metadata == {
+        "gateway_session_id": origin.session_id
+    }
+    assert routed == [None]
+    assert store.get_or_create_session(source).session_id == current.session_id
+    store._db.close()
 
 
 def test_process_tool_redacts_explicit_kill_output(monkeypatch):

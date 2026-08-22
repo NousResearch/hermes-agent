@@ -25352,9 +25352,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return False
         try:
             metadata = {}
-            parent_session_id = str(evt.get("parent_session_id") or "").strip()
-            if parent_session_id:
-                metadata["gateway_session_id"] = parent_session_id
+            target_session_id = str(
+                evt.get("parent_session_id")
+                or evt.get("origin_ui_session_id")
+                or ""
+            ).strip()
+            if target_session_id:
+                metadata["gateway_session_id"] = target_session_id
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -26124,6 +26128,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "type": "completion",
                         "session_id": session_id,
                         "session_key": session_key,
+                        "origin_ui_session_id": watcher.get(
+                            "origin_ui_session_id", ""
+                        ),
                         "platform": platform_name,
                         "chat_type": watcher.get("chat_type", ""),
                         "chat_id": chat_id,

@@ -168,6 +168,7 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         "cwd": "/workspace/live",
         "task_id": task_id,
         "session_key": task_id,
+        "origin_ui_session_id": "",
         "env_vars": {},
         "use_pty": False,
     }]

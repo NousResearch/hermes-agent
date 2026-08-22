@@ -334,6 +334,30 @@ async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_inject_watch_notification_pins_spawning_ui_session(
+    monkeypatch, tmp_path
+):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:dm:123:456",
+        "origin_ui_session_id": "session-before-new",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "user_id": "456",
+    }
+
+    await runner._inject_watch_notification(
+        "[SYSTEM: Background process matched]", evt
+    )
+
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.metadata["gateway_session_id"] == "session-before-new"
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
     """Negative test: watch notification must NOT route to the foreground thread."""
     from gateway.session import SessionSource

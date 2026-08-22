@@ -379,6 +379,23 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     return True, f"browser-use CLI installed ({found[0]})"
 
 
+def _app_session_harness_home(session_name: str) -> str:
+    """Per-app-session harness home (isolates daemon socket/log/pid).
+
+    App-attached sessions run the harness under the DEFAULT daemon name
+    (the named-daemon path calls Target.createTarget, which Electron
+    rejects), so isolation between app sessions — and from the real
+    default web daemon — comes from giving each one its own BH_HOME.
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+
+    path = Path(get_hermes_home()) / "cache" / "browser-use" / "app-sessions" / session_name
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
     """Stable per-task scratch dir that persists across browser_exec calls"""
     existing = os.environ.get("BH_AGENT_WORKSPACE")
@@ -447,6 +464,11 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
+def _set_cdp_env(env: dict, url: str) -> None:
+    """Export a CDP endpoint under the env var the harness expects."""
+    env["BU_CDP_URL" if url.startswith(("http://", "https://")) else "BU_CDP_WS"] = url
+
+
 def _resolve_backend_cdp(
     env: dict, task_id: Optional[str], session_name: str = ""
 ) -> Optional[str]:
@@ -456,6 +478,9 @@ def _resolve_backend_cdp(
 
     1. ``BU_CDP_WS`` / ``BU_CDP_URL`` already in the environment — explicit
        user/operator override, passed through untouched.
+    1b. A named-session endpoint registered by ``hermes browser attach``
+       (``$HERMES_HOME/browser-sessions.json``) — pins THIS session to a
+       desktop app's CDP port without affecting other sessions.
     2. ``BROWSER_CDP_URL`` env / ``browser.cdp_url`` config override — the
        ``/browser connect`` path, same precedence the built-in tools honor.
     3. A configured cloud browser provider (Browserbase, Firecrawl, Nous
@@ -477,6 +502,37 @@ def _resolve_backend_cdp(
     if env.get("BU_CDP_WS") or env.get("BU_CDP_URL"):
         return None
 
+    # A named session registered via `hermes browser attach` is pinned to
+    # that app's CDP endpoint (Electron desktop apps: Obsidian, Slack, …).
+    # It outranks the global override on purpose: the registry entry is
+    # per-session and user-created, so the default session keeps browsing
+    # the web while this one drives the app.
+    if session_name:
+        try:
+            from hermes_cli.browser_attach import resolve_session_endpoint
+
+            registered = resolve_session_endpoint(session_name)
+        except Exception as e:
+            logger.debug("browser session registry lookup failed: %s", e)
+            registered = None
+        if registered:
+            _set_cdp_env(env, registered)
+            # The app's browser belongs to this session alone — no sibling
+            # daemon to collide with, and an own-tab preamble would open a
+            # visible blank window inside the user's app.
+            env[_PRIVATE_BROWSER_SENTINEL] = "1"
+            # Electron apps reject Target.createTarget ("Not supported"),
+            # and the harness's NAMED-daemon path creates a dedicated tab
+            # with exactly that call — fatal on attach. The default-name
+            # daemon attaches to the first real page instead, which is
+            # precisely right for an app (its window IS the page). Keep
+            # per-session isolation by giving each app session its own
+            # harness home (BH_HOME namespaces the daemon's socket, log,
+            # and pid) rather than a daemon name.
+            env.pop("BU_NAME", None)
+            env["BH_HOME"] = _app_session_harness_home(session_name)
+            return None
+
     try:
         from tools.browser_tool import (
             _get_cdp_override,
@@ -492,7 +548,7 @@ def _resolve_backend_cdp(
     except Exception:
         override = ""
     if override:
-        env["BU_CDP_URL" if override.startswith(("http://", "https://")) else "BU_CDP_WS"] = override
+        _set_cdp_env(env, override)
         return None
 
     try:
@@ -537,7 +593,7 @@ def _resolve_backend_cdp(
             "CDP endpoint, so Browser Use mode cannot drive it. Switch to "
             "the built-in browser tools for this provider."
         )
-    env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+    _set_cdp_env(env, cdp)
     # A provider browser keyed bu-named-<name> is exclusive to this session —
     # the own-tab preamble is unnecessary there (it would just leak a blank
     # tab into a browser nobody else touches).
@@ -700,7 +756,11 @@ _HEADER_BASE = (
     "call, so progress survives timeouts. For an isolated concurrent "
     "browser session (parallel tasks that must not share tabs), pass "
     "session=<name> (never BU_NAME env syntax) and reuse the same name on "
-    "every related call."
+    "every related call. A session attached to a desktop Electron/Chromium "
+    "app via `hermes browser attach` (user-run) drives that app's UI over "
+    "CDP with exact DOM control and zero focus steal — for driving desktop "
+    "Electron apps, prefer that over computer_use when an endpoint is "
+    "attached."
 )
 
 _HEADER_VISION = (

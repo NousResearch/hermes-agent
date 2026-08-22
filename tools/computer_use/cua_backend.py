@@ -3951,5 +3951,15 @@ class CuaDriverBackend(ComputerUseBackend):
             meta.update(data)
         if isinstance(structured, dict):
             meta.update(structured)
+        # When the driver recommends escalating, carry the acting target's
+        # pid so the wrapper's escalation enrichment can classify the app
+        # (e.g. Electron → suggest the CDP-attach alternative). Decided
+        # BEFORE building the result — mutating res.meta afterwards would
+        # rely on _action_result_from aliasing the dict, an undocumented
+        # contract. Additive and escalation-only: success payloads stay
+        # byte-identical, and a driver-supplied pid is never overwritten.
+        esc = structured.get("escalation", meta.get("escalation"))
+        if isinstance(esc, dict) and "pid" not in meta and self._active_pid:
+            meta["pid"] = self._active_pid
         return _action_result_from(name, ok, message, meta, structured,
                                    requested_delivery=args.get("delivery_mode"))

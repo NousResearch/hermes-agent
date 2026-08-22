@@ -1044,15 +1044,39 @@ _TYPED_BROWSER_WINDOW_CLASSES = {
 }
 
 
+def _is_electron_pid(pid: Any) -> bool:
+    """True when ``pid``'s executable looks like a packaged Electron app.
+
+    Runs ONLY on the escalation path (never on success), so the process
+    lookup costs nothing in the common case. Any failure — bad pid, process
+    gone, psutil missing, access denied — quietly reports False: this feeds
+    an advisory hint, never a decision.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        import psutil
+
+        from hermes_cli.browser_attach import is_electron_executable
+
+        return is_electron_executable(psutil.Process(pid).exe() or "")
+    except Exception:
+        return False
+
+
 def _enrich_escalation(res: ActionResult) -> Optional[Dict[str, Any]]:
-    """Return the driver's escalation dict, adding a typed-page alternative.
+    """Return the driver's escalation dict, adding wrapper-known alternatives.
 
     Purely additive: never changes the driver's `recommended` rung, only
-    appends `alternative`/`alternative_hint` when the refused target is a
-    known browser window class and the refused event is page-directed input
-    (typing/keys into page content). The model can then try the
-    `cua_browser_*` route — trusted input, no window flash — before a
-    foreground escalation, per the documented ladder ordering.
+    appends `alternative`/`alternative_hint` when the wrapper knows a
+    higher-fidelity route the driver cannot see:
+
+    * a known browser window class receiving page-directed input → the
+      typed `cua_browser_*` route (trusted input, no window flash);
+    * an Electron app whose renderer refused background input → a CDP
+      attach via the user-run `hermes browser attach` (exact DOM control,
+      zero focus steal). Reaction-only, per the ladder doctrine: the check
+      runs strictly on a returned escalation, never as a prediction.
     """
     escalation = res.escalation
     if not isinstance(escalation, dict):
@@ -1061,21 +1085,36 @@ def _enrich_escalation(res: ActionResult) -> Optional[Dict[str, Any]]:
         return escalation
     meta = res.meta or {}
     target_class = str(meta.get("target_class") or "").lower()
-    if target_class not in _TYPED_BROWSER_WINDOW_CLASSES:
-        return escalation
-    if meta.get("event_kind") not in {"text_input", "key_press"}:
-        return escalation
-    enriched = dict(escalation)
-    enriched["alternative"] = "page"
-    enriched["alternative_hint"] = (
-        "target is a browser window: if the input goes into PAGE content "
-        "(not browser chrome or a native dialog), the typed cua_browser_* "
-        "route can deliver it without any window flash — bind with "
-        "cua_browser_state (exact pid/window_id), then cua_browser_type. "
-        "Use foreground only for chrome/native surfaces or if typed binding "
-        "is unavailable."
-    )
-    return enriched
+    if (
+        target_class in _TYPED_BROWSER_WINDOW_CLASSES
+        and meta.get("event_kind") in {"text_input", "key_press"}
+    ):
+        enriched = dict(escalation)
+        enriched["alternative"] = "page"
+        enriched["alternative_hint"] = (
+            "target is a browser window: if the input goes into PAGE content "
+            "(not browser chrome or a native dialog), the typed cua_browser_* "
+            "route can deliver it without any window flash — bind with "
+            "cua_browser_state (exact pid/window_id), then cua_browser_type. "
+            "Use foreground only for chrome/native surfaces or if typed binding "
+            "is unavailable."
+        )
+        return enriched
+    if _is_electron_pid(meta.get("pid")):
+        enriched = dict(escalation)
+        enriched["alternative"] = "cdp_attach"
+        enriched["alternative_hint"] = (
+            "target is an Electron app: its unfocused renderer refused "
+            "background input, and a CDP attach is a higher-fidelity rung "
+            "than foreground — exact DOM control with zero focus steal. "
+            "Ask the USER to run `hermes browser attach` (it may relaunch "
+            "the app with a debug port — their consent, not yours), then "
+            "drive it via browser_exec(session=<name>). The "
+            "drive-electron-apps skill has the full playbook. Foreground "
+            "remains valid if the user prefers not to attach."
+        )
+        return enriched
+    return escalation
 
 
 # Default cap for the AX `elements` array returned by capture. Dense UIs

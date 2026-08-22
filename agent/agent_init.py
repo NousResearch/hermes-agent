@@ -2343,6 +2343,14 @@ def init_agent(
     # Read explicit model output-token override from config when the
     # caller did not pass one directly.
     _model_cfg = _agent_cfg.get("model", {})
+    # Headless Codex Kanban workers keep shell network denied unless the
+    # worker profile explicitly opts in for cold dependency installation.
+    codex_app_server_kanban_network_access = False
+    if isinstance(_model_cfg, dict):
+        codex_app_server_kanban_network_access = is_truthy_value(
+            _model_cfg.get("codex_app_server_kanban_network_access"),
+            default=False,
+        )
     if agent.max_tokens is None and isinstance(_model_cfg, dict):
         _config_max_tokens = _model_cfg.get("max_tokens")
         if _config_max_tokens is not None:
@@ -2781,6 +2789,9 @@ def init_agent(
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (
         compression_idle_compact_after_seconds
+    )
+    agent.codex_app_server_kanban_network_access = (
+        codex_app_server_kanban_network_access
     )
 
     # Reject models whose context window is below the minimum required

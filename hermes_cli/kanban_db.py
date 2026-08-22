@@ -10771,6 +10771,7 @@ def _default_spawn(
     # sidebar renders one row per attempt, labeled with the worker's own prompt
     # ("work kanban task t_…").
     env["HERMES_SESSION_SOURCE"] = "kanban"
+    env["HERMES_KANBAN_WORKSPACE_KIND"] = task.workspace_kind
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
     # dispatching gateway happened to export. The worker subprocess is already

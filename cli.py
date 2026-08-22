@@ -2048,6 +2048,11 @@ def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
     """Return whether a worktree has uncommitted changes (staged, unstaged, or
     untracked).
 
+    Ignore only untracked entries below the reserved top-level ``.worktrees/``
+    container. Kanban may materialize task worktrees below a persistent linked
+    checkout, and those nested repositories must not make the anchor itself
+    appear dirty. Tracked or staged changes below ``.worktrees/`` still count.
+
     Fails SAFE: on any error returns True so callers do not delete a worktree
     whose state they cannot determine.
     """
@@ -2060,7 +2065,14 @@ def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
         )
         if result.returncode != 0:
             return True
-        return bool(result.stdout.strip())
+        changes = (result.stdout or "").splitlines()
+        return any(
+            not (
+                change == "?? .worktrees"
+                or change.startswith("?? .worktrees/")
+            )
+            for change in changes
+        )
     except Exception:
         return True
 

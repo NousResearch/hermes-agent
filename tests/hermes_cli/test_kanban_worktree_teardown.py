@@ -218,3 +218,82 @@ def test_parent_worktree_deferred_until_children_done(
         assert kb.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()
+
+
+def test_linked_anchor_deferred_cleanup_removes_only_nested_task_worktree(
+    kanban_home: Path, repo: Path, tmp_path: Path
+) -> None:
+    canonical = tmp_path / "canonical-production-main"
+    unrelated = tmp_path / "unrelated-worktree"
+    kb._ensure_git_worktree(repo, canonical, "canonical/main")
+    kb._ensure_git_worktree(repo, unrelated, "unrelated/branch")
+
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(
+            conn,
+            title="anchored parent",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(canonical),
+        )
+        task = kb.get_task(conn, parent)
+        assert task is not None
+        workspace, branch = kb._resolve_worktree_workspace(task)
+        assert workspace == canonical / ".worktrees" / parent
+        kb.set_workspace_path(conn, parent, workspace)
+        kb.set_branch_name(conn, parent, branch)
+
+        child = kb.create_task(conn, title="review child", assignee="worker")
+        kb.link_tasks(conn, parent, child)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+
+        assert kb.claim_task(conn, parent, claimer="worker") is not None
+        assert kb.complete_task(conn, parent, summary="parent done")
+        assert workspace.is_dir()
+        assert canonical.is_dir()
+
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+        assert kb.complete_task(conn, child, summary="child done")
+
+    assert not workspace.exists()
+    assert canonical.is_dir()
+    assert (canonical / "README.md").is_file()
+    assert unrelated.is_dir()
+    assert (unrelated / "README.md").is_file()
+
+
+def test_deferred_cleanup_preserves_unowned_canonical_linked_checkout(
+    kanban_home: Path, repo: Path, tmp_path: Path
+) -> None:
+    canonical = tmp_path / "canonical-production-main"
+    unrelated = tmp_path / "unrelated-worktree"
+    kb._ensure_git_worktree(repo, canonical, "canonical/main")
+    kb._ensure_git_worktree(repo, unrelated, "unrelated/branch")
+
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="legacy parent", assignee="worker")
+        child = kb.create_task(conn, title="review child", assignee="worker")
+        kb.link_tasks(conn, parent, child)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, "
+                "branch_name='canonical/main', status='ready' WHERE id=?",
+                (str(canonical), parent),
+            )
+
+        assert kb.claim_task(conn, parent, claimer="worker") is not None
+        assert kb.complete_task(conn, parent, summary="parent done")
+        assert canonical.is_dir()
+
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+        assert kb.complete_task(conn, child, summary="child done")
+
+    assert canonical.is_dir()
+    assert (canonical / "README.md").is_file()
+    assert unrelated.is_dir()
+    assert (unrelated / "README.md").is_file()

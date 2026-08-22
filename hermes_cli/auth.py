@@ -684,12 +684,30 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _configured_api_key_provider_secret(provider_id: str) -> tuple[str, str]:
+    """Return a usable inline key from ``providers.<id>``, if configured."""
+    try:
+        from hermes_cli.config import load_config
+
+        providers = load_config().get("providers")
+        entry = providers.get(provider_id) if isinstance(providers, dict) else None
+        configured_key = entry.get("api_key") if isinstance(entry, dict) else None
+        if has_usable_secret(configured_key):
+            return configured_key.strip(), f"config:providers.{provider_id}.api_key"
+    except Exception:
+        # Preserve env/pool fallback when config is temporarily unreadable.
+        pass
+    return "", ""
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
-        # Use the dedicated copilot auth module for proper token validation
+        # Copilot credentials are raw GitHub tokens, not inference bearer
+        # tokens. Always exchange them through the dedicated resolver instead
+        # of treating providers.copilot.api_key as a direct API credential.
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
@@ -701,6 +719,14 @@ def _resolve_api_key_provider_secret(
         except Exception:
             pass
         return "", ""
+
+    # ``providers.<id>`` is also the supported configuration surface for
+    # built-in providers.  Resolve an inline key there before the provider's
+    # conventional env vars and credential pool so an explicit config choice
+    # cannot be silently replaced by an ambient shell credential.
+    configured_key, configured_source = _configured_api_key_provider_secret(provider_id)
+    if configured_key:
+        return configured_key, configured_source
 
     from hermes_cli.config import get_env_value_prefer_dotenv
     for env_var in pconfig.api_key_env_vars:

@@ -69,6 +69,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
+    FTS_TRIGRAM_STALE_KEY,
     FTS_TRIGRAM_SQL,
     LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL,
@@ -689,6 +690,100 @@ _wal_fallback_warned_lock = threading.Lock()
 # Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
+
+
+def _trigram_fts_enabled_from_config(
+    db_path: Optional[Path] = None,
+) -> Optional[bool]:
+    """Return the profile-owned ``sessions.trigram_fts`` setting when resolved.
+
+    An explicit database path owns its adjacent config. This keeps CLI,
+    gateway, profile aggregation and maintenance opens in agreement without a
+    process-global environment bridge that can carry another profile's value.
+    A missing setting preserves the historical default (on). A present config
+    that cannot be resolved returns ``None`` so SessionDB can honor an existing
+    quarantine marker instead of silently rebuilding a deliberately disabled
+    index.
+    """
+    path = Path(db_path or _default_db_path()).expanduser()
+    config_path = path.parent / "config.yaml"
+    from hermes_cli.config import (
+        ConfigResolutionError,
+        resolve_effective_config_value,
+    )
+
+    try:
+        value = resolve_effective_config_value(
+            config_path,
+            "sessions",
+            "trigram_fts",
+            default=True,
+        )
+    except ConfigResolutionError as exc:
+        logger.warning(
+            "Could not resolve %s for trigram FTS; deferring to the on-disk "
+            "quarantine marker: %s",
+            config_path,
+            exc,
+        )
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "off", "no", "0"}:
+            return False
+        if normalized in {"true", "on", "yes", "1"}:
+            return True
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    logger.warning(
+        "Invalid sessions.trigram_fts value in %s; deferring to the on-disk "
+        "quarantine marker",
+        config_path,
+    )
+    return None
+
+
+def _trigram_enabled_after_config_resolution(
+    conn: sqlite3.Connection,
+    configured: Optional[bool],
+) -> bool:
+    """Resolve a failed config read without crossing a quarantine marker.
+
+    On a fresh database there is no prior opt-out evidence, so the historical
+    default remains enabled. On an existing database, a durable stale marker is
+    authoritative evidence that trigram was quarantined and must stay off until
+    config resolution succeeds again. If even the marker cannot be inspected,
+    fail closed rather than risking an implicit rebuild.
+    """
+    if configured is not None:
+        return configured
+    try:
+        has_meta = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'state_meta' LIMIT 1"
+        ).fetchone()
+        if has_meta is None:
+            return True
+        stale = conn.execute(
+            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+            (FTS_TRIGRAM_STALE_KEY,),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "Could not inspect the trigram quarantine marker; keeping trigram "
+            "disabled for this open: %s",
+            exc,
+        )
+        return False
+    if stale is not None:
+        logger.warning(
+            "Preserving the existing trigram quarantine because config "
+            "resolution failed"
+        )
+        return False
+    return True
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -3793,6 +3888,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._fts_usermerge_floor_applied = False
         self._fts_enabled = False
         self._fts_stale = False
+        trigram_configured = _trigram_fts_enabled_from_config(self.db_path)
+        # Finalize this after opening the exact DB. A failed config resolution
+        # must consult that DB's durable quarantine marker before schema init.
+        self._trigram_enabled = True
         self._trigram_available = False
         # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
         # extension present on the writer connection; _fts_cjk_available: the
@@ -3831,6 +3930,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._trigram_enabled = _trigram_enabled_after_config_resolution(
+                    self._conn,
+                    trigram_configured,
+                )
                 # FTS capability flags normally come from writable schema
                 # initialisation. Probe existing virtual tables with SELECTs
                 # only so read-only search keeps its FTS and trigram paths.
@@ -3847,7 +3950,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._fts_enabled = (
                         self._fts_table_probe(cursor, "messages_fts") is True
                     )
-                    if self._fts_enabled:
+                    trigram_stale = cursor.execute(
+                        "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+                        (FTS_TRIGRAM_STALE_KEY,),
+                    ).fetchone()
+                    if (
+                        self._fts_enabled
+                        and self._trigram_enabled
+                        and trigram_stale is None
+                    ):
                         self._trigram_available = (
                             self._fts_table_probe(
                                 cursor,
@@ -3923,6 +4034,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
+                self._trigram_enabled = _trigram_enabled_after_config_resolution(
+                    self._conn,
+                    trigram_configured,
+                )
                 self._init_schema()
 
             def _connect_and_init_with_lock_patience():

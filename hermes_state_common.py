@@ -322,14 +322,19 @@ FTS_STORAGE_VERSION = 1
 MAX_FTS5_QUERY_CHARS = 2_048
 
 
-_FTS_TRIGGERS = (
+_FTS_BASE_TRIGGERS = (
     "messages_fts_insert",
     "messages_fts_delete",
     "messages_fts_update",
+)
+
+_FTS_TRIGRAM_TRIGGERS = (
     "messages_fts_trigram_insert",
     "messages_fts_trigram_delete",
     "messages_fts_trigram_update",
 )
+
+_FTS_TRIGGERS = _FTS_BASE_TRIGGERS + _FTS_TRIGRAM_TRIGGERS
 
 
 SCHEMA_SQL = """
@@ -700,6 +705,11 @@ _FTS_CJK_TRIGGERS = (
 # on are missing from the cjk index, so it must not serve reads until
 # `hermes sessions optimize-storage` rebuilds it on a capable host.
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
+
+# Breadcrumb set when trigram is deliberately disabled. Existing trigram
+# storage is quarantined by dropping its live triggers, not destructively
+# removed while it may be corrupt; a later enabled open can rebuild safely.
+FTS_TRIGRAM_STALE_KEY = "fts_trigram_stale"
 
 
 # Durable breadcrumb for a base/trigram FTS index that was detached from the

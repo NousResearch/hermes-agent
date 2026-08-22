@@ -3105,6 +3105,36 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_v22_optimize_with_trigram_disabled_builds_base_only(self, tmp_path):
+        db_path = tmp_path / "v22-disabled.db"
+        self._build_v22_db(db_path)
+        (tmp_path / "config.yaml").write_text(
+            "sessions:\n  trigram_fts: false\n",
+            encoding="utf-8",
+        )
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn is not None
+            assert db._trigram_available is False
+            assert db.fts_optimize_available() is True
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db._conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE name = 'messages_fts_trigram'"
+            ).fetchone() is None
+            assert db._conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE name = 'messages_fts_trigram_src'"
+            ).fetchone() is None
+            assert len(db.search_messages("deployment")) == 1
+            assert db._conn.execute(
+                "SELECT 1 FROM messages WHERE content LIKE '%TOOLBLOB%'"
+            ).fetchone() is not None
+        finally:
+            db.close()
+
 
 
 

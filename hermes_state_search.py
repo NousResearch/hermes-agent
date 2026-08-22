@@ -22,10 +22,12 @@ from hermes_state_common import (
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
+    FTS_TRIGRAM_STALE_KEY,
     FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
+    _FTS_TRIGRAM_TRIGGERS,
     escape_like as _escape_like,
 )
 
@@ -649,6 +651,17 @@ class SessionSearchMixin:
         if not self._fts_enabled or self.read_only:
             return False
         with self._lock:
+            if not getattr(self, "_trigram_enabled", True):
+                if self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'messages_fts_trigram' LIMIT 1"
+                ).fetchone():
+                    return True
+                if self._conn.execute(
+                    "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+                    (FTS_TRIGRAM_STALE_KEY,),
+                ).fetchone():
+                    return True
             if self._db_has_legacy_inline_fts(self._conn):
                 return True
             # Interrupted optimize: demotion already removed the legacy
@@ -733,10 +746,13 @@ class SessionSearchMixin:
         # path above). Markers are already durable.
         with self._lock:
             base_ok = self._ensure_fts_schema(self._conn, "messages_fts", FTS_SQL)
-            trigram_ok = self._ensure_fts_schema(
-                self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
-            )
-            self._trigram_available = bool(trigram_ok)
+            if getattr(self, "_trigram_enabled", True):
+                trigram_ok = self._ensure_fts_schema(
+                    self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                )
+                self._trigram_available = bool(trigram_ok)
+            else:
+                self._trigram_available = False
             if not base_ok:
                 raise sqlite3.OperationalError(
                     "failed to create v23 messages_fts during optimize-storage demote"
@@ -765,6 +781,20 @@ class SessionSearchMixin:
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
 
+        if not getattr(self, "_trigram_enabled", True):
+            def _retire_trigram(conn):
+                for trigger in _FTS_TRIGRAM_TRIGGERS:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+                conn.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
+                conn.execute(
+                    "DELETE FROM state_meta WHERE key = ?",
+                    (FTS_TRIGRAM_STALE_KEY,),
+                )
+
+            self._execute_write(_retire_trigram)
+            self._trigram_available = False
+
         # Heal empty-index / orphan-marker bookkeeping from an interrupted
         # demote *before* deciding whether to demote again. This re-seeds
         # markers when trash was already staged (or torn down) without a
@@ -788,10 +818,13 @@ class SessionSearchMixin:
                 base_ok = self._ensure_fts_schema(
                     self._conn, "messages_fts", FTS_SQL
                 )
-                trigram_ok = self._ensure_fts_schema(
-                    self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                )
-                self._trigram_available = bool(trigram_ok)
+                if getattr(self, "_trigram_enabled", True):
+                    trigram_ok = self._ensure_fts_schema(
+                        self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    )
+                    self._trigram_available = bool(trigram_ok)
+                else:
+                    self._trigram_available = False
                 if not base_ok:
                     # Fail fast: without the base table the backfill loop
                     # below would retry "no such table" errors forever.
@@ -951,6 +984,11 @@ class SessionSearchMixin:
                 (str(FTS_STORAGE_VERSION),),
             )
             conn.execute("DELETE FROM state_meta WHERE key = 'fts_optimize_available'")
+            if not getattr(self, "_trigram_enabled", True):
+                conn.execute(
+                    "DELETE FROM state_meta WHERE key = ?",
+                    (FTS_TRIGRAM_STALE_KEY,),
+                )
             conn.execute(
                 "UPDATE schema_version SET version = ? WHERE version < ?",
                 (SCHEMA_VERSION, SCHEMA_VERSION),
@@ -2367,7 +2405,7 @@ class SessionSearchMixin:
         index internally, then VACUUM returns the freed pages to the OS.
 
         Skips any FTS table that does not exist (e.g. the trigram index when
-        disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
+        disabled via ``sessions.trigram_fts: false`` or not yet created), so
         it is safe to call unconditionally.
 
         Returns the number of FTS indexes that were optimized.

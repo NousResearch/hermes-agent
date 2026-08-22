@@ -36,6 +36,11 @@ _CACHE_LOCK = threading.Lock()
 # path_key -> (mtime_ns, size, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
+_CONFIG_FAILURE_CACHE: Dict[str, tuple] = {}
+
+
+class ManagedConfigResolutionError(RuntimeError):
+    """The current managed config exists but cannot be resolved."""
 
 
 def _under_pytest() -> bool:
@@ -76,26 +81,81 @@ def invalidate_managed_cache() -> None:
     with _CACHE_LOCK:
         _CONFIG_CACHE.clear()
         _ENV_CACHE.clear()
+        _CONFIG_FAILURE_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+def _dangling_symlink_key(path: Path) -> Optional[tuple]:
+    """Return lstat provenance when *path* is a dangling symlink."""
+    if not path.is_symlink():
+        return None
+    try:
+        st = path.lstat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_mode)
+
+
+def _cached_read(
+    path: Path,
+    cache: Dict[str, tuple],
+    parse,
+    *,
+    require_resolved: bool = False,
+    failure_cache: Optional[Dict[str, tuple]] = None,
+):
     """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
 
-    Returns ``None`` when the file is absent or fails to parse (fail-open). A
-    parse failure is logged LOUDLY — the admin needs to know their policy isn't
-    being applied — but never raises, so a malformed managed file can't brick
-    startup.
+    Returns ``None`` when the file is absent or fails to parse in the default
+    fail-open mode. A parse failure is logged LOUDLY — the admin needs to know
+    their policy isn't being applied. Strict callers receive
+    :class:`ManagedConfigResolutionError` instead, with failure memoization
+    invalidated by content or permission metadata changes.
     """
+    path_key = str(path)
     try:
         st = path.stat()
-    except OSError:
-        return None  # absent
-    key = (st.st_mtime_ns, st.st_size)
-    path_key = str(path)
+    except FileNotFoundError as exc:
+        key = _dangling_symlink_key(path)
+        if key is None:
+            return None  # genuinely absent
+        logger.warning(
+            "managed scope: %s is a dangling symlink — IGNORING this managed "
+            "file. Admin policy from this file is NOT being applied.",
+            path,
+        )
+        if failure_cache is not None:
+            with _CACHE_LOCK:
+                failure_cache[path_key] = key
+        if require_resolved:
+            raise ManagedConfigResolutionError(
+                f"Current managed config source at {path} is unresolved"
+            ) from exc
+        return None
+    except OSError as exc:
+        logger.warning(
+            "managed scope: failed to access %s: %s — IGNORING this managed file. "
+            "Admin policy from this file is NOT being applied. Fix and restart.",
+            path,
+            exc,
+        )
+        if require_resolved:
+            raise ManagedConfigResolutionError(
+                f"Current managed config source at {path} is inaccessible"
+            ) from exc
+        return None
+    key = (st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_mode)
     with _CACHE_LOCK:
+        if (
+            require_resolved
+            and failure_cache is not None
+            and failure_cache.get(path_key) == key
+        ):
+            raise ManagedConfigResolutionError(
+                f"Current managed config source at {path} is unresolved"
+            )
         hit = cache.get(path_key)
-        if hit is not None and hit[:2] == key:
-            return copy.deepcopy(hit[2])
+        if hit is not None and hit[:4] == key:
+            return copy.deepcopy(hit[4])
     try:
         with open(path, encoding="utf-8") as f:
             parsed = parse(f)
@@ -106,9 +166,27 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
             path,
             exc,
         )
+        if failure_cache is not None:
+            with _CACHE_LOCK:
+                failure_cache[path_key] = key
+        if require_resolved:
+            raise ManagedConfigResolutionError(
+                f"Current managed config source at {path} is unresolved"
+            ) from exc
         return None
     with _CACHE_LOCK:
-        cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
+        if failure_cache is not None:
+            failure_cache.pop(path_key, None)
+        cache[path_key] = (*key, copy.deepcopy(parsed))
+    return parsed
+
+
+def _parse_managed_config(f) -> dict:
+    parsed = yaml.safe_load(f)
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("managed config root must be a mapping")
     return parsed
 
 
@@ -120,9 +198,65 @@ def load_managed_config() -> dict:
     parsed = _cached_read(
         managed_dir / "config.yaml",
         _CONFIG_CACHE,
-        lambda f: yaml.safe_load(f) or {},
+        _parse_managed_config,
+        failure_cache=_CONFIG_FAILURE_CACHE,
     )
     return parsed if isinstance(parsed, dict) else {}
+
+
+def load_managed_config_strict() -> dict:
+    """Parsed managed config, raising while a present source is unresolved.
+
+    Safety-sensitive readers use this to distinguish an absent managed policy
+    from one that exists but was ignored because of I/O or parse failure. Parse
+    failures are memoized by ``(mtime_ns, size)`` until the admin fixes the file.
+    """
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return {}
+    parsed = _cached_read(
+        managed_dir / "config.yaml",
+        _CONFIG_CACHE,
+        _parse_managed_config,
+        require_resolved=True,
+        failure_cache=_CONFIG_FAILURE_CACHE,
+    )
+    return parsed or {}
+
+
+def require_managed_config_resolved() -> None:
+    """Validate the current managed config without copying it on cache hits."""
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return
+    path = managed_dir / "config.yaml"
+    try:
+        st = path.stat()
+    except FileNotFoundError as exc:
+        key = _dangling_symlink_key(path)
+        if key is None:
+            return
+        path_key = str(path)
+        with _CACHE_LOCK:
+            _CONFIG_FAILURE_CACHE[path_key] = key
+        raise ManagedConfigResolutionError(
+            f"Current managed config source at {path} is unresolved"
+        ) from exc
+    except OSError as exc:
+        raise ManagedConfigResolutionError(
+            f"Current managed config source at {path} is inaccessible"
+        ) from exc
+    key = (st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_mode)
+    path_key = str(path)
+    with _CACHE_LOCK:
+        if _CONFIG_FAILURE_CACHE.get(path_key) == key:
+            raise ManagedConfigResolutionError(
+                f"Current managed config source at {path} is unresolved"
+            )
+        hit = _CONFIG_CACHE.get(path_key)
+        if hit is not None and hit[:4] == key:
+            return
+    load_managed_config_strict()
 
 
 def load_managed_env() -> Dict[str, str]:

@@ -2170,6 +2170,23 @@ fails open if the registry cannot be read or locked so users are not stranded.
 It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
 mounted across multiple machines.
 
+### Session search indexes
+
+The trigram substring index is enabled by default. If repeated trigram-index
+corruption affects message writes, disable only that optional index:
+
+```yaml
+sessions:
+  trigram_fts: false
+```
+
+Hermes then removes the trigram write triggers and routes affected searches to
+the standard FTS index or a safe `LIKE` fallback. Canonical messages and the
+standard FTS index are preserved. Re-enabling the setting performs a controlled
+rebuild from canonical messages. Each `state.db` reads the `config.yaml` beside
+it, so the same YAML setting applies consistently to CLI, gateway, maintenance,
+and explicit profile database opens.
+
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
 ```yaml

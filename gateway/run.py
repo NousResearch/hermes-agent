@@ -2150,8 +2150,9 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         elif "HERMES_MAX_ITERATIONS" in os.environ:
             # Clear stale bridge so downstream resolver applies its default.
             del os.environ["HERMES_MAX_ITERATIONS"]
-    # config-authoritative knobs for the session-search index (config.yaml
-    # sessions.* wins over stale env; env stays the cross-process carrier).
+    # Config-authoritative knobs for session-search features that still use
+    # internal cross-process carriers. Trigram FTS is resolved directly from
+    # the config adjacent to each state.db so profiles cannot leak settings.
     sessions_cfg = cfg.get("sessions", {})
     if isinstance(sessions_cfg, dict):
         if "cjk_fts" in sessions_cfg:
@@ -2498,8 +2499,7 @@ if _config_path.exists():
                 os.environ["HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT"] = str(
                     _agent_cfg["gateway_startup_restore_drain_timeout"]
                 )
-        # config-authoritative knobs for the session-search index; same
-        # bridge semantics as the agent settings above.
+        # Remaining config-authoritative session-search env bridges.
         _sessions_cfg = _cfg.get("sessions", {})
         if _sessions_cfg and isinstance(_sessions_cfg, dict):
             if "cjk_fts" in _sessions_cfg:

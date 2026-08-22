@@ -551,13 +551,16 @@ class ComputeHost:
         home_token = None
         secret_token = None
         try:
+            from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+            from hermes_constants import get_hermes_home
+
+            secret_home = Path(profile_home) if profile_home else Path(get_hermes_home())
+            secret_token = set_secret_scope(build_profile_secret_scope(secret_home))
             if profile_home:
                 from hermes_constants import set_hermes_home_override
-                from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_state import SessionDB
 
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 # DEDICATED handle — ours only until _make_agent succeeds. Every
                 # path after that keeps the agent registered in
                 # server._sessions[sid] (via _init_session, or the fallback dict
@@ -584,9 +587,14 @@ class ComputeHost:
             if home_token is not None:
                 try:
                     from hermes_constants import reset_hermes_home_override
-                    from agent.secret_scope import reset_secret_scope
 
                     reset_hermes_home_override(home_token)
+                except Exception:
+                    pass
+            if secret_token is not None:
+                try:
+                    from agent.secret_scope import reset_secret_scope
+
                     reset_secret_scope(secret_token)
                 except Exception:
                     pass

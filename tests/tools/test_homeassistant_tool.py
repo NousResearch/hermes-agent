@@ -320,6 +320,34 @@ class TestCheckAvailable:
             secret_scope.reset_secret_scope(token)
             secret_scope.set_multiplex_active(False)
 
+    def test_stale_process_env_misses_env_file_until_scope_installed(
+        self, monkeypatch, tmp_path
+    ):
+        """Unscoped get_secret keeps the startup snapshot; a per-turn scope does not."""
+        from agent import secret_scope
+        from tools.homeassistant_tool import _get_config
+
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_URL", "")
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "")
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.setenv("HASS_URL", "http://127.0.0.1:8123")
+        (tmp_path / ".env").write_text(
+            "HASS_URL=http://127.0.0.1:8123\nHASS_TOKEN=from-dotenv\n",
+            encoding="utf-8",
+        )
+
+        assert _get_config()[1] == ""
+
+        token = secret_scope.set_secret_scope(
+            secret_scope.build_profile_secret_scope(tmp_path)
+        )
+        try:
+            assert _get_config() == ("http://127.0.0.1:8123", "from-dotenv")
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert _get_config()[1] == ""
+
     def test_multiplex_scope_supplies_profile_url_and_token(self, monkeypatch):
         from agent import secret_scope
         from tools.homeassistant_tool import _get_config

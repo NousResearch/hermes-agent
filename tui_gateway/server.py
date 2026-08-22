@@ -2349,14 +2349,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
             session_db = None
+            try:
+                secret_token = _install_session_secret_scope(current)
+            except Exception:
+                pass
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
-                try:
-                    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
-
-                    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-                except Exception:
-                    pass
                 try:
                     from hermes_state import SessionDB
 
@@ -7994,6 +7992,19 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_hermes_home)
 
 
+def _install_session_secret_scope(session: dict):
+    """Re-read this session's ``.env`` into the per-turn secret scope.
+
+    ``_profile_home`` returns None for the launch/default profile, and
+    interactive turns previously skipped ``set_secret_scope`` in that case.
+    ``get_secret`` then fell through to the process-start ``os.environ``
+    snapshot, so adding ``HASS_TOKEN`` (or any other key) to ``.env`` had no
+    effect until a full app relaunch — a gateway restart does not re-spawn
+    the desktop ``hermes serve`` backend (#91147).
+    """
+    return set_secret_scope(build_profile_secret_scope(_session_home(session)))
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker for a turn whose outcome is about to reach the client.
 
@@ -10828,7 +10839,7 @@ def _run_prompt_submit(
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
+            secret_token = _install_session_secret_scope(session)
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty

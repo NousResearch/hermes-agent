@@ -852,6 +852,7 @@ def _memory_query_text(original_user_message: Any) -> str:
 
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[Dict[str, Any]] = None,
+    *, effective_task_id: Optional[str] = None, turn_id: Optional[str] = None,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
@@ -870,7 +871,14 @@ def _memory_turn_start_and_prefetch(
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
+            # Correlation is manager-owned operation metadata. It is bound to
+            # this turn before prefetch and never inferred from mutable provider state.
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                _query,
+                session_id=agent.session_id or "",
+                task_id=effective_task_id,
+                turn_id=turn_id,
+            ) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -879,7 +887,6 @@ def _memory_turn_start_and_prefetch(
             if _recall_indicator:
                 agent._emit_status(_recall_indicator)
     return ext_prefetch_cache
-
 
 def _stamp_api_content_sidecar(
     agent: Any, messages: List[Any], current_turn_user_idx: int, ext_prefetch_cache: str,
@@ -1129,7 +1136,13 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(
+        agent,
+        original_user_message,
+        turn_author,
+        effective_task_id=effective_task_id,
+        turn_id=turn_id,
+    )
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,

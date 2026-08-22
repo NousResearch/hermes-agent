@@ -16,6 +16,7 @@ export type SettingsView =
   | 'providers'
   | 'sessions'
   | `config:${string}`
+
 export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
 
 export interface SettingsPageProps {

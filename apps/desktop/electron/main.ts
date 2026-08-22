@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  type MenuItemConstructorOptions,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -27,7 +28,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
@@ -186,7 +188,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { deliverDeepLink, ensureMainWindow, focusMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
@@ -287,6 +289,16 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { destroyTray, quitFromTray, restoreMainWindow } from './tray-actions'
+import { applyLoginItemPreference, readLoginItemPreference } from './tray-login-item'
+import { petStartupCommand, type TrayPetCommand } from './tray-pet-policy'
+import {
+  DEFAULT_TRAY_PREFERENCES,
+  loadTrayPreferences,
+  parseTrayPreferences,
+  saveTrayPreferences,
+  type TrayPreferences
+} from './tray-preferences'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -317,6 +329,11 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import {
+  shouldHideMainWindowToTray,
+  shouldQuitAfterAllWindowsClose,
+  shouldShowMainWindowOnStartup
+} from './window-close-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -1286,6 +1303,13 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let hermesTray = null
+let isQuitting = false
+let trayPreferences: TrayPreferences = { ...DEFAULT_TRAY_PREFERENCES }
+let trayPreferencesPath = ''
+let trayPetState = { available: false, poppedOut: false }
+let petStartupRequested = false
+let initialMainWindowPending = true
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -2533,6 +2557,12 @@ function resolveGitBinary() {
     candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
   }
 
+  // Prefer 8.3 aliases before long Program Files paths. simple-git rejects
+  // custom binaries containing spaces/parentheses (or warns repeatedly even
+  // with allowUnsafeCustomBinary), while these aliases resolve to the same
+  // trusted system Git installation without restricted characters.
+  candidates.push('C:\\PROGRA~1\\Git\\cmd\\git.exe')
+  candidates.push('C:\\PROGRA~2\\Git\\cmd\\git.exe')
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
   candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
 
@@ -6219,6 +6249,180 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+function showMainWindow() {
+  restoreMainWindow({ window: mainWindow, createWindow, focusWindow })
+}
+
+function updateTrayPreferences(next: Partial<TrayPreferences>) {
+  const previous = trayPreferences
+  const candidate = parseTrayPreferences({ ...trayPreferences, ...next })
+
+  if (candidate.launchAtLogin !== previous.launchAtLogin && !applyTrayLaunchAtLogin(candidate.launchAtLogin)) {
+    rememberLog('[tray] login-item update failed; keeping the previous preference')
+
+    return previous
+  }
+
+  try {
+    saveTrayPreferences(trayPreferencesPath, candidate)
+    trayPreferences = candidate
+  } catch (error) {
+    if (candidate.launchAtLogin !== previous.launchAtLogin) {
+      applyTrayLaunchAtLogin(previous.launchAtLogin)
+    }
+
+    trayPreferences = previous
+    rememberLog(`[tray] failed to save preferences: ${error?.message || error}`)
+
+    return previous
+  }
+
+  if (!trayPreferences.enabled) {
+    destroyTray({
+      tray: hermesTray,
+      clear: () => {
+        hermesTray = null
+      }
+    })
+  } else if (!hermesTray) {
+    createHermesTray()
+  }
+
+  rebuildHermesTrayMenu()
+
+  return trayPreferences
+}
+
+function applyTrayLaunchAtLogin(enabled: boolean): boolean {
+  if (!IS_WINDOWS) {
+    return true
+  }
+
+  const applied = applyLoginItemPreference(enabled, app, process.execPath)
+
+  if (!applied) {
+    rememberLog('[tray] setLoginItemSettings failed')
+  }
+
+  return applied
+}
+
+function readTrayLaunchAtLogin(): boolean | null {
+  if (!IS_WINDOWS) {
+    return null
+  }
+
+  return readLoginItemPreference(app)
+}
+
+function requestPetCommand(command: TrayPetCommand) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  mainWindow.webContents.send('hermes:tray:pet-command', command)
+}
+
+function rebuildHermesTrayMenu() {
+  if (!hermesTray) {
+    return
+  }
+
+  const template: MenuItemConstructorOptions[] = [
+    { label: 'Show Hermes', click: showMainWindow },
+    { label: 'Hide Hermes', click: () => mainWindow?.hide() },
+    {
+      label: trayPetState.poppedOut ? 'Return pet to Hermes' : 'Show desktop pet',
+      enabled: trayPetState.available,
+      click: () => requestPetCommand(trayPetState.poppedOut ? 'pop-in' : 'pop-out')
+    },
+    { type: 'separator' },
+    {
+      label: 'Enable tray',
+      type: 'checkbox',
+      checked: trayPreferences.enabled,
+      click: item => updateTrayPreferences({ enabled: item.checked })
+    },
+    {
+      label: 'Close window to tray',
+      type: 'checkbox',
+      checked: trayPreferences.closeToTray,
+      // Close-to-tray semantics are Windows-only (macOS already keeps the app
+      // alive after the last window closes); don't offer a dead switch there.
+      enabled: IS_WINDOWS && trayPreferences.enabled,
+      click: item => updateTrayPreferences({ closeToTray: item.checked })
+    },
+    {
+      label: 'Start in tray',
+      type: 'checkbox',
+      checked: trayPreferences.startInTray,
+      enabled: IS_WINDOWS && trayPreferences.enabled,
+      click: item => updateTrayPreferences({ startInTray: item.checked })
+    },
+    {
+      label: 'Pop out pet on startup',
+      type: 'checkbox',
+      checked: trayPreferences.popOutPetOnStartup,
+      enabled: trayPreferences.enabled,
+      click: item => updateTrayPreferences({ popOutPetOnStartup: item.checked })
+    },
+    {
+      label: 'Launch at login',
+      type: 'checkbox',
+      checked: trayPreferences.launchAtLogin,
+      // macOS login items are real, but launch-at-login is not part of the
+      // macOS tray/menu-bar story — keep the switch Windows-only too.
+      enabled: IS_WINDOWS,
+      click: item => updateTrayPreferences({ launchAtLogin: item.checked })
+    },
+    { type: 'separator' },
+    { label: 'Open Settings…', click: sendOpenSettingsRequested },
+    { type: 'separator' },
+    {
+      label: 'Quit Hermes',
+      click: () => {
+        quitFromTray({
+          markQuitting: () => {
+            isQuitting = true
+          },
+          quit: () => app.quit()
+        })
+      }
+    }
+  ]
+
+  hermesTray.setContextMenu(Menu.buildFromTemplate(template))
+}
+
+function createHermesTray() {
+  // Windows: notification-area tray icon. macOS: menu bar icon (Electron Tray
+  // maps to the menu bar there). Both give quick access to the window, pet,
+  // and tray preferences without the app window itself.
+  if ((!IS_WINDOWS && !IS_MAC) || hermesTray || !trayPreferences.enabled) {
+    return
+  }
+
+  const icon = getAppIconPath()
+
+  if (!icon) {
+    rememberLog('[tray] no icon asset found; tray mode disabled')
+
+    return
+  }
+
+  try {
+    hermesTray = new Tray(icon)
+    hermesTray.setToolTip('Hermes')
+    rebuildHermesTrayMenu()
+    hermesTray.on('click', showMainWindow)
+    hermesTray.on('double-click', showMainWindow)
+  } catch (error) {
+    hermesTray?.destroy()
+    hermesTray = null
+    rememberLog(`[tray] setup failed; falling back to normal window lifecycle: ${error?.message || error}`)
+  }
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -6231,6 +6435,26 @@ function sendOpenUpdatesRequested() {
   }
 
   webContents.send('hermes:open-updates')
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show()
+  }
+
+  mainWindow.focus()
+}
+
+function sendOpenSettingsRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:open-settings')
 
   if (!mainWindow.isVisible()) {
     mainWindow.show()
@@ -11061,19 +11285,7 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
 const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  if (win.isMinimized()) {
-    win.restore()
-  }
-
-  if (!win.isVisible()) {
-    win.show()
-  }
-
-  win.focus()
+  focusMainWindow(win)
 }
 
 function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
@@ -12104,6 +12316,27 @@ function createWindow() {
   }
 
   const revealController = wireWindowReveal(createdMainWindow, {
+    // Tray "start in tray" mode keeps the initial main window hidden: only
+    // reveal it when startup visibility policy says so (every later window
+    // created by the app is shown unconditionally, matching the old
+    // ready-to-show behavior).
+    show: () => {
+      const isInitialWindow = initialMainWindowPending
+      initialMainWindowPending = false
+
+      if (
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        shouldShowMainWindowOnStartup({
+          isWindows: IS_WINDOWS,
+          trayAvailable: Boolean(hermesTray),
+          startInTray: trayPreferences.startInTray,
+          isInitialWindow
+        })
+      ) {
+        mainWindow.show()
+      }
+    },
     onRevealed: () => {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
@@ -12151,7 +12384,22 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+
+    if (
+      shouldHideMainWindowToTray({
+        isWindows: IS_WINDOWS,
+        trayAvailable: Boolean(hermesTray),
+        closeToTray: trayPreferences.closeToTray,
+        isQuitting,
+        isQuittingForHandoff
+      })
+    ) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -12448,6 +12696,26 @@ registerPetOverlayIpc({
   getPetOverlayWindow: () => petOverlayWindow,
   openPetOverlay,
   closePetOverlay
+})
+
+ipcMain.on('hermes:tray:pet-state', (_event, payload) => {
+  trayPetState = {
+    available: Boolean(payload?.available),
+    poppedOut: Boolean(payload?.poppedOut)
+  }
+  rebuildHermesTrayMenu()
+
+  const command = petStartupCommand({
+    enabled: trayPreferences.popOutPetOnStartup,
+    available: trayPetState.available,
+    poppedOut: trayPetState.poppedOut,
+    alreadyRequested: petStartupRequested
+  })
+
+  if (command) {
+    petStartupRequested = true
+    requestPetCommand(command)
+  }
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
@@ -14953,12 +15221,7 @@ function handleDeepLink(url) {
   }
 
   try {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-
-    mainWindow.focus()
-    mainWindow.webContents.send('hermes:deep-link', payload)
+    deliverDeepLink(mainWindow, payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
     rememberLog(`[deeplink] delivery failed: ${err.message}`)
@@ -15076,6 +15339,23 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
+  trayPreferencesPath = path.join(app.getPath('userData'), 'tray-preferences.json')
+  trayPreferences = loadTrayPreferences(trayPreferencesPath)
+
+  // Prefer OS login-item truth on cold start when available.
+  if (IS_WINDOWS) {
+    const osLogin = readTrayLaunchAtLogin()
+
+    if (osLogin !== null && osLogin !== trayPreferences.launchAtLogin) {
+      trayPreferences = { ...trayPreferences, launchAtLogin: osLogin }
+
+      try {
+        saveTrayPreferences(trayPreferencesPath, trayPreferences)
+      } catch {
+        void 0
+      }
+    }
+  }
 
   ensureWslWindowsFonts()
   configureSpellChecker()
@@ -15103,6 +15383,7 @@ app.whenReady().then(() => {
     screen.on('display-removed', reposition)
   }
 
+  createHermesTray()
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -15199,6 +15480,8 @@ app.on('before-quit', event => {
     return
   }
 
+  isQuitting = true
+
   if (!backendQuitTeardownDone) {
     event.preventDefault()
     void backendShutdown.run().finally(() => {
@@ -15274,6 +15557,12 @@ app.on('before-quit', event => {
 
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  destroyTray({
+    tray: hermesTray,
+    clear: () => {
+      hermesTray = null
+    }
+  })
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.
@@ -15289,7 +15578,16 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  if (
+    shouldQuitAfterAllWindowsClose({
+      isWindows: IS_WINDOWS,
+      isMac: IS_MAC,
+      trayAvailable: Boolean(hermesTray),
+      closeToTray: trayPreferences.closeToTray,
+      isQuitting,
+      isQuittingForHandoff
+    })
+  ) {
     app.quit()
   }
 })

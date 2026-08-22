@@ -1,10 +1,20 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
+import { SETTINGS_ROUTE } from '@/app/routes'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { persistString, storedString } from '@/lib/storage'
 import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
@@ -21,7 +31,7 @@ import {
   setPetInfo
 } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
-import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
+import { $petOverlayActive, initPetOverlayBridge, popInPet, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
@@ -102,6 +112,7 @@ function loadPosition(): Point {
 export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
   const { resolvedMode } = useTheme()
+  const navigate = useNavigate()
   const gatewayState = useStore($gatewayState)
   const info = useStore($petInfo)
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -300,6 +311,38 @@ export function FloatingPet() {
     return () => window.removeEventListener('focus', onFocus)
   }, [])
 
+  // Report the renderer-owned pet state to the native tray and handle tray
+  // commands through the same pop-in/pop-out path as the in-window gesture.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    const api = window.hermesDesktop?.petOverlay
+
+    if (!api) {
+      return
+    }
+
+    const off = api.onTrayCommand(command => {
+      if (command === 'pop-in') {
+        popInPet()
+
+        return
+      }
+
+      const rect = containerRef.current?.getBoundingClientRect()
+
+      if (command === 'pop-out' && active && rect) {
+        popOutPet({ height: rect.height, width: rect.width, x: rect.x, y: rect.y })
+      }
+    })
+
+    api.reportTrayState({ available: active, poppedOut: overlayActive })
+
+    return off
+  }, [active, overlayActive])
+
   // Restore a popped-out pet on boot, once the pet has loaded (so we never spawn
   // an empty overlay window). Primary window only; runs at most once.
   const restoredRef = useRef(false)
@@ -337,6 +380,11 @@ export function FloatingPet() {
   }, [clamp])
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
+    // Right-click is reserved for the context menu — never start a drag.
+    if (e.button !== 0) {
+      return
+    }
+
     const el = containerRef.current
 
     if (!el) {
@@ -439,6 +487,43 @@ export function FloatingPet() {
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 
+  // Right-click quick actions (Codex-style). The pet is draggable, so the menu
+  // must not steal the pointer-down drag — only the context menu opens.
+  const petRect = () => {
+    const rect = containerRef.current?.getBoundingClientRect()
+
+    return rect ? { height: rect.height, width: rect.width, x: rect.left, y: rect.top } : { height: 96, width: 96, x: 0, y: 0 }
+  }
+
+  const onMenuToggleApp = useCallback(() => {
+    window.hermesDesktop?.petOverlay?.control({ type: 'toggle-app' })
+  }, [])
+
+  const onMenuToggleOverlay = useCallback(() => {
+    if (overlayActive) {
+      popInPet()
+    } else if (active) {
+      popOutPet(petRect())
+    }
+  }, [active, overlayActive])
+
+  const onMenuOpenSettings = useCallback(() => {
+    navigate(SETTINGS_ROUTE)
+  }, [navigate])
+
+  const onMenuResetPosition = useCallback(() => {
+    const next = clamp({ x: 24, y: (window.innerHeight || 600) - 220 })
+    setPosition(next)
+    persistString(POSITION_KEY, JSON.stringify(next))
+  }, [clamp])
+
+  const onMenuScale = useCallback(
+    (delta: number) => {
+      setPetScale(requestGateway, (info.scale ?? 0.33) + delta)
+    },
+    [requestGateway, info.scale]
+  )
+
   // Roam only the in-window pet, only while it's idle (agent at rest) and not
   // popped out into the OS overlay. Activity pauses the wander; the pet reacts
   // in place, then resumes strolling when the turn ends.
@@ -464,50 +549,67 @@ export function FloatingPet() {
   }
 
   return (
-    <div
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      ref={containerRef}
-      style={{
-        cursor: 'grab',
-        left: position.x,
-        pointerEvents: 'auto',
-        position: 'fixed',
-        top: position.y,
-        touchAction: 'none',
-        userSelect: 'none',
-        zIndex: 60
-      }}
-    >
-      <div
-        aria-hidden
-        style={{
-          background: `radial-gradient(ellipse at center, rgba(0,0,0,${shadowAlpha}) 0%, rgba(0,0,0,0) 70%)`,
-          bottom: -shadowH * 0.4,
-          height: shadowH,
-          left: '50%',
-          pointerEvents: 'none',
-          position: 'absolute',
-          transform: 'translateX(-50%)',
-          width: shadowW,
-          zIndex: 0
-        }}
-      />
-      <div
-        ref={spriteWrapRef}
-        style={{
-          lineHeight: 0,
-          position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
-          zIndex: 1
-        }}
-      >
-        <PetSprite info={info} rowOverride={walk.row} />
-      </div>
-      {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
-          burstVibeHearts's router. */}
-      <PetHeartField petH={petH} petW={petW} />
-    </div>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          ref={containerRef}
+          style={{
+            cursor: 'grab',
+            left: position.x,
+            pointerEvents: 'auto',
+            position: 'fixed',
+            top: position.y,
+            touchAction: 'none',
+            userSelect: 'none',
+            zIndex: 60
+          }}
+        >
+          <div
+            aria-hidden
+            style={{
+              background: `radial-gradient(ellipse at center, rgba(0,0,0,${shadowAlpha}) 0%, rgba(0,0,0,0) 70%)`,
+              bottom: -shadowH * 0.4,
+              height: shadowH,
+              left: '50%',
+              pointerEvents: 'none',
+              position: 'absolute',
+              transform: 'translateX(-50%)',
+              width: shadowW,
+              zIndex: 0
+            }}
+          />
+          <div
+            ref={spriteWrapRef}
+            style={{
+              lineHeight: 0,
+              position: 'relative',
+              transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+              zIndex: 1
+            }}
+          >
+            <PetSprite info={info} rowOverride={walk.row} />
+          </div>
+          {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
+              burstVibeHearts's router. */}
+          <PetHeartField petH={petH} petW={petW} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuLabel>{info.displayName || 'Pet'}</ContextMenuLabel>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={onMenuToggleApp}>Show / Hide Hermes</ContextMenuItem>
+        <ContextMenuItem disabled={!active} onSelect={onMenuToggleOverlay}>
+          {overlayActive ? 'Pop pet back in' : 'Pop pet out'}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={onMenuOpenSettings}>Settings…</ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onMenuScale(0.05)}>Bigger</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onMenuScale(-0.05)}>Smaller</ContextMenuItem>
+        <ContextMenuItem onSelect={onMenuResetPosition}>Reset position</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

@@ -156,3 +156,4 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`spike`](/docs/user-guide/skills/bundled/software-development/software-development-spike) | Throwaway experiments to validate an idea before build. | `software-development/spike` |
 | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
 | [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |
+| [`trajectory-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-trajectory-debugger) | Analyze session trajectories, cache hit rates, and tokens. | `software-development/trajectory-debugger` |

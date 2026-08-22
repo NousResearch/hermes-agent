@@ -1001,6 +1001,13 @@ def do_list(source_filter: str = "all",
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
 
+    # Per-skill outcome-verifier state, loaded lazily so listing stays cheap
+    # for libraries where nothing declares a verify block.
+    try:
+        from tools import skill_usage
+    except Exception:
+        skill_usage = None
+
     c = console or _console
     ensure_hub_dirs()
     lock = HubLockFile()
@@ -1008,8 +1015,26 @@ def do_list(source_filter: str = "all",
     builtin_names = set(_read_manifest())
 
     # Pull ALL skills (including disabled ones) so we can annotate status.
-    all_skills = _find_all_skills(skip_disabled=True)
+    # include_dir=True carries each skill's directory + verify-block declaration
+    # from the same pass, so the per-row work below needs no extra scans or
+    # SKILL.md re-reads.
+    all_skills = _find_all_skills(skip_disabled=True, include_dir=True)
     disabled_names = get_disabled_skill_names()
+
+    # Load the whole outcome-usage store once — is_verify_enabled() re-reads
+    # the file per call, which is O(N) file reads across the listing.
+    if skill_usage is not None:
+        try:
+            usage_store = skill_usage.load_usage()
+        except Exception:
+            usage_store = {}
+        try:
+            prune_builtins = skill_usage.prune_builtins_enabled()
+        except Exception:
+            prune_builtins = True
+    else:
+        usage_store = {}
+        prune_builtins = True
 
     title = "Installed Skills"
     if enabled_only:
@@ -1020,6 +1045,7 @@ def do_list(source_filter: str = "all",
     table.add_column("Category", style="dim")
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
+    table.add_column("Verify", style="dim")
     table.add_column("Status", style="dim")
 
     hub_count = 0
@@ -1069,7 +1095,45 @@ def do_list(source_filter: str = "all",
 
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
+
+        # Outcome-verifier marker: only skills that DECLARE a verify block get
+        # a cell — no marker means there is nothing to opt into, so the table
+        # stays quiet for the vast majority of skills. Enabled shows the opt-in
+        # state; disabled-but-declared invites the opt-in. Eligibility is the
+        # SAME rule ``hermes skills verify`` enforces, evaluated by the shared
+        # predicate against data already loaded here — hub set, builtin
+        # manifest, usage store, one config read — so the listing needs no
+        # per-row file reads and the inline mirror can't drift from do_verify.
+        verify_cell = ""
+        if skill_usage is not None and skill.get("dir") and skill.get("verify_declared"):
+            rec = usage_store.get(name, {})
+            eligible = skill_usage.is_verify_optin_eligible_from_state(
+                builtin=name in builtin_names,
+                prune_builtins=prune_builtins,
+                hub_installed=name in hub_installed,
+                protected=skill_usage.is_protected_builtin(name),
+                external=skill.get("external"),
+                curator_managed=(
+                    isinstance(rec, dict)
+                    and (
+                        rec.get("created_by") == "agent"
+                        or rec.get("agent_created") is True
+                    )
+                ),
+            )
+            if eligible:
+                try:
+                    on = rec.get("verify_enabled") is True
+                    verify_cell = "[bold green]on[/]" if on else "[dim]off[/]"
+                except Exception:
+                    verify_cell = ""
+
+        table.add_row(
+            name, category, source_display,
+            f"[{trust_style}]{trust_label}[/]",
+            verify_cell,
+            status_cell,
+        )
 
     c.print(table)
     summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"
@@ -1079,6 +1143,60 @@ def do_list(source_filter: str = "all",
         summary += f" — {enabled_count} enabled, {disabled_count} disabled"
     summary += "[/]\n"
     c.print(summary)
+
+
+def do_verify(
+    name: str, enable: bool = True, console: Optional[Console] = None
+) -> int:
+    """Enable or disable a skill's declared outcome verifier.
+
+    Verifiers are opt-in: frontmatter may DECLARE one, but it only runs when
+    the user grants permission here. ENABLING is gated on the consumer rule
+    the mechanical verifier enforces — the opt-in is only offered where the
+    skill's outcomes actually feed curator review: agent-created
+    (curator-managed) skills always, bundled built-ins only when
+    ``curator.prune_builtins`` is enabled, and hub-installed, external,
+    protected, or un-managed user skills never. DISABLING is always allowed:
+    a skill may drift into ineligibility after being enabled (hub-replaced,
+    provenance cleared), and revoking consent for a subprocess runner must
+    never be blocked by that drift.
+
+    Returns 0 on success, 1 on a refused/unrecognized skill.
+    """
+    from tools import skill_usage
+    from tools.skill_verify import load_verify_spec
+
+    c = console or _console
+    skill_dir = skill_usage._find_skill_dir(name)
+    if skill_dir is None:
+        c.print(f"[bold red]Error:[/] skill '{name}' not found in {display_hermes_home()}/skills")
+        return 1
+    if enable and not skill_usage.is_verify_optin_eligible(name, skill_dir):
+        c.print(
+            f"[bold yellow]Cannot verify '{name}':[/] its outcomes would never "
+            "surface in curator review, so the verifier has nothing to feed. "
+            "Outcome verification applies to agent-created skills and bundled "
+            "built-ins (when `curator.prune_builtins` is enabled); "
+            "hub-installed, external, protected, and un-managed user skills "
+            "are excluded."
+        )
+        return 1
+    spec = load_verify_spec(skill_dir)
+    if enable and spec is None:
+        c.print(
+            f"[bold yellow]'{name}' declares no verify block.[/] Add "
+            "`metadata.hermes.verify` to its SKILL.md frontmatter (see the "
+            "skill-authoring docs) before enabling."
+        )
+        return 1
+    skill_usage.set_verify_enabled(name, enable)
+    verb = "enabled" if enable else "disabled"
+    c.print(
+        f"[green]verify:[/] {verb} for '{name}' — "
+        f"its verifier {'runs' if enable else 'will not run'} at end of turns "
+        "that use it"
+    )
+    return 0
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1838,6 +1956,11 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "verify":
+        do_verify(
+            args.name,
+            enable=not getattr(args, "disable", False),
+        )
     elif action == "uninstall":
         do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
@@ -1877,7 +2000,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|verify|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -2054,6 +2177,14 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action in {"list-modified", "modified"}:
         do_list_modified(console=c, as_json="--json" in args)
 
+    elif action == "verify":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills verify <name> [--disable]\n")
+            return
+        name = args[0]
+        enable = "--disable" not in args
+        do_verify(name, enable=enable, console=c)
+
     elif action == "diff":
         if not args:
             c.print("[bold red]Usage:[/] /skills diff <name>\n")
@@ -2116,6 +2247,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]verify[/] <name> [--disable]   Enable/disable a skill's outcome verifier\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"

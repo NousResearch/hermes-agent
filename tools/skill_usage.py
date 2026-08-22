@@ -29,6 +29,7 @@ import logging
 import os
 import tempfile
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -37,6 +38,54 @@ from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 
 logger = logging.getLogger(__name__)
+
+# Per-turn attribution accumulator (Layer 2 of failure tracing). The agent
+# arms this at turn start with a reference to its own ``_turn_used_skills``
+# set; ``bump_use`` (the single "skill used" chokepoint) records into it.
+# Instance-scoped by construction: the ContextVar only ever holds a reference
+# to the *active* agent's set, cleared (re-armed) on every new turn, and the
+# authoritative state lives on the instance, not in this module — so a parent
+# agent's ``finalize_turn`` reads its own set even if a subagent ran in the
+# same thread in between.
+_turn_skill_accumulator: ContextVar[Optional[Set[str]]] = ContextVar(
+    "turn_skill_accumulator", default=None
+)
+
+
+def arm_turn_skill_accumulator(used_skills: Set[str]) -> Token:
+    """Point the per-turn accumulator at *used_skills* (the agent's set).
+
+    Called at turn start in ``agent.turn_context``. Returns the ContextVar
+    token so the caller can restore it at turn end.
+    """
+    return _turn_skill_accumulator.set(used_skills)
+
+
+def disarm_turn_skill_accumulator(token: Optional[Token]) -> None:
+    """Restore the per-turn accumulator to its unarmed state at turn end.
+
+    Called from ``finalize_turn`` so ``bump_use`` calls that happen OUTSIDE a
+    turn — CLI skill preloads, cron jobs loading skills between turns, gateway
+    sessions sharing a thread — stop writing into the finished turn's set
+    (already read by finalize and about to be discarded). The next turn re-arms
+    with a fresh set, so this is about not mutating a dead set, not about the
+    next turn's attribution.
+    """
+    if token is not None:
+        try:
+            _turn_skill_accumulator.reset(token)
+            return
+        except (ValueError, TypeError, RuntimeError):
+            # The token belongs to a different context (a copy_context boundary
+            # between arm and disarm), or it was already reset (a reused
+            # token raises RuntimeError "Token has already been used") — fall
+            # through to a current-context clear in both cases.
+            pass
+    try:
+        _turn_skill_accumulator.set(None)
+    except Exception:
+        logger.debug("turn_skill_accumulator.clear failed", exc_info=True)
+
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking.
 msvcrt = None
@@ -655,8 +704,35 @@ def _empty_record() -> Dict[str, Any]:
         "created_at": _now_iso(),
         "state": STATE_ACTIVE,
         "pinned": False,
+        "verify_enabled": False,
         "archived_at": None,
+        # Outcome telemetry. Distinct from use_count: use_count answers "was
+        # this touched", these answer "did touching it work". A bounded
+        # recent-outcomes window lets a skill recover after a fix instead of
+        # being haunted by lifetime failures. Each entry is three-state:
+        # True (mechanical PASS), False (mechanical FAIL / eval-blamed), or
+        # None (neutral — ran unverified, no per-skill evidence).
+        "recent_outcomes": [],
+        # Parallel to recent_outcomes (same window, appended in lockstep):
+        # the reason behind each outcome, so the curator review has something
+        # actionable ("verifier: commit message lacks type prefix") instead of
+        # an anonymous boolean. Empty string when no reason was recorded.
+        "recent_outcome_reasons": [],
+        "needs_review": False,
+        "needs_review_since": None,
     }
+
+
+# Bound on len(recent_outcomes) — keeps the sidecar small and keeps the signal
+# focused on recent behavior rather than lifetime history.
+_OUTCOME_WINDOW = 20
+
+# A skill flips to needs_review when it has at least this many recent
+# outcomes and its failure rate over the window is at or above this threshold.
+# The minimum-sample floor prevents one unlucky early failure from flagging
+# a brand-new skill.
+_OUTCOME_MIN_SAMPLES = 4
+_OUTCOME_FAILURE_THRESHOLD = 0.5
 
 
 def load_usage() -> Dict[str, Dict[str, Any]]:
@@ -872,6 +948,13 @@ def bump_use(
 
     Tracks every skill regardless of provenance.
     """
+    # Layer 2 attribution: when a turn has armed the accumulator, remember the
+    # skill so finalize_turn can attribute the turn's outcome to it. Pure
+    # sidecar bookkeeping — never raises, never mutates context.
+    _acc = _turn_skill_accumulator.get()
+    if _acc is not None:
+        _acc.add(skill_name)
+
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         previous_use_count = _non_negative_int(rec.get("use_count"))
         patch_generation = _non_negative_int(rec.get("patch_generation"))
@@ -979,6 +1062,104 @@ def record_installed(skill_name: str) -> None:
         _emit_skill_lifecycle(skill_name, "installed", record=facts)
 
 
+def bump_outcome(
+    skill_name: str, success: Optional[bool], reason: Optional[str] = None
+) -> None:
+    """Record whether a use of *skill_name* held up.
+
+    ``success`` is THREE-state, so the sidecar never claims success without
+    per-skill evidence:
+
+      - True — per-skill evidence it held up (a mechanical verifier PASS).
+      - False — per-skill evidence it failed (mechanical FAIL or
+        eval-attributed blame).
+      - None — NEUTRAL: the turn succeeded but this skill has no per-skill
+        evidence either way (it ran unverified). Counted as a sample so the
+        window still slides and recovery works, but explicitly NOT a pass —
+        incidentally-loaded skills can't bank fake success and wash out their
+        failure history.
+
+    Appends to a capped recent-outcomes window and re-derives needs_review from
+    it. ``reason`` is the human/verifier text explaining the outcome (mechanical
+    fail reason, eval reason, ...); it is kept alongside the outcome in a
+    parallel capped list so the curator review pass can read *why* a skill
+    failed without having to parse trajectories.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        outcomes = rec.get("recent_outcomes")
+        if not isinstance(outcomes, list):
+            outcomes = []
+        # Preserve the three states exactly (bool(True)=True, bool(False)=False,
+        # but bool(None)=False would erase the neutral marker — store raw).
+        outcomes.append(success)
+        if len(outcomes) > _OUTCOME_WINDOW:
+            outcomes = outcomes[-_OUTCOME_WINDOW:]
+
+        reasons = rec.get("recent_outcome_reasons")
+        if not isinstance(reasons, list):
+            reasons = []
+        reasons.append(str(reason) if reason else "")
+        if len(reasons) > _OUTCOME_WINDOW:
+            reasons = reasons[-_OUTCOME_WINDOW:]
+        rec["recent_outcomes"] = outcomes
+        rec["recent_outcome_reasons"] = reasons
+        assert len(outcomes) == len(reasons), (
+            f"recent_outcomes/recent_outcome_reasons misaligned for {skill_name}"
+        )
+
+        was_needs_review = bool(rec.get("needs_review"))
+        samples = len(outcomes)
+        # Only an explicit False is a failure — a None (neutral) counts toward
+        # the sample floor but must never be read as a pass OR a failure.
+        failures = sum(1 for o in outcomes if o is False)
+        should_flag = (
+            samples >= _OUTCOME_MIN_SAMPLES
+            and (failures / samples) >= _OUTCOME_FAILURE_THRESHOLD
+        )
+        if should_flag and not was_needs_review:
+            rec["needs_review"] = True
+            rec["needs_review_since"] = _now_iso()
+        elif not should_flag and was_needs_review:
+            rec["needs_review"] = False
+            rec["needs_review_since"] = None
+
+    _mutate(skill_name, _apply)
+
+
+def _failure_rate_from_outcomes(outcomes: Any) -> Optional[float]:
+    """Recent-window failure rate from a ``recent_outcomes`` list, or None
+    when there are too few samples to judge."""
+    if not isinstance(outcomes, list) or len(outcomes) < _OUTCOME_MIN_SAMPLES:
+        return None
+    return sum(1 for o in outcomes if o is False) / len(outcomes)
+
+
+def failure_rate(skill_name: str) -> Optional[float]:
+    """Recent-window failure rate for *skill_name*, or None with too few samples."""
+    return _failure_rate_from_outcomes(get_record(skill_name).get("recent_outcomes"))
+
+
+def recent_failure_reason(rec: Dict[str, Any]) -> str:
+    """Most recent non-empty reason recorded against a failed outcome.
+
+    ``rec`` is a usage record (or backfilled row). ``recent_outcomes`` and
+    ``recent_outcome_reasons`` are parallel capped lists; walk from the newest
+    entry back to the newest *failure* (an explicit ``False`` — a neutral
+    ``None`` is not a failure) with a reason attached. Returns "" when there
+    isn't one.
+    """
+    outcomes = rec.get("recent_outcomes")
+    reasons = rec.get("recent_outcome_reasons")
+    if not isinstance(outcomes, list) or not isinstance(reasons, list):
+        return ""
+    for i, ok in reversed(list(enumerate(outcomes))):
+        if ok is False and i < len(reasons):
+            r = reasons[i]
+            if isinstance(r, str) and r:
+                return r
+    return ""
+
+
 def mark_agent_created(skill_name: str) -> None:
     """Opt a skill created by skill_manage into curator management.
 
@@ -1003,6 +1184,8 @@ def set_state(skill_name: str, state: str) -> None:
         rec["state"] = state
         if state == STATE_ARCHIVED:
             rec["archived_at"] = _now_iso()
+            rec["needs_review"] = False
+            rec["needs_review_since"] = None
         elif state == STATE_ACTIVE:
             rec["archived_at"] = None
         return {
@@ -1048,6 +1231,96 @@ def set_sync(skill_name: str, sync: bool) -> None:
 def is_sync_enabled(skill_name: str) -> bool:
     """Whether a skill is opted into sync (``sync: true`` in its record)."""
     return get_record(skill_name).get("sync") is True
+
+
+def prune_builtins_enabled() -> bool:
+    """Public alias for the bundled-builtin curation flag."""
+    return _prune_builtins_enabled()
+
+
+def is_verify_optin_eligible_from_state(
+    *,
+    builtin: bool,
+    prune_builtins: bool,
+    hub_installed: bool = False,
+    protected: bool = False,
+    external: bool = False,
+    curator_managed: bool = False,
+) -> bool:
+    """The verify opt-in rule as a pure predicate over pre-resolved state.
+
+    ``is_verify_optin_eligible`` resolves this state from the filesystem and
+    delegates here; ``do_list`` resolves it from its bulk-loaded usage store
+    and delegates here too. The rule therefore lives in exactly one place —
+    the listing's inline mirror can't drift from ``hermes skills verify``.
+    """
+    if hub_installed or protected or external:
+        return False
+    if builtin:
+        return prune_builtins
+    return curator_managed
+
+
+def is_verify_optin_eligible(skill_name: str, skill_dir: Optional[Path] = None) -> bool:
+    """Whether *skill_name* may be opted into outcome verification.
+
+    The opt-in is only meaningful where the outcomes have a consumer: the
+    curator review pass surfaces ``curated_report()``, which lists
+    agent-created (curator-managed) skills plus bundled built-ins when
+    ``curator.prune_builtins`` is enabled. A skill whose outcomes would never
+    surface — a plain local skill with no ``created_by: agent`` record,
+    hub-installed, external, or a protected built-in — must not be switchable
+    on: the user would get "verify: enabled" with nothing visible downstream.
+    """
+    if skill_dir is not None and is_external_skill_path(skill_dir):
+        return False
+    protected = is_protected_builtin(skill_name)
+    hub = is_hub_installed(skill_name)
+    if is_bundled(skill_name):
+        return is_verify_optin_eligible_from_state(
+            builtin=True,
+            prune_builtins=_prune_builtins_enabled(),
+            hub_installed=hub,
+            protected=protected,
+        )
+    external = False
+    if skill_dir is None:
+        if _find_skill_dir(skill_name) is None and _find_external_skill_dir(skill_name) is not None:
+            external = True
+    else:
+        external = is_external_skill_path(skill_dir)
+    return is_verify_optin_eligible_from_state(
+        builtin=False,
+        prune_builtins=False,
+        hub_installed=hub,
+        protected=protected,
+        external=external,
+        curator_managed=is_curator_managed(skill_name),
+    )
+
+
+def set_verify_enabled(skill_name: str, enabled: bool) -> None:
+    """Set the verify opt-in flag on a skill's usage record.
+
+    VERIFY is OPT-IN: a skill's declared ``metadata.hermes.verify`` block is
+    never auto-run unless the user marks the skill with ``verify_enabled``
+    here. This is the consent half of the trust boundary — frontmatter (the
+    skill author) may DECLARE a capability; only this local sidecar flag (the
+    user) grants permission to execute it. ENABLING is gated on curation
+    eligibility so a skill the curator can't manage (bundled-by-default,
+    hub-installed, external) can't be switched on by code that doesn't own it.
+    DISABLING is always allowed: a skill may drift into ineligibility after
+    being enabled (hub-replaced, provenance cleared), and revoking consent
+    for a subprocess runner must never be blocked by that drift.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["verify_enabled"] = bool(enabled)
+    _mutate(skill_name, _apply, require_curation_eligible=bool(enabled))
+
+
+def is_verify_enabled(skill_name: str) -> bool:
+    """Whether a skill's declared verifier may auto-run (``verify_enabled``)."""
+    return get_record(skill_name).get("verify_enabled") is True
 
 
 def forget(skill_name: str) -> None:
@@ -1306,6 +1579,14 @@ def curated_report() -> List[Dict[str, Any]]:
         row = {"name": name, **rec, "_persisted": persisted}
         row["last_activity_at"] = latest_activity_at(row)
         row["activity_count"] = activity_count(row)
+        outcomes = row.get("recent_outcomes")
+        row["failure_rate"] = _failure_rate_from_outcomes(outcomes)
+        row["recent_unknown_count"] = (
+            sum(1 for o in outcomes if o is None)
+            if isinstance(outcomes, list)
+            else 0
+        )
+        row["recent_failure_reason"] = recent_failure_reason(row)
         row["provenance"] = provenance(name)
         rows.append(row)
     return rows

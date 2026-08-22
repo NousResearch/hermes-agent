@@ -1363,6 +1363,30 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 120
+
+  # End-of-turn work verdict (Layer 0 of failure tracing). After a turn
+  # finishes, Hermes asks an aux model whether the WORK held up (as opposed
+  # to whether the loop just ended with text) and records PASS/FAIL/neutral
+  # to the used skills' sidecar, which feeds curator review. Default OFF —
+  # one aux call per turn is real cost, so this is opt-in. When off, the
+  # whole pipeline is inert (zero cost beyond a config read).
+  outcome:
+    enabled: false             # opt-in: one aux call per turn is real cost
+    run: "auto"                # auto | always — auto only judges when a
+                               # verifier FAILed or a used skill had no verifier
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+    extra_body: {}
+    reasoning_effort: ""       # none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+    max_tokens: 1000           # judge output budget; reasoning models need
+                               # ≥~800 or they burn everything on thinking and
+                               # return empty content
+    total_verify_budget_seconds: 60  # aggregate ceiling for ALL per-skill
+                               # verifier subprocesses this turn; after it,
+                               # remaining skills record as skipped
 ```
 
 :::tip

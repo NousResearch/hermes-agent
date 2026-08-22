@@ -22,6 +22,8 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import os
 
@@ -115,6 +117,63 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
         m for m in messages
         if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
     ]
+
+
+def _iter_tool_errors(messages):
+    """Yield ``(tool_name, error_text)`` for tool-role results this turn that
+    carry a JSON ``error`` marker.
+
+    Scans backward and stops at the last ``user`` message: ``messages`` is the
+    full session history, and earlier turns' tool errors must not be counted
+    against this turn (nor re-parsed — tool payloads are routinely large).
+    Yields the tool name (when the row carries one) and the raw error text.
+    """
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            break  # turn boundary — earlier errors belong to prior turns
+        if not isinstance(m, dict) or m.get("role") != "tool":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        try:
+            parsed = json.loads(content)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and parsed.get("error"):
+            yield (m.get("tool_name") or m.get("name") or "", str(parsed.get("error")))
+
+
+def _count_tool_errors(messages) -> int:
+    """Count tool-role results this turn that carry a JSON ``error`` marker.
+
+    Grounding input for the Layer 0 outcome eval, not a decision input — the
+    mechanical verifiers + file-mutation state are what actually attribute.
+    Counts results whose content parses to a dict with a truthy ``error``
+    key (``tools.registry.tool_error``'s canonical shape).
+    """
+    return sum(1 for _ in _iter_tool_errors(messages))
+
+
+def _collect_tool_errors(messages) -> list:
+    """Enumerate tool errors this turn for the Layer 0 evidence catalog.
+
+    Each entry is ``{"tool": name, "error": text}`` so the outcome judge can
+    CITE a specific error (by catalog ID) instead of blaming from a bare
+    count. Best-effort — malformed rows are skipped, error text is bounded so
+    a huge payload can't bloat the judge's prompt.
+    """
+    out = []
+    for tool, error in _iter_tool_errors(messages):
+        out.append({"tool": tool, "error": error[:400]})
+        if len(out) >= _MAX_TOOL_ERROR_EVIDENCE:
+            break
+    # _iter_tool_errors scans backward (current turn's tail first); restore
+    # chronological order so catalog IDs read top-to-bottom like the turn.
+    return list(reversed(out))
+
+
+_MAX_TOOL_ERROR_EVIDENCE = 10
 
 
 def finalize_turn(
@@ -276,10 +335,59 @@ def finalize_turn(
     # killing the turn.
     _cleanup_errors = []
 
+    # ── Turn outcome evaluation (Layer 0) ──────────────────────────────
+    # Best-effort like the other post-loop cleanup: a failure here must never
+    # break the turn. Runs BEFORE trajectory save so the trajectory record can
+    # carry the work verdict (agent/trajectory.py). Interrupted turns skip the
+    # call entirely (the evaluator would reject them anyway); infra-failed
+    # turns still produce an outcome — reported, but with no skill blamed.
+    _turn_outcome = None
+    try:
+        if not interrupted:
+            from agent.turn_outcome import evaluate_turn_outcome
+
+            _turn_outcome = evaluate_turn_outcome(
+                skills_used_this_turn=(
+                    getattr(agent, "_turn_used_skills", None) or ()
+                ),
+                final_response=final_response,
+                user_message=_summarize_user_message_for_log(user_message),
+                failed=failed,
+                interrupted=interrupted,
+                exit_reason=_turn_exit_reason,
+                file_mutation_state=(
+                    getattr(agent, "_turn_failed_file_mutations", None) or {}
+                ),
+                tool_error_evidence=_collect_tool_errors(messages),
+                tool_error_count=_count_tool_errors(messages),
+            )
+    except Exception as _oc_err:
+        logger.debug("turn outcome evaluation failed: %s", _oc_err)
+
+    # Disarm the per-turn skill accumulator so out-of-turn ``bump_use`` calls
+    # (CLI skill preloads, cron jobs loading skills between turns, gateway
+    # sessions sharing a thread) stop writing into this finished turn's set.
+    # Runs regardless of how the turn ended — interrupted turns armed it too
+    # at turn start.
+    try:
+        from tools.skill_usage import disarm_turn_skill_accumulator
+
+        disarm_turn_skill_accumulator(
+            getattr(agent, "_turn_skill_accumulator_token", None)
+        )
+    except Exception as _disarm_err:
+        logger.debug("turn skill accumulator disarm failed: %s", _disarm_err)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     try:
-        agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+        _traj_outcome = _turn_outcome.task_succeeded if _turn_outcome else None
+        agent._save_trajectory(
+            messages,
+            _summarize_user_message_for_log(user_message),
+            completed,
+            outcome=_traj_outcome,
+        )
     except Exception as _save_err:
         _cleanup_errors.append(f"save_trajectory: {_save_err}")
         logger.error("finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True)
@@ -701,6 +809,14 @@ def finalize_turn(
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
+        # Layer 0 outcome seam: skills used this turn + the work verdict.
+        # ``outcome`` is the serialized TurnOutcome (or None when nothing was
+        # produced — feature off, nothing attributable, or interrupted). The
+        # ACSS Hypothesize consumer reads this seam from the edge.
+        "skills_used": sorted(getattr(agent, "_turn_used_skills", None) or ()),
+        "outcome": (
+            dataclasses.asdict(_turn_outcome) if _turn_outcome is not None else None
+        ),
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),

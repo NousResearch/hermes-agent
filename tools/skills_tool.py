@@ -97,7 +97,9 @@ logger = logging.getLogger(__name__)
 #     (config-driven — changes with no filesystem mtime bump at all)
 #   - a short TTL bounds staleness from in-place SKILL.md edits, which
 #     bump only the file's mtime, invisible to any directory signature.
-# skip_disabled True/False are cached separately.
+# skip_disabled True/False are cached separately (and each is also keyed
+# by include_dir, so a caller asking for dir/verify metadata never gets a
+# cache shape built for the minimal listing).
 _SKILLS_CACHE: dict = {}          # {cache_key: (signature, timestamp, skills_list)}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 _SKILLS_CACHE_KEY_DISABLED = "with_disabled"
@@ -670,29 +672,45 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, include_dir: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        include_dir: If True, add ``dir`` (the skill's directory, as a
+            string), ``verify_declared`` (whether the SKILL.md frontmatter
+            declares a usable ``metadata.hermes.verify`` block) and
+            ``external`` (whether the skill lives outside the profile's
+            skills dir) to each dict. Default False keeps the listing
+            payload minimal — the extra keys are metadata only the
+            ``hermes skills list`` verify column needs, and the ``dir``
+            value is a filesystem path the web API / model tool should not
+            surface.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category, and
+        when ``include_dir`` is True, dir/verify_declared/external).
 
     Results are cached per-session; the cache is invalidated when the scan
     signature changes (dir/category mtimes or the disabled-set) and expires
     after a short TTL to bound staleness from in-place SKILL.md edits.
+    ``include_dir`` is part of the cache key so the cached dict shape always
+    matches what the caller asked for.
     """
     from agent.skill_utils import (
         get_external_skills_dirs,
         get_project_skills_dirs,
         iter_project_skill_files,
         iter_skill_index_files,
+        verify_block_declared,
     )
 
-    cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
+    cache_key = (
+        _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED,
+        include_dir,
+    )
 
     # Load disabled set once (not per-skill). Part of the cache signature:
     # disabling a skill is a config change with no filesystem mtime bump.
@@ -773,11 +791,16 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                if include_dir:
+                    skill_entry["dir"] = str(skill_dir)
+                    skill_entry["verify_declared"] = verify_block_declared(frontmatter)
+                    skill_entry["external"] = scan_dir is not active_skills_dir
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)

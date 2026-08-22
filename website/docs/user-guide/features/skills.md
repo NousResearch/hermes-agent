@@ -265,6 +265,63 @@ metadata:
 
 Skills without any conditional fields behave exactly as before — they're always shown.
 
+## Outcome verification (`hermes skills verify`)
+
+A skill can declare a **verifier**: a small deterministic check Hermes runs
+after a turn that used the skill, judging whether the *work* actually held up
+— as opposed to whether the loop just ended with text. Verifier verdicts feed
+the skill's usage sidecar and the [curator's](/user-guide/features/curator)
+review, so a skill that is constantly *used* but silently *broken* gets flagged
+instead of being missed by activity-only metrics.
+
+**Declaring a verifier** (in the skill's `SKILL.md` frontmatter):
+
+```markdown
+---
+name: my-skill
+metadata:
+  hermes:
+    verify:
+      run: scripts/verify.py
+      applicability_check: scripts/applicable.py   # optional
+      timeout_seconds: 30
+---
+```
+
+- `run` — a `.py` or `.sh` script inside the skill's own directory. It must
+  print strict JSON `{"success": bool, "reason": str}` (a non-zero exit code
+  is a fallback).
+- `applicability_check` — optional probe run first; if it exits non-zero the
+  verifier **skips** (most turns won't touch what a given verifier checks, and
+  a skip is not recorded as a pass or a fail).
+- `timeout_seconds` — per-verifier cap, clamped to 300s. A turn-wide budget
+  (default 60s total across all verifiers) prevents skill-heavy turns from
+  hanging finalization.
+
+**Declaring is not consent.** The block is author-controlled (and untrusted for
+hub/agent-authored skills), so Hermes never runs it until *you* opt the skill in:
+
+```bash
+hermes skills verify my-skill          # enable — verifier runs at end of turns
+hermes skills verify my-skill --disable # turn it back off
+```
+
+```text
+/skills verify my-skill                # same, from chat
+```
+
+Only **curator-managed** skills can be verified — agent-created skills always,
+bundled built-ins only when `curator.prune_builtins` is enabled, and
+hub-installed or external skills never, because their outcomes are never
+surfaced by the curator. `hermes skills list` shows an `on`/`off` marker for
+skills that declare a verifier (skills without one show nothing).
+
+**When the feature is off** (the default), the whole pipeline is inert — no
+verifier subprocess and no auxiliary LLM call. The end-of-turn evaluator is
+configured separately under `auxiliary.outcome`; see the
+[auxiliary config reference](/user-guide/configuration#auxiliary-models) for
+the full config block.
+
 ## Secure Setup on Load
 
 Skills can declare required environment variables without disappearing from discovery:

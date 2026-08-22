@@ -221,6 +221,20 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
+def verify_block_declared(frontmatter: Dict[str, Any]) -> bool:
+    """True when frontmatter declares a usable ``metadata.hermes.verify`` block.
+
+    Shared by the listing pass (``_find_all_skills``) and the verifier loader
+    (``tools.skill_verify.load_verify_spec``) so "declares a verifier" means
+    the same thing everywhere. A block is usable only when it is a mapping
+    with a truthy ``run`` target.
+    """
+    meta = frontmatter.get("metadata")
+    hermes = meta.get("hermes") if isinstance(meta, dict) else None
+    verify_cfg = hermes.get("verify") if isinstance(hermes, dict) else None
+    return isinstance(verify_cfg, dict) and bool(verify_cfg.get("run"))
+
+
 # ── Platform matching ─────────────────────────────────────────────────────
 
 

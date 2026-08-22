@@ -340,6 +340,25 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_rm.add_argument("name", help="Tap name to remove")
 
     # config sub-action: interactive enable/disable
+    skills_verify = skills_subparsers.add_parser(
+        "verify",
+        help="Enable or disable a skill's optional outcome verifier",
+        description=(
+            "Opt a curator-managed skill into running its declared "
+            "metadata.hermes.verify check at the end of every turn that uses "
+            "it, feeding PASS/FAIL into the skill sidecar and curator review. "
+            "Verifiers are opt-in: a skill's SKILL.md may DECLARE one, but it "
+            "never runs until you enable it here — the trust boundary is "
+            "your consent, not the skill author's."
+        ),
+    )
+    skills_verify.add_argument("name", help="Skill name to configure")
+    skills_verify.add_argument(
+        "--disable",
+        action="store_true",
+        help="Turn the verifier OFF (default: turn it on)",
+    )
+
     skills_subparsers.add_parser(
         "config",
         help="Interactive skill configuration — enable/disable individual skills",

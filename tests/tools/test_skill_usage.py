@@ -141,6 +141,55 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
     assert record["patch_generation"] == 1
     assert record["last_reused_patch_generation"] == 1
 
+
+def test_bump_use_records_into_turn_accumulator_and_reuse_tracking_together(
+    skills_home,
+    monkeypatch,
+):
+    """The Layer 2 accumulator and reuse-after-patch tracking were merged into
+    one ``bump_use``; assert both fire on every call — the accumulated set gets
+    the skill AND the record/lifecycle facts still carry the reuse signal."""
+    from hermes_cli import lifecycle
+    from tools.skill_usage import (
+        _turn_skill_accumulator,
+        arm_turn_skill_accumulator,
+        bump_patch,
+        bump_use,
+        get_record,
+    )
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append((name, kwargs)),
+    )
+
+    used = set()
+    token = arm_turn_skill_accumulator(used)
+    try:
+        bump_use("accumulated")
+        bump_use("accumulated")
+        bump_patch("accumulated")
+        bump_use("accumulated")
+    finally:
+        _turn_skill_accumulator.reset(token)
+
+    assert used == {"accumulated"}
+    assert _turn_skill_accumulator.get() is None
+    record = get_record("accumulated")
+    assert record["use_count"] == 3
+    assert record["patch_generation"] == 1
+    assert record["last_reused_patch_generation"] == 1
+    loaded = [event for _, event in events if event["action"] == "loaded"]
+    assert [event["reused"] for event in loaded] == [False, True, True]
+    assert [event["reuse_after_patch"] for event in loaded] == [
+        False,
+        False,
+        True,
+    ]
+
 def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
     from hermes_cli import lifecycle
     from tools.skill_usage import (
@@ -305,6 +354,170 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
     assert get_record("skill-b")["use_count"] == 1
 
 
+def test_bump_outcome_sets_needs_review_and_failure_rate(skills_home):
+    from tools.skill_usage import bump_outcome, failure_rate, get_record
+
+    for success in (False, False, False, True):
+        bump_outcome("problematic", success)
+
+    rec = get_record("problematic")
+    assert rec["needs_review"] is True
+    assert rec["needs_review_since"] is not None
+    assert rec["recent_outcomes"] == [False, False, False, True]
+    assert failure_rate("problematic") == 0.75
+
+
+def test_bump_outcome_clears_needs_review_after_recovery(skills_home):
+    from tools.skill_usage import bump_outcome, get_record
+
+    for success in (False, False, False, True):
+        bump_outcome("recovering", success)
+    assert get_record("recovering")["needs_review"] is True
+
+    for success in (True, True, True, True):
+        bump_outcome("recovering", success)
+
+    rec = get_record("recovering")
+    assert rec["needs_review"] is False
+    assert rec["needs_review_since"] is None
+    assert rec["recent_outcomes"][-4:] == [True, True, True, True]
+
+
+def test_bump_outcome_returns_none_before_minimum_samples(skills_home):
+    from tools.skill_usage import bump_outcome, failure_rate
+
+    bump_outcome("small-sample", False)
+    bump_outcome("small-sample", True)
+    bump_outcome("small-sample", False)
+
+    assert failure_rate("small-sample") is None
+
+
+def test_bump_outcome_reason_kept_in_lockstep_window(skills_home):
+    """recent_outcome_reasons must mirror recent_outcomes 1:1 — same window,
+    same cap, same order — or reason attribution is wrong by construction."""
+    from tools.skill_usage import _OUTCOME_WINDOW, bump_outcome, get_record
+
+    for i in range(_OUTCOME_WINDOW + 4):
+        bump_outcome("explained", i % 3 == 0, reason=f"reason-{i}")
+
+    rec = get_record("explained")
+    assert len(rec["recent_outcomes"]) == _OUTCOME_WINDOW
+    assert len(rec["recent_outcome_reasons"]) == len(rec["recent_outcomes"])
+    assert rec["recent_outcome_reasons"][-1] == f"reason-{_OUTCOME_WINDOW + 3}"
+    assert rec["recent_outcome_reasons"][0] == "reason-4"  # oldest surviving
+
+
+def test_bump_outcome_empty_reason_stored_as_blank_not_dropped(skills_home):
+    """An outcome without a reason must still hold its slot, keeping the two
+    arrays index-aligned even when reasons arrive sporadically."""
+    from tools.skill_usage import bump_outcome, get_record, recent_failure_reason
+
+    bump_outcome("sparse", False, reason="boom")
+    bump_outcome("sparse", False)  # no reason
+    bump_outcome("sparse", True, reason="fine")
+
+    rec = get_record("sparse")
+    assert rec["recent_outcome_reasons"] == ["boom", "", "fine"]
+    # newest *failure* has no reason -> walk back to "boom"
+    assert recent_failure_reason(rec) == "boom"
+
+
+def test_bump_outcome_neutral_none_is_not_a_pass_or_failure(skills_home):
+    """A neutral (None) outcome must count as a window sample but never as a
+    pass or a failure: it stores raw, never clears the needs-review flag on its
+    own, keeps the failure math honest, and still lets the window slide toward
+    recovery."""
+    from tools.skill_usage import bump_outcome, failure_rate, get_record, recent_failure_reason
+
+    for _ in range(4):
+        bump_outcome("neutral", False, reason="f")
+    assert get_record("neutral")["needs_review"] is True
+
+    for _ in range(3):
+        bump_outcome("neutral", None, reason="")
+    rec = get_record("neutral")
+    # Stored raw — bool(None) would have collapsed the neutral marker.
+    assert rec["recent_outcomes"] == [False, False, False, False, None, None, None]
+    assert rec["needs_review"] is True             # neutrals don't clear on their own
+    assert failure_rate("neutral") == pytest.approx(4 / 7)  # failures / all samples
+    assert recent_failure_reason(rec) == "f"        # newest failure reason, neutrals skipped
+
+    bump_outcome("neutral", True, reason="recovered")
+    bump_outcome("neutral", True, reason="recovered")
+    assert get_record("neutral")["needs_review"] is False  # 4/9 slides below threshold
+    assert get_record("neutral")["recent_outcomes"][-1] is True
+
+
+def test_bump_outcome_neutrals_never_flag_a_skill_alone(skills_home):
+    """Neutrals in isolation must never flip needs_review — only explicit
+    failures can flag, so incidentally-loaded skills stay unmarked."""
+    from tools.skill_usage import bump_outcome, get_record
+
+    for _ in range(4):
+        bump_outcome("ghost", None, reason="no signal")
+    rec = get_record("ghost")
+    assert rec["recent_outcomes"] == [None, None, None, None]
+    assert rec["needs_review"] is False
+    assert rec["needs_review_since"] is None
+
+
+def test_curated_report_exposes_neutral_count(skills_home):
+    """curated_report must surface how many recent outcomes were neutral so the
+    candidate list can say a skill has no per-skill signal either way."""
+    from tools.skill_usage import bump_outcome, curated_report, mark_agent_created
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mixed")
+    mark_agent_created("mixed")
+    bump_outcome("mixed", False, reason="boom")
+    bump_outcome("mixed", None)
+    bump_outcome("mixed", None)
+
+    row = next(r for r in curated_report() if r["name"] == "mixed")
+    assert row["recent_unknown_count"] == 2
+    assert row["failure_rate"] is None  # 3 samples < minimum floor of 4
+
+
+def test_disarm_turn_skill_accumulator_clears_and_resets(skills_home):
+    """disarm restores the prior context (token path) and also clears a stale
+    arm when the token no longer applies (cross-context fallback)."""
+    import contextvars as _cv
+
+    from tools.skill_usage import (
+        _turn_skill_accumulator,
+        arm_turn_skill_accumulator,
+        disarm_turn_skill_accumulator,
+    )
+
+    assert _turn_skill_accumulator.get() is None
+    armed = set()
+    token = arm_turn_skill_accumulator(armed)
+    assert _turn_skill_accumulator.get() is armed
+    disarm_turn_skill_accumulator(token)
+    assert _turn_skill_accumulator.get() is None
+
+    # A token minted in a different context must still clear the current
+    # context rather than raising — the fallback path.
+    ctx = _cv.copy_context()
+    foreign_token = ctx.run(lambda: arm_turn_skill_accumulator(set()))
+    disarm_turn_skill_accumulator(foreign_token)
+    assert _turn_skill_accumulator.get() is None
+
+    # A REUSED token (reset twice — ContextVar raises RuntimeError
+    # "Token has already been used") must also fall through to the
+    # current-context clear instead of propagating.
+    armed = set()
+    token2 = arm_turn_skill_accumulator(armed)
+    disarm_turn_skill_accumulator(token2)
+    disarm_turn_skill_accumulator(token2)  # second reset — RuntimeError path
+    assert _turn_skill_accumulator.get() is None
+
+    # None token — the unarmed/no-acc-at-finalize case — is a safe no-op.
+    disarm_turn_skill_accumulator(None)
+    assert _turn_skill_accumulator.get() is None
+
+
 def test_concurrent_bump_view_preserves_all_updates(skills_home):
     from tools.skill_usage import get_record
 
@@ -386,6 +599,72 @@ def test_is_agent_created(skills_home):
     assert is_agent_created("my-skill") is True
     assert is_agent_created("bundled") is False
     assert is_agent_created("hubbed") is False
+
+
+def test_is_verify_optin_eligible(skills_home, monkeypatch):
+    """The verify opt-in is only offered where outcomes feed curator review.
+
+    A skill whose outcomes would never surface in ``curated_report()`` — plain
+    local (no provenance record), hub-installed, external, or a protected
+    built-in — must refuse the opt-in, or the user gets "verify: enabled" with
+    nothing visible downstream.
+    """
+    import tools.skill_usage as mod
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "managed")
+    _write_skill(skills_dir, "plain-local")
+    _write_skill(skills_dir, "bundled-one")
+    _write_skill(skills_dir, "hub-one")
+
+    mod.mark_agent_created("managed")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-one:abc\n", encoding="utf-8",
+    )
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
+    )
+
+    # Curator-managed (agent-created) — always eligible.
+    assert mod.is_verify_optin_eligible("managed") is True
+    # Plain local skill with no provenance record — never surfaces outcomes.
+    assert mod.is_verify_optin_eligible("plain-local") is False
+    # Hub-installed — never.
+    assert mod.is_verify_optin_eligible("hub-one") is False
+    # Bundled built-in: prune OFF (the fixture default) → not eligible...
+    assert mod.is_verify_optin_eligible("bundled-one") is False
+    # ...prune ON → eligible (curation and outcomes can surface).
+    monkeypatch.setattr(mod, "_prune_builtins_enabled", lambda: True)
+    assert mod.is_verify_optin_eligible("bundled-one") is True
+    # Protected built-ins are never eligible, regardless of any flag.
+    assert mod.is_verify_optin_eligible("plan") is False
+    # External-dir skills are read-only to the curator.
+    _write_skill(skills_dir, "ext-skill")
+    monkeypatch.setattr(mod, "is_external_skill_path", lambda p: True)
+    assert mod.is_verify_optin_eligible("ext-skill", skills_dir / "ext-skill") is False
+
+
+def test_is_verify_optin_eligible_from_state_branch_table():
+    """The pure predicate is the single source of truth for the opt-in rule.
+
+    Both ``is_verify_optin_eligible`` (filesystem-resolved) and ``do_list``
+    (bulk-loaded) delegate here; pin the branch table directly so a drift in
+    either caller is caught by the matrix above or by this table.
+    """
+    import tools.skill_usage as mod
+
+    f = mod.is_verify_optin_eligible_from_state
+    # Hub-installed / protected / external are never eligible, regardless of flags.
+    assert f(builtin=True, prune_builtins=True, hub_installed=True) is False
+    assert f(builtin=True, prune_builtins=True, protected=True) is False
+    assert f(builtin=False, prune_builtins=False, external=True, curator_managed=True) is False
+    # Bundled built-ins are eligible iff prune_builtins is on.
+    assert f(builtin=True, prune_builtins=True) is True
+    assert f(builtin=True, prune_builtins=False) is False
+    # Plain local skills are eligible iff curator-managed.
+    assert f(builtin=False, prune_builtins=False, curator_managed=True) is True
+    assert f(builtin=False, prune_builtins=False, curator_managed=False) is False
 
 
 # ---------------------------------------------------------------------------

@@ -393,6 +393,27 @@ The curator is on by default. To turn it off:
 
 The curator also refuses to run if `min_idle_hours` hasn't elapsed, so on an active dev machine it naturally only runs during quiet stretches.
 
+## Outcome-based needs review
+
+By default the curator's drift signal is *activity* — staleness, idleness,
+archival. If you also want it to catch work that **actively fails**, enable
+[skill outcome verification](/user-guide/features/skills#outcome-verification-hermes-skills-verify)
+(`auxiliary.outcome.enabled: true`) and opt specific skills in with
+`hermes skills verify <name>`. Once a skill has enough recent outcomes with a
+failure rate at or above the threshold (≥4 samples, ≥50% failures), it flips to
+`needs_review`:
+
+```bash
+hermes curator status        # shows a "needs review (N):" line
+```
+
+Skills flagged this way become **priority candidates** in the LLM review pass —
+the prompt treats their outcome history as evidence the procedure drifted from
+its own contract and asks for a patch, ahead of activity-based consolidation.
+The flag is derived from a bounded recent window (20 outcomes), so after you fix
+the skill, a few clean passes clear it on their own — no manual re-flagging.
+Archiving a skill clears the flag too.
+
 ## See also
 
 - [Skills System](/user-guide/features/skills) — how skills work in general and the self-improvement loop that creates them

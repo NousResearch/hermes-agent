@@ -78,6 +78,51 @@ def _capture_status(curator_cli) -> str:
 # ---------------------------------------------------------------------------
 
 
+def test_status_shows_needs_review_skills(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("risky")
+    env["skill_usage"].mark_agent_created("risky")
+    for success in (False, False, False, True):
+        env["skill_usage"].bump_outcome("risky", success)
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "needs review (1): risky" in out
+
+
+def test_status_no_skills_produces_clean_empty_output(curator_status_env):
+    env = curator_status_env
+    out = _capture_status(env["curator_cli"])
+    assert "no curator-managed skills" in out
+    # None of the ranking sections render
+    assert "most active" not in out
+    assert "least active" not in out
+
+
+def test_run_dry_run_preview_reports_needs_review_count(curator_status_env, monkeypatch):
+    """The dry-run preview must surface the needs_review count the run would
+    act on, not just the raw candidate count."""
+    env = curator_status_env
+    from agent import curator
+
+    monkeypatch.setattr(
+        curator,
+        "run_curator_review",
+        lambda **kw: {
+            "auto_transitions": {"checked": 5, "needs_review": 2},
+            "summary_so_far": "",
+        },
+    )
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["curator_cli"]._cmd_run(Namespace(dry_run=True, background=False,
+                                                  synchronous=True, consolidate=False))
+    out = buf.getvalue()
+
+    assert rc == 0
+    assert "2 need review" in out
+    assert "no transitions applied in dry-run" in out
 
 
 

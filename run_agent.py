@@ -2513,7 +2513,7 @@ class AIAgent:
         from agent.agent_runtime_helpers import convert_to_trajectory_format
         return convert_to_trajectory_format(self, messages, user_query, completed)
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
+    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool, outcome: Optional[bool] = None):
         """
         Save conversation trajectory to JSONL file.
         
@@ -2521,12 +2521,19 @@ class AIAgent:
             messages (List[Dict]): Complete message history
             user_query (str): Original user query
             completed (bool): Whether the conversation completed successfully
+            outcome (bool, optional): Layer 0 work verdict — did the WORK hold
+                up, distinct from whether the loop ended. When present it is
+                written onto the trajectory entry so ``failed_trajectories.jsonl``
+                stops filing confident failures as successes.
         """
         if not self.save_trajectories:
             return
         
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
-        _save_trajectory_to_file(trajectory, self.model, completed)
+        if outcome is not None:
+            _save_trajectory_to_file(trajectory, self.model, completed, outcome=outcome)
+        else:
+            _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
     def _is_entitlement_failure(

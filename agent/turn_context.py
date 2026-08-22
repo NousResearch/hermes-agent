@@ -1324,6 +1324,23 @@ def build_turn_context(
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
 
+    # Per-turn skill attribution (Layer 2 of failure tracing). Reset the
+    # accumulator and arm the ContextVar so ``bump_use`` records every skill
+    # used this turn into this agent's own set. ``finalize_turn`` reads the
+    # instance attribute (never the ContextVar), so a subagent running in the
+    # same thread can't pollute this turn's attribution. The token is stored
+    # so ``finalize_turn`` can disarm the accumulator at turn end.
+    agent._turn_used_skills = set()
+    agent._turn_skill_accumulator_token = None
+    try:
+        from tools.skill_usage import arm_turn_skill_accumulator
+
+        agent._turn_skill_accumulator_token = arm_turn_skill_accumulator(
+            agent._turn_used_skills
+        )
+    except Exception as _arm_err:
+        logger.debug("turn skill accumulator arm failed: %s", _arm_err)
+
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.
     agent._execution_thread_id = threading.current_thread().ident

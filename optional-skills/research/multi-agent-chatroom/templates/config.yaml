@@ -1,0 +1,70 @@
+# Multi-Agent Chatroom for AI2050-OpenOne
+# 多模型协作研究聊天室 — 逆向破解深度神经网络数学原理
+#
+# 配置结构:
+#   coding:       编程/执行 Agent（执行研究任务）
+#   reviewers:    审核 Agent 列表（评审 + 综合）
+#   supervisor:   调度 Agent（管理任务队列和决策）
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+
+project:
+  repo: "https://github.com/ai2050lin/Ai2050-OpenOne"
+  workdir: "../Ai2050-OpenOne"
+
+# ============================================================
+# 编程 Agent — 执行研究任务、编写分析代码、产出报告
+# ============================================================
+coding:
+  name: "deepseek-researcher"
+  provider: "deepseek"           # deepseek | openai | anthropic
+  model: "deepseek-v4-pro"       # 可替换为任意模型
+  temperature: 0.3
+  max_tokens: 16384
+  api_key_env: "DEEPSEEK_API_KEY"  # 从环境变量读取
+
+# ============================================================
+# 审核 Agent 列表 — 可配置多个不同模型进行评审
+# 每个 reviewer 的角色决定其评审侧重点
+# ============================================================
+reviewers:
+  - name: "gpt-reviewer"
+    provider: "openai"           # openai | deepseek | anthropic
+    model: "gpt-5.4"             # 可替换为任意模型
+    role: "reviewer+synthesizer"  # reviewer+synthesizer | reviewer | mathematical-rigor
+    temperature: 0.5
+    max_tokens: 8192
+    api_key_env: "OPENAI_API_KEY"
+    # role说明:
+    #   reviewer+synthesizer:  评审 + 综合所有评审 → 发布共识（至少一个）
+    #   reviewer:              仅评审，不综合
+    #   mathematical-rigor:    数学严谨性专项评审
+
+  - name: "claude-reviewer"
+    provider: "anthropic"        # anthropic | openai | deepseek
+    model: "claude-opus-4-6"     # 可替换为任意模型
+    role: "mathematical-rigor"   # 数学严谨性评审
+    temperature: 0.4
+    max_tokens: 8192
+    api_key_env: "ANTHROPIC_API_KEY"
+
+# ============================================================
+# 调度 Agent — 管理任务队列、决策循环、进度追踪
+# ============================================================
+supervisor:
+  name: "supervisor"
+  provider: "deepseek"           # 调度者使用的模型
+  model: "deepseek-v4-pro"
+
+channels:
+  tasks: "#tasks"
+  review: "#review"
+  consensus: "#consensus"
+  general: "#general"
+
+workflow:
+  max_iterations: 50
+  review_timeout_seconds: 180     # 等待评审的最长时间
+  max_task_retries: 2             # 任务失败最大重试次数

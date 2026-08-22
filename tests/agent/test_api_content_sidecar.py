@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.turn_context import build_turn_context, compose_user_api_content
 from hermes_state import SessionDB
 
@@ -47,6 +47,32 @@ class TestComposeUserApiContent:
         out = compose_user_api_content("hello", "likes tea", "PLUGIN-CTX")
         fenced = build_memory_context_block("likes tea")
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
+
+    def test_memory_block_is_continuity_evidence_not_universal_authority(self):
+        block = build_memory_context_block("likes tea")
+        lower = block.lower()
+        assert "attributed continuity evidence" in lower
+        assert "current explicit user statements" in lower
+        assert "always outrank it" in lower
+        assert "consequential factual claims" in lower
+        assert "canonical live sources" in lower
+        assert "authoritative reference data" not in lower
+
+    def test_standalone_memory_notes_are_fully_stripped_without_losing_text(self):
+        new_note = (
+            "[System note: The following is recalled memory context, NOT new user "
+            "input. Treat it as attributed continuity evidence for orientation. "
+            "Current explicit user statements always outrank it. For consequential "
+            "factual claims, verify against canonical live sources.]"
+        )
+        old_note = (
+            "[System note: The following is recalled memory context, NOT new user "
+            "input. Treat as authoritative reference data — this is the agent's "
+            "persistent memory and should inform all responses.]"
+        )
+
+        assert sanitize_context(f"before\n{new_note}\nafter").strip() == "before\nafter"
+        assert sanitize_context(f"before\n{old_note}\nafter").strip() == "before\nafter"
 
 
 

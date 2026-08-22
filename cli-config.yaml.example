@@ -958,6 +958,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Opt-in one-shot notice when a finite tool-iteration budget is nearly
+  # exhausted. false/absent = off. true = warn once at >= 80% used.
+  # positive integer N = warn once when remaining iterations <= N.
+  # Appended to the newest tool result (cache-safe); no synthetic user msg.
+  # tool_loop_budget_warning: false
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

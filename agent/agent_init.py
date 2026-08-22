@@ -509,6 +509,23 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     return seconds
 
 
+def _normalize_tool_loop_budget_warning(value):
+    """Normalize ``agent.tool_loop_budget_warning``: False | True | positive int."""
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(value, float) and value != value:  # NaN
+        return False
+    if n <= 0:
+        return False
+    return n
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -987,8 +1004,8 @@ def init_agent(
     # the iteration budget (api_call_count >= max_iterations).  At that
     # point we inject ONE message, allow one final API call, and if the
     # model doesn't produce a text response, force a user-message asking
-    # it to summarise.  No intermediate pressure warnings — they caused
-    # models to "give up" prematurely on complex tasks (#7915).
+    # it to summarise.  Intermediate pressure warnings stay default-off
+    # (#7915); opt-in only via agent.tool_loop_budget_warning below.
     agent._budget_exhausted_injected = False
     agent._budget_grace_call = False
 
@@ -1002,6 +1019,11 @@ def init_agent(
     agent._run_budget_started_at = None
     # One-shot latch for the 80% wrap-up notice (reset each turn).
     agent._run_budget_wrapup_injected = False
+
+    # Opt-in tool-iteration budget signpost (agent.tool_loop_budget_warning).
+    # Default off (preserves #7915); resolved from config further below.
+    agent.tool_loop_budget_warning = False
+    agent._tool_loop_budget_wrapup_injected = False
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the
@@ -1980,6 +2002,13 @@ def init_agent(
         agent.run_budget_seconds = _normalize_run_budget_seconds(
             _agent_section.get("run_budget_seconds")
         )
+
+    # Opt-in tool-iteration budget signpost from config.
+    # true => fire at used >= 0.8*max; on tiny finite caps that degrades
+    # toward the last iteration (e.g. max=1 fires only when used>=1).
+    agent.tool_loop_budget_warning = _normalize_tool_loop_budget_warning(
+        _agent_section.get("tool_loop_budget_warning", False)
+    )
 
     # Empty-response retry guard config (NS-503): additive
     # ``agent.empty_response_guard`` subsection. Resolution is tolerant —

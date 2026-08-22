@@ -613,6 +613,8 @@ def build_turn_context(
     else:
         agent._run_budget_started_at = None
     agent._run_budget_wrapup_injected = False
+    # One-shot latch for the tool-iteration budget signpost (reset each turn).
+    agent._tool_loop_budget_wrapup_injected = False
 
     # Log conversation turn start for debugging/observability.
     _preview_text = summarize_user_message_for_log(user_message)

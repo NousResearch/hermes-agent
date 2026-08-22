@@ -27,10 +27,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Optional
+
+from hermes_constants import hermes_home_key
 
 DEFAULT_PORTAL_BASE_URL = "https://portal.nousresearch.com"
 
@@ -210,12 +213,16 @@ def _absolutize_portal_url(portal_url: Optional[str]) -> Optional[str]:
 # only ever returns a token with >=120s of life (its refresh skew), so a 30s
 # cache can never hand back an about-to-expire token. A 401 still surfaces
 # normally (the cache holds a valid token, not the HTTP outcome).
+# Key by the resolved Hermes home: multiplex gateways switch profiles through
+# a context-local home override, and a process-global entry would let one
+# profile receive another profile's bearer token and portal base for the TTL.
 _TOKEN_CACHE_TTL_SECONDS = 30.0
-_token_cache: tuple[float, str, str] | None = None  # (cached_at, token, base)
+_token_cache_lock = threading.Lock()
+_token_cache: dict[str, tuple[float, str, str]] = {}
 
 
 def invalidate_cached_token() -> None:
-    """Bust the 30s token cache so post-step-up replays use the freshly-scoped token.
+    """Bust this profile's cache so replays use the freshly-scoped token.
 
     ``_request`` only self-busts the cache on a 401 (an expired/invalid
     token), not on a 403 scope denial — so after a step-up grant, the
@@ -224,8 +231,9 @@ def invalidate_cached_token() -> None:
     (e.g. the CLI's scope step-up flow) call this instead of poking
     the private ``_token_cache`` global directly.
     """
-    global _token_cache
-    _token_cache = None
+    cache_key = hermes_home_key()
+    with _token_cache_lock:
+        _token_cache.pop(cache_key, None)
 
 
 def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthError":
@@ -253,13 +261,16 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
     loop from re-locking + re-reading the auth store on every 2s tick. Pass
     ``use_cache=False`` to force a fresh resolution (e.g. after a 401).
     """
-    global _token_cache
     import time as _time
 
-    if use_cache and _token_cache is not None:
-        cached_at, token, base = _token_cache
-        if (_time.time() - cached_at) < _TOKEN_CACHE_TTL_SECONDS:
-            return token, base
+    cache_key = hermes_home_key()
+    if use_cache:
+        with _token_cache_lock:
+            cached = _token_cache.get(cache_key)
+        if cached is not None:
+            cached_at, token, base = cached
+            if (_time.time() - cached_at) < _TOKEN_CACHE_TTL_SECONDS:
+                return token, base
 
     try:
         from hermes_cli.auth import get_provider_auth_state
@@ -277,7 +288,8 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
         token = state.get("access_token")
         if isinstance(token, str) and token.strip():
             resolved = (token.strip(), base)
-            _token_cache = (_time.time(), *resolved)
+            with _token_cache_lock:
+                _token_cache[cache_key] = (_time.time(), *resolved)
             return resolved
         raise _billing_not_logged_in()
 
@@ -286,7 +298,8 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
     except AuthError as exc:
         raise _billing_not_logged_in(exc) from exc
     resolved = (token.strip(), base)
-    _token_cache = (_time.time(), *resolved)
+    with _token_cache_lock:
+        _token_cache[cache_key] = (_time.time(), *resolved)
     return resolved
 
 
@@ -433,8 +446,7 @@ def _request(
         # A 401 on a cached token → drop the cache and retry once with a fresh
         # (refresh-aware) resolve before surfacing the auth error.
         if exc.code == 401 and not _retried_auth:
-            global _token_cache
-            _token_cache = None
+            invalidate_cached_token()
             return _request(
                 method,
                 path,

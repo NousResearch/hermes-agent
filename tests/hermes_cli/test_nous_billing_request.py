@@ -48,7 +48,7 @@ def _http_error(status: int, body: bytes | dict[str, object] = b"{}", headers=No
 def _sequence(monkeypatch, *outcomes, resolver=None):
     """Stub urlopen with ordered outcomes and record each Request."""
     seen: list[dict[str, object]] = []
-    monkeypatch.setattr(nb, "_token_cache", None, raising=False)
+    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(
         nb,
         "_resolve_token_and_base",
@@ -77,7 +77,7 @@ def _sequence(monkeypatch, *outcomes, resolver=None):
 def _stub(monkeypatch, body: bytes, status: int = 200):
     # Bypass auth/token resolution entirely — we only exercise response parsing.
     monkeypatch.setattr(nb, "_resolve_token_and_base", lambda **kw: ("tok", "https://portal.example"))
-    monkeypatch.setattr(nb, "_token_cache", None, raising=False)
+    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(nb.urllib.request, "urlopen", lambda req, timeout=None: _FakeResp(body, status))
     yield
 

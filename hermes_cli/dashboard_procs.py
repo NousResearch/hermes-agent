@@ -402,6 +402,18 @@ def _kill_stale_dashboard_processes(
     if sys.platform == "win32":
         for pid in pids:
             try:
+                # USER PATCH 2026-08-18 (BSOD 0xEF fix): never taskkill a PID
+                # that does not belong to a Hermes process - a stale/recycled
+                # PID could be svchost.exe and killing it blue-screens (0xEF).
+                _probe = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue;"
+                     "if($p -and ($p.CommandLine -match 'hermes' -or $p.ExecutablePath -match 'hermes')){'1'}else{'0'}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if not _probe.stdout.strip().endswith("1"):
+                    failed.append((pid, "not hermes-owned (USER PATCH guard)"))
+                    continue
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,

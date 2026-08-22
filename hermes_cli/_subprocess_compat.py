@@ -387,6 +387,36 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
+
+def pid_is_hermes(pid: int) -> bool:
+    """True only if *pid* currently belongs to a Hermes-owned process.
+
+    USER PATCH 2026-08-18 (BSOD 0xEF fix): guard every ``taskkill /PID`` so a
+    stale PID recorded before a reboot can never kill an unrelated process that
+    recycled the PID (e.g. svchost.exe -> CRITICAL_PROCESS_DIED 0xEF blue
+    screen). Non-Windows callers have no taskkill path, so return True there.
+    """
+    if not IS_WINDOWS or not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue;"
+                "if($p -and ($p.CommandLine -match 'hermes' -or $p.ExecutablePath -match 'hermes')){'1'}else{'0'}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=windows_hide_flags(),
+        )
+        return r.stdout.strip().endswith("1")
+    except Exception:
+        return False
+
+
 def kill_process_tree(proc: "subprocess.Popen") -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
@@ -430,8 +460,9 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
         pass
     if IS_WINDOWS:
         try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            if pid_is_hermes(proc.pid):
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

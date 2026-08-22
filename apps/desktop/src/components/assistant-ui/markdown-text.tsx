@@ -13,7 +13,6 @@ import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -22,9 +21,7 @@ import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
-  isFileMediaPath,
   isInlineMediaSrc,
-  isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
@@ -40,8 +37,7 @@ import { cn } from '@/lib/utils'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
-import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
+import { SmartMedia } from './smart-media'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -193,6 +189,9 @@ function MediaAttachment({ path }: { path: string }) {
   }, [kind, path])
 
   if (kind === 'image' && src) {
+    // Source already resolved by resolveMediaPlaybackSrc / resolveMediaDisplaySrc.
+    // Hand the display URL to MarkdownImageContent via an inline src so we do
+    // not re-enter MediaAttachment (which would loop on #media: image paths).
     return (
       <span className="block">
         <MarkdownImage alt={name} src={src} />
@@ -212,16 +211,13 @@ function MediaAttachment({ path }: { path: string }) {
 
   if (kind === 'video' && src) {
     return (
-      <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
-        <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <video
-          className="block max-h-112 w-full rounded-lg bg-black"
-          controls
-          onError={() => setFailed(true)}
-          src={src}
-        />
-        {failed && <OpenMediaButton kind="video" path={path} />}
-      </span>
+      <SmartMedia
+        kind="video"
+        name={name}
+        onOpenExternal={open}
+        openFailedNote={openFailed ? <OpenMediaFailedNote name={name} /> : undefined}
+        src={src}
+      />
     )
   }
 
@@ -258,14 +254,6 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
-    // A delivered markdown document is renderable content, not an opaque
-    // download: route it to the preview rail (which renders .md with a
-    // rendered/source toggle) instead of the download-link fallback that
-    // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
-    }
-
     return <MediaAttachment path={mediaPath} />
   }
 
@@ -284,25 +272,6 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
-    // A plain filesystem href (`[report](/home/user/report.md)`, `file://…`,
-    // `~/notes.md`, `C:\…`) names a file on the AGENT's machine. A bare
-    // anchor is a dead link there — file:// is blocked in the renderer, and
-    // on a remote gateway the path isn't even on this disk. Route it through
-    // the preview pipeline instead: normalizeOrLocalPreviewTarget resolves at
-    // VIEW time against the session's backend (local reads the file directly;
-    // remote fetches it over the authenticated /api/fs bridge), so the same
-    // transcript works from every machine that opens it. Media extensions
-    // keep their richer inline player.
-    const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
-
-    if (fileHref) {
-      return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment source="explicit-link" target={fileHref} />
-      ) : (
-        <MediaAttachment path={fileHref} />
-      )
-    }
-
     return (
       <a
         className={cn('ref wrap-anywhere', className)}
@@ -418,13 +387,17 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
   // width, so the box overshoots the rendered image and strands the download
   // button — which anchors to the container — out in the margin.
   return (
-    <ZoomableImage
+    <SmartMedia
       alt={alt}
       className={cn(
         'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
         className
       )}
       containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
+      kind="image"
+      name={name}
+      onOpenExternal={open}
+      openFailedNote={openFailed ? <OpenMediaFailedNote name={name} /> : undefined}
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}
@@ -493,36 +466,6 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-/**
- * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
- * exactly one `::name{...}` directive claimed by a plugin renders as that
- * plugin's transcript component instead (`transcript.directives` area). The
- * claim check subscribes to the registry, so hot-loading a plugin upgrades
- * already-rendered directives in place; unclaimed directives stay prose.
- */
-function MarkdownParagraph({
-  children,
-  className,
-  streaming,
-  ...props
-}: ComponentProps<'p'> & { streaming?: boolean }) {
-  const plain = paragraphPlainText(children)
-  const claimed = useIsClaimedDirective(plain)
-
-  if (claimed && plain !== null) {
-    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
-  }
-
-  return (
-    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-    // must out-specify Tailwind Typography's `prose` margins — so no
-    // `my-*` here on purpose.
-    <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
-      {children}
-    </p>
-  )
-}
-
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
@@ -554,7 +497,12 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) => <MarkdownParagraph {...props} streaming={isStreaming} />,
+        p: ({ className, ...props }: ComponentProps<'p'>) => (
+          // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
+          // must out-specify Tailwind Typography's `prose` margins — so no
+          // `my-*` here on purpose.
+          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+        ),
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
@@ -603,14 +551,29 @@ function MarkdownTextSurface({
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
         ),
-        // Columns are drag-resizable; the widths live outside the transcript
-        // (see markdown-table-widths.ts) so a new turn or a session switch
-        // doesn't undo a resize.
-        table: ResizableMarkdownTable,
+        table: ({ className, ...props }: ComponentProps<'table'>) => (
+          <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
+            <table
+              className={cn(
+                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
+                className
+              )}
+              {...props}
+            />
+          </div>
+        ),
         thead: ({ className, ...props }: ComponentProps<'thead'>) => (
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
-        th: ResizableMarkdownTh,
+        th: ({ className, ...props }: ComponentProps<'th'>) => (
+          <th
+            className={cn(
+              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+              className
+            )}
+            {...props}
+          />
+        ),
         td: ({ className, ...props }: ComponentProps<'td'>) => (
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),

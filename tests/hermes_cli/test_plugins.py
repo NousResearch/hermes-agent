@@ -1370,6 +1370,135 @@ class TestThreadToolWhitelist:
             clear_thread_tool_whitelist()
 
 
+class TestForbiddenTools:
+    """Tests for the ContextVar forbidden-tools guard (kanban #46582).
+
+    Complement of the whitelist above: deny-list semantics — named tools are
+    refused, everything else passes through to plugin hooks untouched.
+    """
+
+    def test_forbidden_tool_is_blocked_with_named_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_forbidden_tools,
+            clear_forbidden_tools,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_forbidden_tools(
+            {"delegate_task", "terminal"},
+            deny_msg_fmt="Tool '{tool_name}' refused: forbidden by task t_x constraints",
+        )
+        try:
+            msg = get_pre_tool_call_block_message("delegate_task", {})
+            assert msg is not None
+            assert "delegate_task" in msg
+            assert "forbidden by task t_x constraints" in msg
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg is not None and "terminal" in msg
+        finally:
+            clear_forbidden_tools()
+
+    def test_unlisted_tool_passes_through(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_forbidden_tools,
+            clear_forbidden_tools,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_forbidden_tools({"delegate_task"})
+        try:
+            # Only the named tools are constrained; everything else flows.
+            assert get_pre_tool_call_block_message("write_file", {}) is None
+            assert get_pre_tool_call_block_message("kanban_complete", {}) is None
+        finally:
+            clear_forbidden_tools()
+
+    def test_clear_restores_unconstrained_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_forbidden_tools,
+            clear_forbidden_tools,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_forbidden_tools({"terminal"})
+        clear_forbidden_tools()
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_constraint_wins_over_plugin_approve_directive(self, monkeypatch):
+        """A mechanical task constraint must not be overridable by a hook."""
+        from hermes_cli.plugins import (
+            get_pre_tool_call_directive,
+            set_forbidden_tools,
+            clear_forbidden_tools,
+        )
+
+        def approving_hook(hook_name, **kwargs):
+            return [{"action": "approve", "message": "plugin says ok"}]
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", approving_hook
+        )
+        set_forbidden_tools({"terminal"})
+        try:
+            directive, message = get_pre_tool_call_directive(
+                "terminal", {}
+            )
+            assert directive == "block"
+            assert message is not None and "terminal" in message
+        finally:
+            clear_forbidden_tools()
+
+    def test_guard_survives_copied_context_thread_fanout(self, monkeypatch):
+        """Concurrent tool batches run on pool threads via copied contexts.
+
+        The guard is a ContextVar precisely so ``tools.thread_context.
+        propagate_context_to_thread`` (contextvars.copy_context) carries it
+        into DaemonThreadPoolExecutor workers. This asserts that contract:
+        the block must be visible inside a thread running a context copied
+        AFTER the guard was installed.
+        """
+        import contextvars
+        import threading
+
+        from hermes_cli.plugins import (
+            set_forbidden_tools,
+            clear_forbidden_tools,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_forbidden_tools(
+            {"delegate_task"},
+            deny_msg_fmt="'{tool_name}' is forbidden here",
+        )
+        try:
+            seen = {}
+
+            def pool_worker():
+                seen["msg"] = get_pre_tool_call_block_message(
+                    "delegate_task", {}
+                )
+
+            ctx = contextvars.copy_context()
+            t = threading.Thread(target=lambda: ctx.run(pool_worker))
+            t.start()
+            t.join()
+            assert seen["msg"] is not None
+            assert "forbidden here" in seen["msg"]
+        finally:
+            clear_forbidden_tools()
+
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
 

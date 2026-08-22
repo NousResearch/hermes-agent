@@ -357,6 +357,68 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def install_task_constraint_guard() -> Optional[list]:
+    """Install the mechanical forbidden-tools guard for THIS worker session.
+
+    Called once from the CLI quiet path before ``run_conversation`` when
+    ``HERMES_KANBAN_TASK`` is set (#46582). Reads the task row's
+    ``forbidden_tools`` constraint and installs it as a pre-tool-call deny
+    directive (``hermes_cli.plugins.set_forbidden_tools``) so any constrained
+    tool call — kanban or otherwise, terminal included — is refused with an
+    error naming the constraint for the rest of this session.
+
+    Returns the forbidden tool names (for prompt documentation), or None when
+    there is nothing to enforce (no env task, unknown task, unconstrained
+    task). Never raises into worker startup; a failed install degrades to
+    today's behaviour.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not tid:
+        return None
+    try:
+        kb, conn = _connect()
+        try:
+            task = kb.get_task(conn, tid)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        names = getattr(task, "forbidden_tools", None) if task else None
+        if not names:
+            return None
+        from hermes_cli.plugins import set_forbidden_tools
+
+        set_forbidden_tools(
+            set(str(n) for n in names),
+            deny_msg_fmt=(
+                f"Tool '{{tool_name}}' refused: forbidden by task {tid} "
+                f"constraints (forbidden_tools)"
+            ),
+        )
+        return [str(n) for n in names]
+    except Exception as exc:
+        # Enforcement is best-effort at install time by design: a missing or
+        # locked board must never wedge worker startup (the dispatcher's
+        # claim TTL / failure counter is the backstop). The guard itself,
+        # once installed, is mechanical.
+        logger.warning(
+            "kanban constraint guard install failed (continuing without): %s",
+            exc,
+        )
+        return None
+
+
+def clear_task_constraint_guard() -> None:
+    """Best-effort lift of the forbidden-tools guard (worker session teardown)."""
+    try:
+        from hermes_cli.plugins import clear_forbidden_tools
+
+        clear_forbidden_tools()
+    except Exception:
+        pass
+
+
 # Live operator-note injection: poll the worker's task for new comments and
 # fold them into the running agent via the OUT-OF-BAND steer channel, so a user
 # can "talk to" a running kanban task without the block → comment → unblock
@@ -1409,6 +1471,18 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    require_summary, rs_bool_error = _parse_bool_arg(args, "require_summary")
+    if rs_bool_error:
+        return tool_error(rs_bool_error)
+    forbidden_tools = args.get("forbidden_tools")
+    if isinstance(forbidden_tools, str):
+        # Accept a single tool name as a string for convenience.
+        forbidden_tools = [forbidden_tools]
+    if forbidden_tools is not None and not isinstance(forbidden_tools, (list, tuple)):
+        return tool_error(
+            f"forbidden_tools must be a list of tool names, got "
+            f"{type(forbidden_tools).__name__}"
+        )
     model_override = args.get("model")
     provider_override = args.get("provider")
     if provider_override and not model_override:
@@ -1458,6 +1532,8 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
+                forbidden_tools=forbidden_tools,
+                require_summary=require_summary,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1470,6 +1546,16 @@ def _handle_create(args: dict, **kw) -> str:
                 workspace_kind=new_task.workspace_kind if new_task else None,
                 workspace_path=new_task.workspace_path if new_task else None,
                 project_id=new_task.project_id if new_task else None,
+                forbidden_tools=(
+                    list(new_task.forbidden_tools)
+                    if new_task and new_task.forbidden_tools
+                    else None
+                ),
+                require_summary=(
+                    bool(new_task.require_summary)
+                    if new_task
+                    else False
+                ),
                 subscribed=subscribed,
             )
         finally:
@@ -2307,6 +2393,29 @@ KANBAN_CREATE_SCHEMA = {
         },
         "required": ["title", "assignee"],
     },
+}
+
+# Appended after the main schema body so the constraint properties read as
+# one block (#46582).
+KANBAN_CREATE_SCHEMA["parameters"]["properties"]["forbidden_tools"] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Tool names the dispatched worker must NOT call while on this "
+        "task — enforced mechanically, not as prose: any call to a listed "
+        "tool is refused with an error naming the constraint. Use for "
+        "behavioral guardrails the worker must not be able to talk itself "
+        "out of (e.g. ['delegate_task'] so a doc-writer cannot spawn "
+        "sub-agents that complete out of order)."
+    ),
+}
+KANBAN_CREATE_SCHEMA["parameters"]["properties"]["require_summary"] = {
+    "type": "boolean",
+    "description": (
+        "Hard completion gate. When true, kanban_complete on this task is "
+        "refused unless the summary/result handoff carries at least 40 "
+        "characters of substance. Defaults to false."
+    ),
 }
 
 KANBAN_UNBLOCK_SCHEMA = {

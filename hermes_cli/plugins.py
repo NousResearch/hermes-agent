@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import hashlib
 import importlib.metadata
@@ -51,7 +52,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
+from typing import (Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
 
 from hermes_constants import (
     get_hermes_home,
@@ -5977,6 +5978,24 @@ def fire_pre_command_hook(
 
 _thread_tool_whitelist = threading.local()
 
+# Forbidden-tools guard (kanban task constraints, #46582).
+#
+# A ``ContextVar``, not a ``threading.local`` like the whitelist above:
+# concurrent tool batches fan out onto DaemonThreadPoolExecutor workers via
+# ``tools.thread_context.propagate_context_to_thread``, which snapshots
+# ``contextvars.copy_context()`` but does NOT copy thread-locals. A deny-list
+# stored here is therefore visible on BOTH dispatch paths — sequential tool
+# calls (same thread) and parallel batches (pool worker running the copied
+# context) — while never leaking sideways into unrelated threads that did not
+# inherit this context (delegate children snapshot their own context before
+# the guard is installed).
+_forbidden_tools_cv: "contextvars.ContextVar[Optional[FrozenSet[str]]]" = (
+    contextvars.ContextVar("hermes_forbidden_tools", default=None)
+)
+_forbidden_tools_fmt_cv: "contextvars.ContextVar[Optional[str]]" = (
+    contextvars.ContextVar("hermes_forbidden_tools_fmt", default=None)
+)
+
 
 @dataclass(frozen=True)
 class _PreToolCallDirective:
@@ -5996,6 +6015,31 @@ def set_thread_tool_whitelist(
 
 def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
+
+
+def set_forbidden_tools(
+    forbidden: Optional[Set[str]],
+    deny_msg_fmt: str = (
+        "Tool '{tool_name}' refused: forbidden by the active task constraints"
+    ),
+) -> None:
+    """Forbid the named tools for every call dispatched inside this context.
+
+    Complement of :func:`set_thread_tool_whitelist`: allow-list semantics need
+    the caller to enumerate every permitted tool (and any enumeration miss
+    becomes a false denial), while behavioral constraints such as kanban
+    ``forbidden_tools`` (#46582) are naturally deny-list shaped — refuse these
+    named tools, let everything else through. Stored as a ``ContextVar`` so
+    the constraint survives the executor fan-out described above.
+    """
+    _forbidden_tools_cv.set(frozenset(forbidden) if forbidden else None)
+    _forbidden_tools_fmt_cv.set(deny_msg_fmt)
+
+
+def clear_forbidden_tools() -> None:
+    """Lift the forbidden-tools constraint installed by :func:`set_forbidden_tools`."""
+    _forbidden_tools_cv.set(None)
+    _forbidden_tools_fmt_cv.set(None)
 
 
 def _get_pre_tool_call_directive_details(
@@ -6037,6 +6081,19 @@ def _get_pre_tool_call_directive_details(
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return _PreToolCallDirective(
+            action="block",
+            message=fmt.format(tool_name=tool_name),
+        )
+
+    # Forbidden-tools constraint (#46582) — deny-list complement of the
+    # whitelist above, resolved before plugin hooks so a mechanical task
+    # constraint cannot be overridden by an ``approve`` directive.
+    forbidden = _forbidden_tools_cv.get()
+    if forbidden and tool_name in forbidden:
+        fmt = _forbidden_tools_fmt_cv.get() or (
+            "Tool '{tool_name}' refused: forbidden by the active task constraints"
+        )
         return _PreToolCallDirective(
             action="block",
             message=fmt.format(tool_name=tool_name),

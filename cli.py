@@ -21255,6 +21255,30 @@ def main(
                 except Exception as _exc:
                     # Best-effort enrichment; never block worker startup on it.
                     logger.debug("kanban image-ref extraction failed: %s", _exc)
+
+            # Kanban worker behavioral constraints (#46582): install the
+            # mechanical forbidden-tools guard for THIS dispatcher-spawned
+            # worker session before any turn runs. The constraint lives on
+            # the task row (forbidden_tools column) and is read through the
+            # board DB — no env propagation. From here until session end,
+            # any call to a constrained tool (kanban or otherwise, terminal
+            # included) is refused with an error naming the constraint.
+            # Quiet-only: interactive sessions never get a deny-guard just
+            # because HERMES_KANBAN_TASK happens to be set.
+            _kanban_forbidden_tools: list = []
+            if _kanban_task_id and quiet:
+                try:
+                    from tools.kanban_tools import (
+                        install_task_constraint_guard as _install_constraint_guard,
+                    )
+
+                    _kanban_forbidden_tools = (
+                        _install_constraint_guard() or []
+                    )
+                except Exception as _guard_exc:
+                    logger.debug(
+                        "kanban constraint guard skipped: %s", _guard_exc
+                    )
             if quiet:
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
@@ -21317,6 +21341,24 @@ def main(
                                 query,
                                 single_query_images,
                                 announce=False,
+                            )
+                    # Surface the forbidden list in the worker's own task
+                    # context (#46582) — documentation, not enforcement: the
+                    # mechanical refusal happens in the pre-tool-call guard.
+                    if _kanban_forbidden_tools:
+                        _constraint_note = (
+                            "[Task constraints] Forbidden tools for this "
+                            "task: " + ", ".join(_kanban_forbidden_tools)
+                            + ". Calls to them are refused mechanically; "
+                            "complete the task without them."
+                        )
+                        if isinstance(effective_query, str):
+                            effective_query = (
+                                f"{effective_query}\n\n{_constraint_note}"
+                            )
+                        elif isinstance(effective_query, list):
+                            effective_query.append(
+                                {"type": "text", "text": _constraint_note}
                             )
                     turn_route = cli._resolve_turn_agent_config(effective_query)
                     if turn_route["signature"] != cli._active_agent_route_signature:
@@ -21435,6 +21477,17 @@ def main(
                 cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)
+            # Lift the #46582 forbidden-tools guard installed for this
+            # worker session. Runs on every exit path above (normal,
+            # sys.exit, KeyboardInterrupt) — a no-op when never installed.
+            try:
+                from tools.kanban_tools import (
+                    clear_task_constraint_guard as _clear_constraint_guard,
+                )
+
+                _clear_constraint_guard()
+            except Exception:
+                pass
         return
     
     # Run interactive mode

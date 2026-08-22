@@ -1614,3 +1614,159 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Worker behavioral constraints (#46582): forbidden_tools + require_summary
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_round_trips_worker_constraints(kanban_home):
+    """forbidden_tools / require_summary persist and parse back losslessly.
+
+    forbidden_tools follows the skills precedent: JSON array on the row,
+    parsed list on the Task. Normalisation strips whitespace and dedupes
+    (order-preserving) so '["a", " a ", "b"]' cannot store phantom entries.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="constrained",
+            assignee="coder",
+            forbidden_tools=["delegate_task", " terminal ", "delegate_task"],
+            require_summary=True,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.forbidden_tools == ["delegate_task", "terminal"]
+        assert task.require_summary is True
+
+        # Defaults: unconstrained + classic completion behaviour.
+        plain_tid = kb.create_task(conn, title="plain", assignee="coder")
+        plain = kb.get_task(conn, plain_tid)
+        assert plain.forbidden_tools is None
+        assert plain.require_summary is False
+    finally:
+        conn.close()
+
+
+def test_create_task_validates_forbidden_tools(kanban_home):
+    """Non-string names and empty lists are refused at creation time.
+
+    A name that isn't a string would never match any dispatch, silently
+    turning hard enforcement into no enforcement — refuse instead.
+    """
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError, match="tool-name strings"):
+            kb.create_task(
+                conn, title="bad", assignee="coder",
+                forbidden_tools=["delegate_task", 42],
+            )
+        with pytest.raises(ValueError, match="at least one tool name"):
+            kb.create_task(
+                conn, title="empty", assignee="coder", forbidden_tools=[],
+            )
+        # Whitespace-only collapses to empty → same refusal.
+        with pytest.raises(ValueError, match="at least one tool name"):
+            kb.create_task(
+                conn, title="blank", assignee="coder",
+                forbidden_tools=["   "],
+            )
+    finally:
+        conn.close()
+
+
+def test_complete_task_require_summary_gate(kanban_home):
+    """require_summary tasks refuse under-substantiated handoffs (#46582).
+
+    The gate must be retryable: a refusal leaves the task untouched (still
+    running, still completable once real prose arrives).
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="gated", assignee="coder", require_summary=True,
+        )
+        # Empty summary/result refused.
+        with pytest.raises(ValueError, match="substantive summary"):
+            kb.complete_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Short handoff refused.
+        with pytest.raises(ValueError, match="substantive summary"):
+            kb.complete_task(conn, tid, summary="done")
+        # Boundary: one character under the bar is still refused.
+        short = "x" * (kb.REQUIRE_SUMMARY_MIN_CHARS - 1)
+        with pytest.raises(ValueError, match="substantive summary"):
+            kb.complete_task(conn, tid, summary=short)
+
+        # result counts as the handoff when summary is omitted...
+        ok = kb.complete_task(
+            conn, tid,
+            result="Refactored the parser and verified with the full test suite.",
+        )
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+
+        # Unflagged tasks keep classic behaviour (no summary needed).
+        free_tid = kb.create_task(conn, title="free", assignee="coder")
+        assert kb.complete_task(conn, free_tid) is True
+    finally:
+        conn.close()
+
+
+def test_connect_migrates_legacy_db_adds_constraint_columns(tmp_path):
+    """Boards predating #46582 gain both constraint columns on open.
+
+    Legacy rows read back unconstrained (NULL / 0), which is exactly the
+    behaviour they had before the columns existed.
+    """
+    db_path = tmp_path / "legacy-constraints.db"
+    conn = sqlite3.connect(str(db_path))
+    # Pre-#46582 ``tasks`` shape: stops after block_recurrences.
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            block_recurrences INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old board task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        cols = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")
+        }
+        assert "forbidden_tools" in cols
+        assert "require_summary" in cols
+        legacy = kb.get_task(migrated, "legacy")
+        assert legacy is not None
+        assert legacy.forbidden_tools is None
+        assert legacy.require_summary is False

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+
+import pytest
 
 
 def _make_task(kb, *, assignee: str):
@@ -161,3 +164,116 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+# ---------------------------------------------------------------------------
+# Worker behavioral constraints (#46582): forbidden_tools enforcement rides
+# the pre-tool-call block-directive pipeline. The dispatcher persists the
+# constraint on the task row; the WORKER session installs it from the board
+# DB at boot (no env propagation). These tests exercise that worker-session
+# path with a real board DB and the same HERMES_KANBAN_* env pins
+# _default_spawn sets.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kanban_board_home(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME with an initialized default-board kanban DB."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from hermes_cli import kanban_db as kb
+
+    kb.init_db()
+    return home
+
+
+def _create_constrained_task(kb, conn, *, forbidden, require_summary=False):
+    return kb.create_task(
+        conn,
+        title="hard-constrained card",
+        assignee="elias",
+        forbidden_tools=forbidden,
+        require_summary=require_summary,
+    )
+
+
+def test_worker_session_installs_forbidden_tools_guard(kanban_board_home, monkeypatch):
+    """A spawned-worker session refuses constrained tool calls — mechanically.
+
+    Mirrors the worker bootstrap: the task row carries forbidden_tools, the
+    worker process has only the spawn env pins, and
+    ``install_task_constraint_guard()`` reads the board and installs the deny
+    directive. The constrained call is refused with an error naming the
+    constraint and the task; every other tool flows. Clearing restores
+    today's behaviour.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools.kanban_tools import (
+        install_task_constraint_guard,
+        clear_task_constraint_guard,
+    )
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    conn = kb.connect()
+    try:
+        tid = _create_constrained_task(
+            kb, conn, forbidden=["delegate_task", "kanban_create"]
+        )
+    finally:
+        conn.close()
+
+    # The only worker-side signal is the env pin the dispatcher sets.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    installed = install_task_constraint_guard()
+    try:
+        assert installed == ["delegate_task", "kanban_create"]
+
+        directive, message = get_pre_tool_call_directive("delegate_task", {})
+        assert directive == "block"
+        assert "delegate_task" in message
+        assert tid in message
+
+        directive, message = get_pre_tool_call_directive(
+            "kanban_create", {"title": "x"}
+        )
+        assert directive == "block"
+
+        # Everything else — terminal included — passes through untouched.
+        assert get_pre_tool_call_directive("terminal", {}) == (None, None)
+        assert get_pre_tool_call_directive("write_file", {}) == (None, None)
+    finally:
+        clear_task_constraint_guard()
+
+    assert get_pre_tool_call_directive("delegate_task", {}) == (None, None)
+
+
+def test_worker_session_without_constraints_is_unconstrained(kanban_board_home, monkeypatch):
+    """Tasks created without forbidden_tools leave workers exactly as before."""
+    from hermes_cli import kanban_db as kb
+    from tools.kanban_tools import install_task_constraint_guard
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="free card", assignee="elias")
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    assert install_task_constraint_guard() is None
+    assert get_pre_tool_call_directive("terminal", {}) == (None, None)
+
+
+def test_worker_session_guard_survives_unknown_task_gracefully(kanban_board_home, monkeypatch):
+    """A missing task / broken board must degrade to no guard, never wedge
+    worker startup (dispatcher claim-TTL is the backstop)."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_nonexistent")
+
+    from tools.kanban_tools import install_task_constraint_guard
+    from hermes_cli.plugins import get_pre_tool_call_directive
+
+    assert install_task_constraint_guard() is None
+    assert get_pre_tool_call_directive("terminal", {}) == (None, None)

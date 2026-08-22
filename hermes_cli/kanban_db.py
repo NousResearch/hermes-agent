@@ -134,6 +134,38 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# Hard completion gate (#46582): when a task sets ``require_summary``, the
+# completing handoff (summary, or result when summary is omitted) must carry
+# at least this many characters. The point is substance, not length for its
+# own sake — one short sentence clears the bar; an empty string does not.
+REQUIRE_SUMMARY_MIN_CHARS = 40
+
+
+def require_summary_rejection(
+    require_summary_enabled: bool,
+    summary: Optional[str],
+    result: Optional[str],
+) -> Optional[str]:
+    """Return a refusal message when a completion violates ``require_summary``.
+
+    Pure predicate shared by every completion surface so the gate reads
+    identically everywhere: ``None`` means the handoff is acceptable, a
+    string is the reason it is not (empty or under
+    ``REQUIRE_SUMMARY_MIN_CHARS`` characters). Flag unset → always ``None``
+    (classic behaviour).
+    """
+    if not require_summary_enabled:
+        return None
+    text = (summary if summary is not None else result) or ""
+    if len(text.strip()) >= REQUIRE_SUMMARY_MIN_CHARS:
+        return None
+    return (
+        f"task requires a substantive summary: the summary/result handoff "
+        f"must be at least {REQUIRE_SUMMARY_MIN_CHARS} characters "
+        f"(got {len(text.strip())}). Describe what was done and how to "
+        f"verify it, then retry kanban_complete."
+    )
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
@@ -1141,6 +1173,13 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Tools the dispatched worker must not call while on this task
+    # (#46582). Stored as a JSON array; the worker session installs them
+    # as a mechanical pre-tool-call deny-list. None = unconstrained.
+    forbidden_tools: Optional[list] = None
+    # When True, ``complete_task`` refuses completions whose summary/result
+    # handoff text is empty or under ``REQUIRE_SUMMARY_MIN_CHARS`` (#46582).
+    require_summary: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1154,6 +1193,15 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        # Parse forbidden_tools JSON blob if present (same shape as skills).
+        forbidden_tools_value: Optional[list] = None
+        if "forbidden_tools" in keys and row["forbidden_tools"]:
+            try:
+                parsed = json.loads(row["forbidden_tools"])
+                if isinstance(parsed, list):
+                    forbidden_tools_value = [str(s) for s in parsed if s]
+            except Exception:
+                forbidden_tools_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -1234,6 +1282,12 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            forbidden_tools=forbidden_tools_value,
+            require_summary=(
+                bool(row["require_summary"])
+                if "require_summary" in keys and row["require_summary"]
+                else False
             ),
         )
 
@@ -1422,7 +1476,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Behavioral constraints for the dispatched worker (#46582). Stored as a
+    -- JSON array of tool names; the worker session installs them as a
+    -- mechanical pre-tool-call deny-list so a constrained call is refused
+    -- with an error naming the constraint. NULL = unconstrained.
+    forbidden_tools      TEXT,
+    -- When 1, ``complete_task`` refuses completions whose summary/result
+    -- handoff text is empty or under REQUIRE_SUMMARY_MIN_CHARS. Opt-in hard
+    -- completion gate; 0 (the default) preserves classic behaviour.
+    require_summary      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2679,6 +2742,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "forbidden_tools" not in cols:
+        # Worker behavioral constraint (#46582): JSON array of tool names the
+        # dispatched worker must not call. NULL on legacy rows = unconstrained,
+        # which is exactly the behaviour they had before the column existed.
+        _add_column_if_missing(conn, "tasks", "forbidden_tools", "forbidden_tools TEXT")
+
+    if "require_summary" not in cols:
+        # Opt-in hard completion gate (#46582). 0 (the default) keeps the
+        # classic behaviour existing rows had — any completion accepted.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "require_summary",
+            "require_summary INTEGER NOT NULL DEFAULT 0",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3183,6 +3262,8 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    forbidden_tools: Optional[Iterable[str]] = None,
+    require_summary: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3216,6 +3297,17 @@ def create_task(
     (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
     ``--reasoning <level>``. It is independent of ``model_override``: a task
     can run the profile's own model at a different depth.
+
+    ``forbidden_tools`` is an optional list of tool names the dispatched
+    worker must not call while on this task (#46582). Stored as JSON; the
+    worker session installs it as a mechanical pre-tool-call deny-list, so a
+    constrained call is refused with an error naming the constraint — not a
+    soft body-text instruction.
+
+    ``require_summary=True`` turns on the hard completion gate: the worker's
+    ``kanban_complete`` handoff must carry a substantive summary/result
+    (at least ``REQUIRE_SUMMARY_MIN_CHARS`` characters) or completion is
+    refused with a clear message.
 
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
@@ -3393,6 +3485,33 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Normalise + validate forbidden_tools (#46582): same strip/dedupe
+    # discipline as skills. A tool name that isn't a plain string would never
+    # match any dispatch, silently turning "hard" into "no" enforcement —
+    # refuse instead of coercing.
+    forbidden_tools_list: Optional[list[str]] = None
+    if forbidden_tools is not None:
+        cleaned_ft: list[str] = []
+        seen_ft: set[str] = set()
+        for ft in forbidden_tools:
+            if not isinstance(ft, str):
+                raise ValueError(
+                    f"forbidden_tools must be tool-name strings, got "
+                    f"{type(ft).__name__}: {ft!r}"
+                )
+            name = ft.strip()
+            if not name:
+                continue
+            if name not in seen_ft:
+                seen_ft.add(name)
+                cleaned_ft.append(name)
+        if not cleaned_ft:
+            raise ValueError(
+                "forbidden_tools must contain at least one tool name "
+                "(pass None to leave the worker unconstrained)"
+            )
+        forbidden_tools_list = cleaned_ft
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -3497,8 +3616,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        forbidden_tools, require_summary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3644,12 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        (
+                            json.dumps(forbidden_tools_list)
+                            if forbidden_tools_list is not None
+                            else None
+                        ),
+                        1 if require_summary else 0,
                     ),
                 )
                 for pid in parents:
@@ -3552,6 +3678,12 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "forbidden_tools": (
+                            list(forbidden_tools_list)
+                            if forbidden_tools_list
+                            else None
+                        ),
+                        "require_summary": bool(require_summary) or None,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -5393,6 +5525,24 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    # Hard completion gate (#46582): refuse under-substantiated handoffs
+    # BEFORE anything else — no audit event, no run row, no state change.
+    # The caller surfaces the message verbatim (tool_error on the worker
+    # toolset, stderr + exit 1 on the CLI), so the refusal is retryable:
+    # the task is untouched and the completer can re-complete with prose.
+    # Unknown ids fall through to the ordinary failure paths below.
+    _gate = conn.execute(
+        "SELECT require_summary FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        _gate is not None
+        and "require_summary" in _gate.keys()
+        and _gate["require_summary"]
+    ):
+        rejection = require_summary_rejection(True, summary, result)
+        if rejection is not None:
+            raise ValueError(f"kanban_complete refused: {rejection}")
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):

@@ -331,7 +331,7 @@ _TOOL_STUBS = {
     "web_search": (
         "web_search",
         "query: str, limit: int = 5",
-        '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
+        '"""Search the web. Returns {"success": bool, "data": {"web": [{url, title, description, position}, ...]}}. Check "success" first — "data" may be absent on failure, so use .get()."""',
         '{"query": query, "limit": limit}',
     ),
     "web_extract": (
@@ -343,31 +343,31 @@ _TOOL_STUBS = {
     "read_file": (
         "read_file",
         "path: str, offset: int = 1, limit: int = 2000",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
+        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines". "content" is LINE-NUMBER PREFIXED as "<n>|<line>", so ^-anchored regexes will not match the original line start. For .eml/.csv/.json prefer parsing the file directly with open()/stdlib. Re-reading an unchanged file returns {"status": "unchanged", "content_returned": False} with no "content" key."""',
         '{"path": path, "offset": offset, "limit": limit}',
     ),
     "write_file": (
         "write_file",
         "path: str, content: str, cross_profile: bool = False",
-        '"""Write content to a file (always overwrites). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '"""Write content to a file (always overwrites). Returns {"bytes_written": N, "dirs_created": bool} — there is no "status" key; success is the absence of an "error" key. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
         '{"path": path, "content": content, "cross_profile": cross_profile}',
     ),
     "search_files": (
         "search_files",
         'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
-        '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
+        '"""Search file contents (target="content") or find files by name (target="files"). Result key depends on target: target="files" returns "files" (list of absolute paths); target="content" returns "matches" (list of {path, line, content}), or "counts" with output_mode="count". Always includes "total_count". With 5+ content matches, "matches" is replaced by "matches_text" + "matches_format". Empty keys are omitted, so use .get() not indexing."""',
         '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
     ),
     "patch": (
         "patch",
         'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns {"success": bool, ...} — the key is "success", not "status". "diff"/"files_modified"/"files_created"/"files_deleted"/"error" appear only when non-empty, so use .get(). cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}',
     ),
     "terminal": (
         "terminal",
         "command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
+        '"""Run a shell command (foreground only). Returns {"output": str, "exit_code": int, "error": None|str}. A command may be gated for user approval instead of running, in which case the result carries "pending_approval"/"status" and no real output — check exit_code and "error" rather than assuming it ran."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}',
     ),
 }
@@ -2050,26 +2050,62 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
 _TOOL_DOC_LINES = [
     ("web_search",
      "  web_search(query: str, limit: int = 5) -> dict\n"
-     "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
+     "    Returns {\"success\": bool, \"data\": {\"web\": [{\"url\", \"title\",\n"
+     "    \"description\", \"position\"}, ...]}}. Check \"success\" — on failure\n"
+     "    \"data\" may be absent, so use .get() rather than indexing."),
     ("web_extract",
      "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n"
+     "    \"content\" is LINE-NUMBER PREFIXED: every line is rendered as\n"
+     "    \"<n>|<original line>\". A regex anchored with ^ will NOT match the\n"
+     "    original line start — strip the prefix first, or match \"^\\\\s*\\\\d+\\\\|\".\n"
+     "    For structured formats (.eml, .csv, .json) prefer parsing the file\n"
+     "    directly with open()/stdlib instead; execute_code has real FS access.\n"
+     "    Re-reading an UNCHANGED file you already read this session is deduped:\n"
+     "    it returns {\"status\": \"unchanged\", \"content_returned\": false} with NO\n"
+     "    \"content\" key. Reuse the content from your earlier read instead of\n"
+     "    treating the file as empty."),
     ("write_file",
-     "  write_file(path: str, content: str) -> dict\n"
-     "    Always overwrites the entire file."),
+     "  write_file(path: str, content: str, cross_profile: bool = False) -> dict\n"
+     "    Always overwrites the entire file.\n"
+     "    Returns {\"bytes_written\": N, \"dirs_created\": bool} — there is NO\n"
+     "    \"status\" key. Success is the ABSENCE of an \"error\" key; optional\n"
+     "    \"warning\"/\"lint\"/\"lsp_diagnostics\" appear only when non-empty."),
     ("search_files",
      "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+     "    target: \"content\" (search inside files) or \"files\" (find files by name).\n"
+     "    The result key DEPENDS ON target — they are not interchangeable:\n"
+     "      target=\"files\"   -> {\"files\": [\"/abs/path\", ...], \"total_count\": N}\n"
+     "      target=\"content\" -> {\"matches\": [{\"path\", \"line\", \"content\"}, ...], \"total_count\": N}\n"
+     "      target=\"content\" with output_mode=\"count\" -> {\"counts\": {path: N}, \"total_count\": N}\n"
+     "    Reading the wrong key returns an empty list with no error, which looks\n"
+     "    identical to \"nothing found\" — check \"total_count\" to tell them apart.\n"
+     "    DENSIFY: with 5+ content matches the \"matches\" list is REPLACED by\n"
+     "    \"matches_text\" (a path-grouped string) plus \"matches_format\" describing\n"
+     "    it. Code that reads \"matches\" works for 1-4 hits and breaks at 5.\n"
+     "    Empty result keys are OMITTED entirely, not returned as [] — always\n"
+     "    use .get(), never result[\"files\"].\n"
+     "    `path` accepts ~ (expanded by the tool). Returned paths are absolute."),
     ("patch",
-     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
+     "  patch(path: str = None, old_string: str = None, new_string: str = None,\n"
+     "        replace_all: bool = False, mode: str = \"replace\", patch: str = None,\n"
+     "        cross_profile: bool = False) -> dict\n"
+     "    mode=\"replace\" is targeted find-and-replace; mode=\"patch\" applies a\n"
+     "    V4A multi-file patch passed via the `patch` argument.\n"
+     "    Returns {\"success\": bool, ...} — the key is \"success\", NOT \"status\".\n"
+     "    \"diff\"/\"files_modified\"/\"files_created\"/\"files_deleted\"/\"error\" are\n"
+     "    present only when non-empty; use .get()."),
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty).\n"
+     "    Returns {\"output\": \"...\", \"exit_code\": N, \"error\": None|str}.\n"
+     "    A command may be gated for user approval instead of running — the\n"
+     "    result then carries \"pending_approval\"/\"status\" and NO real output.\n"
+     "    Check exit_code and \"error\" rather than assuming the command ran."),
 ]
 
 

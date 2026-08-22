@@ -240,6 +240,28 @@ class TestResolveDeliveryTarget:
             "thread_id": "17",
         }
 
+    def test_explicit_telegram_topic_thread_survives_directory_topic_prefix_match(self):
+        """Raw explicit chat_id:thread_id must not be rewritten by cached topic labels.
+
+        Session-derived Telegram directory entries may include labels such as
+        ``-1003724596514 / topic 38`` whose id resolves to ``-1003724596514:38``
+        when a bare chat id is used as a human-friendly prefix. An explicit
+        cron target ``telegram:-1003724596514:17`` must still go to thread 17.
+        """
+        job = {
+            "deliver": "telegram:-1003724596514:17",
+        }
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1003724596514:38",
+        ) as resolve_mock:
+            result = _resolve_delivery_target(job)
+        resolve_mock.assert_not_called()
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": "17",
+        }
 
     def test_human_friendly_label_resolved_via_channel_directory(self):
         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""

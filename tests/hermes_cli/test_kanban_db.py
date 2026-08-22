@@ -16,6 +16,7 @@ import pytest
 
 import hermes_state
 from hermes_cli import kanban_db as kb
+from plugins.builder_adapter.native import BUILDER_WORKER_POLICY
 
 
 @pytest.fixture
@@ -47,6 +48,310 @@ def _init_git_repo(repo: Path) -> None:
 
 
 
+def test_governed_completion_retains_worker_lease_until_exit(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(
+            conn, task_id, claimer=f"{kb._claimer_id()}:lease"
+        )
+        kb._set_worker_pid(conn, task_id, os.getpid())
+        before = kb.get_task(conn, task_id)
+        assert before is not None
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="requested",
+        )
+        pending = kb.get_task(conn, task_id)
+        assert pending is not None
+        assert pending.status == "completion_pending"
+        assert pending.worker_pid == os.getpid()
+        assert pending.claim_lock == before.claim_lock
+        assert pending.completed_at is None
+
+
+def test_governed_spawn_fails_closed_without_kernel_identity(
+    kanban_home, monkeypatch
+):
+    fake_pid = 987653
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(conn, task_id, claimer=f"{kb._claimer_id()}:lease")
+        monkeypatch.setattr(
+            kb,
+            "_kernel_process_start_identity",
+            lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
+        )
+
+        with pytest.raises(RuntimeError, match="unable to attest"):
+            kb._set_worker_pid(conn, task_id, fake_pid)
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.worker_pid is None
+        assert conn.execute(
+            "SELECT 1 FROM governed_worker_lifecycle WHERE task_id=?",
+            (task_id,),
+        ).fetchone() is None
+
+
+def test_governed_worker_policy_rejects_empty_tool_allowlist(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="invalid worker_policy"):
+            kb.create_task(
+                conn,
+                title="governed",
+                assignee="deepseek-builder",
+                created_by="hermes.builder_dispatch.v1",
+                worker_policy={
+                    "policy_id": "hermes.builder_worker.v1",
+                    "tool_allowlist": [],
+                    "completion_requires_exit_proof": True,
+                },
+            )
+
+
+def test_process_group_termination_requires_positive_absence_proof(monkeypatch):
+    process_group = 987652
+    monkeypatch.setattr(
+        os,
+        "killpg",
+        lambda _pgid, _signal: (_ for _ in ()).throw(PermissionError()),
+    )
+    assert kb._process_group_terminated(process_group) is False
+
+    monkeypatch.setattr(
+        os,
+        "killpg",
+        lambda _pgid, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    assert kb._process_group_terminated(process_group) is True
+
+
+def test_governed_completion_requires_callback_and_process_group_cleanup(
+    kanban_home, monkeypatch
+):
+    fake_pid = 987654
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(conn, task_id, claimer=f"{kb._claimer_id()}:lease")
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-start-a"
+        )
+        kb._set_worker_pid(conn, task_id, fake_pid)
+        assert kb.complete_task(conn, task_id, result="requested")
+        monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(kb, "_process_group_terminated", lambda pgid: True)
+        kb._recent_worker_exits.pop(fake_pid, None)
+        kb.detect_crashed_workers(conn)
+        assert kb.get_task(conn, task_id).status == "completion_pending"
+        lifecycle = conn.execute(
+            "SELECT * FROM governed_worker_lifecycle WHERE task_id=?", (task_id,)
+        ).fetchone()
+        kb._recent_worker_exits[fake_pid] = (
+            0,
+            time.time(),
+            lifecycle["start_identity"],
+            lifecycle["run_id"],
+        )
+        kb.detect_crashed_workers(conn)
+        assert kb.get_task(conn, task_id).status == "done"
+        lifecycle = conn.execute(
+            "SELECT * FROM governed_worker_lifecycle WHERE task_id=?", (task_id,)
+        ).fetchone()
+        assert lifecycle["state"] == "terminated"
+        assert lifecycle["completion_lease"]
+
+
+def test_governed_completion_denies_finalization_while_descendant_alive(
+    kanban_home, monkeypatch
+):
+    fake_pid = 987655
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(conn, task_id, claimer=f"{kb._claimer_id()}:lease")
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-start-b"
+        )
+        kb._set_worker_pid(conn, task_id, fake_pid)
+        assert kb.complete_task(conn, task_id, result="requested")
+        lifecycle = conn.execute(
+            "SELECT * FROM governed_worker_lifecycle WHERE task_id=?", (task_id,)
+        ).fetchone()
+        kb._recent_worker_exits[fake_pid] = (
+            0,
+            time.time(),
+            lifecycle["start_identity"],
+            lifecycle["run_id"],
+        )
+        monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(kb, "_process_group_terminated", lambda pgid: False)
+        kb.detect_crashed_workers(conn)
+        assert kb.get_task(conn, task_id).status == "completion_pending"
+
+
+def test_completion_pid_reuse_accepts_only_original_incarnation_callback(
+    kanban_home, monkeypatch
+):
+    fake_pid = 987656
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(conn, task_id, claimer=f"{kb._claimer_id()}:lease")
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-original"
+        )
+        kb._set_worker_pid(conn, task_id, fake_pid)
+        assert kb.complete_task(conn, task_id, result="requested")
+        lifecycle = conn.execute(
+            "SELECT * FROM governed_worker_lifecycle WHERE task_id=?", (task_id,)
+        ).fetchone()
+        monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-replacement"
+        )
+        cleanup_calls = []
+        monkeypatch.setattr(
+            kb,
+            "_process_group_terminated",
+            lambda pgid: cleanup_calls.append(pgid) or True,
+        )
+        kb._recent_worker_exits[fake_pid] = (
+            0,
+            time.time(),
+            lifecycle["start_identity"],
+            lifecycle["run_id"],
+        )
+        kb.detect_crashed_workers(conn)
+        assert kb.get_task(conn, task_id).status == "done"
+        assert cleanup_calls == [fake_pid]
+
+
+def test_completion_pid_reuse_rejects_replacement_incarnation_callback(
+    kanban_home, monkeypatch
+):
+    fake_pid = 987657
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            created_by="hermes.builder_dispatch.v1",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        assert kb.claim_task(conn, task_id, claimer=f"{kb._claimer_id()}:lease")
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-original"
+        )
+        kb._set_worker_pid(conn, task_id, fake_pid)
+        assert kb.complete_task(conn, task_id, result="requested")
+        lifecycle = conn.execute(
+            "SELECT * FROM governed_worker_lifecycle WHERE task_id=?", (task_id,)
+        ).fetchone()
+        monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(
+            kb, "_kernel_process_start_identity", lambda pid: "kernel-replacement"
+        )
+        cleanup_calls = []
+        monkeypatch.setattr(
+            kb,
+            "_process_group_terminated",
+            lambda pgid: cleanup_calls.append(pgid) or True,
+        )
+        kb._recent_worker_exits[fake_pid] = (
+            0,
+            time.time(),
+            "kernel-replacement",
+            lifecycle["run_id"],
+        )
+        kb.detect_crashed_workers(conn)
+        assert kb.get_task(conn, task_id).status == "completion_pending"
+        assert cleanup_calls == []
+
+
+@pytest.mark.parametrize(
+    ("process_name", "start_time"),
+    [
+        ("ordinary", "424242"),
+        ("worker name with spaces", "515151"),
+        ("worker (nested) name) with parentheses", "616161"),
+    ],
+)
+def test_linux_proc_start_identity_parses_parenthesized_process_name(
+    process_name, start_time
+):
+    # Fields after comm are state (3) followed by fields 4..22. The final
+    # value below is field 22, starttime.
+    numeric = [str(value) for value in range(4, 22)] + [start_time]
+    raw = f"123 ({process_name}) S {' '.join(numeric)}\n"
+    assert kb._linux_proc_start_time(raw) == start_time
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "123 no-parenthesized-name S 1 2 3",
+        "123 (unterminated S 1 2 3",
+        "123 (short) S 1 2 3",
+    ],
+)
+def test_linux_proc_start_identity_rejects_malformed_records(raw):
+    with pytest.raises(ProcessLookupError):
+        kb._linux_proc_start_time(raw)
+
+
+def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
+    """All kanban connections should use the explicit busy-timeout knob.
+
+    A worker stampede should wait for SQLite's writer lock instead of failing
+    immediately with ``database is locked`` during first-connect/WAL/schema
+    setup.  The timeout must be queryable via PRAGMA so CLI, gateway, and tool
+    connections behave the same way.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "123456")
+
+    with kb.connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+
+    assert row[0] == 123456
 
 
 @pytest.mark.windows_only
@@ -503,6 +808,201 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 
 
 
+def test_dispatch_skips_unassigned(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="floater")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_unassigned
+    assert t not in res.skipped_nonspawnable
+    assert not res.spawned
+
+
+def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
+    """Tasks whose assignee fails profile_exists() must NOT land in
+    ``skipped_unassigned`` (which is operator-actionable) — they go in
+    the dedicated ``skipped_nonspawnable`` bucket so health telemetry
+    can suppress false-positive "stuck" warnings."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="for-terminal", assignee="orion-cc")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_unassigned
+    assert not res.spawned
+
+
+def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns False when every ready task is
+    assigned to a control-plane lane — used by gateway/CLI dispatchers
+    to silence the stuck-warn while terminals still have queued work."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t1", assignee="orion-cc")
+        kb.create_task(conn, title="t2", assignee="orion-research")
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeypatch):
+    """``has_spawnable_ready`` returns True as soon as ANY ready task
+    has an assignee that maps to a real Hermes profile — preserves the
+    real "stuck" signal when a daily/agent task is queued."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "daily"
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="terminal-task", assignee="orion-cc")
+        kb.create_task(conn, title="hermes-task", assignee="daily")
+        assert kb.has_spawnable_ready(conn) is True
+
+
+def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
+    """Empty queue is the trivial false case — no ready tasks at all."""
+    with kb.connect() as conn:
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, workspace))
+
+    with kb.connect() as conn:
+        p = kb.create_task(conn, title="p", assignee="alice")
+        c = kb.create_task(conn, title="c", assignee="bob", parents=[p])
+        # Finish parent outside dispatch; promotion happens inside.
+        kb.complete_task(conn, p)
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+    # Spawned c (a was already done when dispatch was called).
+    assert len(spawns) == 1
+    assert spawns[0][0] == c
+    assert spawns[0][1] == "bob"
+    # c is now running
+    with kb.connect() as conn:
+        assert kb.get_task(conn, c).status == "running"
+
+
+def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
+    def boom(task, workspace):
+        raise RuntimeError("spawn failed")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="boom", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=boom)
+        # Must return to ready so the next tick can retry.
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.get_task(conn, t).claim_lock is None
+
+
+def test_worker_identity_failure_holds_claim_when_cleanup_is_denied(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    fake_pid = 987658
+    monkeypatch.setattr(
+        kb,
+        "_kernel_process_start_identity",
+        lambda pid: (_ for _ in ()).throw(OSError("kernel identity unavailable")),
+    )
+    cleanup = []
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, claim_lock: cleanup.append((pid, claim_lock))
+        or {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": True,
+        },
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="governed",
+            assignee="deepseek-builder",
+            worker_policy=BUILDER_WORKER_POLICY,
+        )
+        result = kb.dispatch_once(
+            conn, spawn_fn=lambda _task, _workspace: fake_pid
+        )
+        task = kb.get_task(conn, task_id)
+        assert result.spawned == []
+        assert task.status == "running"
+        assert task.claim_lock
+        assert task.worker_pid is None
+        assert cleanup == [(fake_pid, task.claim_lock)]
+        assert conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? "
+            "AND kind='spawn_cleanup_unconfirmed'",
+            (task_id,),
+        ).fetchone()
+
+
+def test_dispatch_max_spawn_counts_existing_running_tasks(
+    kanban_home, all_assignees_spawnable
+):
+    """max_spawn is a live concurrency cap, not a per-tick spawn cap.
+
+    Without counting tasks already in ``running``, every dispatcher tick can
+    launch up to ``max_spawn`` more workers while previous workers are still
+    alive. Long-running boards then accumulate unbounded worker subprocesses.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready = kb.create_task(conn, title="ready", assignee="carol")
+        kb.claim_task(conn, running_a)
+        kb.claim_task(conn, running_b)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
+
+        assert res.spawned == []
+        assert spawns == []
+        assert kb.get_task(conn, ready).status == "ready"
+
+
+def test_dispatch_max_spawn_fills_remaining_capacity(
+    kanban_home, all_assignees_spawnable
+):
+    """When below cap, dispatch only fills available worker slots."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="bob")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="carol")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
+
+        assert len(res.spawned) == 1
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_reclaims_stale_before_spawning(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="alice")
+        kb.claim_task(conn, t)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, t),
+        )
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert res.reclaimed == 1
 
 
 # ---------------------------------------------------------------------------

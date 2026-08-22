@@ -1483,6 +1483,20 @@ def _normalize_custom_provider_entry(
     models_discovered = entry.get("models_discovered") is True
 
     models = entry.get("models")
+    if isinstance(models, str) and models.strip():
+        # Hand-edited configs or ``hermes config set`` may store ``models`` as
+        # a JSON-encoded string (e.g. '["model-a","model-b"]').  Parse it so
+        # the normalizer doesn't silently drop the list and /model shows the
+        # provider with (0) models.
+        import json as _json
+        try:
+            decoded = _json.loads(models)
+            if isinstance(decoded, list):
+                models = decoded
+            elif isinstance(decoded, dict):
+                models = decoded
+        except (ValueError, TypeError):
+            pass  # not JSON — leave as-is (will be skipped below)
     if isinstance(models, dict) and models:
         # Shallow-copy: `entry` may alias a cached config sub-dict, and the
         # normalized entry escapes into long-lived runtime state

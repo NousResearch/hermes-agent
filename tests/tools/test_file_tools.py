@@ -80,6 +80,42 @@ class TestWriteFileHandler:
         assert "line-number" in result["error"].lower()
         mock_get.assert_not_called()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_rejects_legitimate_pipe_delimited_csv_without_force(self, mock_get):
+        """A real CSV export with sequential row IDs matches the same
+        shape heuristic as a read_file echo and is blocked by default —
+        this pins that current (over-broad but intentional) behavior."""
+        from tools.file_tools import write_file_tool
+
+        csv_content = "1|apple|0.50\n2|banana|0.30\n3|orange|0.75\n4|grape|1.20\n"
+        result = json.loads(write_file_tool("/tmp/prices.csv", csv_content))
+
+        assert "error" in result
+        assert "line-number" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_force_true_bypasses_line_numbered_content_guard(self, mock_get):
+        """force=True is the escape hatch for legitimate pipe-delimited
+        content that the heuristic in the test above false-positives on —
+        without it there was no way to ever write such content."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/prices.csv"}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+
+        csv_content = "1|apple|0.50\n2|banana|0.30\n3|orange|0.75\n4|grape|1.20\n"
+        result = json.loads(
+            write_file_tool("/tmp/prices.csv", csv_content, force=True)
+        )
+
+        assert result["status"] == "ok"
+        mock_ops.write_file.assert_called_once()
+        written_content = mock_ops.write_file.call_args[0][1]
+        assert written_content == csv_content
 
     @patch("tools.file_tools._get_file_ops")
     def test_unexpected_exception_still_logs_error(self, mock_get, caplog):

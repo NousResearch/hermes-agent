@@ -2221,6 +2221,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
+                    force: bool = False,
                     session_id: str | None = None) -> str:
     """Write content to a file.
 
@@ -2229,6 +2230,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     skills/plugins/cron/memories directory; everything else is unaffected.
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
+
+    ``force`` opts out of the read_file-display-text heuristic below.
+    That heuristic is a similarity check on shape (mostly-consecutive
+    ``N|line`` prefixes), not a guarantee — legitimate pipe-delimited data
+    with sequential row numbers (CSV exports, numbered logs, queue dumps)
+    can match it and would otherwise be permanently unwritable with no
+    escape hatch. Pass ``True`` after explicit user direction, same shape
+    as ``cross_profile``.
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
@@ -2246,11 +2255,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
-    if _is_internal_file_tool_content(content):
+    if not force and _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
             "Strip read_file line-number prefixes or reconstruct the intended "
-            "file contents before writing."
+            "file contents before writing. If this content is genuinely "
+            "pipe-delimited data (not a read_file echo), retry with force=true."
         )
     try:
         # Resolve once for the registry lock + stale check.  Failures here
@@ -2676,6 +2686,11 @@ WRITE_FILE_SCHEMA = {
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
+            "force": {
+                "type": "boolean",
+                "description": "Opt out of the read_file-display-text guard. Defaults to false. Set true ONLY when the write was blocked with 'Refusing to write internal read_file display text as file content' and the content is genuinely pipe-delimited data (e.g. a CSV export with sequential row numbers like '1|apple\\n2|banana'), not an accidental read_file echo.",
+                "default": False,
+            },
         },
         "required": ["path", "content"]
     }
@@ -2780,6 +2795,7 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        force=bool(args.get("force", False)),
         session_id=kw.get("session_id"),
     )
 

@@ -575,7 +575,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
-- **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet.
+- **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet. Assignments can be confirmed before applying via the opt-in [dry-run probe](#assign-confirmation-probe-dry-run) — assigning a ready card starts execution on the dispatcher's next tick.
 - **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
 - **Multi-select with bulk actions** — shift/ctrl-click a card or tick its checkbox to add it to the selection. A bulk action bar appears at the top with batch status transitions, archive, and reassign (by profile dropdown, or "(unassign)"). Destructive batches confirm first. Per-id partial failures are reported without aborting the rest.
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
@@ -658,8 +658,9 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
-| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
+| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result. A pure assignee patch also accepts `dry_run: true` — see [Assign confirmation probe](#assign-confirmation-probe-dry-run) |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
+| `POST` | `/tasks/:id/reassign` | Reassign with optional reclaim-first (recovery popover). Accepts `dry_run: true` — see [Assign confirmation probe](#assign-confirmation-probe-dry-run) |
 | `POST` | `/tasks/:id/comments` | Append a comment |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |
 | `POST` | `/tasks/:id/decompose` | Run the kanban decomposer — auxiliary LLM produces a task graph and the helper atomically creates the children + links the root + flips `triage → todo`. Returns `{ok, task_id, reason, fanout, child_ids, new_title}`. Same 200-on-LLM-error convention as `/specify`. |
@@ -675,6 +676,50 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
 
 Every handler is a thin wrapper — the plugin is ~700 lines of Python (router + WebSocket tail + bulk batcher + config reader) and adds no new business logic. A tiny `_conn()` helper auto-initializes `kanban.db` on every read and write, so a fresh install works whether the user opened the dashboard first, hit the REST API directly, or ran `hermes kanban init`.
+
+### Assign confirmation probe (`dry_run`)
+
+Assigning a card is the moment work begins: unassigned cards are never dispatched, but an assigned+ready card is claimed and its worker spawned on the dispatcher's next tick. To let the UI (or any API client) confirm before that happens, both assign endpoints accept an opt-in `dry_run: true`:
+
+- `PATCH /api/plugins/kanban/tasks/:id` with a body of `{"assignee": "<profile>", "dry_run": true}` (a pure assignee patch only), or
+- `POST /api/plugins/kanban/tasks/:id/reassign` with `{"profile": "<profile>", "reclaim_first": false, "dry_run": true}`.
+
+Neither mutates anything. Both return `{ok, dry_run: true, task_id, probe}` where `probe` reports what WOULD happen:
+
+```json
+{
+  "task_id": "t_ab12cd34",
+  "task_exists": true,
+  "current_status": "ready",
+  "current_assignee": null,
+  "claim_locked": false,
+  "running": false,
+  "target_profile": "ops",
+  "target_profile_exists": true,
+  "would_reclaim": false,
+  "would_refuse": false,
+  "parents_satisfied": true,
+  "dispatchable_after_assign": true,
+  "warnings": [
+    "assignment starts execution immediately: the dispatcher will claim this task and spawn the assigned profile on its next tick"
+  ]
+}
+```
+
+`dispatchable_after_assign` is the headline field: it is true when the assignment would put the card in front of the dispatcher immediately (ready status after the assign, target profile exists, parents satisfied). `would_refuse` mirrors the DB layer's guards (unknown task id; running claim without `reclaim_first`). Omitting `dry_run` keeps today's apply-immediately behavior — confirmation is opt-in per request.
+
+### Operator audit trail
+
+State-changing kanban events record **who** acted, as an additive `operator` key on the event payload (issue #82689). The formats are surface-prefixed:
+
+| Surface | `operator` format | Where it appears |
+|---|---|---|
+| CLI / gateway `/kanban` | `cli:<user>@<host>` | `assigned`, `claimed`, `completed` events |
+| Dashboard plugin API | `dashboard:<session-hash>` | `assigned`, `completed` events |
+| Dispatcher auto-spawn | `dispatcher:<host>:<pid>` | `claimed` events |
+| Spawned worker tools | `worker:<profile>@<host:pid>` | `completed` events |
+
+The dashboard's session hash is a short SHA-256 prefix of the server's ephemeral session token — stable per dashboard process, never the raw token. Events written by callers predating this field (or by third-party tools calling `kanban_db` directly) simply carry no `operator` key; nothing else about the payload changed, so old consumers and old rows are unaffected. Read the trail with `hermes kanban show <id>` (events section) or `hermes kanban tail`.
 
 ### Dashboard config
 

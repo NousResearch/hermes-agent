@@ -1230,3 +1230,131 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Assign confirmation probe (dry_run) + operator attribution (#82689)
+# ---------------------------------------------------------------------------
+
+
+def test_reassign_dry_run_probe_reports_without_mutating(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "probe me"})
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert r.json()["task"]["status"] == "ready"  # no parents -> ready
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "ghost-profile", "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["dry_run"] is True
+    assert body["task_id"] == task_id
+
+    probe = body["probe"]
+    assert probe["task_exists"] is True
+    assert probe["current_status"] == "ready"
+    assert probe["target_profile"] == "ghost-profile"
+    # Isolated HERMES_HOME has no profile dirs -> target doesn't exist, so
+    # the assignment would NOT hand the card to the dispatcher.
+    assert probe["target_profile_exists"] is False
+    assert probe["would_refuse"] is False
+    assert probe["would_reclaim"] is False
+    assert probe["dispatchable_after_assign"] is False
+    assert isinstance(probe["warnings"], list)
+
+    # Nothing was mutated: task still unassigned, no assigned event.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee is None
+        assert [
+            e for e in kb.list_events(conn, task_id) if e.kind == "assigned"
+        ] == []
+
+
+def test_reassign_dry_run_flags_running_claim(client):
+    """A running claim without reclaim_first must surface would_refuse."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "busy"})
+    task_id = r.json()["task"]["id"]
+    with kb.connect() as conn:
+        kb.claim_task(conn, task_id, claimer="box:1")
+
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "builder", "dry_run": True},
+    )
+    probe = resp.json()["probe"]
+    assert probe["running"] is True
+    assert probe["claim_locked"] is True
+    assert probe["would_refuse"] is True
+    assert resp.json()["ok"] is False
+
+    # With reclaim_first the same probe flips to would_reclaim.
+    resp = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/reassign",
+        json={"profile": "builder", "reclaim_first": True, "dry_run": True},
+    )
+    probe = resp.json()["probe"]
+    assert probe["would_refuse"] is False
+    assert probe["would_reclaim"] is True
+
+
+def test_reassign_dry_run_missing_task_reports_not_found(client):
+    resp = client.post(
+        "/api/plugins/kanban/tasks/t_deadbeef/reassign",
+        json={"profile": "x", "dry_run": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["probe"]["task_exists"] is False
+    assert body["probe"]["would_refuse"] is True
+
+
+def test_patch_assign_dry_run_then_apply_stamps_operator(client):
+    """PATCH dry_run probes an assignee change; the real (default) PATCH
+    behavior is unchanged and stamps a dashboard: operator."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    url = f"/api/plugins/kanban/tasks/{task_id}"
+
+    # Probe: nothing mutates.
+    resp = client.patch(url, json={"assignee": "builder", "dry_run": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True and body["task_id"] == task_id
+    probe = body["probe"]
+    assert probe["target_profile"] == "builder"
+    assert probe["task_exists"] is True
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee is None
+
+    # Real assign (default behavior unchanged) — event carries operator.
+    resp = client.patch(url, json={"assignee": "builder"})
+    assert resp.status_code == 200, resp.text
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).assignee == "builder"
+        assigned = [
+            e.payload for e in kb.list_events(conn, task_id)
+            if e.kind == "assigned"
+        ]
+    assert len(assigned) == 1
+    assert assigned[0]["operator"].startswith("dashboard:")
+    assert assigned[0]["assignee"] == "builder"
+
+
+def test_patch_dry_run_requires_pure_assignee_patch(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "card"})
+    task_id = r.json()["task"]["id"]
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"assignee": "builder", "status": "ready", "dry_run": True},
+    )
+    assert resp.status_code == 400
+    # And without an assignee there is nothing to probe.
+    resp = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"dry_run": True},
+    )
+    assert resp.status_code == 400

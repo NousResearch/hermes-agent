@@ -179,3 +179,53 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Operator attribution on CLI verbs (issue #82689)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_assign_claim_complete_stamp_operator(kanban_home):
+    """The mutating CLI verbs record a ``cli:<user>@<host>`` operator on
+    the assigned / claimed / completed event payloads (issue #82689)."""
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="audit me")
+
+    assert "Assigned" in kc.run_slash(f"assign {tid} bob")
+    assert "Claimed" in kc.run_slash(f"claim {tid}")
+    assert f"Completed {tid}" in kc.run_slash(f"complete {tid} --result done")
+
+    expected = kc._cli_operator()
+    assert expected.startswith("cli:")
+    assert "@" in expected
+
+    with kb.connect_closing() as conn:
+        payloads = {}
+        for e in kb.list_events(conn, tid):
+            if e.kind in {"assigned", "claimed", "completed"}:
+                payloads.setdefault(e.kind, []).append(e.payload)
+
+    assert len(payloads["assigned"]) == 1
+    assert payloads["assigned"][0]["operator"] == expected
+    assert payloads["assigned"][0]["assignee"] == "bob"
+    assert len(payloads["claimed"]) == 1
+    assert payloads["claimed"][0]["operator"] == expected
+    assert len(payloads["completed"]) == 1
+    assert payloads["completed"][0]["operator"] == expected
+
+
+def test_cli_reassign_stamps_operator(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="reassign me")
+
+    assert "Reassigned" in kc.run_slash(f"reassign {tid} carol")
+
+    with kb.connect_closing() as conn:
+        assigned = [
+            e.payload for e in kb.list_events(conn, tid)
+            if e.kind == "assigned"
+        ]
+    assert len(assigned) == 1
+    assert assigned[0]["operator"] == kc._cli_operator()
+    assert assigned[0]["assignee"] == "carol"

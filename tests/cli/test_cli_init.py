@@ -137,6 +137,19 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_explicit_steer_rejection_queues_behind_older_next_turn_work(self):
+        """A terminal-sealed turn must not lose a non-empty explicit /steer."""
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = SimpleNamespace(steer=lambda _text: False)
+        cli._pending_input.put("older queued work")
+
+        cli.process_command("/steer preserve this message")
+
+        assert cli._pending_input.get_nowait() == "older queued work"
+        assert cli._pending_input.get_nowait() == "preserve this message"
+        assert cli._pending_input.empty()
+
 
 
 

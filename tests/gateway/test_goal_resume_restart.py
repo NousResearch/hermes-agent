@@ -141,6 +141,15 @@ class _FakeAdapter:
         self._pending_messages = {}
 
 
+class _ProfileFakeAdapter(_FakeAdapter):
+    def __init__(self, physical_key):
+        super().__init__()
+        self.physical_key = physical_key
+
+    def session_key_for_source(self, _source):
+        return self.physical_key
+
+
 def _make_runner() -> tuple[GatewayRunner, _FakeAdapter]:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -149,6 +158,7 @@ def _make_runner() -> tuple[GatewayRunner, _FakeAdapter]:
     runner.session_store = _FakeSessionStore()
     adapter = _FakeAdapter()
     runner.adapters = {Platform.DISCORD: adapter}
+    runner._profile_adapters = {}
     runner._queued_events = {}
     return runner, adapter
 
@@ -200,3 +210,27 @@ class TestGatewayResumeRestartsWork:
 
         assert "No goal to resume" in response
         assert adapter._pending_messages == {}
+
+    @pytest.mark.asyncio
+    async def test_named_profile_resume_uses_own_adapter_and_physical_slot(
+        self, hermes_home
+    ):
+        runner, default_adapter = _make_runner()
+        runner.config.multiplex_profiles = True
+        profile_key = "agent:coder:discord:channel:goal-resume"
+        profile_adapter = _ProfileFakeAdapter(profile_key)
+        runner._profile_adapters = {
+            "coder": {Platform.DISCORD: profile_adapter},
+        }
+        event = _resume_event()
+        event.source.profile = "coder"
+        _exhaust_budget(_GW_SID)
+
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+        assert "resume" in response.lower() or "Goal" in response
+        assert default_adapter._pending_messages == {}
+        pending = profile_adapter._pending_messages.get(profile_key)
+        assert pending is not None
+        assert pending.source.profile == "coder"
+        assert pending.text.startswith("[Continuing toward your standing goal]")

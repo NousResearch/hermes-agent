@@ -886,6 +886,11 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+    # A steer is accepted only while one run_conversation generation is open.
+    # Terminal drains seal this token under the same lock as the pending slot,
+    # so callers can distinguish accepted in-turn work from next-turn queueing.
+    agent._steer_generation_counter = 0
+    agent._steer_acceptance_generation: Optional[int] = None
 
     # Active-turn redirect mechanism. A regular follow-up sent while the model
     # is generating is different from a hard /stop: preserve the valid turn

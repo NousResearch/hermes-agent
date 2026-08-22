@@ -23,6 +23,7 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
+    agent._steer_acceptance_generation = 1
     agent._pending_redirect = None
     agent._pending_redirect_lock = threading.Lock()
     agent._model_request_active = threading.Event()
@@ -60,6 +61,48 @@ class TestSteerDrain:
         agent = _bare_agent()
         agent.steer("hello")
         assert agent._drain_pending_steer() == "hello"
+        assert agent._pending_steer is None
+
+    def test_steer_wins_lock_before_terminal_seal_and_is_returned(self):
+        from agent.conversation_loop import _terminal_result_with_pending_steer
+
+        agent = _bare_agent()
+        steer_committed = threading.Event()
+        outcome = {}
+
+        def steer_first():
+            outcome["accepted"] = agent.steer("include the migration note")
+            steer_committed.set()
+
+        worker = threading.Thread(target=steer_first)
+        worker.start()
+        assert steer_committed.wait(timeout=1)
+        result = _terminal_result_with_pending_steer(agent, {})
+        worker.join(timeout=1)
+
+        assert outcome["accepted"] is True
+        assert result["pending_steer"] == "include the migration note"
+        assert agent._pending_steer is None
+
+    def test_terminal_seal_wins_lock_and_later_steer_is_rejected(self):
+        from agent.conversation_loop import _terminal_result_with_pending_steer
+
+        agent = _bare_agent()
+        terminal_sealed = threading.Event()
+        result_holder = {}
+
+        def seal_first():
+            result_holder.update(_terminal_result_with_pending_steer(agent, {}))
+            terminal_sealed.set()
+
+        worker = threading.Thread(target=seal_first)
+        worker.start()
+        assert terminal_sealed.wait(timeout=1)
+        accepted = agent.steer("run this as the next turn")
+        worker.join(timeout=1)
+
+        assert accepted is False
+        assert result_holder == {}
         assert agent._pending_steer is None
 
 

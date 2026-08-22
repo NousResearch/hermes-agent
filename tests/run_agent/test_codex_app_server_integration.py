@@ -86,6 +86,31 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_terminal_result_preserves_and_seals_late_steer(self):
+        """Codex's direct return must honor the ordinary terminal contract."""
+        agent = _make_codex_agent()
+
+        def fake_run_turn(*, user_input: str):
+            assert user_input == "hello"
+            assert agent.steer("include the migration note") is True
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-steer-1",
+                thread_id="thread-steer-1",
+            )
+
+        fake_codex_session = MagicMock()
+        fake_codex_session.run_turn.side_effect = fake_run_turn
+        setattr(agent, "_codex_session", fake_codex_session)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["pending_steer"] == "include the migration note"
+        assert agent._pending_steer is None
+        assert agent._seal_pending_steer() is None
+        assert agent.steer("too late for this turn") is False
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

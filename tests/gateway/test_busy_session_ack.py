@@ -295,6 +295,46 @@ class TestBusySessionAck:
         assert "Steered" not in content
 
     @pytest.mark.asyncio
+    async def test_explicit_steer_rejection_queues_behind_existing_fifo_head(self):
+        """A terminal-sealed agent rejects /steer; the command becomes next-turn work."""
+        runner, _sentinel = _make_runner()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="explicit-steer-boundary",
+            chat_type="dm",
+            user_id="user1",
+        )
+        state_key = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        older = MessageEvent(
+            text="older queued work",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="older",
+        )
+        adapter._pending_messages[state_key] = older
+        agent = MagicMock()
+        agent.steer.return_value = False
+        runner._running_agents[state_key] = agent
+        command = MessageEvent(
+            text="/steer run this next",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="steer",
+        )
+
+        response = await runner._busy_steer_command(command, state_key, source)
+
+        agent.steer.assert_called_once_with("run this next")
+        assert "queued for the next turn" in response.lower()
+        assert adapter._pending_messages[state_key] is older
+        assert [event.text for event in runner._queued_events[state_key]] == [
+            "run this next"
+        ]
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
         """If agent is still starting (sentinel), steer mode falls back to queue."""
         runner, sentinel = _make_runner()

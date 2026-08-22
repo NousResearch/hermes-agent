@@ -13,20 +13,30 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
+def _make_source(
+    platform: Platform = Platform.TELEGRAM,
+    *,
+    profile: str | None = None,
+) -> SessionSource:
     return SessionSource(
         platform=platform,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
         chat_type="dm",
+        profile=profile,
     )
 
 
-def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> MessageEvent:
+def _make_event(
+    text: str,
+    *,
+    platform: Platform = Platform.TELEGRAM,
+    profile: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=_make_source(platform),
+        source=_make_source(platform, profile=profile),
         message_id="m1",
     )
 
@@ -303,7 +313,11 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
 
 
 @pytest.mark.asyncio
-async def test_handle_message_stale_result_keeps_newer_generation_callback(monkeypatch):
+@pytest.mark.parametrize("newer_callback", [False, True])
+async def test_handle_message_stale_result_cleans_only_owned_physical_callback(
+    monkeypatch,
+    newer_callback,
+):
     import gateway.run as gateway_run
 
     class _Adapter:
@@ -312,6 +326,9 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
 
         async def send(self, *args, **kwargs):
             return None
+
+        def session_key_for_source(self, source):
+            return build_session_key(source)
 
         def pop_post_delivery_callback(self, session_key, *, generation=None):
             entry = self._post_delivery_callbacks.get(session_key)
@@ -327,8 +344,12 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
                 return None
             return self._post_delivery_callbacks.pop(session_key, None)
 
+    source = _make_source(profile="research")
+    session_key = build_session_key(source, profile="research")
+    adapter_key = build_session_key(source)
+    assert adapter_key != session_key
     session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
+        session_key=session_key,
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
@@ -336,15 +357,20 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
         chat_type="dm",
     )
     runner = _make_runner(session_entry)
+    runner.config.multiplex_profiles = True
     runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
-    session_key = session_entry.session_key
     adapter = _Adapter()
-    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._profile_adapters = {"research": {Platform.TELEGRAM: adapter}}
 
     async def _stale_result(**kwargs):
-        # Simulate a newer run claiming the callback slot before the stale run unwinds.
-        runner._session_run_generation[session_key] = 2
-        adapter._post_delivery_callbacks[session_key] = (2, lambda: None)
+        # Simulate a newer run claiming the physical callback slot before the
+        # stale run unwinds from its profile-qualified durable state slot.
+        newer_generation = runner._begin_session_run_generation(session_key)
+        assert newer_generation > kwargs["run_generation"]
+        adapter._post_delivery_callbacks[adapter_key] = (
+            newer_generation if newer_callback else kwargs["run_generation"],
+            lambda: None,
+        )
         return {
             "final_response": "late reply",
             "messages": [],
@@ -364,11 +390,14 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
         lambda *_args, **_kwargs: 100000,
     )
 
-    result = await runner._handle_message(_make_event("hello"))
+    result = await runner._handle_message(_make_event("hello", profile="research"))
 
     assert result is None
-    assert session_key in adapter._post_delivery_callbacks
-    assert adapter._post_delivery_callbacks[session_key][0] == 2
+    assert session_key not in adapter._post_delivery_callbacks
+    if newer_callback:
+        assert adapter._post_delivery_callbacks[adapter_key][0] == 2
+    else:
+        assert adapter_key not in adapter._post_delivery_callbacks
 
 
 @pytest.mark.asyncio

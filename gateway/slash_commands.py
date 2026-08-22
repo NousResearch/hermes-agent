@@ -589,9 +589,18 @@ class GatewaySlashCommandsMixin:
         agent = self._running_agents.get(session_key)
         is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
-        # Count pending /queue follow-ups (slot + overflow).
-        adapter = self.adapters.get(source.platform) if source else None
-        queue_depth = self._queue_depth(session_key, adapter=adapter)
+        # Count pending /queue follow-ups across physical slot + durable overflow.
+        adapter = self._adapter_for_source(source) if source else None
+        adapter_key = self._adapter_key_for_source(
+            adapter,
+            source,
+            fallback=session_key,
+        )
+        queue_depth = self._queue_depth(
+            session_key,
+            adapter=adapter,
+            adapter_key=adapter_key,
+        )
 
         def _clean_str(value: Any) -> str:
             return value.strip() if isinstance(value, str) and value.strip() else ""
@@ -2717,10 +2726,14 @@ class GatewaySlashCommandsMixin:
             if state is None:
                 return t("gateway.goal.no_goal_set")
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._adapter_for_source(event.source) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
-                    self._clear_goal_pending_continuations(_quick_key, adapter)
+                    self._clear_goal_pending_continuations(
+                        _quick_key,
+                        adapter,
+                        source=event.source,
+                    )
             except Exception as exc:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
@@ -2737,9 +2750,14 @@ class GatewaySlashCommandsMixin:
             # and pause/clear's stale-continuation cleanup recognizes it.
             prompt = mgr.next_continuation_prompt()
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._adapter_for_source(event.source) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if prompt and adapter and _quick_key:
+                    adapter_key = self._adapter_key_for_source(
+                        adapter,
+                        event.source,
+                        fallback=_quick_key,
+                    )
                     cont_event = MessageEvent(
                         text=prompt,
                         message_type=MessageType.TEXT,
@@ -2747,7 +2765,12 @@ class GatewaySlashCommandsMixin:
                         message_id=None,
                         channel_prompt=None,
                     )
-                    self._enqueue_fifo(_quick_key, cont_event, adapter)
+                    self._enqueue_fifo(
+                        _quick_key,
+                        cont_event,
+                        adapter,
+                        adapter_key=adapter_key,
+                    )
             except Exception as exc:
                 logger.debug("goal resume: continuation enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
@@ -2756,10 +2779,14 @@ class GatewaySlashCommandsMixin:
             had = mgr.has_goal()
             mgr.clear()
             try:
-                adapter = self.adapters.get(event.source.platform) if event.source else None
+                adapter = self._adapter_for_source(event.source) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
-                    self._clear_goal_pending_continuations(_quick_key, adapter)
+                    self._clear_goal_pending_continuations(
+                        _quick_key,
+                        adapter,
+                        source=event.source,
+                    )
             except Exception as exc:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
@@ -2857,10 +2884,15 @@ class GatewaySlashCommandsMixin:
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
-        adapter = self.adapters.get(event.source.platform) if event.source else None
+        adapter = self._adapter_for_source(event.source) if event.source else None
         _quick_key = self._session_key_for_source(event.source) if event.source else None
         if adapter and _quick_key:
             try:
+                adapter_key = self._adapter_key_for_source(
+                    adapter,
+                    event.source,
+                    fallback=_quick_key,
+                )
                 kickoff_event = MessageEvent(
                     text=state.goal,
                     message_type=MessageType.TEXT,
@@ -2868,7 +2900,12 @@ class GatewaySlashCommandsMixin:
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
                 )
-                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                self._enqueue_fifo(
+                    _quick_key,
+                    kickoff_event,
+                    adapter,
+                    adapter_key=adapter_key,
+                )
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 

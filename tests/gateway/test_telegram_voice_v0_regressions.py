@@ -185,6 +185,8 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     runner = _run_agent_runner(adapter)
     source = _source()
     session_key = "telegram:dm:12345"
+    adapter_key = adapter.session_key_for_source(source)
+    assert adapter_key != session_key
     event = MessageEvent(
         text="",
         message_type=MessageType.VOICE,
@@ -192,9 +194,9 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         media_urls=["/tmp/telegram-pending-voice.ogg"],
         media_types=["audio/ogg"],
     )
-    adapter._pending_messages[session_key] = event
-    adapter._active_sessions[session_key] = asyncio.Event()
-    adapter._active_sessions[session_key].set()
+    adapter._pending_messages[adapter_key] = event
+    adapter._active_sessions[adapter_key] = asyncio.Event()
+    adapter._active_sessions[adapter_key].set()
     _PendingVoiceAgent.messages = []
 
     with (
@@ -218,6 +220,8 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
+    assert adapter_key not in adapter._pending_messages
+    assert session_key not in adapter._pending_messages
 
 
 @pytest.mark.asyncio

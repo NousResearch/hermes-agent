@@ -10329,6 +10329,43 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert "interrupt_called" not in calls  # must NOT interrupt
 
 
+def test_session_steer_rejection_preserves_message_without_hard_interrupt():
+    """A terminal-sealed TUI steer becomes FIFO next-turn work, not a stop."""
+    calls = {}
+
+    class _Agent:
+        def steer(self, text):
+            calls["steer_text"] = text
+            return False
+
+        def interrupt(self, *args, **kwargs):
+            calls["interrupt_called"] = True
+
+    session = _session(agent=_Agent(), running=True)
+    server._enqueue_prompt(session, "older queued work", "older-transport")
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "preserve this message"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "queued",
+        "text": "preserve this message",
+    }
+    assert calls["steer_text"] == "preserve this message"
+    assert "interrupt_called" not in calls
+    assert session["queued_prompt"]["text"] == (
+        "older queued work\n\npreserve this message"
+    )
+
+
 def test_session_steer_rejects_empty_text():
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(steer=lambda t: True)

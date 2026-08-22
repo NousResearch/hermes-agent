@@ -121,6 +121,24 @@ class ProgressAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class ReviewingProgressAgent(ProgressAgent):
+    """Emits progress plus a background-review notice in one production turn."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.background_review_callback = kwargs.get("background_review_callback")
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        result = super().run_conversation(
+            message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+        )
+        if self.background_review_callback is not None:
+            self.background_review_callback("💾 Memory updated")
+        return result
+
+
 class FailingAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -262,7 +280,9 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
+    session_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
+    assert adapter_key == session_key
 
     pre_existing_fired = []
 
@@ -271,7 +291,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
 
     # Pre-register a callback with the same generation the run will use
     # (run_generation=None in this test path — matches the default slot).
-    adapter.register_post_delivery_callback(session_key, _preexisting_callback)
+    adapter.register_post_delivery_callback(adapter_key, _preexisting_callback)
 
     result = await runner._run_agent(
         message="hello",
@@ -283,7 +303,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     )
 
     assert result["final_response"] == "done"
-    cb = adapter.pop_post_delivery_callback(session_key)
+    cb = adapter.pop_post_delivery_callback(adapter_key)
     assert callable(cb)
     await _fire_post_delivery_cb(cb)
     for _ in range(20):
@@ -295,3 +315,79 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["research", "default"])
+async def test_profiled_production_delivery_consumes_adapter_owned_callbacks(
+    monkeypatch,
+    tmp_path,
+    profile,
+):
+    """The real adapter lifecycle consumes review + cleanup callbacks once."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    runner.config.multiplex_profiles = True
+    runner._profile_adapters = {}
+    if profile != "default":
+        runner._profile_adapters[profile] = {Platform.TELEGRAM: adapter}
+    gateway_run = _install_fakes(
+        monkeypatch,
+        ReviewingProgressAgent,
+        cleanup_on=True,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="profiled-chat",
+        chat_type="dm",
+        profile=profile,
+    )
+    event = gateway_run.MessageEvent(
+        text="hello",
+        message_type=gateway_run.MessageType.TEXT,
+        source=source,
+        message_id="profiled-message",
+    )
+    state_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
+    assert state_key == adapter_key
+    generation = runner._begin_session_run_generation(state_key)
+
+    async def _production_handler(inbound_event):
+        runner._bind_adapter_run_generation(
+            adapter,
+            inbound_event.source,
+            state_key,
+            generation,
+        )
+        result = await runner._run_agent(
+            message=inbound_event.text,
+            context_prompt="",
+            history=[],
+            source=inbound_event.source,
+            session_id=f"sess-{profile}",
+            session_key=state_key,
+            run_generation=generation,
+        )
+        return result["final_response"]
+
+    adapter.set_message_handler(_production_handler)
+    await adapter.handle_message(event)
+    task = adapter._session_tasks[adapter_key]
+    await asyncio.wait_for(task, timeout=5)
+    assert runner._is_session_run_current(state_key, generation)
+
+    for _ in range(50):
+        sent_text = [item["content"] for item in adapter.sent]
+        if "💾 Memory updated" in sent_text and adapter.deleted:
+            break
+        await asyncio.sleep(0.01)
+
+    sent_text = [item["content"] for item in adapter.sent]
+    assert "done" in sent_text
+    assert sent_text.count("💾 Memory updated") == 1
+    assert sent_text.index("done") < sent_text.index("💾 Memory updated")
+    assert adapter.deleted
+    assert adapter._post_delivery_callbacks == {}

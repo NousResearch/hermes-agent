@@ -3445,6 +3445,8 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+                if not preserve_redirect:
+                    self._steer_acceptance_generation = None
         return True
 
     def steer(self, text: str) -> bool:
@@ -3463,7 +3465,8 @@ class AIAgent:
             text: The user text to inject. Empty strings are ignored.
 
         Returns:
-            True if the steer was accepted, False if the text was empty.
+            True if the steer was accepted by the active turn, False if the
+            text was empty or that turn already sealed its terminal result.
         """
         if not text or not text.strip():
             return False
@@ -3473,15 +3476,47 @@ class AIAgent:
             # Test stubs that built AIAgent via object.__new__ skip __init__.
             # Fall back to direct attribute set; no concurrent callers expected
             # in those stubs.
+            if getattr(self, "_steer_acceptance_generation", 0) is None:
+                return False
             existing = getattr(self, "_pending_steer", None)
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
             return True
         with _lock:
+            if getattr(self, "_steer_acceptance_generation", 0) is None:
+                return False
             if self._pending_steer:
                 self._pending_steer = self._pending_steer + "\n" + cleaned
             else:
                 self._pending_steer = cleaned
         return True
+
+    def _begin_steer_acceptance(self) -> int:
+        """Open a new turn generation for thread-safe steer acceptance."""
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            generation = int(getattr(self, "_steer_generation_counter", 0)) + 1
+            self._steer_generation_counter = generation
+            self._steer_acceptance_generation = generation
+            return generation
+        with _lock:
+            generation = int(getattr(self, "_steer_generation_counter", 0)) + 1
+            self._steer_generation_counter = generation
+            self._steer_acceptance_generation = generation
+        return generation
+
+    def _seal_pending_steer(self) -> Optional[str]:
+        """Atomically close steer acceptance and drain this turn's pending text."""
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            text = getattr(self, "_pending_steer", None)
+            self._pending_steer = None
+            self._steer_acceptance_generation = None
+            return text
+        with _lock:
+            text = self._pending_steer
+            self._pending_steer = None
+            self._steer_acceptance_generation = None
+        return text
 
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task.

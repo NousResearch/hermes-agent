@@ -3487,7 +3487,16 @@ def _(rid, params: dict) -> dict:
             # settle (same class as redirect).
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+        status = "queued"
+    else:
+        # The active turn sealed steer acceptance before this RPC acquired the
+        # agent lock. Keep the user's text as next-turn work; do not route this
+        # normal terminal race through the hard-interrupt busy-submit fallback.
+        with session["history_lock"]:
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            session["last_active"] = time.time()
+        status = "queued"
+    return _ok(rid, {"status": status, "text": text})
 
 
 @method("session.redirect")

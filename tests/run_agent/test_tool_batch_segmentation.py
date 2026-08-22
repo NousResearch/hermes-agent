@@ -397,6 +397,10 @@ def agent():
             skip_memory=True,
         )
         a.client = MagicMock()
+        # These tests invoke the tool-dispatch seam directly instead of entering
+        # through run_conversation(), which normally opens the active turn's
+        # steer-acceptance generation before any tool batch can execute.
+        a._begin_steer_acceptance()
         return a
 
 

@@ -1006,6 +1006,7 @@ async def _run_with_agent(
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
     scope_id=None,
+    profile=None,
 ):
     if config_data:
         import yaml
@@ -1023,6 +1024,10 @@ async def _run_with_agent(
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
+    runner.config.multiplex_profiles = profile is not None
+    runner._profile_adapters = {}
+    if profile and profile != "default":
+        runner._profile_adapters[profile] = {platform: adapter}
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -1034,12 +1039,12 @@ async def _run_with_agent(
         thread_id=thread_id,
         user_id=user_id,
         scope_id=scope_id,
+        profile=profile,
     )
-    session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
-    if thread_id:
-        session_key = f"{session_key}:{thread_id}"
+    session_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
     if pending_text is not None:
-        adapter._pending_messages[session_key] = MessageEvent(
+        adapter._pending_messages[adapter_key] = MessageEvent(
             text=pending_text,
             message_type=MessageType.TEXT,
             source=source,
@@ -1393,6 +1398,50 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_named_profile_queued_delivery_pops_profiled_callback_once(
+    monkeypatch,
+    tmp_path,
+):
+    """The in-band first-response send uses the same slot as base delivery."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-profiled-queued-review",
+        pending_text="queued follow-up",
+        profile="research",
+    )
+
+    adapter_key = "agent:research:telegram:group:-1001:17585"
+    assert result["final_response"] == "done"
+    for _ in range(50):
+        if [item["content"] for item in adapter.sent].count(
+            "💾 Skill 'prospect-scanner' created."
+        ) == 1:
+            break
+        await asyncio.sleep(0.01)
+
+    sent_text = [item["content"] for item in adapter.sent]
+    assert sent_text.count("💾 Skill 'prospect-scanner' created.") == 1
+    assert adapter_key in adapter._post_delivery_callbacks
+
+    callback = adapter.pop_post_delivery_callback(adapter_key)
+    assert callable(callback)
+    callback()
+    for _ in range(50):
+        if [item["content"] for item in adapter.sent].count(
+            "💾 Skill 'prospect-scanner' created."
+        ) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert [item["content"] for item in adapter.sent].count(
+        "💾 Skill 'prospect-scanner' created."
+    ) == 2
+    assert adapter._post_delivery_callbacks == {}
 
 
 @pytest.mark.asyncio

@@ -4271,6 +4271,41 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_truncated_tool_call_exhaustion_returns_mid_turn_steer(self, agent):
+        """A steer received while truncated tool calls retry must survive the
+        terminal return, just like a text-only output truncation."""
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        calls = 0
+
+        def _always_truncated(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent.steer("use the small report template")
+            return _mock_response(
+                content="", finish_reason="length", tool_calls=[bad_tc],
+            )
+
+        agent.client.chat.completions.create.side_effect = _always_truncated
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert agent.client.chat.completions.create.call_count == 5
+        assert result["completed"] is False
+        assert result["pending_steer"] == "use the small report template"
+        mock_handle_function_call.assert_not_called()
+
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
         (up to 3 times). If a retry succeeds (valid JSON args), tool execution
@@ -4803,6 +4838,51 @@ class TestRunConversation:
         # context_length was NOT mutated by an output-cap error.
         assert agent.context_compressor.context_length == 200_000
 
+    def test_output_cap_lock_defer_returns_mid_turn_steer(self, agent):
+        """A lock-contended output-cap compression keeps a late steer."""
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=True)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+
+        class _OutputCapError(Exception):
+            status_code = 400
+            code = 400
+
+        def _reject_with_steer(*_args, **_kwargs):
+            agent.steer("wait for compression, then keep the concise plan")
+            raise _OutputCapError(error_msg)
+
+        agent.client.chat.completions.create.side_effect = _reject_with_steer
+
+        def _lock_contended(messages, system_message, **_kwargs):
+            agent._compression_skipped_due_to_lock = "pid=4242:tid=1"
+            return messages, system_message
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", side_effect=_lock_contended),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["compression_deferred"] is True
+        assert result["pending_steer"] == (
+            "wait for compression, then keep the concise plan"
+        )
+
     def test_output_cap_retry_compression_no_progress_terminates_bounded(self, agent):
         """Regression: when the compressor cannot reduce the request (zero
         progress AND no images to strip), the output-cap retry must terminate
@@ -4964,6 +5044,36 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
         assert result.get("final_response") == result["error"]
+
+    def test_invalid_response_retry_exhaustion_returns_mid_turn_steer(self, agent):
+        """Generic provider retry exhaustion has the same leftover-steer contract."""
+        self._setup_agent(agent)
+        bad_resp = SimpleNamespace(choices=[], model="test/model", usage=None)
+        calls = 0
+
+        def _always_invalid(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent.steer("switch to the concise fallback plan")
+            return bad_resp
+
+        agent.client.chat.completions.create.side_effect = _always_invalid
+        from agent import conversation_loop as _conv_loop
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert calls == agent._api_max_retries
+        assert result["completed"] is False
+        assert result["pending_steer"] == "switch to the concise fallback plan"
 
     def test_invalid_response_retry_completes_one_logical_call(self, agent):
         self._setup_agent(agent)

@@ -86,6 +86,21 @@ class TestContinuationRepetitionGuard:
         # Exactly one API call — no continuation was attempted.
         assert loop_agent.client.chat.completions.create.call_count == 1
 
+    def test_repetition_abort_preserves_and_seals_late_steer(self, loop_agent):
+        echo = _INCIDENT_ECHO * 2000
+
+        def respond_with_late_steer(*_args, **_kwargs):
+            assert loop_agent.steer("include the migration note") is True
+            return _stub(echo)
+
+        loop_agent.client.chat.completions.create.side_effect = respond_with_late_steer
+
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["pending_steer"] == "include the migration note"
+        assert loop_agent._pending_steer is None
+        assert loop_agent.steer("too late for this turn") is False
+
     def test_legit_truncation_still_continues(self, loop_agent):
         # Ordinary short truncated fragments still get continuation retries.
         loop_agent.client.chat.completions.create.side_effect = [

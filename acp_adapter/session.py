@@ -155,6 +155,34 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+def _refresh_agent_tool_surface(
+    agent: Any,
+    *,
+    enabled_toolsets: List[str] | None,
+    disabled_toolsets: List[str] | None,
+) -> None:
+    """Rebuild agent tool metadata after inheriting session-local toolsets."""
+    if not enabled_toolsets:
+        return
+
+    from model_tools import get_tool_definitions
+
+    tools = get_tool_definitions(
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+        quiet_mode=True,
+    )
+    agent.tools = tools
+    agent.valid_tool_names = {
+        tool["function"]["name"]
+        for tool in tools or []
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    }
+    invalidate = getattr(agent, "_invalidate_system_prompt", None)
+    if callable(invalidate):
+        invalidate()
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -260,11 +288,31 @@ class SessionManager:
             return None
 
         new_id = str(uuid.uuid4())
+        requested_provider = getattr(original.agent, "provider", None)
+        base_url = getattr(original.agent, "base_url", None)
+        api_mode = getattr(original.agent, "api_mode", None)
         agent = self._make_agent(
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            requested_provider=requested_provider,
+            base_url=base_url,
+            api_mode=api_mode,
         )
+        enabled_toolsets = copy.deepcopy(getattr(original.agent, "enabled_toolsets", None))
+        disabled_toolsets = copy.deepcopy(getattr(original.agent, "disabled_toolsets", None))
+        if enabled_toolsets is not None:
+            agent.enabled_toolsets = enabled_toolsets
+        if disabled_toolsets is not None:
+            agent.disabled_toolsets = disabled_toolsets
+        try:
+            _refresh_agent_tool_surface(
+                agent,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
+        except Exception:
+            logger.debug("Failed to refresh ACP fork tool surface", exc_info=True)
         state = SessionState(
             session_id=new_id,
             agent=agent,

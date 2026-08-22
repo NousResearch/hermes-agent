@@ -123,6 +123,61 @@ class TestResolveProviderClientNamedCustom:
         # no-key-required should be used
 
 
+class TestNamedCustomProviderWithBaseUrl:
+    """A named custom provider paired with an explicit base_url must keep
+    its provider identity (not collapse to anonymous 'custom'), so the
+    named-custom arm can resolve the entry's key_env / api_mode.  Regression
+    for #76602: auxiliary vision with provider + base_url was downgraded to
+    'custom' and the request went out with an empty key → 401."""
+
+    def test_task_resolution_keeps_named_custom_identity(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://relay.example.com/v1",
+                    "key_env": "MYRELAY_API_KEY",
+                },
+            },
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+        # Simulate the second resolution pass inside resolve_vision_provider_client:
+        # explicit provider + base_url args, api_key left to the caller (None).
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            "vision", "myrelay", "gpt-4o-mini",
+            "https://relay.example.com/v1", None,
+        )
+        # Provider identity must be preserved — NOT collapsed to "custom".
+        assert provider == "myrelay"
+        assert model == "gpt-4o-mini"
+        assert base_url == "https://relay.example.com/v1"
+        assert api_key is None
+
+    def test_client_resolves_key_from_entry_key_env(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://relay.example.com/v1",
+                    "key_env": "MYRELAY_API_KEY",
+                },
+            },
+        })
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-relay-secret")
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client(
+            "myrelay",
+            model="gpt-4o-mini",
+            explicit_base_url="https://relay.example.com/v1",
+            explicit_api_key=None,
+        )
+        assert client is not None
+        assert "relay.example.com" in str(client.base_url)
+        assert client.api_key == "sk-relay-secret"
+
+
 
 class TestResolveProviderClientModelNormalization:
     """Direct-provider auxiliary routing should normalize models like main runtime."""

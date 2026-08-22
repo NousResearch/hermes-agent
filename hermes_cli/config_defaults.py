@@ -731,6 +731,9 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
+        "preflight_enabled": True,  # allow context engines to request
+                                      # sub-threshold maintenance; default on
+                                      # preserves the existing plugin contract
         "progress_notices": False,    # opt-in (#52995): when True, routine compression
                                       # progress statuses (compacting/preflight/pre-API/
                                       # idle/retry) are delivered to chat gateway

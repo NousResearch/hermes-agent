@@ -536,6 +536,11 @@ compression:
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
 
+  # Allow context-engine plugins to request maintenance below the normal
+  # compression threshold (default: true). Set false to skip that engine hook
+  # while keeping threshold-triggered, manual, and idle compression available.
+  preflight_enabled: true
+
   # Opt-in compression progress notices on chat platforms (default: false).
   # By design, routine automatic compression is SILENT on human-facing chat
   # gateways (Telegram, Discord, Slack, ...) — it happens in the background

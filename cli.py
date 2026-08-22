@@ -470,6 +470,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
+            "preflight_enabled": True,  # Allow engine-requested sub-threshold maintenance
             "threshold": 0.50,    # Compress at 50% of model's context limit
             "min_tail_user_messages": 1,  # Real user messages guaranteed in the tail (1 = existing single anchor)
         },

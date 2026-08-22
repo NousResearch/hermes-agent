@@ -1102,11 +1102,19 @@ def build_turn_context(
             _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
             if callable(_clear_warn):
                 _clear_warn()
-            # Engine maintenance only when NO skip-branch fired: a failure
+            # Engine maintenance only when enabled and NO skip-branch fired:
             # cooldown, deferred estimate, or codex-native route must keep
             # the engine hook un-consulted (#20316 contract — the cooldown
             # exists precisely because compression recently failed).
-            if _compression_cooldown or _preflight_deferred or _codex_native_auto:
+            _engine_preflight_enabled = getattr(
+                agent, "compression_preflight_enabled", True
+            )
+            if (
+                not _engine_preflight_enabled
+                or _compression_cooldown
+                or _preflight_deferred
+                or _codex_native_auto
+            ):
                 _engine_preflight = None
             else:
                 _engine_preflight = getattr(

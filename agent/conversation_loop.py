@@ -7531,6 +7531,52 @@ def run_conversation(
                             # this turn's fresh, not-yet-persisted rows into history_ids
                             # and skip writing them.
                             messages = _pruned_msgs
+                            # The committed prune may have replaced earlier
+                            # skill_view/read_file bodies with compact markers.
+                            # Invalidate retrieval dedup caches so an explicit
+                            # post-prune reload returns full content instead of
+                            # an unchanged-content stub pointing at text that is
+                            # no longer present in the active conversation.
+                            try:
+                                from tools.skills_tool import reset_skill_view_dedup
+                                reset_skill_view_dedup(effective_task_id)
+                            except Exception as exc:
+                                _warned_resets = getattr(
+                                    agent, "_proactive_prune_reset_warnings", None
+                                )
+                                if _warned_resets is None:
+                                    _warned_resets = set()
+                                    agent._proactive_prune_reset_warnings = _warned_resets
+                                _warning_key = ("skill_view", effective_task_id)
+                                if _warning_key not in _warned_resets:
+                                    _warned_resets.add(_warning_key)
+                                    logger.warning(
+                                        "failed to reset skill_view dedup after proactive "
+                                        "prune (task=%s): %s",
+                                        effective_task_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
+                            try:
+                                from tools.file_tools import reset_file_dedup
+                                reset_file_dedup(effective_task_id)
+                            except Exception as exc:
+                                _warned_resets = getattr(
+                                    agent, "_proactive_prune_reset_warnings", None
+                                )
+                                if _warned_resets is None:
+                                    _warned_resets = set()
+                                    agent._proactive_prune_reset_warnings = _warned_resets
+                                _warning_key = ("read_file", effective_task_id)
+                                if _warning_key not in _warned_resets:
+                                    _warned_resets.add(_warning_key)
+                                    logger.warning(
+                                        "failed to reset read_file dedup after proactive "
+                                        "prune (task=%s): %s",
+                                        effective_task_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

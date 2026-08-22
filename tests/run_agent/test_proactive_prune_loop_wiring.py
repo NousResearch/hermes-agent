@@ -18,6 +18,7 @@ These tests drive ``run_conversation()`` through real tool iterations and pin:
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -116,7 +117,7 @@ def agent():
     return a
 
 
-def _run_tool_loop(agent, n_tool_iterations: int):
+def _run_tool_loop(agent, n_tool_iterations: int, task_id: str | None = None):
     responses = [_tool_response(i) for i in range(n_tool_iterations)]
     responses.append(_stop_response())
     agent.client.chat.completions.create.side_effect = responses
@@ -130,7 +131,7 @@ def _run_tool_loop(agent, n_tool_iterations: int):
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
-        result = agent.run_conversation("do a lot of tool work")
+        result = agent.run_conversation("do a lot of tool work", task_id=task_id)
 
     return result
 
@@ -188,6 +189,116 @@ class TestProactivePruneLoopWiring:
         tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
         assert tool_rows, "expected tool rows in the final transcript"
         assert all(m["content"] == marker for m in tool_rows)
+
+    def test_committed_prune_resets_retrieval_dedup_caches(self, agent):
+        """A committed prune can remove prior skill/file bodies from context.
+
+        Their retrieval caches must be invalidated so the next skill_view or
+        read_file returns full content rather than an unchanged-content stub
+        pointing at text the prune removed.
+        """
+        committed = False
+
+        def _prune(messages, current_tokens=None):
+            nonlocal committed
+            if committed:
+                return messages, 0
+            committed = True
+            return [dict(m) for m in messages], 1
+
+        agent.context_compressor.prune_tool_results_only = _prune
+        with (
+            patch("tools.skills_tool.reset_skill_view_dedup") as reset_skill,
+            patch("tools.file_tools.reset_file_dedup") as reset_file,
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=2)
+
+        assert result["completed"] is True
+        reset_skill.assert_called_once_with(agent._current_task_id)
+        reset_file.assert_called_once_with(agent._current_task_id)
+
+    def test_failed_dedup_reset_warns_and_does_not_stop_prune_loop(self, agent, caplog):
+        def _prune(messages, current_tokens=None):
+            return [dict(m) for m in messages], 1
+
+        agent.context_compressor.prune_tool_results_only = _prune
+        with (
+            patch(
+                "tools.skills_tool.reset_skill_view_dedup",
+                side_effect=RuntimeError("reset unavailable"),
+            ),
+            patch("tools.file_tools.reset_file_dedup") as reset_file,
+            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=3)
+
+        assert result["completed"] is True
+        assert reset_file.call_count == 3
+        warnings = [
+            record
+            for record in caplog.records
+            if "failed to reset skill_view dedup after proactive prune"
+            in record.message
+        ]
+        assert len(warnings) == 1
+
+    def test_committed_prune_resets_only_effective_task_caches(self, agent):
+        """Characterize task isolation at the proactive-prune call boundary."""
+        from tools import file_tools, skills_tool
+
+        committed = False
+        effective_task_id = "active-prune-task"
+        unrelated_task_id = "unrelated-task"
+        active_file_cache = {
+            "dedup": {"active-key": "active-value"},
+            "dedup_hits": {"active-key": 2},
+        }
+        unrelated_file_cache = {
+            "dedup": {"other-key": "other-value"},
+            "dedup_hits": {"other-key": 3},
+        }
+        unrelated_skill_cache = {("other-skill", ""): (1, 2, "digest")}
+
+        def _prune(messages, current_tokens=None):
+            nonlocal committed
+            if committed:
+                return messages, 0
+            committed = True
+            return [dict(m) for m in messages], 1
+
+        agent.context_compressor.prune_tool_results_only = _prune
+        with (
+            patch.dict(
+                file_tools._read_tracker,
+                {
+                    effective_task_id: active_file_cache,
+                    unrelated_task_id: unrelated_file_cache,
+                },
+                clear=True,
+            ),
+            patch.dict(
+                skills_tool._skill_view_tracker,
+                {
+                    effective_task_id: {("active-skill", ""): (1, 2, "digest")},
+                    unrelated_task_id: unrelated_skill_cache,
+                },
+                clear=True,
+            ),
+        ):
+            result = _run_tool_loop(
+                agent, n_tool_iterations=2, task_id=effective_task_id
+            )
+
+            assert result["completed"] is True
+            assert effective_task_id not in skills_tool._skill_view_tracker
+            assert skills_tool._skill_view_tracker[unrelated_task_id] is unrelated_skill_cache
+            assert active_file_cache["dedup"] == {}
+            assert active_file_cache["dedup_hits"] == {}
+            assert file_tools._read_tracker[unrelated_task_id] is unrelated_file_cache
+            assert unrelated_file_cache == {
+                "dedup": {"other-key": "other-value"},
+                "dedup_hits": {"other-key": 3},
+            }
 
     def test_noop_input_object_commits_nothing(self, agent):
         """Engine returns the INPUT object with a (bogus) non-zero count —

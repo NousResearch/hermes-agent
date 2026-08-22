@@ -2202,6 +2202,53 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     return issues
 
 
+def _emit_startup_warning(lines: List[str]) -> None:
+    """Emit an ANSI-colored startup warning without letting the TUI garble it.
+
+    These warnings fire from two very different places.  The gateway prints
+    them at module-import time with nothing else attached to the terminal, so
+    a plain ``sys.stderr.write`` is exactly right.  The interactive CLI reaches
+    the same code *while a prompt_toolkit ``Application`` is running* — the
+    gateway module is imported lazily during ``_init_agent`` — and there
+    ``patch_stdout``'s ``StdoutProxy`` owns stderr.  Every proxied write lands
+    in ``Vt100_Output.write()``, whose body is literally
+    ``data.replace("\\x1b", "?")``, so the escapes surface as garbled
+    ``?[33m⚠ …?[0m`` text instead of color (#87919; same class as #2262,
+    which #2448 fixed for the status printouts but not for these two).
+
+    Note the ``isatty()`` trap: ``StdoutProxy.isatty()`` delegates to the real
+    terminal, so it answers True inside the TUI.  Gating the escapes on
+    ``isatty`` / ``NO_COLOR`` therefore leaves this case garbled exactly as
+    before — the text has to reach prompt_toolkit's renderer, not merely be
+    withheld from a dumb pipe.
+
+    When the TUI is live, hand the text to ``cli._cprint`` instead: it renders
+    through ``print_formatted_text(ANSI(...))``, which parses the escapes into
+    real style, and it records the line in the resize-replay history so the
+    warning survives a terminal resize like every other CLI line.
+
+    ``cli`` is read out of ``sys.modules`` rather than imported.  A running
+    Application implies ``cli`` is already loaded, and this keeps a headless
+    gateway from ever pulling the ~1MB CLI module in as an import side effect.
+    Any failure falls through to the plain path — a startup warning must never
+    be the thing that breaks startup.
+    """
+    body = "\n".join(lines)
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+
+        if get_app_or_none() is not None:
+            cprint = getattr(sys.modules.get("cli"), "_cprint", None)
+            if cprint is not None:
+                # _cprint appends the line break; the extra "\n" preserves the
+                # blank spacer line the plain path writes below.
+                cprint(body + "\n")
+                return
+    except Exception:
+        pass
+    sys.stderr.write(body + "\n\n")
+
+
 def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     """Print config structure warnings to stderr at startup.
 
@@ -2221,7 +2268,7 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
         marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
         lines.append(f"  {marker} {ci.message}")
     lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
-    sys.stderr.write("\n".join(lines) + "\n\n")
+    _emit_startup_warning(lines)
 
 
 def warn_deprecated_cwd_env_vars() -> None:
@@ -2256,14 +2303,17 @@ def warn_deprecated_cwd_env_vars() -> None:
 
         hint_path = display_hermes_home()
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
-        lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m"
-        )
+        # The YAML hint is meant to be copy-pasted, so it has to be laid out as
+        # real lines.  Emitting it as one string containing a literal "\n"
+        # escape printed the two characters backslash-n and produced a snippet
+        # that is invalid YAML the moment anyone pastes it.
+        lines.append("  \033[2mMove to config.yaml instead:\033[0m")
+        lines.append("    \033[2mterminal:\033[0m")
+        lines.append("      \033[2mcwd: /your/project/path\033[0m")
         lines.append(
             f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
         )
-        sys.stderr.write("\n".join(lines) + "\n\n")
+        _emit_startup_warning(lines)
 
 
 def _persist_migration(config: Dict[str, Any]) -> None:

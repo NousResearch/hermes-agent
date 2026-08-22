@@ -258,6 +258,8 @@ def _run_guard(detect_side_effect, orphan_return):
 
     with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_abort_if_update_index_locked"
     ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(

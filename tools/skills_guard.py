@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -97,6 +97,17 @@ class ScanResult:
 # ---------------------------------------------------------------------------
 # Threat patterns — (regex, pattern_id, severity, category, description)
 # ---------------------------------------------------------------------------
+
+# Action verbs that signal file-modification intent. Used by the agent-config
+# persistence patterns: a verb within the same line as (and shortly before) an
+# agent config filename is scored as modification; a bare mention is not.
+MODIFY_VERB_RE = (
+    r'(?:\bwrit(?:e|es|ing)\b|\bwritten\b|\bedit(?:s|ed|ing)?\b'
+    r'|\bmodif(?:y|ies|ied|ying|ication)s?\b|\bupdat(?:e|es|ed|ing)\b'
+    r'|\bappend(?:s|ed|ing)?\b|\bprepend(?:s|ed|ing)?\b'
+    r'|\binject(?:s|ed|ing)?\b|\boverwrit(?:e|es|ing)\b|\boverwritten\b'
+    r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b)'
+)
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -459,15 +470,47 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
+    # Mere mentions of agent config files are NOT threats by themselves —
+    # legitimate meta-skills discuss them constantly (authoring guides,
+    # setup docs, cross-references to other skills). Flagging any mention
+    # as critical produced permanent false-positive blocks for popular
+    # community skills (#92021). Two tiers instead:
+    #   * Mechanical persistence (shell redirection, sed -i targeting the
+    #     file) is critical — an unambiguous write path.
+    #   * Prose modification intent is scored only in IMPERATIVE POSITION
+    #     (start of line / bullet item): regexes cannot reliably separate
+    #     "Edit AGENTS.md to inject instructions" from descriptive prose
+    #     like "a guide about writing AGENTS.md", but an imperative verb
+    #     aimed at the file is the shape real instructions take. Scored
+    #     high → caution verdict (user confirmation) rather than an
+    #     irreversible community block.
+    #   * Bare references are informational (low) for auditability.
+    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b',
+     "agent_config_mod", "high", "persistence",
+     "modification language aimed at agent config files (verify intent)"),
+    (r'(?:>>|>)\s*[~\w./-]*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b'
+     r'|\bsed\b[^\n]*\s-i\b[^\n]*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b',
+     "agent_config_mod_shell", "critical", "persistence",
+     "shell redirection or sed -i targeting agent config files (persistence mechanism)"),
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
-     "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
+     "agent_config_ref", "low", "persistence",
+     "references agent config files (informational; only modification intent is scored)"),
+    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b',
+     "hermes_config_mod", "high", "persistence",
+     "modification language aimed at Hermes configuration files (verify intent)"),
+    (r'(?:>>|>)\s*[~\w./-]*\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b'
+     r'|\bsed\b[^\n]*\s-i\b[^\n]*\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b',
+     "hermes_config_mod_shell", "critical", "persistence",
+     "shell redirection or sed -i targeting Hermes configuration files"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
-     "hermes_config_mod", "critical", "persistence",
-     "references Hermes configuration files directly"),
+     "hermes_config_ref", "low", "persistence",
+     "references Hermes configuration files (informational; only modification intent is scored)"),
+    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?\.(?:claude/settings|codex/config)',
+     "other_agent_config_mod", "high", "persistence",
+     "modifies other agents' configuration files"),
     (r'\.claude/settings|\.codex/config',
-     "other_agent_config", "high", "persistence",
-     "references other agent configuration files"),
+     "other_agent_config_ref", "low", "persistence",
+     "references other agent configuration files (informational; only modification intent is scored)"),
 
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',

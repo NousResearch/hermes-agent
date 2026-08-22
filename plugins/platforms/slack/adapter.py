@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -990,6 +991,13 @@ class SlackAdapter(BasePlatformAdapter):
         # be workspace-scoped markers (team_id, ts) in multi-workspace mode.
         self._approval_resolved: Dict[Any, bool] = {}
         self._APPROVAL_RESOLVED_MAX = 1000
+        # Server-side approval token state: opaque approval_id → (session_key,
+        # request_id). Block Kit button values carry only the token, never the
+        # session key; the request id binds the token to the exact queued
+        # request so a stale button cannot advance a different one.
+        self._approval_state: Dict[str, tuple] = {}
+        # Same server-side indirection for slash-command confirmations.
+        self._slash_confirm_state: Dict[str, str] = {}
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
@@ -6874,6 +6882,7 @@ class SlackAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        request_id: Optional[str] = None,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
@@ -6903,13 +6912,22 @@ class SlackAdapter(BasePlatformAdapter):
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
+            # Mint an unguessable approval token; the button value carries
+            # only this id. The real (session_key, entry id) pair is resolved
+            # server-side on click, binding the token to the exact queued request.
+            token = secrets.token_urlsafe(16)
+            self._approval_state[token] = (session_key, request_id or "")
+            self._trim_oldest_dict_entries(
+                self._approval_state, self._APPROVAL_RESOLVED_MAX
+            )
+
             actions = [
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Once"},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
-                    "value": session_key,
+                    "value": token,
                 },
             ]
             if not smart_denied and allow_session:
@@ -6917,21 +6935,21 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
                     "action_id": "hermes_approve_session",
-                    "value": session_key,
+                    "value": token,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Always Allow"},
                         "action_id": "hermes_approve_always",
-                        "value": session_key,
+                        "value": token,
                     })
             actions.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Deny"},
                 "style": "danger",
                 "action_id": "hermes_deny",
-                "value": session_key,
+                "value": token,
             })
             blocks = [
                 {
@@ -6994,9 +7012,13 @@ class SlackAdapter(BasePlatformAdapter):
             _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
-            # Encode session_key and confirm_id into the button value so the
-            # callback handler can resolve without extra bookkeeping.
-            value = f"{session_key}|{confirm_id}"
+            # Store the session_key server-side and expose only the confirm_id
+            # in the Block Kit button value, mirroring the approval token pattern.
+            self._slash_confirm_state[confirm_id] = session_key
+            self._trim_oldest_dict_entries(
+                self._slash_confirm_state, self._APPROVAL_RESOLVED_MAX
+            )
+            value = str(confirm_id)
 
             blocks = [
                 {
@@ -7257,11 +7279,14 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Parse session_key|confirm_id back out
-        if "|" not in value:
-            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+        # Resolve the confirm_id to the real session_key server-side. A
+        # missing/stale confirm_id means the prompt was already resolved or
+        # is forged; fail closed.
+        confirm_id = str(value)
+        session_key = self._slash_confirm_state.pop(confirm_id, "")
+        if not session_key:
+            logger.warning("[Slack] Slash-confirm %s already resolved or unknown", confirm_id)
             return
-        session_key, confirm_id = value.split("|", 1)
 
         choice_map = {
             "hermes_confirm_once": "once",
@@ -7370,7 +7395,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        token = action.get("value", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -7423,13 +7448,29 @@ class SlackAdapter(BasePlatformAdapter):
         if self._approval_resolved.pop(approval_key, True):
             return
 
+        # Resolve the opaque token to the real session_key server-side. A
+        # missing/stale token means the approval was already resolved or is
+        # forged; fail closed.
+        if not isinstance(token, str) or not token:
+            logger.warning("[Slack] Invalid approval token: %r", token)
+            return
+        stored = self._approval_state.pop(token, None)
+        if not stored:
+            logger.warning("[Slack] Approval token %s already resolved or unknown", token)
+            return
+        session_key, request_id = stored
+
         # Resolve the approval FIRST — this unblocks the agent thread. Render
         # after, so a click that lands past the approval timeout (count == 0)
         # shows "expired" instead of falsely claiming the command was approved.
+        # The token is bound to the exact queued request, so a stale button can
+        # never resolve a different request at the head of the session queue.
         try:
             from tools.approval import resolve_gateway_approval
 
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(
+                session_key, choice, request_id=request_id or None
+            )
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count,

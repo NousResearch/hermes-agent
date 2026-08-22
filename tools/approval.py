@@ -4230,6 +4230,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         # Leader resolved "once" — fall through to a fresh prompt below.
 
     entry = _ApprovalEntry(approval_data)
+    # Expose the exact queue entry to the notify callback so button-based
+    # adapters can bind their token to this request via resolve_gateway_approval(request_id=…).
+    approval_data["request_id"] = entry.data["request_id"]
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 

@@ -117,9 +117,23 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
+        # Each button carries an unguessable token, not the session key.
+        token = elements[0]["value"]
+        assert token != "agent:main:slack:group:C1:1111"
+        assert not token.isdigit()
+        assert adapter._approval_state[token] == ("agent:main:slack:group:C1:1111", "")
         for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+            assert e["value"] == token
+
+        second = await adapter.send_exec_approval(
+            chat_id="C1",
+            command="echo other",
+            session_key="agent:main:slack:group:C1:1111",
+        )
+        assert second.success is True
+        other = mock_client.chat_postMessage.call_args_list[1].kwargs["blocks"][1]["elements"][0]["value"]
+        assert other != token
+        assert not other.isdigit()
 
     @pytest.mark.asyncio
     async def test_smart_deny_owner_override_hides_persistent_buttons(self):
@@ -154,6 +168,7 @@ class TestSlackApprovalAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["1.2"] = False
+        adapter._approval_state["tok-1"] = ("session-key", "")
 
         # Simulate Slack re-escaping: original was ~2990 chars, but & → &amp;
         # etc. inflates it past 3000.
@@ -167,7 +182,7 @@ class TestSlackApprovalAction:
             "channel": {"id": "C1"},
             "user": {"name": "alice", "id": "U_ALICE"},
         }
-        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        action = {"action_id": "hermes_approve_once", "value": "tok-1"}
 
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
@@ -196,6 +211,30 @@ class TestSlackApprovalAction:
         }
         action = {
             "action_id": "hermes_approve_once",
+            "value": "1",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forged_session_key_button_fails_closed(self, monkeypatch):
+        """A button value carrying the raw session_key must not resolve (#80283)."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1234.5678"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
             "value": "agent:main:slack:group:C1:1111",
         }
 
@@ -204,6 +243,57 @@ class TestSlackApprovalAction:
 
         ack.assert_called_once()
         mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_click_resolves_bound_request_not_queue_head(self):
+        """A token bound to a specific request_id resolves that exact request
+        (not the session's oldest FIFO entry) via resolve_gateway_approval."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1234.5678"] = False
+        adapter._approval_state["tok-abc"] = ("session-key", "req-abc")
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "tok-abc"}
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        mock_resolve.assert_called_once_with(
+            "session-key", "once", request_id="req-abc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_token_reports_expired_when_request_gone(self):
+        """A token whose request already left the queue (timed out/resolved)
+        must not resolve anything and must render as expired."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1234.5678"] = False
+        adapter._approval_state["tok-abc"] = ("session-key", "req-abc")
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "tok-abc"}
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=0):
+            await adapter._handle_approval_action(ack, body, action)
+
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "expired" in update_kwargs["text"].lower()
 
 
 class TestSlackInteractiveAuth:
@@ -237,6 +327,7 @@ class TestSlackSlashConfirmAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["2222.3333"] = False
+        adapter._slash_confirm_state["confirm-1"] = "agent:main:slack:group:C1:1111"
 
         # Simulate Slack re-escaping inflating text past 3000 chars.
         inflated_text = "b" * 2990 + "&lt;" * 10  # 2990 + 40 = 3030 chars
@@ -251,7 +342,7 @@ class TestSlackSlashConfirmAction:
         }
         action = {
             "action_id": "hermes_confirm_once",
-            "value": "agent:main:slack:group:C1:1111|confirm-1",
+            "value": "confirm-1",
         }
 
         mock_client = adapter._team_clients["T1"]

@@ -7866,6 +7866,22 @@ def run_conversation(
                             # loop and end the turn without ever calling the
                             # fallback. Clear the preflight block so the
                             # re-run isn't skipped.
+                            #
+                            # Roll back BOTH outer gates before the continue:
+                            # each empty response consumed an outer logical
+                            # iteration (api_call_count and one
+                            # iteration_budget slot), but the fallback has not
+                            # run yet. Without the rollback, at the
+                            # max_iterations boundary the while condition
+                            # (api_call_count < max_iterations AND
+                            # iteration_budget.remaining > 0) goes false and
+                            # the loop exits before the just-activated
+                            # fallback is ever called — the #77305 starvation,
+                            # still live on the outer empty-response path.
+                            # Mirrors the shared retry-loop
+                            # restart_with_rebuilt_messages transaction.
+                            api_call_count -= 1
+                            agent.iteration_budget.refund()
                             _preflight_compression_blocked = False
                             continue
 

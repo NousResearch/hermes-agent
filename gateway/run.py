@@ -22300,8 +22300,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         actual_paths: List[str] = []
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from gateway.platforms.base import _strip_media_directives
 
-            tts_text = _strip_markdown_for_tts(text)
+            # Delivery directives (MEDIA:<path>, [[audio_as_voice]]) are a wire
+            # contract with the platform adapter, not speech. The text path strips
+            # them before display; the voice path must strip them too, or the clip
+            # reads the raw file path aloud after the real sentence.
+            tts_text = _strip_markdown_for_tts(_strip_media_directives(text))
             if not tts_text:
                 return
 

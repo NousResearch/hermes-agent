@@ -44,16 +44,62 @@ import queue
 import threading
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import AudioFormat, StreamingTTSHandle
+from gateway.platforms.base import (
+    AudioFormat,
+    StreamingTTSHandle,
+    _strip_media_directives,
+)
 
 logger = logging.getLogger("gateway.streaming_tts_consumer")
 
 _ABORT = object()
 _DONE = object()
 
+# Delivery directives are a contract with the platform adapter, never speech.
+# A partially arrived directive must not be forwarded to the chunker, so any
+# trailing text that could still grow into one is held back until the next
+# delta or the final flush.
+_DIRECTIVE_MARKERS = ("MEDIA:", "[[audio_as_voice]]", "[[as_document]]")
+
+
+def _directive_holdback_index(buf: str) -> int:
+    """Index from which ``buf`` must be withheld because a directive may be forming.
+
+    Returns ``len(buf)`` when nothing needs holding back.
+    """
+    if not buf:
+        return 0
+    candidates = [len(buf)]
+
+    # An opened MEDIA: whose path has not been terminated by a newline yet:
+    # the rest of the path is still arriving.
+    idx = buf.rfind("MEDIA:")
+    if idx != -1 and "\n" not in buf[idx:]:
+        candidates.append(idx)
+
+    # An opened [[ tag that has not closed yet.
+    idx = buf.rfind("[[")
+    if idx != -1 and "]]" not in buf[idx:]:
+        candidates.append(idx)
+
+    # A trailing fragment that is a proper prefix of a marker ("MED", "[[audio").
+    for marker in _DIRECTIVE_MARKERS:
+        for n in range(min(len(marker) - 1, len(buf)), 0, -1):
+            if buf.endswith(marker[:n]):
+                candidates.append(len(buf) - n)
+                break
+
+    return min(candidates)
+
 
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
+
+    # Class-level default so the attribute exists even on instances built via
+    # __new__ without __init__. on_delta() and finish() swallow exceptions
+    # broadly, so a missing attribute would not raise, it would silently drop
+    # every clause.
+    _directive_buf: str = ""
 
     def __init__(
         self,
@@ -105,6 +151,9 @@ class StreamingTTSConsumer:
         # Pre-allocate the strip-markdown helper lazily to avoid import cycles.
         self._strip_markdown = None
 
+        # Carry-over for a delivery directive split across deltas.
+        self._directive_buf = ""
+
     # ------------------------------------------------------------------
     # Public properties
     # ------------------------------------------------------------------
@@ -153,12 +202,28 @@ class StreamingTTSConsumer:
     # Sync callback (agent worker thread)
     # ------------------------------------------------------------------
 
+    def _consume_directives(self, text: str, *, final: bool = False) -> str:
+        """Strip delivery directives from the delta stream before chunking.
+
+        Must run BEFORE the SentenceChunker: a directive path such as
+        ``song.mp3`` contains sentence boundaries, so chunking first would
+        cut the directive into fragments that no longer match and would then
+        be synthesised aloud.
+        """
+        buf = _strip_media_directives(self._directive_buf + text)
+        if final:
+            self._directive_buf = ""
+            return buf
+        hold = _directive_holdback_index(buf)
+        self._directive_buf = buf[hold:]
+        return buf[:hold]
+
     def on_delta(self, text: str) -> None:
         """Receive a text delta from the agent. Non-blocking."""
         if self._aborted or not self.active or self._finished:
             return
         try:
-            for clause in self._chunker.feed(text):
+            for clause in self._chunker.feed(self._consume_directives(text)):
                 self._queue.put_nowait(clause)
         except queue.Full:
             self._dropped = True
@@ -179,6 +244,12 @@ class StreamingTTSConsumer:
         if self._aborted or not self.active:
             return
         try:
+            # Release any held-back tail first: at end of text it can no
+            # longer grow into a directive.
+            tail = self._consume_directives("", final=True)
+            if tail:
+                for clause in self._chunker.feed(tail):
+                    self._queue.put_nowait(clause)
             for clause in self._chunker.flush():
                 self._queue.put_nowait(clause)
         except queue.Full:

@@ -163,7 +163,7 @@ Then start a fresh Hermes session or run:
 Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example:
 
 ```text
-调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
+调用 MCP 工具 mcp__chrome_devtools_win__list_pages，列出当前浏览器标签页。
 ```
 
 ### When `/browser connect` is the wrong tool

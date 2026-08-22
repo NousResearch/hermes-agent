@@ -163,7 +163,7 @@ hermes mcp test chrome-devtools-win
 加载后，Hermes 可以直接使用带 MCP 前缀的浏览器工具。例如：
 
 ```text
-调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
+调用 MCP 工具 mcp__chrome_devtools_win__list_pages，列出当前浏览器标签页。
 ```
 
 ### 何时 `/browser connect` 不适用

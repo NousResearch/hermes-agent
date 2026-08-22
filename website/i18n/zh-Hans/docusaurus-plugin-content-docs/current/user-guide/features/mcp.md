@@ -156,16 +156,16 @@ mcp_servers:
 Hermes 为 MCP 工具添加前缀，避免与内置名称冲突：
 
 ```text
-mcp_<server_name>_<tool_name>
+mcp__<server_name>__<tool_name>
 ```
 
 示例：
 
 | 服务器 | MCP 工具 | 注册名称 |
 |---|---|---|
-| `filesystem` | `read_file` | `mcp_filesystem_read_file` |
-| `github` | `create-issue` | `mcp_github_create_issue` |
-| `my-api` | `query.data` | `mcp_my_api_query_data` |
+| `filesystem` | `read_file` | `mcp__filesystem__read_file` |
+| `github` | `create-issue` | `mcp__github__create_issue` |
+| `my-api` | `query.data` | `mcp__my_api__query_data` |
 
 实际使用中，你通常不需要手动调用带前缀的名称——Hermes 在正常推理过程中会自动识别并选择该工具。
 
@@ -180,8 +180,8 @@ mcp_<server_name>_<tool_name>
 
 这些工具按服务器注册，遵循相同的前缀规则，例如：
 
-- `mcp_github_list_resources`
-- `mcp_github_get_prompt`
+- `mcp__github__list_resources`
+- `mcp__github__get_prompt`
 
 ### 重要说明
 

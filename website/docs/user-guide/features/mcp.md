@@ -445,16 +445,16 @@ You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); 
 Hermes prefixes MCP tools so they do not collide with built-in names:
 
 ```text
-mcp_<server_name>_<tool_name>
+mcp__<server_name>__<tool_name>
 ```
 
 Examples:
 
 | Server | MCP tool | Registered name |
 |---|---|---|
-| `filesystem` | `read_file` | `mcp_filesystem_read_file` |
-| `github` | `create-issue` | `mcp_github_create_issue` |
-| `my-api` | `query.data` | `mcp_my_api_query_data` |
+| `filesystem` | `read_file` | `mcp__filesystem__read_file` |
+| `github` | `create-issue` | `mcp__github__create_issue` |
+| `my-api` | `query.data` | `mcp__my_api__query_data` |
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
 
@@ -476,8 +476,8 @@ When supported, Hermes also registers utility tools around MCP resources and pro
 
 These are registered per server with the same prefix pattern, for example:
 
-- `mcp_github_list_resources`
-- `mcp_github_get_prompt`
+- `mcp__github__list_resources`
+- `mcp__github__get_prompt`
 
 ### Important
 

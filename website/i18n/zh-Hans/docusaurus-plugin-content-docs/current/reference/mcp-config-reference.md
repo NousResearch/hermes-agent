@@ -205,19 +205,19 @@ mcp_servers:
 服务器原生 MCP 工具的命名格式为：
 
 ```text
-mcp_<server>_<tool>
+mcp__<server>__<tool>
 ```
 
 示例：
-- `mcp_github_create_issue`
-- `mcp_filesystem_read_file`
-- `mcp_my_api_query_data`
+- `mcp__github__create_issue`
+- `mcp__filesystem__read_file`
+- `mcp__my_api__query_data`
 
 工具包装器遵循相同的前缀规则：
-- `mcp_<server>_list_resources`
-- `mcp_<server>_read_resource`
-- `mcp_<server>_list_prompts`
-- `mcp_<server>_get_prompt`
+- `mcp__<server>__list_resources`
+- `mcp__<server>__read_resource`
+- `mcp__<server>__list_prompts`
+- `mcp__<server>__get_prompt`
 
 ### 名称规范化
 
@@ -226,7 +226,7 @@ mcp_<server>_<tool>
 例如，名为 `my-api` 的服务器暴露了名为 `list-items.v2` 的工具，注册后变为：
 
 ```text
-mcp_my_api_list_items_v2
+mcp__my_api__list_items_v2
 ```
 
 编写 `include` / `exclude` 过滤器时请注意——使用**原始** MCP 工具名称（含连字符/点号），而非规范化后的名称。

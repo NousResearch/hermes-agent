@@ -93,10 +93,10 @@ from `config.yaml` via the catalog entry.
 1. Launch Unreal Editor, wait for the project to finish loading; confirm the
    server started (Output Log shows the bind address, or run
    `ModelContextProtocol.StartServer` manually).
-2. Start the Hermes session. Tools register as `mcp_unreal_engine_*`. If
+2. Start the Hermes session. Tools register as `mcp__unreal_engine__*`. If
    they're missing: editor wasn't up first — start it, then open a new
    Hermes session.
-3. Sanity check: call `mcp_unreal_engine_list_toolsets` and confirm toolsets
+3. Sanity check: call `mcp__unreal_engine__list_toolsets` and confirm toolsets
    come back.
 
 ## The Tool Surface: Discovery, Not a Fixed List
@@ -107,9 +107,9 @@ they appear as:
 
 | Hermes tool | Purpose |
 |---|---|
-| `mcp_unreal_engine_list_toolsets` | Names + descriptions of every registered toolset |
-| `mcp_unreal_engine_describe_toolset` | Full JSON schemas for one named toolset's tools |
-| `mcp_unreal_engine_call_tool` | Invoke a named tool with arguments, get the result |
+| `mcp__unreal_engine__list_toolsets` | Names + descriptions of every registered toolset |
+| `mcp__unreal_engine__describe_toolset` | Full JSON schemas for one named toolset's tools |
+| `mcp__unreal_engine__call_tool` | Invoke a named tool with arguments, get the result |
 
 The discovery walk, always in this order:
 
@@ -127,7 +127,7 @@ Cache what you learn for the session; re-list only after the editor side
 changes (new plugin enabled, toolset authored, `RefreshTools` run).
 
 The alternative eager mode (`Enable Tool Search` off in Editor Preferences)
-advertises every tool as its own `mcp_unreal_engine_<tool>` entry. Discovery
+advertises every tool as its own `mcp__unreal_engine__<tool>` entry. Discovery
 then happens at `hermes mcp install`/`configure` time instead. Tool-search
 mode is the default and what this skill assumes; it also keeps schema tokens
 out of every API call, so prefer it.
@@ -152,7 +152,7 @@ Every Unreal task follows the same loop:
    server-side without breaking the serial rule
    (`references/advanced-workflows.md`).
 3. **NEVER issue overlapping calls.** Do not batch multiple
-   `mcp_unreal_engine_*` calls in one turn — Hermes runs batched calls
+   `mcp__unreal_engine__*` calls in one turn — Hermes runs batched calls
    concurrently, and parallel calls against the game thread deadlock or
    fail. Strictly one call, await result, next call. This overrides the
    general parallel-tool-calls guidance.
@@ -231,7 +231,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
 ## Pitfalls (top of mind — full list in references/pitfalls.md)
 
 - **Start order matters.** Editor + server up first, then the Hermes
-  session. Missing `mcp_unreal_engine_*` tools = wrong order.
+  session. Missing `mcp__unreal_engine__*` tools = wrong order.
 - **One call at a time.** Serial game thread; no batching, no overlap.
 - **The editor UI freezes during each call.** That's by design (game-thread
   execution). Warn the user during long operations; keep calls small.

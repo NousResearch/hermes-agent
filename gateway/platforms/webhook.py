@@ -241,6 +241,18 @@ class WebhookAdapter(BasePlatformAdapter):
             script_timeout_seconds=self._script_timeout_seconds
         )
 
+        # Event coalescing (per-route, opt-in via route ``coalesce`` config).
+        #
+        # Rapid distinct events on the same logical entity (e.g. five pushes
+        # to one PR in a minute) each carry a fresh delivery ID, so the
+        # idempotency cache cannot suppress them and every event wakes a
+        # separate agent run.  Coalescing groups events by a payload-derived
+        # key and debounces them: only the LATEST event in a quiet window is
+        # dispatched.  Keyed ``"{route}|{rendered key}"`` → pending entry
+        # holding the newest event's payload/prompt/delivery data.
+        self._coalesce_pending: Dict[str, dict] = {}
+        self._coalesce_tasks: Dict[str, "asyncio.Task"] = {}
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -282,6 +294,37 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
+
+            # Coalescing config: agent-mode only, key required, positive
+            # numeric windows.  Validate at startup so a typo'd route fails
+            # fast instead of silently dispatching every event.
+            coalesce = route.get("coalesce")
+            if coalesce is not None:
+                if route.get("deliver_only"):
+                    raise ValueError(
+                        f"[webhook] Route '{name}' combines deliver_only with "
+                        f"coalesce. Coalescing only applies to agent-mode "
+                        f"routes; deliver_only pushes are immediate by design."
+                    )
+                key = coalesce.get("key") if isinstance(coalesce, dict) else None
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has a coalesce block "
+                        f"without a non-empty string 'key'. Set coalesce.key "
+                        f"to a payload field (e.g. 'pull_request.number') or "
+                        f"a template (e.g. '{{repository.full_name}}#{{number}}')."
+                    )
+                for field in ("window_seconds", "max_wait_seconds"):
+                    value = coalesce.get(field)
+                    if value is not None and (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or value <= 0
+                    ):
+                        raise ValueError(
+                            f"[webhook] Route '{name}' coalesce.{field} must "
+                            f"be a positive number, got {value!r}."
+                        )
 
         # client_max_size makes aiohttp enforce the cap on every read path,
         # including Transfer-Encoding: chunked bodies that carry no
@@ -344,6 +387,9 @@ class WebhookAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        # Don't drop debounced events on shutdown — dispatch them now so the
+        # agent still sees the latest state of each coalesced group.
+        self._flush_pending_coalesced_events()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -907,6 +953,70 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=502,
             )
 
+        # ── Event coalescing (opt-in per route) ─────────────────
+        # Distinct rapid events on the same logical entity are debounced:
+        # only the latest event in a quiet window wakes the agent.
+        coalesce = route_config.get("coalesce")
+        if (
+            isinstance(coalesce, dict)
+            and isinstance(coalesce.get("key"), str)
+            and coalesce["key"].strip()
+        ):
+            self._enqueue_coalesced_event(
+                route_name=route_name,
+                route_config=route_config,
+                coalesce=coalesce,
+                payload=payload,
+                event_type=event_type,
+                prompt=prompt,
+                delivery_id=delivery_id,
+                profile=profile if isinstance(profile, str) else None,
+                now=now,
+            )
+            return web.json_response(
+                {
+                    "status": "coalesced",
+                    "route": route_name,
+                    "event": event_type,
+                    "delivery_id": delivery_id,
+                },
+                status=202,
+            )
+
+        self._dispatch_agent_run(
+            route_name=route_name,
+            route_config=route_config,
+            payload=payload,
+            event_type=event_type,
+            prompt=prompt,
+            delivery_id=delivery_id,
+            profile=profile if isinstance(profile, str) else None,
+            now=now,
+        )
+
+        return web.json_response(
+            {
+                "status": "accepted",
+                "route": route_name,
+                "event": event_type,
+                "delivery_id": delivery_id,
+            },
+            status=202,
+        )
+
+    def _dispatch_agent_run(
+        self,
+        *,
+        route_name: str,
+        route_config: dict,
+        payload: dict,
+        event_type: str,
+        prompt: str,
+        delivery_id: str,
+        profile: Optional[str],
+        now: float,
+    ) -> None:
+        """Spawn the agent run for one webhook event (fire-and-forget)."""
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
@@ -933,7 +1043,7 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
-        if profile and isinstance(profile, str):
+        if profile:
             source.profile = profile
         event = MessageEvent(
             text=prompt,
@@ -944,32 +1054,174 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         logger.info(
-            "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",
-            request.method,
+            "[webhook] dispatch event=%s route=%s prompt_len=%d delivery=%s",
             event_type,
             route_name,
             len(prompt),
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately.  The per-delivery
-        # session is closed by the ``on_processing_complete`` override below
-        # once the agent run actually finishes (``handle_message`` itself is
-        # fire-and-forget: it spawns ``_process_message_background`` and
-        # returns before the run starts, so nothing can be closed here).
+        # Non-blocking — the caller returns 202 Accepted immediately.  The
+        # per-delivery session is closed by the ``on_processing_complete``
+        # override below once the agent run actually finishes
+        # (``handle_message`` itself is fire-and-forget: it spawns
+        # ``_process_message_background`` and returns before the run starts,
+        # so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        return web.json_response(
-            {
-                "status": "accepted",
-                "route": route_name,
-                "event": event_type,
-                "delivery_id": delivery_id,
-            },
-            status=202,
+    # ------------------------------------------------------------------
+    # Event coalescing
+    # ------------------------------------------------------------------
+
+    _COALESCE_DEFAULT_WINDOW_SECONDS = 30.0
+    _COALESCE_DEFAULT_MAX_WAIT_SECONDS = 300.0
+
+    def _coalesce_group_key(
+        self, route_name: str, key_template: str, payload: dict, event_type: str
+    ) -> str:
+        """Render the coalesce key for one event.
+
+        ``key`` accepts either a bare dotted payload field
+        (``pull_request.number``) or a full template with braces
+        (``{repository.full_name}#{pull_request.number}``).  Unresolved
+        fields render as their literal ``{name}`` placeholder, which still
+        groups deterministically per route.
+        """
+        template = key_template.strip()
+        if "{" not in template:
+            template = "{" + template + "}"
+        rendered = self._render_prompt(template, payload, event_type, route_name)
+        return f"{route_name}|{rendered}"
+
+    def _enqueue_coalesced_event(
+        self,
+        *,
+        route_name: str,
+        route_config: dict,
+        coalesce: dict,
+        payload: dict,
+        event_type: str,
+        prompt: str,
+        delivery_id: str,
+        profile: Optional[str],
+        now: float,
+    ) -> None:
+        """Record an event in its coalesce group and (re)arm the debounce timer.
+
+        The newest event REPLACES the pending one — its payload renders the
+        prompt and delivery templates when the group finally dispatches — so
+        the agent always acts on the latest state of the entity.  Each new
+        event pushes the quiet-window timer back, bounded by
+        ``max_wait_seconds`` past the group's FIRST event so a steady stream
+        cannot starve dispatch forever.
+
+        Only ever called from the aiohttp event loop, so the pending map and
+        timer bookkeeping need no locking.
+        """
+        window = float(
+            coalesce.get("window_seconds", self._COALESCE_DEFAULT_WINDOW_SECONDS)
         )
+        max_wait = float(
+            coalesce.get("max_wait_seconds", self._COALESCE_DEFAULT_MAX_WAIT_SECONDS)
+        )
+        group_key = self._coalesce_group_key(
+            route_name, coalesce["key"], payload, event_type
+        )
+
+        existing = self._coalesce_pending.get(group_key)
+        first_at = existing["first_at"] if existing else now
+        count = (existing["count"] + 1) if existing else 1
+        superseded = existing["delivery_id"] if existing else None
+        self._coalesce_pending[group_key] = {
+            "route_name": route_name,
+            "route_config": route_config,
+            "payload": payload,
+            "event_type": event_type,
+            "prompt": prompt,
+            "delivery_id": delivery_id,
+            "profile": profile,
+            "first_at": first_at,
+            "count": count,
+        }
+        if superseded is not None:
+            logger.info(
+                "[webhook] coalesced delivery %s superseded by %s (group=%s, %d events)",
+                superseded,
+                delivery_id,
+                group_key,
+                count,
+            )
+
+        # Re-arm the timer: quiet-window from now, capped at max_wait past
+        # the group's first event.
+        old_task = self._coalesce_tasks.pop(group_key, None)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+        delay = min(window, max(0.0, first_at + max_wait - now))
+        task = asyncio.create_task(self._coalesce_timer(group_key, delay))
+        self._coalesce_tasks[group_key] = task
+
+    async def _coalesce_timer(self, group_key: str, delay: float) -> None:
+        """Wait out the quiet window, then dispatch the group's latest event."""
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            # Superseded by a newer event's timer — the pending entry stays.
+            return
+        self._coalesce_tasks.pop(group_key, None)
+        entry = self._coalesce_pending.pop(group_key, None)
+        if entry is None:
+            return
+        self._dispatch_coalesced_entry(entry, group_key)
+
+    def _dispatch_coalesced_entry(self, entry: dict, group_key: str) -> None:
+        """Dispatch a settled coalesce group as one agent run."""
+        prompt = entry["prompt"]
+        if entry["count"] > 1:
+            prompt += (
+                f"\n\n(Note: {entry['count']} webhook events for this item "
+                f"arrived in quick succession and were coalesced — this is "
+                f"the most recent one; earlier events are superseded.)"
+            )
+        logger.info(
+            "[webhook] coalesce settled group=%s events=%d delivery=%s",
+            group_key,
+            entry["count"],
+            entry["delivery_id"],
+        )
+        self._dispatch_agent_run(
+            route_name=entry["route_name"],
+            route_config=entry["route_config"],
+            payload=entry["payload"],
+            event_type=entry["event_type"],
+            prompt=prompt,
+            delivery_id=entry["delivery_id"],
+            profile=entry["profile"],
+            now=time.time(),
+        )
+
+    def _flush_pending_coalesced_events(self) -> None:
+        """Dispatch every pending coalesce group immediately.
+
+        Called on disconnect so buffered events are not silently dropped when
+        the gateway shuts down or restarts mid-window.
+        """
+        for task in self._coalesce_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._coalesce_tasks.clear()
+        pending = self._coalesce_pending
+        self._coalesce_pending = {}
+        for group_key, entry in pending.items():
+            try:
+                self._dispatch_coalesced_entry(entry, group_key)
+            except Exception:
+                logger.exception(
+                    "[webhook] failed to flush coalesced group %s", group_key
+                )
 
     async def on_processing_complete(
         self, event: "MessageEvent", outcome: Any

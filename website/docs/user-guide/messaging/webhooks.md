@@ -89,6 +89,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template that identifies the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Not compatible with `deliver_only`. |
 
 ### Full example
 
@@ -161,6 +162,41 @@ Supported operators:
 - `all`, `any`, and `not` groups
 
 Field paths use dot notation. `payload.foo` reads from a top-level `payload` object when one exists, or from the root webhook body for flat payloads. `event` / `event_type` match the resolved event type, and `headers.<Name>` reads request headers.
+
+### Event Coalescing
+
+Providers often fire several distinct events for the same logical entity in quick succession — five rapid pushes to one pull request, a burst of edits to one ticket, a flapping monitoring alert. Each event carries a fresh delivery ID, so the idempotency cache cannot suppress them and every event wakes a separate agent run.
+
+Set `coalesce` on a route to debounce these into a single run per entity:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        github-pr:
+          events: ["pull_request"]
+          secret: "github-webhook-secret"
+          coalesce:
+            key: "{repository.full_name}#{pull_request.number}"
+            window_seconds: 30      # quiet window (default 30)
+            max_wait_seconds: 300   # dispatch cap (default 300)
+          prompt: "Review PR #{pull_request.number}: {pull_request.title}"
+          deliver: "github_comment"
+          deliver_extra:
+            repo: "{repository.full_name}"
+            pr_number: "{pull_request.number}"
+```
+
+How it works:
+
+- Events are grouped per route by the rendered `key`. A bare dotted field (`pull_request.number`) or a full template (`{repository.full_name}#{pull_request.number}`) both work.
+- Each new event **replaces** the pending one and pushes the quiet-window timer back. When `window_seconds` pass with no new event, the group dispatches **one** agent run using the latest event's payload, prompt, and delivery templates.
+- `max_wait_seconds` caps total buffering from the group's first event, so a steady event stream cannot postpone dispatch forever.
+- When more than one event was coalesced, the prompt gets a short note telling the agent how many earlier events were superseded.
+- Coalesced requests return HTTP 202 with `{"status": "coalesced"}`. Delivery-ID idempotency still runs first, so provider retries of the same delivery are dropped rather than counted.
+- Pending groups are flushed (dispatched immediately) on gateway shutdown, not dropped.
+- `coalesce` applies to agent-mode routes only; combining it with `deliver_only` is rejected at startup. Buffered events live in memory — a hard crash (not a clean shutdown) loses at most the current window's buffered burst.
 
 ### Script Filters and Transforms
 

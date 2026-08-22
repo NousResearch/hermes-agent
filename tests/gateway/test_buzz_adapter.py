@@ -538,3 +538,51 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+# ── Sidecar env hygiene ──────────────────────────────────────────────────
+
+
+class TestExecBuzzEnv:
+
+    @pytest.mark.asyncio
+    async def test_exec_buzz_child_env_scrubbed_keeps_relay_and_key(self, monkeypatch):
+        """The buzz CLI child must not inherit gateway credentials; the
+        relay URL and the plugin's own private key still travel via env."""
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("EMAIL_PASSWORD", "mail-pass")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, input=None):
+                return b"", b""
+
+        async def _fake_exec(*args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs.get("env")
+            return _FakeProc()
+
+        monkeypatch.setattr(_buzz_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        rc, out, err = await _buzz_mod._exec_buzz(
+            "buzz",
+            ["messages", "send", "--channel", CHANNEL, "--content", "-"],
+            relay_url="wss://relay.test",
+            private_key="nsec1test",
+            input_text="hello",
+        )
+        assert rc == 0
+        assert out == "" and err == ""
+
+        env = captured["env"]
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert "EMAIL_PASSWORD" not in env
+        assert "OPENAI_API_KEY" not in env
+        # The plugin's own child-only values are applied on top of the
+        # sanitized env.
+        assert env["BUZZ_RELAY_URL"] == "wss://relay.test"
+        assert env["BUZZ_PRIVATE_KEY"] == "nsec1test"
+
+

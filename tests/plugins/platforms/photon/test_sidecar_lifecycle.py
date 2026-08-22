@@ -209,3 +209,72 @@ async def test_spectrum_patch_runs_off_the_event_loop(
         "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
         "every other platform on the gateway loop"
     )
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_env_scrubbed_keeps_photon_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The Node sidecar child must not inherit gateway credentials; the
+    photon-specific values it is entitled to still travel via env."""
+    adapter = _make_adapter(monkeypatch)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+    monkeypatch.setenv("EMAIL_PASSWORD", "mail-pass")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    spawned: Dict[str, Any] = {}
+    monkeypatch.setattr(
+        "hermes_cli._subprocess_compat.windows_hide_flags",
+        lambda: 0x08000000,
+    )
+
+    class _PatchResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "run", lambda cmd, **kwargs: _PatchResult()
+    )
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    env = spawned["kwargs"]["env"]
+    assert "GATEWAY_RELAY_SECRET" not in env
+    assert "EMAIL_PASSWORD" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert env["PHOTON_PROJECT_ID"] == "test-project-id"
+    assert env["PHOTON_PROJECT_SECRET"] == "test-project-secret"
+    assert env["PHOTON_SIDECAR_TOKEN"] == adapter._sidecar_token
+    assert env["PHOTON_SIDECAR_WATCH_STDIN"] == "1"

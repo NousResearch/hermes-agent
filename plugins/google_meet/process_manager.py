@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from tools.environments.local import build_subprocess_env
 
 # File + directory layout (under $HERMES_HOME):
 #
@@ -132,7 +133,9 @@ def start(
             except OSError:
                 pass
 
-    env = os.environ.copy()
+    # Build the meet_bot child env from the sanitized subprocess env factory
+    # (scrubs gateway credentials) and pass the meeting's own config on top.
+    env = build_subprocess_env()
     env["HERMES_MEET_URL"] = url
     env["HERMES_MEET_OUT_DIR"] = str(out)
     env["HERMES_MEET_GUEST_NAME"] = guest_name

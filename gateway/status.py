@@ -307,6 +307,19 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
 
     POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+
+    On Windows, `os.kill(SIGTERM)` actually calls `TerminateProcess`, which
+    returns `Permission denied` (ERROR_ACCESS_DENIED) when the target PID is
+    owned by an orphaned job-object tree — a pattern that occurs after the
+    Hermes gateway crashes on Windows (the parent cmd.exe wrapper dies, leaving
+    child python.exe as an unreapable job-object orphan). When that happens on
+    the `force=False` path, escalate to `taskkill /T /F` (the same call used
+    by the `force=True` path) so the gateway restart manager's `--replace`
+    path can actually replace the dead instance instead of bailing out at the
+    `return False` in `gateway/run.py` start_gateway() that follows the
+    PermissionError catch on this function. Without this escalation, every
+    Hermes gateway crash on Windows is unrecoverable until an operator manually
+    kills the orphan.
     """
     if force and _IS_WINDOWS:
         # CREATE_NO_WINDOW: terminate_pid runs from the windowless pythonw.exe
@@ -332,7 +345,37 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
         return
 
     sig = signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM)
-    os.kill(pid, sig)
+    try:
+        os.kill(pid, sig)
+    except (PermissionError, OSError) as exc:
+        # On Windows, TerminateProcess fails with ERROR_ACCESS_DENIED when
+        # the target is an orphaned job-object child (e.g. after the
+        # gateway crashed). Escalate to taskkill /T /F so the caller can
+        # still replace the dead instance. On POSIX, PermissionError means
+        # we don't own the process — let the caller decide.
+        if _IS_WINDOWS and isinstance(exc, PermissionError):
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+            except FileNotFoundError:
+                # taskkill not available — re-raise the original
+                raise exc from None
+
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                raise OSError(
+                    details or f"taskkill fallback failed for PID {pid}"
+                ) from exc
+            # taskkill succeeded — the dead process is finally reaped
+            return
+        raise
 
 
 def _scope_hash(identity: str) -> str:

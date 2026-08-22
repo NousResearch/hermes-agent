@@ -2646,8 +2646,9 @@ from tools.registry import registry, tool_error
 
 def _check_file_reqs():
     """Lazy wrapper to avoid circular import with tools/__init__.py."""
-    from tools import check_file_requirements
-    return check_file_requirements()
+    from .terminal_tool import check_terminal_requirements
+
+    return check_terminal_requirements()
 
 READ_FILE_SCHEMA = {
     "name": "read_file",

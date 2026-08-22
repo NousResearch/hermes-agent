@@ -31,6 +31,22 @@ class TestTerminalRequirements:
         )
         assert terminal_tool_module.check_terminal_requirements() is True
 
+    def test_file_requirements_resolve_from_the_current_package(self, monkeypatch):
+        import tools
+        from tools import file_tools
+
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "check_terminal_requirements",
+            lambda: True,
+        )
+
+        def fail_package_export():
+            raise AssertionError("file requirements re-imported the tools package export")
+
+        monkeypatch.setattr(tools, "check_file_requirements", fail_package_export)
+        assert file_tools._check_file_reqs() is True
+
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -269,12 +285,8 @@ class TestCheckFnTransientFailureSuppression:
         monkeypatch.setattr(
             terminal_tool_module, "check_terminal_requirements", flaky_terminal_check
         )
-        # file tools delegate to the same check via tools.check_file_requirements.
-        import tools as tools_pkg
-
-        monkeypatch.setattr(
-            tools_pkg, "check_file_requirements", flaky_terminal_check
-        )
+        # File tools resolve the terminal check from their own package. This
+        # stays reliable when a workspace also contains a top-level tools/ dir.
 
         t = {"now": 5000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])

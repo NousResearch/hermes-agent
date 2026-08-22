@@ -76,6 +76,40 @@ def test_share_nous_attaches_redacted_error_context(captured_upload):
     assert secret not in context, "secret leaked through error_context redaction"
 
 
+def test_share_nous_client_text_gets_upload_safe_log_redaction(captured_upload):
+    """Client artifacts must ride the SAME redactor as backend logs
+    (_redact_log_text): secrets AND email addresses — not just the bare
+    secret pass, which leaves emails through (review finding on #92020)."""
+    secret = "sk-abc123def456ghi789jkl012mno345pqr678"
+    result = _handler()(
+        "rid-2b",
+        {
+            "error_context": "user reported by alice@example.com",
+            "extra_files": {"desktop.log": f"login bob@example.com token={secret}"},
+        },
+    )
+    assert result["result"]["ok"] is True
+
+    files = _envelope(captured_upload["blob"])["files"]
+    assert "alice@example.com" not in files["error-context.txt"]
+    assert "[REDACTED_EMAIL]" in files["error-context.txt"]
+    assert "bob@example.com" not in files["client/desktop.log"]
+    assert secret not in files["client/desktop.log"]
+
+
+def test_share_nous_linkless_success_is_a_failure(monkeypatch):
+    """ok:true with neither view_url nor id would strand the user with an
+    unreferencable upload — surface it as a structured failure instead."""
+    import hermes_cli.diagnostics_upload as du
+
+    monkeypatch.setattr(du, "share_to_nous", lambda blob: {})
+
+    result = _handler()("rid-2c", {})
+    payload = result["result"]
+    assert payload["ok"] is False
+    assert "no view URL" in payload["error"]
+
+
 def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):
     secret = "sk-abc123def456ghi789jkl012mno345pqr678"
     result = _handler()(

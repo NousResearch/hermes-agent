@@ -141,4 +141,36 @@ describe('send-diagnostics store', () => {
 
     expect($sendDiagnostics.get()).toBeNull()
   })
+
+  it('dismissal mid-upload is immediate and a stale completion cannot resurrect the dialog', async () => {
+    let resolveRequest: (value: unknown) => void = () => {}
+    const request = vi.fn().mockImplementation(
+      () => new Promise(resolve => (resolveRequest = resolve))
+    )
+    const restoreGateway = stubGateway(request as never)
+    const restoreDesktop = stubDesktopLogs(null)
+
+    try {
+      requestSendDiagnostics()
+      const pending = confirmSendDiagnostics()
+
+      // Wait for the request to actually start, then dismiss mid-flight.
+      await vi.waitFor(() => expect(request).toHaveBeenCalled())
+      dismissSendDiagnostics()
+      expect($sendDiagnostics.get()).toBeNull()
+
+      // The upload completes AFTER dismissal — it must not write back.
+      resolveRequest({ ok: true, view_url: 'https://nas.example/view/stale' })
+      await pending
+
+      expect($sendDiagnostics.get()).toBeNull()
+
+      // A NEW dialog opened after the stale completion is untouched by it.
+      requestSendDiagnostics('fresh')
+      expect($sendDiagnostics.get()?.phase).toBe('consent')
+    } finally {
+      restoreDesktop()
+      restoreGateway()
+    }
+  })
 })

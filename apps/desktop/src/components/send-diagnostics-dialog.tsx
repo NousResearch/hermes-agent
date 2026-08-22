@@ -47,7 +47,11 @@ export function SendDiagnosticsHost() {
   const busy = state.phase === 'uploading'
 
   return (
-    <Dialog onOpenChange={open => (!open && !busy ? dismissSendDiagnostics() : undefined)} open>
+    // Dismissal is allowed in EVERY phase, including mid-upload: the store's
+    // generation guard makes a dismissed upload's completion a no-op, so Esc/
+    // backdrop/Cancel are always an immediate way out (cancellation of the
+    // in-flight request itself stays best-effort).
+    <Dialog onOpenChange={open => (!open ? dismissSendDiagnostics() : undefined)} open>
       <DialogContent className="max-w-[30rem]">
         {state.phase === 'consent' || state.phase === 'uploading' ? (
           <>
@@ -61,7 +65,7 @@ export function SendDiagnosticsHost() {
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button disabled={busy} onClick={dismissSendDiagnostics} variant="ghost">
+              <Button onClick={dismissSendDiagnostics} variant="ghost">
                 {copy.cancel}
               </Button>
               <Button disabled={busy} onClick={() => void confirmSendDiagnostics()}>
@@ -98,12 +102,16 @@ export function SendDiagnosticsHost() {
               <DialogTitle>{copy.doneTitle}</DialogTitle>
               <DialogDescription className="text-left">{copy.doneDescription}</DialogDescription>
             </DialogHeader>
-            {state.result?.viewUrl && (
+            {(state.result?.viewUrl || state.result?.uploadId) && (
               <div className="flex items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) px-3 py-2">
                 <code className="min-w-0 flex-1 truncate text-[0.78rem] text-(--ui-text-secondary)">
-                  {state.result.viewUrl}
+                  {state.result.viewUrl ?? copy.uploadIdFallback(state.result.uploadId ?? '')}
                 </code>
-                <CopyButton appearance="inline" label={copy.copyLink} text={state.result.viewUrl} />
+                <CopyButton
+                  appearance="inline"
+                  label={copy.copyLink}
+                  text={state.result.viewUrl ?? state.result.uploadId ?? ''}
+                />
               </div>
             )}
             <div className="text-[0.8rem] text-(--ui-text-secondary)">{copy.handoffLead}</div>

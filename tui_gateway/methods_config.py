@@ -486,8 +486,11 @@ def _(rid, params: dict) -> dict:
     upload failures inline.
     """
     try:
-        from agent.redact import redact_sensitive_text
-        from hermes_cli.debug import build_nous_bundle, collect_share_bundle
+        from hermes_cli.debug import (
+            _redact_log_text,
+            build_nous_bundle,
+            collect_share_bundle,
+        )
         from hermes_cli.diagnostics_upload import share_to_nous
 
         log_lines = params.get("log_lines")
@@ -496,10 +499,14 @@ def _(rid, params: dict) -> dict:
 
         bundle = collect_share_bundle(log_lines=log_lines, redact=True)
 
+        # Client-supplied text goes through the SAME upload-safe log redactor
+        # as backend-collected logs (_redact_log_text = force secret redaction
+        # + email masking) — never the weaker bare secret pass, so the remote
+        # path can't upload what the CLI pipeline would have removed.
         error_context = params.get("error_context")
         if isinstance(error_context, str) and error_context.strip():
-            bundle["error-context.txt"] = redact_sensitive_text(
-                error_context.strip()[:8_000], force=True
+            bundle["error-context.txt"] = _redact_log_text(
+                error_context.strip()[:8_000]
             )
 
         # Client-side artifacts (local desktop.log on remote connections).
@@ -520,18 +527,25 @@ def _(rid, params: dict) -> dict:
                 safe_label = safe_label.lstrip(".").strip()
                 if not safe_label or not text.strip():
                     continue
-                bundle[f"client/{safe_label}"] = redact_sensitive_text(
-                    text[:524_288], force=True
-                )
+                bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
 
         blob = build_nous_bundle(bundle, redact=True)
         res = share_to_nous(blob)
+        view_url = res.get("viewUrl") or res.get("view_url")
+        upload_id = res.get("id")
+        if not view_url and not upload_id:
+            # An upload the user can't reference is useless to support —
+            # surface it as a failure instead of a linkless success.
+            return _ok(
+                rid,
+                {"ok": False, "error": "upload succeeded but returned no view URL or id"},
+            )
         return _ok(
             rid,
             {
                 "ok": True,
-                "view_url": res.get("viewUrl") or res.get("view_url"),
-                "upload_id": res.get("id"),
+                "view_url": view_url,
+                "upload_id": upload_id,
                 "expires_at": res.get("expiresAt") or res.get("expires_at"),
             },
         )

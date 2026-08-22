@@ -213,12 +213,13 @@ export const en: Translations = {
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
     privacyNotice:
-      'This uploads a debug bundle to Nous-internal storage (not a public paste). It includes system info (OS, versions, provider — never your API keys) and recent agent, gateway, and desktop logs, which may contain conversation content and file paths. Secrets are redacted before upload. Only Nous staff can view it, and it auto-deletes after 14 days.',
+      'This uploads a debug bundle to Nous-internal storage (not a public paste). It includes system info (OS, versions, provider, which API keys are configured — never the keys themselves) and full agent, gateway, and desktop logs (up to 512 KB each), which likely contain conversation content, tool outputs, and file paths. Secrets are redacted before upload. The bundle is viewable only by Nous staff and allowlisted Discord moderators, and auto-deletes after 14 days.',
     upload: 'Upload',
     uploading: 'Uploading…',
     cancel: 'Cancel',
     close: 'Close',
     copyLink: 'Copy link',
+    uploadIdFallback: id => `No view link returned — quote upload ID ${id} to support`,
     doneTitle: 'Diagnostics sent',
     doneDescription: 'Your bundle was uploaded privately. Share the link below in your support thread so the team can see your logs.',
     failedTitle: 'Upload failed',

@@ -33,12 +33,22 @@ export interface SendDiagnosticsState {
 
 export const $sendDiagnostics = atom<SendDiagnosticsState | null>(null)
 
+// Generation token: bumped on every open AND every dismiss. An in-flight
+// upload captures the generation it started under and only writes its
+// completion back when the token still matches — so dismissing mid-upload is
+// immediate and a stale completion can't resurrect or overwrite the dialog.
+// Request cancellation stays best-effort (the WS call runs to completion
+// server-side; we just ignore the result).
+let generation = 0
+
 /** Open the consent modal. No network I/O happens until the user confirms. */
 export function requestSendDiagnostics(errorContext?: string): void {
+  generation += 1
   $sendDiagnostics.set({ errorContext, phase: 'consent' })
 }
 
 export function dismissSendDiagnostics(): void {
+  generation += 1
   $sendDiagnostics.set(null)
 }
 
@@ -76,6 +86,11 @@ export async function confirmSendDiagnostics(): Promise<void> {
     return
   }
 
+  const startedGeneration = generation
+
+  // Only write back while the dialog the upload belongs to is still open.
+  const stillCurrent = () => generation === startedGeneration
+
   $sendDiagnostics.set({ ...current, phase: 'uploading' })
 
   try {
@@ -87,6 +102,10 @@ export async function confirmSendDiagnostics(): Promise<void> {
 
     const extraFiles = await collectLocalExtras()
 
+    if (!stillCurrent()) {
+      return
+    }
+
     const response = await gateway.request<ShareNousResponse>(
       'diagnostics.share_nous',
       {
@@ -95,6 +114,10 @@ export async function confirmSendDiagnostics(): Promise<void> {
       },
       SHARE_TIMEOUT_MS
     )
+
+    if (!stillCurrent()) {
+      return
+    }
 
     if (!response.ok) {
       throw new Error(response.error || 'upload failed')
@@ -110,6 +133,10 @@ export async function confirmSendDiagnostics(): Promise<void> {
       }
     })
   } catch (error) {
+    if (!stillCurrent()) {
+      return
+    }
+
     $sendDiagnostics.set({
       ...current,
       error: error instanceof Error ? error.message : String(error),

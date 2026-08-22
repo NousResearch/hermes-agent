@@ -258,6 +258,7 @@ export interface Translations {
     cancel: string
     close: string
     copyLink: string
+    uploadIdFallback: (id: string) => string
     doneTitle: string
     doneDescription: string
     failedTitle: string

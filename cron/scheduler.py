@@ -4049,7 +4049,16 @@ def _run_job_script(
     try:
         from tools.environments.local import build_subprocess_env
 
-        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        # errors="replace" without an explicit encoding: the POSIX decoding
+        # default (locale-derived, see 7498eae3f) is preserved, only the error
+        # handler changes.  The pipes are read in text mode, so one undecodable
+        # byte — a chunked multibyte write, iconv output, binary noise on
+        # stderr — makes communicate() raise UnicodeDecodeError and fails the
+        # whole job even though the script itself exited 0.
+        popen_kwargs: dict[str, Any] = {
+            "start_new_session": True,
+            "errors": "replace",
+        }
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()

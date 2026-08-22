@@ -1234,6 +1234,46 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/var/run",
 )
 
+# Windows has no equivalent of the POSIX paths above, and they do not degrade
+# gracefully: ``Path("/etc").resolve()`` becomes ``C:\etc`` on the current
+# drive, which does not exist, so every entry above is inert on Windows and the
+# non-strict denylist is effectively empty there. These are resolved from the
+# environment rather than hard-coded, because Windows need not be on C: and a
+# roaming profile need not be under C:\Users.
+_MEDIA_DELIVERY_DENIED_WINDOWS_ENV_ROOTS = (
+    "SystemRoot",    # C:\Windows — system binaries, config, SAM/SYSTEM hives
+    "ProgramData",   # machine-wide application state, incl. credential stores
+)
+
+# Windows credential stores that live under the user profile. The POSIX
+# dotfile equivalents (.aws, .ssh, .azure, .gcloud …) use the same names on
+# Windows and are already covered by _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS;
+# these are the locations that have no POSIX counterpart.
+#
+# AppData is deliberately NOT denied wholesale: %LOCALAPPDATA%\Temp is a normal
+# place for generated artifacts, so a blanket rule would break legitimate media
+# delivery. Only the credential subtrees are listed.
+#
+# Split by which AppData root they live under, because that root is NOT always
+# ``home / "AppData/Roaming"`` / ``home / "AppData/Local"``: Windows Known
+# Folder redirection (roaming profiles, Folder Redirection GPOs) can point
+# %APPDATA% / %LOCALAPPDATA% at a path outside %USERPROFILE% entirely, e.g.
+# %USERPROFILE%=C:\Users\svc but %APPDATA%=Z:\RoamingProfile\svc. Deriving
+# these paths from home alone denies the default-layout credential store but
+# not the redirected one — the actual live location on a redirected machine.
+# _media_delivery_denied_paths() below resolves both the home-relative form
+# (matches the common case with zero env dependency) AND the env-derived form
+# (matches the redirected case) so either layout is covered.
+_MEDIA_DELIVERY_DENIED_WINDOWS_ROAMING_SUBPATHS = (
+    "Microsoft/Credentials",
+    "Microsoft/Protect",  # DPAPI master keys
+    "Microsoft/Crypto",
+)
+_MEDIA_DELIVERY_DENIED_WINDOWS_LOCAL_SUBPATHS = (
+    "Microsoft/Credentials",
+    "Microsoft/Vault",
+)
+
 # Within $HOME we additionally deny common credential / config directories.
 # Resolved at check time against the live $HOME so containers and alt-home
 # setups work correctly.
@@ -1365,6 +1405,27 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
+    if os.name == "nt":
+        # The POSIX prefixes above are inert here (see the constant's comment),
+        # so add the real system roots for this platform.
+        for env_name in _MEDIA_DELIVERY_DENIED_WINDOWS_ENV_ROOTS:
+            root = os.environ.get(env_name)
+            if root:
+                denied.append(Path(root))
+        # Roaming/Local AppData credential subtrees: deny BOTH the
+        # home-relative form (correct on the common, non-redirected layout,
+        # and a fail-closed fallback when %APPDATA%/%LOCALAPPDATA% are unset)
+        # and the env-derived form (correct when Known Folder redirection
+        # points the real root outside %USERPROFILE%). See the subpaths'
+        # constant comment above.
+        roaming_root = Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
+        local_root = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        for sub in _MEDIA_DELIVERY_DENIED_WINDOWS_ROAMING_SUBPATHS:
+            denied.append(home / "AppData" / "Roaming" / sub)
+            denied.append(roaming_root / sub)
+        for sub in _MEDIA_DELIVERY_DENIED_WINDOWS_LOCAL_SUBPATHS:
+            denied.append(home / "AppData" / "Local" / sub)
+            denied.append(local_root / sub)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above (matched BEFORE this denylist in

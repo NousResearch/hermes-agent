@@ -3669,6 +3669,33 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
+def _cron_run_history_retention() -> int:
+    """How many cron run-sessions to keep per job (env > config > default).
+
+    Bounds state.db growth and BOTS/SESSIONS duplicate noise from per-tick
+    cron session rows (#88268). The desktop run-history window (20) is always
+    a subset of the retention floor; 0 keeps nothing.
+    """
+    try:
+        env_value = os.getenv("HERMES_CRON_RUN_HISTORY_RETENTION", "").strip()
+        if env_value:
+            return max(0, int(float(env_value)))
+    except Exception:
+        logger.warning(
+            "Invalid HERMES_CRON_RUN_HISTORY_RETENTION=%r; using config/default",
+            env_value,
+        )
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("run_history_retention")
+        if configured is not None:
+            return max(0, int(float(configured)))
+    except Exception:
+        logger.debug("Failed to load cron run-history retention from config")
+    return 50
+
+
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
     if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
@@ -6441,6 +6468,20 @@ def run_job(
                 )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            # Bound per-job run history so busy jobs cannot grow state.db
+            # unbounded or flood BOTS/SESSIONS with per-tick duplicates
+            # (#88268). Best-effort: a prune failure must never wedge the
+            # run's bookkeeping or delivery.
+            try:
+                _pruned = _session_db.prune_cron_job_runs(
+                    job_id, keep=_cron_run_history_retention()
+                )
+                if _pruned:
+                    logger.info(
+                        "Job '%s': pruned %d old run sessions", job_id, _pruned
+                    )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to prune run history: %s", job_id, e)
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:

@@ -172,6 +172,51 @@ class TestAgentSwitchModelDefenseInDepth:
         )
 
 
+class TestOpenCodeApiModeOverrideCoversTheWholeFamily:
+    """The api_mode override at the top of switch_model used to gate on a
+    literal ``{"opencode-zen", "opencode-go", "opencode"}`` set instead of
+    ``opencode_provider_family()`` — the SAME predicate ``models.py`` already
+    uses 30 lines below for the /v1 base_url normalization, and whose own
+    docstring says it is "the single owner of that family-membership
+    question; do not re-implement it inline." The exact-set check missed
+    two real members of the family: the built-in ``opencode-free`` provider
+    (Zen-hosted, same per-model routing) and any custom provider whose name
+    extends a family slug (``opencode-go-bridge``, issue #85589). Both used
+    to silently fall through to the generic ``determine_api_mode()``, which
+    has no per-model OpenCode routing table and defaults to
+    ``chat_completions`` — reproducing the exact "double /v1 404 / wrong
+    wire" bug class this whole override exists to prevent, but only for
+    models whose family routing isn't chat_completions.
+    """
+
+    def test_opencode_free_claude_model_gets_anthropic_messages(self):
+        """opencode-free is Zen-hosted; a Claude-family model on it must get
+        the same anthropic_messages routing opencode-zen gets."""
+        result = _run_opencode_switch(
+            raw_input="claude-opus-5",
+            current_provider="opencode-free",
+            current_model="grok-4.5",
+            current_base_url="https://opencode.ai/zen/v1",
+        )
+
+        assert result.success, f"switch_model failed: {result.error_message}"
+        assert result.api_mode == "anthropic_messages"
+
+    def test_custom_opencode_go_family_provider_gets_codex_responses(self):
+        """A custom provider whose name extends the opencode-go family slug
+        (issue #85589) must get the same per-model routing the built-in
+        opencode-go provider gets — here codex_responses for a Grok model."""
+        result = _run_opencode_switch(
+            raw_input="grok-4.5",
+            current_provider="opencode-go-bridge",
+            current_model="kimi-k2.6",
+            current_base_url="https://my-opencode-mirror.example/v1",
+        )
+
+        assert result.success, f"switch_model failed: {result.error_message}"
+        assert result.api_mode == "codex_responses"
+
+
 class TestStaleConfigDefaultDoesNotWedgeResolver:
     """Regression for the real bug Quentin hit.
 

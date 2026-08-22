@@ -1489,6 +1489,7 @@ def switch_model(
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
+        opencode_provider_family,
         _get_ollama_request_headers,
         _get_provider_config_dict,
         _same_ollama_native_root,
@@ -2134,7 +2135,14 @@ def switch_model(
         api_mode = copilot_model_api_mode(new_model, api_key=api_key)
 
     # --- OpenCode api_mode override ---
-    if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
+    # opencode_provider_family is the single owner of family membership (its
+    # own docstring says so): it also matches opencode-free (Zen-hosted, same
+    # per-model routing) and custom providers whose name extends a family
+    # slug (opencode-go-bridge, opencode-zen-custom, issue #85589) — both of
+    # which this exact-set check used to miss, silently falling through to
+    # the generic determine_api_mode() and landing on the wrong wire for any
+    # model whose family routing isn't chat_completions.
+    if opencode_provider_family(target_provider) is not None:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
     # --- Nous Portal dual-wire override ---

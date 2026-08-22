@@ -8,6 +8,7 @@ Covers:
 
 import json
 import os
+import shlex
 from argparse import Namespace
 
 import pytest
@@ -418,6 +419,37 @@ class TestTerminalToolGatewayLifecycleGuard:
         result = json.loads(tt.terminal_tool(command=str(script)))
 
         assert result["exit_code"] == 1
+
+    def test_absolute_foundry_binary_reaches_execution(self, monkeypatch, tmp_path):
+        """A gateway command may invoke Foundry by absolute executable path.
+
+        The referenced-script fallback must classify ELF bytes as binary rather
+        than recursively scanning decoded machine code as shell text.
+        """
+        import tools.terminal_tool as tt
+
+        forge = tmp_path / "forge"
+        forge.write_bytes(b"\x7fELF\x02\x01\n/opt/foundry\x00 --version\n")
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+            cwd = str(tmp_path)
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "forge Version: test", "returncode": 0}
+
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
+        )
+        command = f"{shlex.quote(str(forge))} --version"
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 0
+        assert calls == [command]
 
     def test_launchctl_submit_parser_handles_shell_quoting(self, monkeypatch):
         import tools.terminal_tool as tt

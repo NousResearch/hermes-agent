@@ -656,7 +656,8 @@ def _is_image_size_error(error: Exception) -> bool:
     return any(hint in err_str for hint in (
         "too large", "payload", "413", "content_too_large",
         "request_too_large", "image_url", "invalid_request",
-        "exceeds", "size limit",
+        "exceeds", "exceed", "size limit", "dimensions exceed",
+        "max allowed size",
     ))
 
 

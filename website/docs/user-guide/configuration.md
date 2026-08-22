@@ -2250,14 +2250,24 @@ Configure the `execute_code` tool:
 ```yaml
 code_execution:
   mode: project                # project (default) | strict
-  timeout: 300                 # Max execution time in seconds
-  max_tool_calls: 50           # Max tool calls within code execution
+  kernel_mode: session         # session (default) | per_call
+  kernel_idle_seconds: 1800    # Reap inactive local kernels
+  max_live_kernels: 16         # Process-wide local-kernel bound
+  timeout: 300                 # Max execution time per call
+  max_tool_calls: 50           # Max tool calls per call
 ```
 
 **`mode`** controls the working directory and Python interpreter for scripts:
 
 - **`project`** (default) — scripts run in the session's working directory with the active virtualenv/conda env's python. Project deps (`pandas`, `torch`, project packages) and relative paths (`.env`, `./data.csv`) resolve naturally, matching what `terminal()` sees.
 - **`strict`** — scripts run in a temp staging directory with `sys.executable` (Hermes's own python). Maximum reproducibility, but project deps and relative paths won't resolve.
+
+**`kernel_mode`** controls local Python state:
+
+- **`session`** (default) — variables, imports, functions, and objects persist across `execute_code` calls in one conversation. A call with `reset: true`, `/new`, session teardown, timeout, interrupt, or kernel crash starts a fresh kernel.
+- **`per_call`** — every call starts a fresh Python process, matching the legacy behavior. Remote terminal backends always use this behavior.
+
+`kernel_idle_seconds` and `max_live_kernels` bound persistent processes in long-running gateways. Idle kernels are reaped after the configured interval, and the least-recently-used inactive kernel is closed when the process-wide cap is exceeded.
 
 Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PASSWD`, `*_AUTH`) and the tool whitelist apply identically in both modes — switching mode does not change the security posture.
 

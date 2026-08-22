@@ -74,6 +74,9 @@ class _FakeAgent:
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
 
+    def _code_execution_scope_id(self):
+        return f"conversation:{self.session_id}"
+
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
@@ -173,6 +176,18 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     assert cli.session_start > old_session_start
     assert cli.agent.session_start == cli.session_start
     cli.agent._invalidate_system_prompt.assert_called_once()
+
+
+def test_new_session_disposes_the_previous_python_kernel(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_scope = cli.agent._code_execution_scope_id()
+
+    with patch(
+        "tools.code_execution_kernel.kernel_registry.dispose_scope"
+    ) as dispose_scope:
+        cli.new_session(silent=True)
+
+    dispose_scope.assert_called_once_with(old_scope)
 
 
 
@@ -295,5 +310,4 @@ def test_new_session_with_title(capsys):
 
     captured = capsys.readouterr()
     assert "My Test Session" in captured.out
-
 

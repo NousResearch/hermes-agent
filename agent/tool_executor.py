@@ -2481,6 +2481,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             effective_task_id,
                             tool_call_id=tool_call.id,
                             session_id=agent.session_id or "",
+                            code_execution_session_id=(
+                                agent._code_execution_scope_id()
+                                if function_name == "execute_code"
+                                else None
+                            ),
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
                             api_request_id=getattr(agent, "_current_api_request_id", "")
                             or "",
@@ -2563,6 +2568,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             effective_task_id,
                             tool_call_id=tool_call.id,
                             session_id=agent.session_id or "",
+                            code_execution_session_id=(
+                                agent._code_execution_scope_id()
+                                if function_name == "execute_code"
+                                else None
+                            ),
                             turn_id=getattr(agent, "_current_turn_id", "") or "",
                             api_request_id=getattr(agent, "_current_api_request_id", "")
                             or "",

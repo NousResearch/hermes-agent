@@ -2104,6 +2104,7 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                code_execution_session_id=None,
                 turn_id="",
                 api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
@@ -2114,6 +2115,31 @@ class TestConcurrentToolExecution:
                 tool_request_middleware_trace=[],
             )
             assert result == "result"
+
+    def test_invoke_tool_forwards_stable_code_execution_scope(self, agent):
+        with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
+            agent._invoke_tool("execute_code", {"code": "42"}, "task-1")
+
+        assert mock_hfc.call_args.kwargs["code_execution_session_id"] == (
+            agent._code_execution_scope_id()
+        )
+
+    @pytest.mark.parametrize("quiet_mode", [True, False])
+    def test_sequential_execute_code_forwards_stable_scope(self, agent, quiet_mode):
+        agent.quiet_mode = quiet_mode
+        tool_call = _mock_tool_call(
+            name="execute_code",
+            arguments='{"code":"42"}',
+            call_id="c1",
+        )
+        message = _mock_assistant_msg(content="", tool_calls=[tool_call])
+
+        with patch("run_agent.handle_function_call", return_value='{"status":"success"}') as mock_hfc:
+            agent._execute_tool_calls_sequential(message, [], "task-1")
+
+        assert mock_hfc.call_args.kwargs["code_execution_session_id"] == (
+            agent._code_execution_scope_id()
+        )
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

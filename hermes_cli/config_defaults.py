@@ -2702,6 +2702,14 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Local Python state lifetime. Remote backends remain per-call.
+        "kernel_mode": "session",
+        # Reap inactive local kernels so gateways cannot retain them forever.
+        "kernel_idle_seconds": 1800,
+        # Process-wide LRU bound across profiles and conversations.
+        "max_live_kernels": 16,
+        "timeout": 300,
+        "max_tool_calls": 50,
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).

@@ -30,6 +30,21 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_code_execution_scope_reaches_registry_dispatch(self):
+        with patch(
+            "model_tools.registry.dispatch", return_value='{"status":"success"}'
+        ) as dispatch:
+            handle_function_call(
+                "execute_code",
+                {"code": "42"},
+                session_id="segment",
+                code_execution_session_id="conversation:root",
+            )
+
+        assert dispatch.call_args.kwargs["code_execution_session_id"] == (
+            "conversation:root"
+        )
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

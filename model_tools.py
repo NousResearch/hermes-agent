@@ -1205,6 +1205,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    code_execution_session_id: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1334,6 +1335,7 @@ def handle_function_call(
                 task_id=task_id,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
+                code_execution_session_id=code_execution_session_id,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
                 user_task=user_task,
@@ -1499,6 +1501,7 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        code_execution_session_id=code_execution_session_id,
                         enabled_tools=sandbox_enabled,
                     )
             else:

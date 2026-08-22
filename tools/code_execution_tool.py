@@ -8,10 +8,10 @@ collapsing multi-step tool chains into a single inference turn.
 Architecture (two transports):
 
   **Local backend (UDS):**
-  1. Parent generates a `hermes_tools.py` stub module with UDS RPC functions
-  2. Parent opens a Unix domain socket and starts an RPC listener thread
-  3. Parent spawns a child process that runs the LLM's script
-  4. Tool calls travel over the UDS back to the parent for dispatch
+  1. Parent creates one Python kernel per conversation
+  2. Each cell gets a fresh authenticated UDS/TCP RPC listener
+  3. Variables and imports remain in the child process between cells
+  4. Tool calls travel over RPC back to the parent for dispatch
 
   **Remote backends (file-based RPC):**
   1. Parent generates `hermes_tools.py` with file-based RPC stubs
@@ -24,7 +24,7 @@ Architecture (two transports):
 In both cases, only the script's stdout is returned to the LLM; intermediate
 tool results never enter the context window.
 
-Platform: Linux / macOS only (Unix domain sockets for local). Disabled on Windows.
+Platform: Linux, macOS, and Windows (loopback TCP is used on Windows).
 Remote execution additionally requires Python 3 in the terminal backend.
 """
 
@@ -513,6 +513,8 @@ _UDS_TRANSPORT_HEADER = '''\
 import json, os, socket, shlex, threading, time
 
 _sock = None
+_sock_endpoint = None
+_sock_token = None
 # The RPC server handles a single client connection serially and has no
 # request-id in the protocol, so concurrent _call() invocations from multiple
 # threads (e.g. ThreadPoolExecutor) would race on the shared socket and get
@@ -529,9 +531,16 @@ def _connect():
       - a string of the form ``tcp://127.0.0.1:<port>`` (Windows, where
         AF_UNIX is unreliable — the parent falls back to loopback TCP)
     """
-    global _sock
+    global _sock, _sock_endpoint, _sock_token
+    endpoint = os.environ["HERMES_RPC_SOCKET"]
+    token = os.environ.get("HERMES_RPC_TOKEN", "")
+    if _sock is not None and (endpoint != _sock_endpoint or token != _sock_token):
+        try:
+            _sock.close()
+        except OSError:
+            pass
+        _sock = None
     if _sock is None:
-        endpoint = os.environ["HERMES_RPC_SOCKET"]
         if endpoint.startswith("tcp://"):
             # tcp://host:port  (host is always 127.0.0.1 in practice — we
             # only bind loopback server-side)
@@ -543,6 +552,8 @@ def _connect():
             _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             _sock.connect(endpoint)
         _sock.settimeout(300)
+        _sock_endpoint = endpoint
+        _sock_token = token
     return _sock
 
 def _call(tool_name, args):
@@ -676,14 +687,16 @@ def _rpc_server_loop(
                 continue
         if conn is None:
             return
-        conn.settimeout(300)
+        conn.settimeout(0.1)
 
         buf = b""
         while True:
             try:
                 chunk = conn.recv(65536)
             except socket.timeout:
-                break
+                if stop_event.is_set():
+                    break
+                continue
             if not chunk:
                 break
             buf += chunk
@@ -1252,7 +1265,7 @@ def _execute_remote(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def execute_code(
+def _execute_code_per_call(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
@@ -1744,6 +1757,358 @@ def execute_code(
             pass  # already cleaned up or never created
 
 
+def _persistent_child_environment(child_python: str) -> tuple[dict, list[str]]:
+    child_env = _scrub_child_env(os.environ)
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+    timezone = os.getenv("HERMES_TIMEZONE", "").strip()
+    if timezone:
+        child_env["TZ"] = timezone
+    child_env.pop("HERMES_TIMEZONE", None)
+
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(child_env)
+
+    from tools.environments.local import _strip_hermes_owned_pythonpath
+    _strip_hermes_owned_pythonpath(child_env)
+    python_paths = []
+    hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _uses_hermes_python_environment(child_python):
+        python_paths.append(hermes_root)
+    elif child_python not in _external_env_logged:
+        _external_env_logged.add(child_python)
+        logger.info(
+            "execute_code: child interpreter %s is outside the Hermes "
+            "environment; hermes root omitted from PYTHONPATH",
+            child_python,
+        )
+    existing = child_env.get("PYTHONPATH", "")
+    if existing:
+        python_paths.extend(part for part in existing.split(os.pathsep) if part)
+    child_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    return child_env, python_paths
+
+
+def _open_local_rpc_server():
+    sock_path = None
+    if _IS_WINDOWS:
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        host, port = server_sock.getsockname()[:2]
+        endpoint = f"tcp://{host}:{port}"
+    else:
+        sock_dir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        sock_path = os.path.join(sock_dir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
+        endpoint = sock_path
+    server_sock.listen(1)
+    return server_sock, endpoint, sock_path
+
+
+def _execute_code_persistent(
+    code: str,
+    *,
+    task_id: Optional[str],
+    execution_session_id: str,
+    enabled_tools: Optional[List[str]],
+    reset: bool,
+) -> str:
+    from hermes_constants import hermes_home_key
+    from tools.code_execution_kernel import (
+        KernelDiedError,
+        KernelStartupInterrupted,
+        KernelStartupTimeout,
+        PersistentPythonKernel,
+        kernel_registry,
+    )
+    from tools.interrupt import is_interrupted
+
+    cfg = _load_config()
+    timeout = float(cfg.get("timeout", DEFAULT_TIMEOUT))
+    max_tool_calls = int(cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS))
+    idle_seconds = float(cfg.get("kernel_idle_seconds", DEFAULT_KERNEL_IDLE_SECONDS))
+    max_live = int(cfg.get("max_live_kernels", DEFAULT_MAX_LIVE_KERNELS))
+    mode = _get_execution_mode()
+    child_python = _resolve_child_python(mode)
+    placeholder = tempfile.gettempdir()
+    child_cwd = _resolve_child_cwd(mode, placeholder, task_id=task_id or "")
+    if mode == "strict":
+        child_cwd = ""
+
+    session_tools = set(enabled_tools) if enabled_tools else set()
+    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
+    if not sandbox_tools:
+        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    tools_source = generate_hermes_tools_module(list(sandbox_tools))
+    child_env, python_paths = _persistent_child_environment(child_python)
+    profile_key = hermes_home_key()
+    key = (
+        profile_key,
+        execution_session_id,
+        mode,
+        os.path.realpath(child_python),
+        tuple(sorted(sandbox_tools)),
+    )
+    if reset:
+        kernel_registry.dispose_scope(execution_session_id, profile_key)
+
+    exec_start = time.monotonic()
+    deadline = exec_start + timeout
+
+    def create_kernel():
+        return PersistentPythonKernel(
+            child_python,
+            child_cwd,
+            child_env,
+            tools_source,
+            deadline=deadline,
+            interrupted=is_interrupted,
+        )
+
+    kernel = None
+    acquired = False
+    server_sock = None
+    sock_path = None
+    stop_event = threading.Event()
+    rpc_thread = None
+    tool_call_log: list = []
+    tool_call_counter = [0]
+    try:
+        kernel, reused = kernel_registry.acquire(
+            key,
+            scope_id=execution_session_id,
+            profile_key=profile_key,
+            factory=create_kernel,
+            max_live=max_live,
+            idle_seconds=idle_seconds,
+            deadline=deadline,
+            interrupted=is_interrupted,
+        )
+        acquired = True
+        server_sock, endpoint, sock_path = _open_local_rpc_server()
+        rpc_token = secrets.token_urlsafe(32)
+        rpc_thread = threading.Thread(
+            target=propagate_context_to_thread(_rpc_server_loop),
+            args=(
+                server_sock,
+                task_id,
+                tool_call_log,
+                tool_call_counter,
+                max_tool_calls,
+                sandbox_tools,
+                stop_event,
+                rpc_token,
+            ),
+            daemon=True,
+        )
+        rpc_thread.start()
+        cell_env = dict(child_env)
+        cell_env["HERMES_RPC_SOCKET"] = endpoint
+        cell_env["HERMES_RPC_TOKEN"] = rpc_token
+
+        activity_state = {"last_touch": time.monotonic(), "start": exec_start}
+        try:
+            from tools.environments.base import touch_activity_if_due
+        except Exception:
+            touch_activity_if_due = None
+
+        def touch_activity():
+            if touch_activity_if_due is not None:
+                try:
+                    touch_activity_if_due(activity_state, "execute_code running")
+                except Exception:
+                    pass
+
+        result = kernel.execute(
+            code,
+            cwd=child_cwd or kernel.staging_dir,
+            env=cell_env,
+            python_paths=[
+                kernel.staging_dir,
+                *([child_cwd] if child_cwd else []),
+                *python_paths,
+            ],
+            deadline=deadline,
+            interrupted=is_interrupted,
+            stdout_limit=MAX_STDOUT_BYTES,
+            stderr_limit=MAX_STDERR_BYTES,
+            activity=touch_activity,
+        )
+        stdout_text, stdout_metadata = _assemble_stdout_result(
+            result.stdout_head,
+            result.stdout_tail,
+            total_bytes=result.stdout_total,
+        )
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        from tools.ansi_strip import sanitize_display_text
+        stdout_text = sanitize_display_text(stdout_text)
+        stderr_text = sanitize_display_text(stderr_text)
+        from agent.redact import redact_sensitive_text
+        stdout_text = redact_sensitive_text(stdout_text, code_file=True)
+        stderr_text = redact_sensitive_text(stderr_text, code_file=True)
+        duration = round(time.monotonic() - exec_start, 2)
+        response: Dict[str, Any] = {
+            "status": result.status,
+            "output": stdout_text,
+            "exit_code": 0 if result.status == "success" else 1,
+            "tool_calls_made": tool_call_counter[0],
+            "duration_seconds": duration,
+            "persistent": True,
+            "kernel_reused": reused,
+        }
+        response.update(stdout_metadata)
+        if result.status == "timeout":
+            suffix = (
+                " and the Python kernel was reset"
+                if result.invalidate_kernel
+                else " before execution started"
+            )
+            message = f"Script timed out after {timeout:g}s{suffix}."
+            response["error"] = message
+            response["output"] = (
+                f"{stdout_text}\n\n⏰ {message}" if stdout_text else f"⏰ {message}"
+            )
+            if result.invalidate_kernel:
+                kernel_registry.discard(key, kernel)
+        elif result.status == "interrupted":
+            suffix = " — Python kernel reset" if result.invalidate_kernel else ""
+            response["output"] = stdout_text + f"\n[execution interrupted{suffix}]"
+            if result.invalidate_kernel:
+                kernel_registry.discard(key, kernel)
+        elif result.status == "error":
+            error = result.error or stderr_text or "Python execution failed"
+            response["error"] = error
+            if stderr_text:
+                response["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
+            hint = _sandbox_failure_hint(stderr_text or error, enabled_tools=sandbox_tools)
+            if hint:
+                response["hint"] = hint
+        return json.dumps(response, ensure_ascii=False)
+    except KernelStartupTimeout:
+        return json.dumps({
+            "status": "timeout",
+            "error": f"Python kernel did not start within {timeout:g}s.",
+            "output": f"⏰ Python kernel did not start within {timeout:g}s.",
+            "exit_code": 1,
+            "tool_calls_made": tool_call_counter[0],
+            "duration_seconds": round(time.monotonic() - exec_start, 2),
+            "persistent": True,
+        }, ensure_ascii=False)
+    except KernelStartupInterrupted:
+        return json.dumps({
+            "status": "interrupted",
+            "output": "[execution interrupted during Python kernel startup]",
+            "exit_code": 1,
+            "tool_calls_made": tool_call_counter[0],
+            "duration_seconds": round(time.monotonic() - exec_start, 2),
+            "persistent": True,
+        }, ensure_ascii=False)
+    except KernelDiedError as exc:
+        if kernel is not None:
+            kernel_registry.discard(key, kernel)
+        return json.dumps({
+            "status": "error",
+            "error": f"Python kernel stopped unexpectedly: {exc}",
+            "tool_calls_made": tool_call_counter[0],
+            "duration_seconds": round(time.monotonic() - exec_start, 2),
+            "persistent": True,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("persistent execute_code failed: %s", exc, exc_info=True)
+        if kernel is not None and not kernel.alive:
+            kernel_registry.discard(key, kernel)
+        return json.dumps({
+            "status": "error",
+            "error": str(exc),
+            "tool_calls_made": tool_call_counter[0],
+            "duration_seconds": round(time.monotonic() - exec_start, 2),
+            "persistent": True,
+        }, ensure_ascii=False)
+    finally:
+        stop_event.set()
+        if server_sock is not None:
+            try:
+                server_sock.close()
+            except OSError:
+                pass
+        if rpc_thread is not None:
+            rpc_thread.join(timeout=3)
+        if sock_path:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+        if acquired:
+            kernel_registry.release(key, kernel)
+
+
+def execute_code(
+    code: str,
+    task_id: Optional[str] = None,
+    enabled_tools: Optional[List[str]] = None,
+    execution_session_id: Optional[str] = None,
+    reset: bool = False,
+) -> str:
+    """Execute Python, retaining local state when a session identity is available."""
+    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+
+    cfg = _load_config()
+    kernel_mode = _get_kernel_mode(cfg)
+    env_config = _get_env_config()
+    if (
+        env_config["env_type"] != "local"
+        or kernel_mode == "per_call"
+        or not execution_session_id
+    ):
+        result = json.loads(_execute_code_per_call(code, task_id, enabled_tools))
+        result.setdefault("persistent", False)
+        return json.dumps(result, ensure_ascii=False)
+
+    if not SANDBOX_AVAILABLE:
+        return tool_error("execute_code is unavailable in this environment")
+    if not code or not code.strip():
+        return tool_error(
+            "No code provided. execute_code requires a non-empty 'code' parameter."
+        )
+    from tools.approval import check_execute_code_guard
+    guard = check_execute_code_guard(
+        code,
+        "local",
+        has_host_access=_docker_has_host_access(env_config),
+    )
+    if not guard.get("approved", False):
+        return json.dumps({
+            "status": "error",
+            "error": guard.get("message") or "execute_code blocked by approval guard.",
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+            "persistent": True,
+        }, ensure_ascii=False)
+    if guard.get("user_approved"):
+        from tools.interrupt import clear_current_thread_interrupt
+        clear_current_thread_interrupt()
+    return _execute_code_persistent(
+        code,
+        task_id=task_id,
+        execution_session_id=execution_session_id,
+        enabled_tools=enabled_tools,
+        reset=reset,
+    )
+
+
+def dispose_code_execution_sessions(
+    execution_session_id: str,
+    profile_key: Optional[str] = None,
+) -> None:
+    if not execution_session_id:
+        return
+    from tools.code_execution_kernel import kernel_registry
+    kernel_registry.dispose_scope(execution_session_id, profile_key)
+
+
 def _kill_process_group(proc, escalate: bool = False):
     """Kill the child and its entire process tree (cross-platform via psutil)."""
     import psutil
@@ -1821,6 +2186,28 @@ def _load_config() -> dict:
 # and the config layer can reference the canonical set.
 EXECUTION_MODES = ("project", "strict")
 DEFAULT_EXECUTION_MODE = "project"
+KERNEL_MODES = ("session", "per_call")
+DEFAULT_KERNEL_MODE = "session"
+DEFAULT_KERNEL_IDLE_SECONDS = 1800
+DEFAULT_MAX_LIVE_KERNELS = 16
+
+
+def _get_kernel_mode(cfg: Optional[dict] = None) -> str:
+    value = str(
+        (cfg if cfg is not None else _load_config()).get(
+            "kernel_mode", DEFAULT_KERNEL_MODE
+        )
+    ).strip().lower().replace("-", "_")
+    if value in KERNEL_MODES:
+        return value
+    logger.warning(
+        "Ignoring code_execution.kernel_mode=%r (expected one of %s), "
+        "falling back to %r",
+        value,
+        KERNEL_MODES,
+        DEFAULT_KERNEL_MODE,
+    )
+    return DEFAULT_KERNEL_MODE
 
 
 def _get_execution_mode() -> str:
@@ -2074,7 +2461,8 @@ _TOOL_DOC_LINES = [
 
 
 def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+                              mode: str = None,
+                              kernel_mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``hermes tools`` (e.g. web is turned off),
@@ -2091,6 +2479,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
     if mode is None:
         mode = _get_execution_mode()
+    if kernel_mode is None:
+        kernel_mode = _get_kernel_mode()
 
     # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
@@ -2111,28 +2501,47 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     # temp-dir staging and hermes-agent's own python.
     if mode == "strict":
         cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
+            "Code runs in its own temp dir, not the session's CWD — use absolute paths "
             "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
         )
     else:
         cwd_note = (
-            "Scripts run in the session's working directory with the active venv's python, "
+            "Code runs in the session's working directory with the active venv's python, "
             "so project deps (pandas, etc.) and relative paths work like in terminal()."
         )
+    if kernel_mode == "session":
+        execution_note = (
+            "Run one Python cell. On the local backend, it executes in a conversation-scoped "
+            "persistent kernel: variables, imports, functions, and in-memory objects survive "
+            "across calls. Work incrementally — import or load once, then define, test, and "
+            "reuse prior names in later calls. After an error, fix and rerun only the failing "
+            "step. Use reset=true only when a fresh kernel is required."
+        )
+        code_note = (
+            "One Python cell to execute. Prior top-level names from this conversation are "
+            "available. Import tools with "
+        )
+    else:
+        execution_note = (
+            "Run a Python script in a fresh process. Each call starts with no prior Python state."
+        )
+        code_note = "Python code to execute in a fresh process. Import tools with "
 
     description = (
-        "Run a Python script that calls Hermes tools programmatically. "
-        "Use when you need 3+ tool calls with logic between them: "
+        f"{execution_note}\n\n"
+        "Use this for incremental computation, or call Hermes tools programmatically when "
+        "you need 3+ tool calls with logic between them: "
         "filtering/reducing large outputs before they enter context, "
         "conditional branching, or loops (N pages/files, retry on failure). "
         "Use normal tool calls for single calls, results you must reason "
         "over in full, or anything needing user interaction.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
+        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per call. "
         "terminal() is foreground-only (no background or pty).\n\n"
         f"{cwd_note}\n\n"
-        "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
+        "Print your final result or leave it as the final expression; "
+        "stdlib (json, re, csv, datetime, ...) "
         "is available for processing.\n\n"
         "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
         "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
@@ -2148,10 +2557,18 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                 "code": {
                     "type": "string",
                     "description": (
-                        "Python code to execute. Import tools with "
-                        f"`from hermes_tools import {import_str}` "
-                        "and print your final result to stdout."
+                        code_note
+                        + f"`from hermes_tools import {import_str}` "
+                        + "and print your final result or leave it as the final expression."
                     ),
+                },
+                "reset": {
+                    "type": "boolean",
+                    "description": (
+                        "Reset this conversation's local Python kernel before "
+                        "running the code. Ignored on per-call and remote backends."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["code"],
@@ -2196,10 +2613,20 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
             "execute_code(code=\"...\")."
         )
 
+    reset = args.get("reset", False)
+    if not isinstance(reset, bool):
+        return tool_error(
+            "execute_code 'reset' must be true or false."
+        )
+
     return execute_code(
         code=code or "",
         task_id=kwargs.get("task_id"),
         enabled_tools=kwargs.get("enabled_tools"),
+        execution_session_id=(
+            kwargs.get("code_execution_session_id") or kwargs.get("session_id")
+        ),
+        reset=reset,
     )
 
 

@@ -4560,6 +4560,12 @@ class AIAgent:
 
         task_id = getattr(self, "session_id", None) or ""
 
+        try:
+            from tools.code_execution_kernel import kernel_registry
+            kernel_registry.dispose_scope(self._code_execution_scope_id())
+        except Exception:
+            pass
+
         # 1. Kill background processes for this task
         try:
             from tools.process_registry import process_registry
@@ -8479,6 +8485,14 @@ class AIAgent:
             except Exception:
                 logger.debug("Conversation root lineage walk failed", exc_info=True)
         return start
+
+    def _code_execution_scope_id(self) -> str:
+        """Return the stable, isolated owner for a local Python kernel."""
+        session_id = getattr(self, "session_id", None) or ""
+        if getattr(self, "platform", None) == "subagent":
+            return f"subagent:{session_id}"
+        root_id = self._conversation_root_id() or session_id
+        return f"conversation:{root_id}" if root_id else ""
 
     def run_conversation(
         self,

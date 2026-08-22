@@ -6,15 +6,15 @@ description: "Programmatic Python execution with RPC tool access — collapse mu
 
 # Code Execution (Programmatic Tool Calling)
 
-The `execute_code` tool lets the agent write Python scripts that call Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn. The script runs in a child process on the agent host, communicating with Hermes over a Unix domain socket RPC.
+The `execute_code` tool lets the agent write Python that calls Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn. On the local backend, each conversation owns a persistent child Python process and each call uses a fresh authenticated RPC connection to Hermes.
 
 ## How It Works
 
 1. The agent writes a Python script using `from hermes_tools import ...`
 2. Hermes generates a `hermes_tools.py` stub module with RPC functions
-3. Hermes opens a Unix domain socket and starts an RPC listener thread
-4. The script runs in a child process — tool calls travel over the socket back to Hermes
-5. Only the script's `print()` output is returned to the LLM; intermediate tool results never enter the context window
+3. Hermes opens a fresh local RPC endpoint for the call
+4. The code runs in the conversation's Python process — tool calls travel over RPC back to Hermes
+5. Printed output and the final expression's representation are returned to the LLM; intermediate tool results never enter the context window
 
 ```python
 # The agent can write scripts like:
@@ -28,6 +28,25 @@ print(summary)
 ```
 
 **Available tools inside scripts:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
+
+## Persistent Local State
+
+With the default `code_execution.kernel_mode: session`, local calls behave like a notebook or REPL: variables, imports, functions, and in-memory objects remain available to later `execute_code` calls in the same conversation.
+
+```python
+# First call
+import pandas as pd
+rows = pd.read_csv("data.csv")
+
+# Later call in the same conversation
+rows.groupby("category")["amount"].sum()
+```
+
+Set `reset: true` on a call to discard that conversation's kernel before running the new code. `/new`, session teardown, a timeout, an interrupt, or a kernel crash also discards it. Ordinary Python exceptions do not: definitions and mutations made before the exception remain available for diagnosis and recovery.
+
+Kernels are isolated by Hermes profile and conversation. Subagents receive separate kernels. Context compression keeps the parent conversation's kernel because it preserves the conversation lineage.
+
+Remote terminal backends continue to run one fresh process per call. To restore that behavior locally, set `code_execution.kernel_mode: per_call`.
 
 ## When the Agent Uses This
 
@@ -159,7 +178,7 @@ Switching mode changes where scripts run and which interpreter runs them, not wh
 
 | Resource | Limit | Notes |
 |----------|-------|-------|
-| **Timeout** | 5 minutes (300s) | Script is killed with SIGTERM, then SIGKILL after 5s grace |
+| **Timeout** | 5 minutes (300s) | The running call is stopped and its local kernel is reset |
 | **Stdout** | 50 KB | Output truncated with `[output truncated at 50KB]` notice |
 | **Stderr** | 10 KB | Included in output on non-zero exit for debugging |
 | **Tool calls** | 50 per execution | Error returned when limit reached |
@@ -169,16 +188,19 @@ All limits are configurable via `config.yaml`:
 ```yaml
 # In ~/.hermes/config.yaml
 code_execution:
-  mode: project      # project (default) | strict
-  timeout: 300       # Max seconds per script (default: 300)
-  max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  mode: project               # project (default) | strict
+  kernel_mode: session        # session (default) | per_call
+  kernel_idle_seconds: 1800   # Reap an inactive local kernel after 30 minutes
+  max_live_kernels: 16        # Process-wide LRU bound
+  timeout: 300                # Max seconds per call (default: 300)
+  max_tool_calls: 50          # Max tool calls per call (default: 50)
 ```
 
 ## How Tool Calls Work Inside Scripts
 
 When your script calls a function like `web_search("query")`:
 
-1. The call is serialized to JSON and sent over a Unix domain socket to the parent process
+1. The call is serialized to JSON and sent over the current call's authenticated local RPC endpoint
 2. The parent dispatches through the standard `handle_function_call` handler
 3. The result is sent back over the socket
 4. The function returns the parsed result

@@ -521,6 +521,9 @@ def load_cli_config() -> Dict[str, Any]:
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
+            "kernel_mode": "session",
+            "kernel_idle_seconds": 1800,
+            "max_live_kernels": 16,
         },
         "auxiliary": {
             "vision": {
@@ -9798,6 +9801,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        if self.agent:
+            try:
+                from tools.code_execution_kernel import kernel_registry
+                kernel_registry.dispose_scope(self.agent._code_execution_scope_id())
+            except Exception:
+                pass
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back

@@ -1180,6 +1180,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Real session title from the sessions table (absent for untitled
+   *  sessions). The backend enriches every result with it; the sidebar maps
+   *  it onto the synthesized row so search hits show the actual name, not
+   *  the matched-message snippet. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

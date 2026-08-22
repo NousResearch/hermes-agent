@@ -1589,6 +1589,14 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             if message_id:
                 delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
 
+        if not thread_id and platform not in ("tui", ""):
+            logger.warning(
+                "kanban_notify_subs: subscribing task=%r platform=%r chat_id=%r "
+                "with EMPTY thread_id — on a threaded platform this can land "
+                "the completion notification on the wrong channel",
+                task_id, platform, chat_id,
+            )
+
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb
         _kb.add_notify_sub(
@@ -1676,12 +1684,16 @@ _DESC_TASK_ID_DEFAULT = (
 )
 
 _DESC_BOARD = (
-    "Kanban board slug to target. When omitted, the call resolves the "
-    "active board the usual way: HERMES_KANBAN_DB env → "
-    "HERMES_KANBAN_BOARD env → the 'current' symlink under the kanban "
-    "home → 'default'. Pass an explicit slug only when the caller (e.g. "
-    "a Telegram routing layer) needs to override the env-pinned active "
-    "board for this one call."
+    "Kanban board slug to target. Passing this OVERRIDES any per-conversation "
+    "board binding the current conversation already has — an explicit value "
+    "here always wins. Leave it omitted unless you specifically need to reach "
+    "a DIFFERENT board than the one this chat is bound to. When omitted, the "
+    "call resolves the active board via get_current_board()'s chain (highest "
+    "precedence first): the per-conversation binding (scoped_current_board) → "
+    "HERMES_KANBAN_BOARD env → the 'current' file under the kanban home → "
+    "'default'. Do not hardcode a board slug here from memory of a past task — "
+    "that silently defeats the per-conversation binding for every future "
+    "conversation on this thread."
 )
 
 

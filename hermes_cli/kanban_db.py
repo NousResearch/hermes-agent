@@ -612,11 +612,14 @@ def get_current_board() -> str:
 
     Order (highest precedence first):
 
-    1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
+    1. ``_CURRENT_BOARD_OVERRIDE`` (a ``ContextVar``, set via
+       ``scoped_current_board()``) — a per-conversation binding a caller can
+       pin for the duration of a scope.
+    2. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
-    2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
+    3. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
        switch``), but only when that board still exists.
-    3. ``DEFAULT_BOARD`` (``"default"``).
+    4. ``DEFAULT_BOARD`` (``"default"``).
 
     A malformed or stale slug at any step falls through to the next layer
     with a best-effort warning — the dispatcher must never crash because a
@@ -5695,10 +5698,20 @@ def _persist_scratch_completion_artifacts(
         try:
             resolved_src = src.resolve()
         except OSError:
+            _log.warning(
+                "kanban complete_task(%s): artifact path could not be "
+                "resolved, will NOT be persisted before workspace cleanup: %r",
+                task_id, artifact,
+            )
             persisted.append(artifact)
             continue
 
         if not resolved_src.is_relative_to(workspace_root):
+            _log.warning(
+                "kanban complete_task(%s): artifact %r resolved to %s, which "
+                "is outside its workspace %s — not persisted before cleanup",
+                task_id, artifact, resolved_src, workspace_root,
+            )
             persisted.append(artifact)
             continue
 

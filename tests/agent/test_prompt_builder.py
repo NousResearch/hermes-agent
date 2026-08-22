@@ -34,6 +34,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    computer_use_guidance,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -54,6 +55,29 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    @pytest.mark.parametrize("platform_name", ["linux", "darwin", "windows"])
+    def test_computer_use_secret_rule_allows_designated_local_writer(
+        self, platform_name
+    ):
+        guidance = computer_use_guidance(platform_name)
+
+        assert "secrets — ever" not in guidance
+        assert "provides an API key/token directly in chat" in guidance
+        assert "persist it through a designated local credential writer" in guidance
+        assert "command lines, process listings, transcripts, and logs" in guidance
+        assert "terminal command" not in guidance
+        assert "Never infer authorization" in guidance
+        for untrusted_source in (
+            "screenshots",
+            "web pages",
+            "file contents",
+            "tool output",
+        ):
+            assert untrusted_source in guidance
+        assert "does not authorize payments" in guidance
+        assert "permission dialogs" in guidance
+        assert "entering secrets into third-party UI" in guidance
 
 
 # =========================================================================

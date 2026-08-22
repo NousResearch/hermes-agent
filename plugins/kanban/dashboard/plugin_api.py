@@ -44,8 +44,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -94,6 +94,64 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
     return bool(_ws._ws_auth_ok(ws))
 
 
+# Query params the WS upgrade may legitimately carry in ``view=signal``
+# mode: the signal contract's own params plus whichever credential
+# ``_ws_upgrade_authorized`` accepts for the active auth mode.
+_SIGNAL_WS_ALLOWED_PARAMS = {"view", "board", "since", "token", "ticket", "internal"}
+
+
+def _signal_ws_query_items(ws: "WebSocket") -> list[tuple[str, str]]:
+    """Query items as ``(key, value)`` pairs, preserving duplicates.
+
+    Real Starlette ``QueryParams`` exposes ``multi_items()``; falls back
+    to plain ``.items()`` for the simple dict-based fakes used in tests.
+    """
+    qp = ws.query_params
+    multi = getattr(qp, "multi_items", None)
+    if callable(multi):
+        return list(multi())
+    return list(qp.items())
+
+
+def _signal_ws_validation_error(ws: "WebSocket") -> Optional[str]:
+    """Strict canonical query validation for ``view=signal`` connections.
+
+    Returns a short reason string when the query is malformed (unknown
+    or duplicated parameter, missing/invalid ``board``, non-canonical
+    ``since``), else ``None``. The legacy view-absent path never calls
+    this — it keeps coercing a malformed ``since`` to 0, unchanged, for
+    byte-compatibility with existing callers.
+    """
+    seen: set[str] = set()
+    for key, _ in _signal_ws_query_items(ws):
+        if key not in _SIGNAL_WS_ALLOWED_PARAMS:
+            return f"unknown parameter: {key}"
+        if key in seen:
+            return f"duplicate parameter: {key}"
+        seen.add(key)
+
+    board_raw = ws.query_params.get("board")
+    if not board_raw:
+        return "board is required"
+    try:
+        normed_board = kanban_db._normalize_board_slug(board_raw)
+        if not normed_board:
+            return "board is required"
+    except ValueError as exc:
+        return str(exc)
+    if normed_board != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed_board):
+        return f"board {normed_board!r} does not exist"
+
+    since_raw = ws.query_params.get("since")
+    if since_raw is not None:
+        try:
+            if int(since_raw) < 0:
+                return "since must be a non-negative integer"
+        except ValueError:
+            return "since must be a non-negative integer"
+    return None
+
+
 def _resolve_board(board: Optional[str]) -> Optional[str]:
     """Validate and normalise a board slug from a query param.
 
@@ -114,6 +172,46 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
             detail=f"board {normed!r} does not exist",
         )
     return normed
+
+
+def _resolve_board_strict(board: Optional[str]) -> str:
+    """Like :func:`_resolve_board`, but ``board`` is mandatory.
+
+    Used by the generic read-model surface (issue-scoped read-only
+    consumers), which must name the board explicitly rather than
+    inheriting the ambient "current board" pointer other endpoints fall
+    back to.
+    """
+    if not board or not board.strip():
+        raise HTTPException(status_code=400, detail="board is required")
+    try:
+        normed = kanban_db._normalize_board_slug(board)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not normed:
+        raise HTTPException(status_code=400, detail="board is required")
+    if normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+    return normed
+
+
+def _reject_unknown_query_params(request: "Request", allowed: set[str]) -> None:
+    """Enforce strict canonical query params: every key must be in
+    ``allowed`` and appear at most once. Raises 400 otherwise.
+
+    Generic FastAPI ``Query(...)`` declarations silently ignore extra or
+    repeated params, which is fine for the dashboard's own UI but wrong
+    for a versioned external read-model contract where a typo'd or
+    duplicated param should fail loudly instead of being silently
+    dropped.
+    """
+    seen: set[str] = set()
+    for key, _ in request.query_params.multi_items():
+        if key not in allowed:
+            raise HTTPException(status_code=400, detail=f"unknown parameter: {key}")
+        if key in seen:
+            raise HTTPException(status_code=400, detail=f"duplicate parameter: {key}")
+        seen.add(key)
 
 
 def _conn(board: Optional[str] = None):
@@ -232,6 +330,40 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "metadata": r.metadata,
         "error": r.error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Signal read-model — allowlisted, redacted views for external consumers
+# (issue: generic Kanban read-model surface). Never emit body, result,
+# prompt, path, token, raw error, summary, metadata, or event payload —
+# those are exposed only through the authenticated dashboard REST/WS
+# surfaces above, whose consumers already need the full task record.
+# ---------------------------------------------------------------------------
+
+_SIGNAL_TASK_FIELDS = (
+    "id", "title", "status", "priority", "assignee", "tenant", "project_id",
+    "created_at", "started_at", "completed_at", "workflow_template_id",
+    "current_step_key", "current_run_id", "consecutive_failures",
+    "block_kind", "goal_mode",
+)
+
+_SIGNAL_RUN_FIELDS = ("id", "task_id", "profile", "step_key", "status", "started_at", "ended_at", "outcome")
+
+_SIGNAL_EVENT_FIELDS = ("id", "task_id", "run_id", "kind", "created_at")
+
+
+def _signal_task_dict(task: kanban_db.Task) -> dict[str, Any]:
+    d = asdict(task)
+    return {k: d.get(k) for k in _SIGNAL_TASK_FIELDS}
+
+
+def _signal_run_dict(r: kanban_db.Run) -> dict[str, Any]:
+    d = asdict(r)
+    return {k: d.get(k) for k in _SIGNAL_RUN_FIELDS}
+
+
+def _signal_event_dict(event: dict[str, Any]) -> dict[str, Any]:
+    return {k: event.get(k) for k in _SIGNAL_EVENT_FIELDS}
 
 
 # Hallucination-warning event kinds — see complete_task() in kanban_db.py.
@@ -2604,6 +2736,73 @@ def switch_board(slug: str):
 
 
 # ---------------------------------------------------------------------------
+# GET/HEAD /read-model/signal?board=<slug> — generic sanitized read model
+# ---------------------------------------------------------------------------
+
+_SIGNAL_CAPABILITIES = ("kanban.read_model.signal.v1", "kanban.events.signal.v1")
+
+
+@router.get("/capabilities")
+def get_capabilities():
+    """Discoverable capability strings for external plugin consumers."""
+    return {"capabilities": list(_SIGNAL_CAPABILITIES)}
+
+
+@router.api_route("/read-model/signal", methods=["GET", "HEAD"])
+def get_signal_read_model(request: Request, board: Optional[str] = Query(None)):
+    """Authenticated, redacted operational-graph view of a board.
+
+    Strict surface for external dashboard plugins that only need
+    status/graph signals: allowlisted task/run fields and parent/child
+    links, never the sensitive fields the full REST/WS surfaces carry
+    (body, result, prompt, workspace path, claim tokens, run error/
+    summary/metadata). ``board`` is mandatory and no other query
+    parameter is accepted.
+    """
+    _reject_unknown_query_params(request, {"board"})
+    normed = _resolve_board_strict(board)
+    conn = _conn(board=normed)
+    try:
+        tasks = kanban_db.list_tasks(conn, include_archived=True)
+        task_ids = [t.id for t in tasks]
+        links = [
+            {"parent_id": row["parent_id"], "child_id": row["child_id"]}
+            for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+        ]
+        runs: list[dict[str, Any]] = []
+        if task_ids:
+            placeholders = ",".join(["?"] * len(task_ids))
+            for row in conn.execute(
+                f"SELECT * FROM task_runs WHERE task_id IN ({placeholders}) ORDER BY id",
+                tuple(task_ids),
+            ).fetchall():
+                runs.append(_signal_run_dict(kanban_db.Run.from_row(row)))
+        floor_row = conn.execute(
+            "SELECT COALESCE(MIN(id), 0) AS floor, COALESCE(MAX(id), 0) AS latest "
+            "FROM task_events"
+        ).fetchone()
+        payload = {
+            "board": normed,
+            "tasks": [_signal_task_dict(t) for t in tasks],
+            "links": links,
+            "runs": runs,
+            # The lowest surviving task_events.id: since ids are
+            # monotonic and retention (kanban_db.gc_events) only ever
+            # deletes the oldest rows, this floor only moves forward.
+            # A WS ``since`` cursor below it means history in that gap
+            # was reclaimed — the signal envelope surfaces the same
+            # value as ``generation`` so callers can detect the gap.
+            "generation": int(floor_row["floor"]),
+            "cursor": int(floor_row["latest"]),
+        }
+    finally:
+        conn.close()
+    response = JSONResponse(content=payload)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+# ---------------------------------------------------------------------------
 # WebSocket: /events?since=<event_id>
 # ---------------------------------------------------------------------------
 
@@ -2899,6 +3098,18 @@ async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
+
+    # ``view=signal`` opts into the strict, redacted read-model contract.
+    # Absent/empty ``view`` is the legacy path below, kept byte-compatible.
+    view_raw = (ws.query_params.get("view") or "").strip()
+    signal_mode = view_raw == "signal"
+    if view_raw and not signal_mode:
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+    if signal_mode and _signal_ws_validation_error(ws) is not None:
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+
     await ws.accept()
     try:
         since_raw = ws.query_params.get("since", "0")
@@ -2906,6 +3117,8 @@ async def stream_events(ws: WebSocket):
             cursor = int(since_raw)
         except ValueError:
             cursor = 0
+        starting_cursor = cursor
+        reset_notified = False
 
         # Board selection — pinned at the WS handshake; re-subscribe to
         # switch boards. Changing boards mid-stream would require
@@ -2917,7 +3130,7 @@ async def stream_events(ws: WebSocket):
         except ValueError:
             ws_board = None
 
-        def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
+        def _fetch_new(cursor_val: int) -> tuple[int, list[dict], int]:
             conn = kanban_db.connect(board=ws_board)
             try:
                 rows = conn.execute(
@@ -2941,7 +3154,17 @@ async def stream_events(ws: WebSocket):
                         "created_at": r["created_at"],
                     })
                     new_cursor = r["id"]
-                return new_cursor, out
+                floor = 0
+                if signal_mode:
+                    # Lowest surviving event id — see
+                    # get_signal_read_model's ``generation`` for why this
+                    # doubles as the retention-gap marker.
+                    floor = int(
+                        conn.execute(
+                            "SELECT COALESCE(MIN(id), 0) AS floor FROM task_events"
+                        ).fetchone()["floor"]
+                    )
+                return new_cursor, out, floor
             finally:
                 conn.close()
 
@@ -2961,8 +3184,22 @@ async def stream_events(ws: WebSocket):
             except asyncio.TimeoutError:
                 pass  # no client message — poll the DB
 
-            cursor, events = await asyncio.to_thread(_fetch_new, cursor)
-            if events:
+            cursor, events, floor = await asyncio.to_thread(_fetch_new, cursor)
+            if signal_mode:
+                if not reset_notified and starting_cursor > 0 and floor > starting_cursor:
+                    # Some history between the requested cursor and the
+                    # current floor was reclaimed by retention — the
+                    # client must not treat this as "nothing happened"
+                    # and should refetch /read-model/signal to resync.
+                    await ws.send_json({"reset": True, "generation": floor, "cursor": floor})
+                    reset_notified = True
+                if events:
+                    await ws.send_json({
+                        "generation": floor,
+                        "cursor": cursor,
+                        "events": [_signal_event_dict(e) for e in events],
+                    })
+            elif events:
                 await ws.send_json({"events": events, "cursor": cursor})
     except WebSocketDisconnect:
         return

@@ -25,8 +25,8 @@ safe. Invariants shared with the startup pruner (never violated here either):
 - live-locked trees (owning pid alive) are never touched;
 - a branch is deleted only after its worktree removal succeeded — a failed
   removal must not orphan reachable commits;
-- untracked-only dirt is ARCHIVED to ``~/.hermes/archive/worktree-prune/``
-  before its tree is reaped, never destroyed.
+- untracked-only dirt is ARCHIVED inside the active Hermes profile before its
+  tree is reaped, never destroyed.
 
 Classification primitives are imported from ``cli`` so the two paths can
 never drift apart on what "dirty", "unpushed", or "merged" means.
@@ -43,6 +43,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +148,7 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
     something?" question.
     """
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = (
-        Path.home() / ".hermes" / "archive" / "worktree-prune"
-        / f"{tree.name}-{stamp}"
-    )
+    dest = get_hermes_home() / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
     try:
         for rel in untracked:
             src = tree / rel

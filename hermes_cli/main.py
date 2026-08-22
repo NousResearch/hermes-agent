@@ -12533,6 +12533,8 @@ def main():
     # =========================================================================
     # worktree command — audit/reclaim accumulated git worktrees + branches
     # =========================================================================
+    from hermes_constants import display_hermes_home
+
     worktree_parser = subparsers.add_parser(
         "worktree",
         help="Audit and reclaim accumulated git worktrees and merged branches",
@@ -12540,7 +12542,8 @@ def main():
             "Attended reclaim for the .worktrees/ directory hermes -w sessions "
             "accumulate. Never deletes uncommitted tracked changes, unique "
             "unpushed commits, or in-use trees; untracked-only scratch is "
-            "archived to ~/.hermes/archive/worktree-prune/ before removal. See: "
+            f"archived to {display_hermes_home()}/archive/worktree-prune/ "
+            "before removal. See: "
             "https://hermes-agent.nousresearch.com/docs/user-guide/cli#worktree-cleanup"
         ),
     )

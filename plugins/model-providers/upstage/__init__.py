@@ -76,14 +76,14 @@ class UpstageProfile(ProviderProfile):
             return {}, top_level
 
         # Map Hermes' effort vocabulary onto Solar's accepted set via the
-        # shared clamp (agent.reasoning_effort). minimal → omit (Solar's
+        # shared clamp (agent.reasoning_effort). none/minimal → omit (Solar's
         # minimal means off); unknown-but-enabled bespoke levels collapse to
         # high rather than silently downgrading (#62650 precedent).
         effort = (reasoning_config.get("effort") or "").strip().lower()
         if not effort:
             top_level["reasoning_effort"] = _DEFAULT_REASONING_EFFORT
             return {}, top_level
-        if effort == "minimal":
+        if effort in ("none", "minimal"):
             return {}, top_level
 
         from agent.reasoning_effort import EFFORT_LADDER, SOLAR_EFFORTS, clamp_effort

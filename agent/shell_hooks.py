@@ -21,9 +21,11 @@ Design notes
   ``accept_hooks=True`` (resolved from ``--accept-hooks``,
   ``HERMES_ACCEPT_HOOKS``, or ``hooks_auto_accept: true`` in config)
   for registration to succeed without a prompt.
-* Registration is idempotent — safe to invoke from both the CLI entry
-  point (``hermes_cli/main.py``) and the gateway entry point
-  (``gateway/run.py``).
+* Registration is idempotent per ``(profile, event, matcher, command)`` —
+  safe to invoke from CLI, gateway, and per-session agent construction
+  (``tui_gateway.server._make_agent``). Multi-profile backends can register
+  the same command under different profiles without colliding; callbacks
+  only run while the active HERMES_HOME matches the owning profile.
 
 Wire protocol
 -------------
@@ -183,12 +185,14 @@ _STDERR_MESSAGE_LIMIT = 400
 
 
 # (event, matcher, command) triples that have been wired to the plugin
-# manager in the current process.  Matcher is part of the key because
-# the same script can legitimately register for different matchers under
-# the same event (e.g. one entry per tool the user wants to gate).
-# Second registration attempts for the exact same triple become no-ops
-# so the CLI and gateway can both call register_from_config() safely.
-_registered: Set[Tuple[str, Optional[str], str]] = set()
+# manager in the current process.  Key is
+# (profile_home, event, matcher, command) so multi-profile backends can
+# hold the same command under different profiles without colliding.
+# Value is the live callback so a force-reload that clears
+# PluginManager._hooks can re-wire without double-appending.
+# Matcher is part of the key because the same script can legitimately
+# register for different matchers under the same event.
+_registered: Dict[Tuple[str, str, Optional[str], str], Callable] = {}
 _registered_lock = threading.Lock()
 
 # Intra-process lock for allowlist read-modify-write on platforms that
@@ -244,10 +248,29 @@ class ShellHookSpec:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _resolved_profile_key(profile: Optional[str] = None) -> str:
+    """Stable identity for the profile that owns a shell-hook registration.
+
+    Prefer an explicit profile home path; otherwise the active HERMES_HOME
+    (including a context-local override from multi-profile dashboard sessions).
+    """
+    if profile:
+        try:
+            return str(Path(profile).expanduser().resolve())
+        except OSError:
+            return str(Path(profile).expanduser())
+    home = get_hermes_home()
+    try:
+        return str(home.expanduser().resolve())
+    except OSError:
+        return str(home.expanduser())
+
+
 def register_from_config(
     cfg: Optional[Dict[str, Any]],
     *,
     accept_hooks: bool = False,
+    profile: Optional[str] = None,
 ) -> List[ShellHookSpec]:
     """Register every configured shell hook on the plugin manager.
 
@@ -260,6 +283,11 @@ def register_from_config(
     setting.  ``HERMES_ACCEPT_HOOKS=1`` and ``hooks_auto_accept: true`` are
     also honored inside this function so either CLI or gateway call sites
     pick them up.
+
+    ``profile`` optionally pins the owning profile home.  When omitted, the
+    active :func:`get_hermes_home` (including session overrides) is used.
+    Idempotence and dispatch are scoped to that profile so multi-profile
+    backends can hold the same command under different homes.
 
     Returns the list of :class:`ShellHookSpec` entries that ended up wired
     up on the plugin manager.  Skipped entries (unknown events, malformed,
@@ -278,6 +306,7 @@ def register_from_config(
         return []
 
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
+    profile_key = _resolved_profile_key(profile)
 
     specs = _parse_hooks_block(cfg.get("hooks"))
     if not specs:
@@ -295,9 +324,20 @@ def register_from_config(
     # input().  Mutation re-takes the lock with a defensive idempotence
     # re-check in case two callers ever race through the prompt.
     for spec in specs:
-        key = (spec.event, spec.matcher, spec.command)
+        key = (profile_key, spec.event, spec.matcher, spec.command)
         with _registered_lock:
-            if key in _registered:
+            existing_cb = _registered.get(key)
+            if existing_cb is not None:
+                # Force-reload clears PluginManager._hooks but leaves our
+                # idempotence map; re-wire the same callback if missing.
+                hooks_list = manager._hooks.setdefault(spec.event, [])
+                if existing_cb not in hooks_list:
+                    hooks_list.append(existing_cb)
+                    logger.info(
+                        "shell hook re-wired after registry clear: %s -> %s "
+                        "(profile=%s)",
+                        spec.event, spec.command, profile_key,
+                    )
                 continue
             already_allowlisted = _is_allowlisted(spec.event, spec.command)
 
@@ -315,16 +355,21 @@ def register_from_config(
                 continue
 
         with _registered_lock:
-            if key in _registered:
+            existing_cb = _registered.get(key)
+            if existing_cb is not None:
+                hooks_list = manager._hooks.setdefault(spec.event, [])
+                if existing_cb not in hooks_list:
+                    hooks_list.append(existing_cb)
                 continue
-            manager._hooks.setdefault(spec.event, []).append(_make_callback(spec))
-            _registered.add(key)
+            callback = _make_callback(spec, profile_key)
+            manager._hooks.setdefault(spec.event, []).append(callback)
+            _registered[key] = callback
             registered.append(spec)
             logger.info(
-                "shell hook registered: %s -> %s (matcher=%s, timeout=%ds, "
-                "fail_closed=%s)",
-                spec.event, spec.command, spec.matcher, spec.timeout,
-                spec.fail_closed,
+                "shell hook registered: %s -> %s (profile=%s, matcher=%s, "
+                "timeout=%ds, fail_closed=%s)",
+                spec.event, spec.command, profile_key, spec.matcher,
+                spec.timeout, spec.fail_closed,
             )
 
     return registered
@@ -360,9 +405,39 @@ def re_register_config_hooks() -> None:
 
 
 def reset_for_tests() -> None:
-    """Clear the idempotence set.  Test-only helper."""
+    """Clear the idempotence map.  Test-only helper."""
     with _registered_lock:
         _registered.clear()
+
+
+def _make_callback(
+    spec: ShellHookSpec, profile_key: Optional[str] = None,
+) -> Callable[..., Optional[Dict[str, Any]]]:
+    """Build the closure that ``invoke_hook()`` will call per firing.
+
+    ``profile_key`` is the owning profile home.  When omitted, the active
+    HERMES_HOME at callback-construction time is captured.  The callback is a
+    no-op unless the active HERMES_HOME resolves to the same key, so
+    multi-profile backends never run another profile's shell hooks.
+    """
+    owning_key = (
+        profile_key if profile_key is not None else _resolved_profile_key()
+    )
+
+    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
+        if _resolved_profile_key() != owning_key:
+            return None
+        # Matcher gate — only meaningful for tool-scoped events.
+        if spec.event in {"pre_tool_call", "post_tool_call"}:
+            if not spec.matches_tool(kwargs.get("tool_name")):
+                return None
+
+        r = _spawn(spec, _serialize_payload(spec.event, kwargs))
+        return _evaluate_result(spec, r)
+
+    _callback.__name__ = f"shell_hook[{owning_key}:{spec.event}:{spec.command}]"
+    _callback.__qualname__ = _callback.__name__
+    return _callback
 
 
 # ---------------------------------------------------------------------------
@@ -619,23 +694,6 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     result["stderr"] = stderr or ""
     result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
     return result
-
-
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:
-    """Build the closure that ``invoke_hook()`` will call per firing."""
-
-    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
-        # Matcher gate — only meaningful for tool-scoped events.
-        if spec.event in {"pre_tool_call", "post_tool_call"}:
-            if not spec.matches_tool(kwargs.get("tool_name")):
-                return None
-
-        r = _spawn(spec, _serialize_payload(spec.event, kwargs))
-        return _evaluate_result(spec, r)
-
-    _callback.__name__ = f"shell_hook[{spec.event}:{spec.command}]"
-    _callback.__qualname__ = _callback.__name__
-    return _callback
 
 
 def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:

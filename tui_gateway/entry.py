@@ -431,6 +431,10 @@ def main():
     # import cost entirely off the path for users with no mcp_servers.
     ensure_mcp_discovery_started()
 
+    # Shell hooks register at tui_gateway.server._make_agent (session-owned,
+    # profile-keyed) when the first agent is built — not process-global here —
+    # so multi-profile backends and ordinary dashboard share one path.
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",

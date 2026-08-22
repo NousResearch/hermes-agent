@@ -566,10 +566,21 @@ def _load_interim_assistant_messages() -> bool:
 
 
 def _notify_session_boundary(
-    event_type: str, session_id: str | None, platform: str | None = None
+    event_type: str,
+    session_id: str | None,
+    platform: str | None = None,
+    profile_home: str | None = None,
 ) -> None:
-    """Fire session lifecycle hooks with CLI parity."""
+    """Fire session lifecycle hooks with CLI parity.
+
+    When ``profile_home`` is set (multi-profile dashboard/TUI), bind that
+    profile around the invoke so profile-keyed shell hooks run under the
+    owning HERMES_HOME rather than the launch profile.
+    """
+    home_token = None
     try:
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
         from hermes_cli.lifecycle import finalize_session, invoke_hook
 
         if event_type == "on_session_finalize":
@@ -585,6 +596,9 @@ def _notify_session_boundary(
             )
     except Exception:
         pass
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def _claim_active_session_slot(
@@ -791,9 +805,13 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Mirrors cli.py's atexit handler that fires the same hook when
     # the user Ctrl‑C's mid‑turn.
     if agent is not None:
+        home_token = None
         try:
             from hermes_cli.lifecycle import invoke_hook
 
+            profile_home = session.get("profile_home")
+            if profile_home:
+                home_token = set_hermes_home_override(profile_home)
             invoke_hook(
                 "on_session_end",
                 session_id=getattr(agent, "session_id", None)
@@ -805,6 +823,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             )
         except Exception:
             pass
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
 
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
@@ -814,7 +835,12 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    _notify_session_boundary(
+        "on_session_finalize",
+        session_id,
+        _session_source(session),
+        profile_home=session.get("profile_home"),
+    )
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
     # Use session_id (from agent.session_id) not session_key — after compression,
@@ -2471,7 +2497,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-            _notify_session_boundary("on_session_reset", key, _session_source(current))
+            _notify_session_boundary(
+                "on_session_reset",
+                key,
+                _session_source(current),
+                profile_home=current.get("profile_home"),
+            )
 
             info = _session_info(agent, current)
             cfg_warn = _probe_config_health(_load_cfg())
@@ -7089,6 +7120,20 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+    # Session-owned shell hooks: register from the config already loaded under
+    # the active HERMES_HOME override (multi-profile dashboard/TUI). Idempotent
+    # per (profile, event, matcher, command); callbacks only fire under the
+    # owning profile. Covers ordinary hermes dashboard + Desktop without a
+    # process-global startup stamp of the launch profile's hooks.
+    try:
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(cfg, accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at agent construction",
+            exc_info=True,
+        )
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
 
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
@@ -7350,7 +7395,12 @@ def _init_session(
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-    _notify_session_boundary("on_session_reset", key, _session_source(_sessions.get(sid, {})))
+    _notify_session_boundary(
+        "on_session_reset",
+        key,
+        _session_source(_sessions.get(sid, {})),
+        profile_home=(_sessions.get(sid) or {}).get("profile_home"),
+    )
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
     _schedule_mcp_late_refresh(sid, agent)
 

@@ -90,7 +90,7 @@ class TestFinalizeSessionUsesAgentSessionId:
 
         # Monkeypatch _get_db to return our test DB
         with patch.object(server, "_get_db", return_value=db):
-            with patch.object(server, "_notify_session_boundary", lambda *a: None):
+            with patch.object(server, "_notify_session_boundary", lambda *a, **k: None):
                 server._finalize_session(session, end_reason="tui_close")
 
         # The continuation session should be ended

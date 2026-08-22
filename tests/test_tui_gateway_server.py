@@ -4474,7 +4474,9 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id, *_args: calls["hooks"].append((event, session_id)),
+        lambda event, session_id, *_args, **_kw: calls["hooks"].append(
+            (event, session_id)
+        ),
     )
 
     try:
@@ -4928,7 +4930,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id, *_args: hooks.append((event, session_id)),
+        lambda event, session_id, *_args, **_kw: hooks.append((event, session_id)),
     )
 
     import tools.approval as _approval

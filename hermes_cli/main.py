@@ -11544,6 +11544,11 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
 
+    # Shell hooks for dashboard/Web UI/Desktop sessions register at the shared
+    # tui_gateway.server._make_agent boundary (session-owned, profile-keyed) so
+    # ordinary hermes dashboard and multi-profile backends get the right
+    # profile's hooks without stamping launch-profile callbacks process-wide.
+
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.

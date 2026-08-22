@@ -1621,7 +1621,10 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     ``hermes auth add <provider>`` inside the profile, profile entries
     fully shadow global for that provider on the next read.
 
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
+    Direct writes still go to the profile. Runtime ``CredentialPool`` objects
+    additionally retain the source path returned by
+    ``_read_credential_pool_with_source`` so refresh/status mutations of a
+    fallback pool update its global owner without creating a profile shadow.
     See issue #18594 follow-up.
     """
     auth_store = _load_auth_store()
@@ -1647,12 +1650,46 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             merged[gp_key] = list(gp_entries)
         return merged
 
-    provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    entries, _source_path = _read_credential_pool_with_source(
+        provider_id,
+        auth_store=auth_store,
+        global_store=global_store,
+    )
+    return entries
+
+
+def _read_credential_pool_with_source(
+    provider_id: str,
+    *,
+    auth_store: Optional[Dict[str, Any]] = None,
+    global_store: Optional[Dict[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Path]:
+    """Return one provider slice and the auth store that owns those rows.
+
+    An empty or missing local slice does not own the global fallback. If no
+    usable slice exists in either store, the active profile path is returned
+    so a later explicit add keeps the established profile-local write scope.
+    """
+    active_path = _auth_file_path()
+    if auth_store is None:
+        auth_store = _load_auth_store()
+    pool = auth_store.get("credential_pool")
+    if isinstance(pool, dict):
+        provider_entries = pool.get(provider_id)
+        if isinstance(provider_entries, list) and provider_entries:
+            return list(provider_entries), active_path
+
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        return [], active_path
+    if global_store is None:
+        global_store = _load_global_auth_store()
+    global_pool = global_store.get("credential_pool") if global_store else None
+    if isinstance(global_pool, dict):
+        global_entries = global_pool.get(provider_id)
+        if isinstance(global_entries, list) and global_entries:
+            return list(global_entries), global_path
+    return [], active_path
 
 
 _POOL_STATUS_FIELDS = (
@@ -1727,6 +1764,8 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    required_ids: Optional[Iterable[str]] = None,
+    target_path: Optional[Path] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1744,11 +1783,17 @@ def write_credential_pool(
     snapshot cannot erase a cooldown/quarantine another process just wrote.
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
-    merge does not resurrect them from the on-disk copy.
+    merge does not resurrect them from the on-disk copy. Direct callers omit
+    ``target_path`` and retain the profile-local write contract. A runtime
+    pool loaded through global fallback passes its recorded owner path so
+    rotating tokens and status metadata do not fork into a profile shadow.
+    ``required_ids`` seals that owner snapshot: a missing row fails closed
+    instead of being silently recreated from stale in-memory credentials.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    required = {rid for rid in (required_ids or ()) if rid}
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -1765,6 +1810,12 @@ def write_credential_pool(
             for entry in existing_list
             if isinstance(entry, dict) and entry.get("id")
         }
+        missing_required = required - set(existing_by_id)
+        if missing_required:
+            raise RuntimeError(
+                "Credential pool source changed while it was in use; "
+                "refusing to recreate missing entries"
+            )
         new_ids = {
             entry.get("id")
             for entry in sanitized_entries
@@ -1786,7 +1837,7 @@ def write_credential_pool(
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, target_path=target_path)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
@@ -1823,7 +1874,25 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
     try:
         auth_store = _load_auth_store()
         suppressed = auth_store.get("suppressed_sources", {})
-        return source in suppressed.get(provider_id, [])
+        if isinstance(suppressed, dict) and provider_id in suppressed:
+            provider_sources = suppressed.get(provider_id, [])
+            if isinstance(provider_sources, dict):
+                provider_sources = list(provider_sources)
+            return source in provider_sources
+
+        # A profile borrowing a global provider/pool must also inherit the
+        # root suppression that defines that source set. Otherwise every
+        # profile re-seeds a globally suppressed singleton and immediately
+        # creates a local pool shadow. An explicit profile provider key stays
+        # authoritative, matching per-provider pool shadowing.
+        global_store = _load_global_auth_store()
+        global_suppressed = global_store.get("suppressed_sources", {})
+        if not isinstance(global_suppressed, dict):
+            return False
+        provider_sources = global_suppressed.get(provider_id, [])
+        if isinstance(provider_sources, dict):
+            provider_sources = list(provider_sources)
+        return source in provider_sources
     except Exception:
         return False
 

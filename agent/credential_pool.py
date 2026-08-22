@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _load_provider_state_with_source,
+    _read_credential_pool_with_source,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _same_path,
@@ -648,9 +650,20 @@ def _write_through_provider_state_to_global_root(
 
 
 class CredentialPool:
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(
+        self,
+        provider: str,
+        entries: List[PooledCredential],
+        *,
+        source_path: Optional[Path] = None,
+        source_entry_ids: Optional[Set[str]] = None,
+    ):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
+        self._source_path = source_path or auth_mod._auth_file_path()
+        self._source_entry_ids = (
+            set(source_entry_ids) if source_entry_ids is not None else None
+        )
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
         # RLock: the mutation primitives below (_replace_entry/_persist)
@@ -778,11 +791,84 @@ class CredentialPool:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
+            current_ids = {entry.id for entry in self._entries if entry.id}
             write_credential_pool(
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                required_ids=self._source_entry_ids,
+                target_path=self._source_path,
             )
+            self._source_entry_ids = current_ids
+
+    def _sync_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt the latest tracked rows from the exact store this pool owns.
+
+        A pool write persists the whole in-memory provider slice. Refreshing
+        only ``entry`` is therefore insufficient: another process may have
+        rotated a different row while this instance was waiting for the owner
+        lock, and writing our stale sibling row would roll that single-use
+        token chain back. Rebase every row this instance originally loaded;
+        entries added later remain protected by ``write_credential_pool``'s
+        merge.
+        """
+        auth_store = _load_auth_store(self._source_path)
+        pool = auth_store.get("credential_pool")
+        persisted_entries = pool.get(self.provider) if isinstance(pool, dict) else None
+        if not isinstance(persisted_entries, list):
+            if self._source_entry_ids is not None:
+                raise RuntimeError(
+                    "Credential pool source changed while it was in use"
+                )
+            return entry
+        persisted_by_id = {
+            payload.get("id"): payload
+            for payload in persisted_entries
+            if isinstance(payload, dict) and payload.get("id")
+        }
+        if self._source_entry_ids is not None:
+            missing_ids = self._source_entry_ids - set(persisted_by_id)
+            if missing_ids:
+                raise RuntimeError(
+                    "Credential pool entry disappeared while it was in use"
+                )
+
+        target = entry
+        with self._lock:
+            for index, current in enumerate(self._entries):
+                persisted = persisted_by_id.get(current.id)
+                if not isinstance(persisted, dict):
+                    continue
+                stored = PooledCredential.from_dict(self.provider, persisted)
+                if (
+                    stored.access_token != current.access_token
+                    or stored.refresh_token != current.refresh_token
+                ):
+                    logger.debug(
+                        "Pool entry %s: adopting tokens rotated in owner store",
+                        current.id,
+                    )
+                self._entries[index] = stored
+                if current.id == entry.id:
+                    target = stored
+        return target
+
+    @contextmanager
+    def _single_use_refresh_store_lock(self):
+        """Lock active profile then the pool owner in deterministic order."""
+        timeout = self._single_use_refresh_lock_timeout()
+        active_path = auth_mod._auth_file_path()
+        with _auth_store_lock(timeout_seconds=timeout):
+            if _same_path(active_path, self._source_path):
+                yield
+                return
+            with _auth_store_lock(
+                timeout_seconds=timeout,
+                target_path=self._source_path,
+            ):
+                yield
 
     def _is_terminal_auth_failure(
         self,
@@ -921,7 +1007,7 @@ class CredentialPool:
         device_code-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
         """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+        if self.provider != "openai-codex" or entry.source != "device_code":
             return entry
         try:
             with _auth_store_lock():
@@ -1048,45 +1134,6 @@ class CredentialPool:
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
-        return entry
-
-    def _sync_xai_oauth_entry_from_pool_store(
-        self, entry: PooledCredential
-    ) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance.
-
-        Direct xAI integrations load a fresh ``CredentialPool`` for each
-        request. Their in-memory locks therefore cannot protect xAI's
-        single-use refresh token across concurrent requests or processes.
-        This helper is called while the shared auth-store lock is held and
-        re-reads the exact persisted row before a refresh POST is attempted.
-        """
-        if self.provider != "xai-oauth":
-            return entry
-        try:
-            persisted = next(
-                (
-                    payload
-                    for payload in read_credential_pool(self.provider)
-                    if isinstance(payload, dict) and payload.get("id") == entry.id
-                ),
-                None,
-            )
-            if not isinstance(persisted, dict):
-                return entry
-            stored = PooledCredential.from_dict(self.provider, persisted)
-            if (
-                stored.access_token != entry.access_token
-                or stored.refresh_token != entry.refresh_token
-            ):
-                logger.debug(
-                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
-                    entry.id,
-                )
-                self._replace_entry(entry, stored)
-                return stored
-        except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
         return entry
 
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1320,27 +1367,22 @@ class CredentialPool:
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
         if self.provider in ("openai-codex", "xai-oauth"):
-            sync_entry = (
-                self._sync_codex_entry_from_auth_store
-                if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
-            )
-            with _auth_store_lock(
-                timeout_seconds=self._single_use_refresh_lock_timeout()
-            ):
-                synced = sync_entry(entry)
-                if self.provider == "openai-codex":
-                    if synced is not entry:
-                        entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
-                            return entry
-                    return self._refresh_entry_impl(entry, force=force)
+            with self._single_use_refresh_store_lock():
+                owner_synced = self._sync_entry_from_pool_store(entry)
                 if (
-                    synced.access_token != entry.access_token
-                    or synced.refresh_token != entry.refresh_token
+                    owner_synced.access_token != entry.access_token
+                    or owner_synced.refresh_token != entry.refresh_token
                 ):
-                    return synced
-                return self._refresh_entry_impl(synced, force=force)
+                    return owner_synced
+                if self.provider == "openai-codex":
+                    synced = self._sync_codex_entry_from_auth_store(owner_synced)
+                    if (
+                        synced.access_token != owner_synced.access_token
+                        or synced.refresh_token != owner_synced.refresh_token
+                    ):
+                        return synced
+                    return self._refresh_entry_impl(owner_synced, force=force)
+                return self._refresh_entry_impl(owner_synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
 
     def _single_use_refresh_lock_timeout(self) -> float:
@@ -1962,7 +2004,7 @@ class CredentialPool:
                     sync_fn = (
                         self._sync_codex_entry_from_auth_store
                         if self.provider == "openai-codex"
-                        else self._sync_xai_oauth_entry_from_pool_store
+                        else self._sync_entry_from_pool_store
                     )
                     pending_refresh.append((entry, sync_fn))
                     continue
@@ -2366,7 +2408,12 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=[removed.id],
+                required_ids=self._source_entry_ids,
+                target_path=self._source_path,
             )
+            self._source_entry_ids = {
+                entry.id for entry in self._entries if entry.id
+            }
             if self._current_id == removed.id:
                 self._current_id = None
             return removed
@@ -2399,6 +2446,11 @@ class CredentialPool:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         with self._lock:
+            # ``hermes auth add`` inside a profile is an explicit local
+            # override. Preserve the documented shadowing contract even when
+            # this pool was initially populated through global fallback.
+            self._source_path = auth_mod._auth_file_path()
+            self._source_entry_ids = None
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             self._persist()
@@ -3131,7 +3183,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    raw_entries = read_credential_pool(provider)
+    raw_entries, source_path = _read_credential_pool_with_source(provider)
     disk_ids = {
         entry.get("id")
         for entry in raw_entries
@@ -3192,4 +3244,11 @@ def load_pool(provider: str) -> CredentialPool:
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
             removed_ids=disk_ids - new_ids,
         )
-    return CredentialPool(provider, entries)
+        source_path = auth_mod._auth_file_path()
+        disk_ids = {entry.id for entry in entries if entry.id}
+    return CredentialPool(
+        provider,
+        entries,
+        source_path=source_path,
+        source_entry_ids=disk_ids,
+    )

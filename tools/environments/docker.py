@@ -100,6 +100,100 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+
+
+def _normalize_runtime_mounts(runtime_mounts: list[dict] | None) -> list[dict[str, object]]:
+    """Validate infrastructure-owned bind mounts before Docker CLI assembly."""
+    if runtime_mounts is None:
+        return []
+    if not isinstance(runtime_mounts, list):
+        raise ValueError("runtime_mounts must be a list")
+    normalized: list[dict[str, object]] = []
+    targets: set[str] = set()
+    for index, mount in enumerate(runtime_mounts):
+        if not isinstance(mount, dict):
+            raise ValueError(f"runtime mount #{index} must be a mapping")
+        source = str(mount.get("source") or "").strip()
+        target = str(mount.get("target") or "").strip()
+        if not source or not target:
+            raise ValueError(f"runtime mount #{index} requires source and target")
+        # The dispatcher/runtime layer already canonicalizes local sources.  At
+        # this point source may be a translated path on a remote Docker host,
+        # so do not os.path.exists() it from the Hermes machine.
+        if not target.startswith("/"):
+            raise ValueError(f"runtime mount #{index} target must be absolute")
+        if "," in source or "," in target:
+            raise ValueError("runtime mount paths containing commas are unsupported")
+        if target in targets:
+            raise ValueError(f"duplicate runtime mount target: {target}")
+        targets.add(target)
+        normalized.append({
+            "source": source,
+            "target": target,
+            "read_only": bool(mount.get("read_only", False)),
+            "purpose": str(mount.get("purpose") or "runtime"),
+        })
+    return normalized
+
+
+
+_MOUNT_CAPABLE_EXTRA_ARG_FLAGS = frozenset({
+    "-v",
+    "--volume",
+    "--mount",
+    "--volumes-from",
+})
+
+
+def _normalize_docker_extra_args(extra_args: list | None) -> list[str]:
+    """Preserve the historical extra-arg surface while dropping bad types."""
+    validated: list[str] = []
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+            continue
+        validated.append(arg)
+    return validated
+
+
+def _mount_capable_extra_args(extra_args: list[str]) -> list[str]:
+    """Return Docker run args that can add host/volume filesystem mounts."""
+    collisions: list[str] = []
+    for arg in extra_args:
+        if arg == "-v" or arg.startswith("-v="):
+            collisions.append(arg)
+            continue
+        # Docker/pflag also accepts a short option with its value attached.
+        if arg.startswith("-v") and not arg.startswith("--") and len(arg) > 2:
+            collisions.append(arg)
+            continue
+        if any(
+            arg == flag or arg.startswith(f"{flag}=")
+            for flag in _MOUNT_CAPABLE_EXTRA_ARG_FLAGS
+            if flag != "-v"
+        ):
+            collisions.append(arg)
+    return collisions
+
+def _runtime_mount_args(runtime_mounts: list[dict] | None) -> tuple[list[str], set[str]]:
+    """Render strict Docker ``--mount type=bind`` argv for runtime mounts.
+
+    ``--mount`` fails when a bind source is missing instead of silently creating
+    an empty host directory like ``-v`` can.  That failure mode is essential for
+    Kanban durability: a wrong host path must fail the worker, never create an
+    ephemeral-looking success somewhere else.
+    """
+    mounts = _normalize_runtime_mounts(runtime_mounts)
+    args: list[str] = []
+    targets: set[str] = set()
+    for mount in mounts:
+        spec = f"type=bind,src={mount['source']},dst={mount['target']}"
+        if mount["read_only"]:
+            spec += ",readonly"
+        args.extend(["--mount", spec])
+        targets.add(str(mount["target"]))
+    return args, targets
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -878,6 +972,7 @@ class DockerEnvironment(BaseEnvironment):
         persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
+        runtime_mounts: list[dict] | None = None,
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
@@ -900,6 +995,20 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        self._runtime_mounts = _normalize_runtime_mounts(runtime_mounts)
+        # Validate profile/user extra args BEFORE Docker availability/cgroup
+        # probes.  When task runtime mounts are authoritative, no lower-priority
+        # Docker flag may add or inherit another filesystem mount.  Benign
+        # extra args retain their historical last-wins position below.
+        validated_extra = _normalize_docker_extra_args(extra_args)
+        if self._runtime_mounts:
+            mount_extra = _mount_capable_extra_args(validated_extra)
+            if mount_extra:
+                raise ValueError(
+                    "docker_extra_args cannot add host/volume mounts while "
+                    "task-scoped runtime mounts are active: "
+                    + ", ".join(repr(arg) for arg in mount_extra)
+                )
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
@@ -931,7 +1040,7 @@ class DockerEnvironment(BaseEnvironment):
         # no controller delegation required). Skip when the user already sets
         # it via docker_extra_args, or opted out with an empty/"0" value.
         shm = str(shm_size or "").strip()
-        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+        if shm and shm != "0" and not _extra_args_set_shm_size(validated_extra):
             resource_args.extend(["--shm-size", shm])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
@@ -949,9 +1058,19 @@ class DockerEnvironment(BaseEnvironment):
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
         from tools.environments.base import get_sandbox_dir
 
+        # Dispatcher/runtime mounts are infrastructure-owned and authoritative.
+        # When present, user/profile docker_volumes are ignored so a shared
+        # worker profile cannot widen a task's host filesystem view.
+        runtime_volume_args, runtime_targets = _runtime_mount_args(self._runtime_mounts)
+        volume_args = list(runtime_volume_args)
+        workspace_explicitly_mounted = "/workspace" in runtime_targets
+        if self._runtime_mounts and volumes:
+            logger.warning(
+                "Ignoring profile docker_volumes because task-scoped runtime mounts are active"
+            )
+            volumes = []
+
         # User-configured volume mounts (from config.yaml docker_volumes)
-        volume_args = []
-        workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
                 logger.warning("Docker volume entry is not a string: %r", vol)
@@ -1320,14 +1439,9 @@ class DockerEnvironment(BaseEnvironment):
         )
 
         logger.info("Docker volume_args: %s", volume_args)
-        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
-        # Appended last so they can override defaults if needed.
-        validated_extra = []
-        for arg in (extra_args or []):
-            if not isinstance(arg, str):
-                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
-                continue
-            validated_extra.append(arg)
+        # User-supplied benign extra Docker run flags keep their historical
+        # last-wins position. Mount-capable forms were rejected before any
+        # Docker call when task-scoped runtime mounts are active.
         if egress_env_overrides:
             _extra_collisions = _extra_args_egress_collisions(
                 validated_extra, _critical_egress_names,

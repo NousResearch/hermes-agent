@@ -25,6 +25,7 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            observe_unmentioned_group_messages: false  # store approved channel chatter as context
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
@@ -37,6 +38,7 @@ environment and is never logged.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -44,7 +46,7 @@ import re
 import shutil
 import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -391,6 +393,15 @@ class BuzzAdapter(BasePlatformAdapter):
         else:
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
+        # Mention-gated channel messages may be stored as context for a later
+        # addressed request. This is opt-in and is protected by the explicit
+        # adapter allow-list checked in _observe_unmentioned_group_message().
+        _observe_raw = os.getenv("BUZZ_OBSERVE_UNMENTIONED_GROUP_MESSAGES")
+        _observe_cfg = extra.get("observe_unmentioned_group_messages", False)
+        self.observe_unmentioned_group_messages = str(
+            _observe_cfg if _observe_raw is None else _observe_raw
+        ).strip().lower() in ("true", "1", "yes", "on")
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -1030,16 +1041,18 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels, respond only when addressed — unless
-        # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
-
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
+            return
+
+        # In shared channels, respond only when addressed — unless
+        # require_mention is disabled, in which case respond to every message.
+        # DMs always dispatch. Opt-in observation records only explicitly
+        # allow-listed channel senders as context for a later mention.
+        if not is_dm and self.require_mention and not self._is_mentioned(content):
+            self._observe_unmentioned_group_message(channel_id, pubkey, content, event_id, created_at)
             return
 
         # Strip a leading @mention so slash commands (@Chip /whoami ->
@@ -1210,6 +1223,42 @@ class BuzzAdapter(BasePlatformAdapter):
             state["seen"][event_id] = None
             self._trim_seen(state)
 
+    def _observe_unmentioned_group_message(
+        self, channel_id: str, pubkey: str, content: str, event_id: str, created_at: int
+    ) -> None:
+        """Persist an approved, mention-gated channel message as context only.
+
+        The shared source lets a later mention from any approved member use the
+        same channel history. Requiring both an opt-in and a non-empty adapter
+        allow-list prevents unrestricted community traffic entering a prompt.
+        """
+        if not self.observe_unmentioned_group_messages or not self._allowed_pubkeys:
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            source = self.build_source(
+                chat_id=channel_id,
+                chat_name=self._channel_names.get(channel_id, channel_id),
+                chat_type="group",
+                user_id=pubkey,
+                user_name=self._user_names.get(pubkey, pubkey[:16]),
+            )
+            shared_source = dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+            session_entry = store.get_or_create_session(shared_source)
+            store.append_to_transcript(session_entry.session_id, {
+                "role": "user",
+                "content": f"[{pubkey[:16]}|{pubkey}]\n{content}",
+                "timestamp": datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+                if created_at else datetime.now(tz=timezone.utc).isoformat(),
+                "message_id": event_id,
+                "observed": True,
+            })
+            logger.debug("Buzz: observed unmentioned channel message %s", event_id[:12])
+        except Exception:
+            logger.warning("Buzz: failed to observe unmentioned channel message", exc_info=True)
+
     async def _dispatch_message(
         self,
         text: str,
@@ -1316,6 +1365,8 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    if "observe_unmentioned_group_messages" in extra and not os.getenv("BUZZ_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+        os.environ["BUZZ_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(extra["observe_unmentioned_group_messages"]).lower()
     return None
 
 

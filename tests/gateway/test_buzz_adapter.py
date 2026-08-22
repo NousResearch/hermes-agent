@@ -45,6 +45,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
 )
 
 
@@ -249,6 +250,34 @@ class TestMentionGating:
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_observes_unmentioned_allowlisted_channel_message(self, adapter):
+        adapter.observe_unmentioned_group_messages = True
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        store = MagicMock()
+        store.get_or_create_session.return_value = MagicMock(session_id="shared-channel-session")
+        adapter.set_session_store(store)
+
+        await self._poll_with(adapter, _event("e1", content="project context", created_at=10))
+
+        assert adapter._dispatched == []
+        source = store.get_or_create_session.call_args.args[0]
+        assert source.user_id is None
+        entry = store.append_to_transcript.call_args.args[1]
+        assert entry["observed"] is True
+        assert entry["message_id"] == "e1"
+        assert entry["content"] == f"[{OTHER_PUBKEY[:16]}|{OTHER_PUBKEY}]\nproject context"
+
+    @pytest.mark.asyncio
+    async def test_does_not_observe_without_explicit_allowlist(self, adapter):
+        adapter.observe_unmentioned_group_messages = True
+        store = MagicMock()
+        adapter.set_session_store(store)
+
+        await self._poll_with(adapter, _event("e1", content="untrusted context", created_at=10))
+
+        store.get_or_create_session.assert_not_called()
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────

@@ -10,9 +10,10 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+const MEDIA_LINE_RE =
+  /(^|\n)[\t ]*[`"']?MEDIA:[\t ]*(?<line>`[^`\r\n]+`|"[^"\r\n]+"|'[^'\r\n]+'|[^\r\n]*?\S)[`"']?[\t ]*(?=\r?\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:[\t ]*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
@@ -29,10 +30,7 @@ function mediaLink(value: string): string {
 
 export function renderMediaTags(text: string): string {
   return text
-    .replace(
-      MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
-    )
+    .replace(MEDIA_LINE_RE, (_match, lead: string, value: string) => `${lead}${mediaLink(value)}`)
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')

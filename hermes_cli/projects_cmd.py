@@ -211,6 +211,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if proj is None:
         print("project: vanished after create", file=sys.stderr)
         return 2
+    if args.board:
+        _sync_board_binding(proj, args.board, bound=True)
     print(f"Created project {proj.slug} ({pid})")
     _print_project(proj)
     return 0
@@ -305,23 +307,25 @@ def _cmd_restore(args, conn, proj) -> int:
 
 @_with_project
 def _cmd_bind_board(args, conn, proj) -> int:
+    previous_board = proj.board_slug
     pdb.update_project(conn, proj.id, board_slug=args.board)
     if args.board.strip():
         print(f"Bound {proj.slug} -> board {args.board}")
-        _sync_board_default_workdir(proj, args.board)
+        _sync_board_binding(proj, args.board, bound=True)
     else:
         print(f"Unbound board from {proj.slug}")
+    if previous_board and pdb.normalize_slug(previous_board) != pdb.normalize_slug(args.board):
+        _sync_board_binding(proj, previous_board, bound=False)
     return 0
 
 
-def _sync_board_default_workdir(proj, board_slug: str) -> None:
-    """Best-effort: point the bound board's default_workdir at the primary repo.
+def _sync_board_binding(proj, board_slug: str, *, bound: bool) -> None:
+    """Best-effort: keep the board's reciprocal Project metadata in sync.
 
-    Keeps kanban task worktrees anchored to the project's repo. Failures here
-    are non-fatal — the binding itself already succeeded.
+    A bound board also inherits the project's primary repo as its default
+    workdir. Failures here are non-fatal — the Project binding already
+    succeeded.
     """
-    if not proj.primary_path:
-        return
     try:
         from hermes_cli import kanban_db as kb
 
@@ -330,6 +334,14 @@ def _sync_board_default_workdir(proj, board_slug: str) -> None:
             return
         if slug != kb.DEFAULT_BOARD and not kb.board_exists(slug):
             return
-        kb.write_board_metadata(slug, default_workdir=proj.primary_path)
+        if not bound:
+            if kb.read_board_metadata(slug).get("project_id") != proj.id:
+                return
+            kb.write_board_metadata(slug, project_id="")
+            return
+        updates = {"project_id": proj.id}
+        if proj.primary_path:
+            updates["default_workdir"] = proj.primary_path
+        kb.write_board_metadata(slug, **updates)
     except Exception:
         pass

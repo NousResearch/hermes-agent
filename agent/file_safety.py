@@ -216,6 +216,67 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     return f"{verb} denied: '{path}' is a protected system/credential file."
 
 
+# Path validation gate (added 2026-08-19, per Claude handoff
+# HERMES-WRITE-FILE-PATH-CORRUPTION-2026-08-19.md).
+#
+# Without this, write_file shells out a path that the bash escape
+# happily single-quotes but cannot actually write to: literal newlines,
+# NULs, leading whitespace, or non-absolute relative paths get baked
+# into a script that "succeeds" in creating a junk directory tree at
+# whatever the caller's cwd is. The live case (2026-08-01 12:18 PT)
+# created a 32K empty directory tree under /root because the corrupted
+# path was relative and the caller's cwd was /root.
+#
+# This gate is fail-closed: any path that doesn't pass is rejected
+# synchronously with a clear error before any subprocess is spawned.
+# It is intentionally narrow — it only rejects strings that no real
+# filesystem path can contain (control chars, embedded newlines, NULs).
+# It does NOT enforce the safe-root list (that's get_write_denied_error's
+# job) or the approval list (that's is_write_approval_required's job).
+# This gate is strictly the "is this even a string that could be a
+# real filesystem path" check, sitting at the front of the pipeline.
+import re as _re_path_validate
+_INVALID_PATH_CHARS = _re_path_validate.compile(r"[\x00-\x1f\x7f]")  # C0 + DEL
+
+
+def get_invalid_path_error(path: str) -> Optional[str]:
+    """Return an error when ``path`` cannot be a real filesystem path.
+
+    Rejects:
+      * Control characters (NUL, BEL, TAB, LF, CR, etc.) — these break
+        shell scripts and contain no real path semantics.
+      * Leading/trailing whitespace — the resolver already strips these
+        in most places; failing here surfaces a confused caller early.
+      * Empty string.
+
+    Does NOT reject:
+      * Relative paths (cwd-relative writes are legitimate; the
+        safe-root + approval gates check the eventual resolved target).
+      * Paths containing spaces, punctuation, unicode, etc. — those
+        are all valid in modern filesystems.
+    """
+    if not path:
+        return "Path validation: empty path. Provide a non-empty target path."
+    if _INVALID_PATH_CHARS.search(path):
+        # Show a hex-dump-style preview so the model can see what it
+        # accidentally passed (the 2026-08-01 case had a JSON envelope
+        # in the path; the preview is what made that diagnosable).
+        preview = path[:80].encode("unicode_escape").decode("ascii")
+        return (
+            f"Path validation: '{preview!s}' contains control characters "
+            f"(NUL, newline, etc.) that cannot appear in a real filesystem "
+            f"path. This usually means a tool-call argument was built from "
+            f"the wrong JSON field — check that the path string came from "
+            f"`path` (not the surrounding request envelope) and try again."
+        )
+    if path != path.strip():
+        return (
+            f"Path validation: '{path!r}' has leading or trailing whitespace. "
+            f"Strip it before calling write_file."
+        )
+    return None
+
+
 def is_write_approval_required(path: str) -> bool:
     """Return True if ``path`` is an approval-gated write target.
 

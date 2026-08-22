@@ -1094,13 +1094,35 @@ class ShellFileOperations(FileOperations):
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.
-        
+
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
+
+        Also runs the fail-closed path-validation gate (added 2026-08-19,
+        per Claude handoff HERMES-WRITE-FILE-PATH-CORRUPTION-2026-08-19.md)
+        so that ALL public file ops — read_file, write_file, delete_file,
+        move_file, patch_replace, search — reject paths containing control
+        characters, empty strings, or whitespace padding BEFORE any
+        subprocess is spawned. The gate lives here rather than in each
+        caller because every public method already routes through
+        _expand_path first.
         """
         if not path:
             return path
-        
+
+        # Fail-closed path validation. Reject control chars + DEL +
+        # empty + whitespace-padded paths. Runs BEFORE the ~ expansion
+        # below (which shells out via `echo $HOME` / `echo ~username`),
+        # so a corrupted path never reaches a subprocess.
+        from agent.file_safety import get_invalid_path_error
+        invalid_err = get_invalid_path_error(path)
+        if invalid_err:
+            # Raise — _expand_path callers don't handle return values
+            # beyond `None`/str. A ValueError surfaces cleanly as a tool
+            # error in file_tools.write_file_tool / read_file_tool /
+            # patch_tool etc. without leaving any subprocess half-running.
+            raise ValueError(invalid_err)
+
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment
@@ -1469,11 +1491,15 @@ class ShellFileOperations(FileOperations):
         Returns:
             ReadResult with content, metadata, or error info
         """
-        # Expand ~ and other shell paths
-        path = self._expand_path(path)
-        
+        # Expand ~ and other shell paths. _expand_path raises ValueError
+        # on a malformed path (2026-08-19 fail-closed gate).
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return ReadResult(error=str(exc))
+
         offset, limit = normalize_read_pagination(offset, limit)
-        
+
         # Check if file exists and get size (POSIX, works on Linux + macOS)
         stat_result = self._exec(self._size_probe_cmd(path))
 
@@ -1759,7 +1785,10 @@ class ShellFileOperations(FileOperations):
         No pagination, no line-number prefixes, no per-line truncation.
         Uses cat so the full file is returned regardless of size.
         """
-        path = self._expand_path(path)
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return ReadResult(error=str(exc))
         stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
             return self._suggest_similar_files(path)
@@ -1801,7 +1830,10 @@ class ShellFileOperations(FileOperations):
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
         """Read binary-safe bytes from any shell-backed environment."""
-        path = self._expand_path(path)
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return ReadResult(error=str(exc))
         stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
             return ReadResult(error=f"File not found: {path}")
@@ -1851,7 +1883,10 @@ class ShellFileOperations(FileOperations):
         return self._python_delete(path, recursive=recursive)
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
-        path = self._expand_path(path)
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return WriteResult(error=str(exc))
         denied = get_write_denied_error(path, verb="Delete")
         if denied:
             return WriteResult(error=denied)
@@ -1896,8 +1931,11 @@ class ShellFileOperations(FileOperations):
 
     def move_file(self, src: str, dst: str) -> WriteResult:
         """Move a file via mv."""
-        src = self._expand_path(src)
-        dst = self._expand_path(dst)
+        try:
+            src = self._expand_path(src)
+            dst = self._expand_path(dst)
+        except ValueError as exc:
+            return WriteResult(error=str(exc))
         for p in (src, dst):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
@@ -1954,8 +1992,13 @@ class ShellFileOperations(FileOperations):
         Returns:
             WriteResult with bytes written, lint summary, or error.
         """
-        # Expand ~ and other shell paths
-        path = self._expand_path(path)
+        # Expand ~ and other shell paths. _expand_path now runs the
+        # fail-closed path-validation gate (2026-08-19) and raises
+        # ValueError on a malformed path — caught below.
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return WriteResult(error=str(exc))
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -2200,8 +2243,12 @@ class ShellFileOperations(FileOperations):
         Returns:
             PatchResult with diff and lint results
         """
-        # Expand ~ and other shell paths
-        path = self._expand_path(path)
+        # Expand ~ and other shell paths. _expand_path raises ValueError
+        # on a malformed path (2026-08-19 fail-closed gate).
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return PatchResult(error=str(exc))
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -2781,9 +2828,13 @@ class ShellFileOperations(FileOperations):
         """
         offset, limit = normalize_search_pagination(offset, limit)
 
-        # Expand ~ and other shell paths
-        path = self._expand_path(path)
-        
+        # Expand ~ and other shell paths. _expand_path raises ValueError
+        # on a malformed path (2026-08-19 fail-closed gate).
+        try:
+            path = self._expand_path(path)
+        except ValueError as exc:
+            return SearchResult(matches=[], error=str(exc))
+
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:

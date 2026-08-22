@@ -772,6 +772,29 @@ def check_command_security(command: str) -> dict:
             return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
         return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
 
+    # Defense-in-depth path validation (2026-08-19, per Claude handoff
+    # HERMES-WRITE-FILE-PATH-CORRUPTION-2026-08-19.md). tirith_path is
+    # already validated by _resolve_tirith_path() above (isfile + os.access),
+    # but the path-validation gate is the canonical fail-closed check that
+    # every shell-out should pass through.
+    try:
+        from agent.file_safety import get_invalid_path_error
+        invalid_err = get_invalid_path_error(tirith_path)
+        if invalid_err:
+            _warn_once(
+                "tirith_path_invalid",
+                "tirith path failed validation: %s",
+                invalid_err,
+            )
+            return {"action": "block", "findings": [],
+                    "summary": f"tirith path invalid: {invalid_err}"}
+    except (ImportError, ValueError) as exc:
+        # If the safety module is unavailable, fall through to the
+        # existing OSError handler below (defense-in-depth fails open,
+        # but the next subprocess.run will catch any real spawn error).
+        _warn_once("tirith_path_validator_unavailable",
+                   "tirith path validator unavailable: %s", exc)
+
     try:
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive",

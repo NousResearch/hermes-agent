@@ -50,6 +50,10 @@ class TestGuidanceConstants:
         assert "session_search" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
+        # Skill authoring lives in SKILLS_GUIDANCE behind skill_manage
+        # gating — not in the memory-only block (#74249). The old "save it as
+        # a skill" phrasing was removed from prompts entirely (#82154).
+        assert "save it as a skill" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
@@ -947,7 +951,52 @@ class TestBuildSkillsSystemPromptConditional:
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
 
+    def test_read_only_toolset_omits_skill_manage_authoring(self, monkeypatch, tmp_path):
+        """#74249: read-only {skills_list, skill_view} must not advertise writes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: duckduckgo\ndescription: Free web search\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools={"skills_list", "skill_view"},
+            available_toolsets=set(),
+        )
+        assert "duckduckgo" in result
+        assert "skill_manage" not in result
+        assert "offer to save as a skill" not in result
 
+    def test_writable_toolset_includes_skill_manage_authoring(self, monkeypatch, tmp_path):
+        """#74249: writable set retains index maintenance guidance."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: duckduckgo\ndescription: Free web search\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools={"skills_list", "skill_view", "skill_manage"},
+            available_toolsets=set(),
+        )
+        assert "duckduckgo" in result
+        assert "skill_manage(action='patch')" in result
+        assert "offer to save as a skill" in result
+
+    def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata key present but null should not AttributeError."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "safe-skill"
+        skill_dir.mkdir(parents=True)
+        # YAML `metadata:` with no value parses as {"metadata": None}
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "safe-skill" in result
 
 
 # =========================================================================

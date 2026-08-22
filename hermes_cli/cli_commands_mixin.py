@@ -2102,7 +2102,17 @@ class CLICommandsMixin:
         authors the skill via ``skill_manage``. No engine, no model-tool
         footprint, works on any terminal backend.
         """
-        from agent.learn_prompt import build_learn_prompt
+        from agent.learn_prompt import (
+            LEARN_UNAVAILABLE_MESSAGE,
+            build_learn_prompt,
+            skill_manage_available,
+        )
+
+        agent = getattr(self, "agent", None)
+        tool_names = getattr(agent, "valid_tool_names", None) if agent else None
+        if not skill_manage_available(tool_names):
+            print(f"\n{LEARN_UNAVAILABLE_MESSAGE}")
+            return
 
         # Everything after the command word is the open-ended request.
         parts = cmd.strip().split(None, 1)

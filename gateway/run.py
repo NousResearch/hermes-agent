@@ -17637,9 +17637,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # web_extract, this conversation, pasted text) and authors the skill
             # via skill_manage. Mirrors the /blueprint fall-through so role
             # alternation is preserved. No engine, works on any backend.
-            from agent.learn_prompt import build_learn_prompt
+            from agent.learn_prompt import (
+                LEARN_UNAVAILABLE_MESSAGE,
+                build_learn_prompt,
+                skill_manage_available,
+            )
 
             _learn_req = event.get_command_args().strip()
+            _agent = self._running_agents.get(_quick_key)
+            if _agent is not None and _agent is not _AGENT_PENDING_SENTINEL:
+                _tool_names = getattr(_agent, "valid_tool_names", None)
+            else:
+                from hermes_cli.tools_config import _get_platform_tools
+                from model_tools import get_tool_definitions
+
+                _platform_key = _platform_config_key(source.platform)
+                _user_config = _load_gateway_config()
+                _enabled = sorted(_get_platform_tools(_user_config, _platform_key))
+                _agent_cfg = _user_config.get("agent") or {}
+                _disabled = _agent_cfg.get("disabled_toolsets") or None
+                _defs = get_tool_definitions(
+                    enabled_toolsets=_enabled,
+                    disabled_toolsets=_disabled,
+                    quiet_mode=True,
+                )
+                _tool_names = {d["function"]["name"] for d in _defs}
+
+            if not skill_manage_available(_tool_names):
+                return LEARN_UNAVAILABLE_MESSAGE
+
             _ack = (
                 "Learning a skill from what you described…"
                 if _learn_req

@@ -484,3 +484,27 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestSkillManagePromptGating:
+    """#74249 — system prompt must match effective skill write capability."""
+
+    _READ_ONLY = {"memory", "skills_list", "skill_view"}
+    _WRITABLE = {"memory", "skills_list", "skill_view", "skill_manage"}
+
+    def test_read_only_tools_omit_skill_authoring_guidance(self):
+        agent = _make_agent(valid_tool_names=sorted(self._READ_ONLY))
+        stable = _stable_prompt(agent)
+        assert "Procedures and workflows belong in skills, not memory." in stable
+        assert "save it as a skill with the skill tool" not in stable
+        assert "skill_manage(action='patch')" not in stable
+        assert "When you work out a non-trivial workflow" not in stable
+
+    def test_writable_tools_include_skill_authoring_guidance(self):
+        agent = _make_agent(valid_tool_names=sorted(self._WRITABLE))
+        stable = _stable_prompt(agent)
+        # "save it as a skill with the skill tool" was removed from prompts
+        # entirely upstream (#82154: Anthropic filter rejection); gated
+        # SKILLS_GUIDANCE carries the skill-authoring intent instead.
+        assert "skill_manage(action='patch')" in stable
+        assert "When you work out a non-trivial workflow" in stable

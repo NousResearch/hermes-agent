@@ -181,8 +181,6 @@ MEMORY_GUIDANCE = (
     "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
     "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
     "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
-    "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool.\n"
     "Write memories as declarative facts, not instructions to yourself. "
     "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
@@ -191,6 +189,8 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+# Skill-authoring guidance lives in SKILLS_GUIDANCE, appended only when
+# skill_manage is in the effective toolset (#74249).
 USER_PROFILE_GUIDANCE = (
     "You have a persistent user profile across sessions. Save durable facts about "
     "the user with the memory tool (target='user'): name, role, preferences, "
@@ -2183,11 +2183,12 @@ def _build_skills_system_prompt_inner(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
+            + (("If a skill has issues, fix it with skill_manage(action='patch').\n"
+               "After difficult/iterative tasks, offer to save as a skill. "
+               "If a skill you loaded was missing steps, had wrong commands, or needed "
+               "pitfalls you discovered, update it before finishing.\n")
+              if "skill_manage" in (available_tools or set()) else "")
+            + "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"

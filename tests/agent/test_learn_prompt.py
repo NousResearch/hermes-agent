@@ -7,8 +7,10 @@ these are the load-bearing behavior contracts.
 """
 
 from agent.learn_prompt import (
-    build_learn_prompt,
+    LEARN_UNAVAILABLE_MESSAGE,
     _AUTHORING_STANDARDS,
+    build_learn_prompt,
+    skill_manage_available,
     _KNOWLEDGE_SKILL_STANDARDS,
     _SOURCE_HYGIENE,
 )
@@ -106,6 +108,17 @@ class TestBuildLearnPrompt:
         assert "If one exists, load it with `skill_view`" in prompt
         assert "Only when no matching skill exists" in prompt
         assert 'action="create"' in prompt
+
+
+class TestLearnSkillManageGating:
+    def test_skill_manage_available_requires_tool_name(self):
+        assert skill_manage_available({"skills_list", "skill_view", "skill_manage"})
+        assert not skill_manage_available({"skills_list", "skill_view"})
+        assert not skill_manage_available(set())
+        assert not skill_manage_available(None)
+
+    def test_unavailable_message_names_skill_manage(self):
+        assert "skill_manage" in LEARN_UNAVAILABLE_MESSAGE
 
 
 class TestLearnRegistryWiring:

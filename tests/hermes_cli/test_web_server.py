@@ -1318,6 +1318,174 @@ class TestWebServerEndpoints:
 
 
 
+    def test_model_set_preserves_unrelated_config_and_yaml_comments(self, monkeypatch):
+        """Desktop's model picker must update only model keys, leaving unrelated
+        user configuration and comments intact (#89184)."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "# user-managed config\n"
+            "model:\n"
+            "  # retain this comment\n"
+            "  default: old-model\n"
+            "  provider: old-provider\n"
+            "  base_url: https://old.example/v1\n"
+            "fallback_providers:\n"
+            "  - provider: backup\n"
+            "    model: backup-model\n"
+            "agent:\n"
+            "  personalities:\n"
+            "    catgirl: 'nya (=^･ω･^=) 你好'\n"
+            "auxiliary:\n"
+            "  unchanged: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        text = config_path.read_text(encoding="utf-8")
+        assert "# user-managed config" in text
+        assert "# retain this comment" in text
+        assert "nya (=^･ω･^=) 你好" in text
+        saved = yaml.safe_load(text)
+        assert saved["model"] == {
+            "default": "new/model",
+            "provider": "openrouter",
+            "base_url": "",
+        }
+        assert saved["fallback_providers"] == [{"provider": "backup", "model": "backup-model"}]
+        assert saved["agent"]["personalities"] == {"catgirl": "nya (=^･ω･^=) 你好"}
+        assert saved["auxiliary"] == {"unchanged": True}
+
+    def test_model_set_preserves_comments_when_nous_gateway_defaults_change(self, monkeypatch):
+        """Managed gateway defaults must not turn a targeted model save into a
+        whole-document rewrite (#89184)."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "# user-managed config\n"
+            "model:\n"
+            "  # retain this comment\n"
+            "  default: old-model\n"
+            "  provider: old-provider\n"
+            "agent:\n"
+            "  personalities:\n"
+            "    catgirl: 'nya (=^･ω･^=) 你好'\n"
+            "web:\n"
+            "  # retain this tool comment\n"
+            "  custom_option: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def apply_managed_defaults(cfg, **_kwargs):
+            cfg.setdefault("web", {})["backend"] = "firecrawl"
+            return {"web"}
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.apply_nous_managed_defaults",
+            apply_managed_defaults,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_args, **_kwargs: ["web"],
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new-model",
+                "confirm_expensive_model": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        text = config_path.read_text(encoding="utf-8")
+        assert "# user-managed config" in text
+        assert "# retain this comment" in text
+        assert "# retain this tool comment" in text
+        saved = yaml.safe_load(text)
+        assert saved["model"]["provider"] == "nous"
+        assert saved["model"]["default"] == "new-model"
+        assert saved["web"] == {"custom_option": True, "backend": "firecrawl"}
+        assert saved["agent"]["personalities"] == {"catgirl": "nya (=^･ω･^=) 你好"}
+
+    def test_model_set_respects_managed_configuration(self, monkeypatch):
+        """The targeted persistence path must retain save_config's managed
+        installation write guard."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        original = "model:\n  provider: old-provider\n  default: old-model\n"
+        config_path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
+        monkeypatch.setattr("hermes_cli.config.ensure_hermes_home", lambda: None)
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert config_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.linux_only
+    def test_model_set_secures_config_file_after_persisting_api_key(self, monkeypatch):
+        """Saving a model endpoint key must retain save_config's owner-only
+        config file permissions."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text("model:\n  default: old-model\n", encoding="utf-8")
+        os.chmod(config_path, 0o644)
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "new/model",
+                "api_key": "test-model-key",
+                "confirm_expensive_model": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert (config_path.stat().st_mode & 0o777) == 0o600
+
     def test_model_set_maps_unknown_vendor_to_aggregator(self, monkeypatch):
         """A bare vendor name from analytics rows (no billing_provider) is not
         a Hermes provider — keep the user's aggregator instead of writing a

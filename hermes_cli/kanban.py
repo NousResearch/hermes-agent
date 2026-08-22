@@ -2340,6 +2340,10 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
+    # Same redaction kb.block_task()/kb.add_comment() apply before
+    # persisting — computed once here so the terminal echo below shows
+    # exactly what was stored, not the raw pre-redaction text.
+    echo_reason = kb.redact_review_value(reason) if reason else reason
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
@@ -2358,7 +2362,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 # to todo, and a tripped unblock-loop breaker routes to triage.
                 landed = kb.get_task(conn, tid)
                 where = landed.status if landed else "blocked"
-                suffix = f": {reason}" if reason else ""
+                suffix = f": {echo_reason}" if echo_reason else ""
                 if where == "todo":
                     print(f"{tid} → todo (dependency wait){suffix}")
                 elif where == "triage":
@@ -2376,6 +2380,10 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
+    # Same redaction kb.schedule_task()/kb.add_comment() apply before
+    # persisting — computed once here so the terminal echo below shows
+    # exactly what was stored, not the raw pre-redaction text.
+    echo_reason = kb.redact_review_value(reason) if reason else reason
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
@@ -2389,7 +2397,7 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)
             else:
-                print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
+                print(f"Scheduled {tid}" + (f": {echo_reason}" if echo_reason else ""))
     return 0 if not failed else 1
 
 

@@ -170,6 +170,39 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# /kanban block / schedule — echo must not leak the pre-redaction reason
+# ---------------------------------------------------------------------------
+#
+# kb.block_task()/kb.schedule_task() redact `reason` before persisting, but
+# _cmd_block/_cmd_schedule captured `reason` from argv BEFORE that call and
+# echoed the same local (unredacted) variable back to the terminal — so the
+# stored row was safe but the CLI's own response line still printed the full
+# secret. Both commands share the identical pattern; fixed together.
+
+
+def test_block_echo_does_not_leak_raw_secret(kanban_home):
+    token = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs a secret rotated")
+
+    out = kc.run_slash(f"block {tid} rotate {token} before continuing")
+
+    assert token not in out, out
+    assert "Blocked" in out or "→" in out, out
+
+
+def test_schedule_echo_does_not_leak_raw_secret(kanban_home):
+    token = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="waiting on a secret")
+
+    out = kc.run_slash(f"schedule {tid} rotate {token} first")
+
+    assert token not in out, out
+    assert "Scheduled" in out, out
+
+
+# ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------
 

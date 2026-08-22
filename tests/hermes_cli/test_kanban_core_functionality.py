@@ -434,6 +434,152 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+_FAKE_GH_TOKEN = "ghp_" + "A" * 36
+_REDACTED_MARKER = "ghp_AA...AAAA"
+
+
+def test_complete_task_redacts_secrets_in_summary_result_metadata(kanban_home):
+    """complete_task() must redact secrets like request_review()/
+    request_changes() do — it's the same durable, cross-caller (CLI/
+    dashboard/agent-tool) record surfaced to downstream children via
+    build_worker_context and to dashboard/gateway notifications.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="secret completion", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.complete_task(
+            conn, tid,
+            result=f"result token {_FAKE_GH_TOKEN}",
+            summary=f"summary token {_FAKE_GH_TOKEN}",
+            metadata={"note": f"metadata token {_FAKE_GH_TOKEN}"},
+        ) is True
+
+        task = kb.get_task(conn, tid)
+        assert _FAKE_GH_TOKEN not in (task.result or "")
+        assert _REDACTED_MARKER in task.result
+
+        run = kb.latest_run(conn, tid)
+        assert _FAKE_GH_TOKEN not in (run.summary or "")
+        assert _REDACTED_MARKER in run.summary
+        assert _FAKE_GH_TOKEN not in (run.metadata or {}).get("note", "")
+        assert _REDACTED_MARKER in run.metadata["note"]
+    finally:
+        conn.close()
+
+
+def test_block_task_redacts_secrets_in_reason(kanban_home):
+    """block_task()'s ``reason`` lands in the closed run's summary and every
+    block-routing event's payload — must be redacted like request_changes()'s
+    ``reason`` is.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="secret block", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn, tid, reason=f"blocked because {_FAKE_GH_TOKEN}",
+        ) is True
+
+        run = kb.latest_run(conn, tid)
+        assert _FAKE_GH_TOKEN not in (run.summary or "")
+        assert _REDACTED_MARKER in run.summary
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert events
+        reason_payload = events[-1].payload.get("reason") or ""
+        assert _FAKE_GH_TOKEN not in reason_payload
+        assert _REDACTED_MARKER in reason_payload
+    finally:
+        conn.close()
+
+
+def test_add_comment_redacts_secrets_in_body(kanban_home):
+    """add_comment()'s ``body`` is durable, dashboard/gateway-notification-
+    visible free text — must be redacted at the same domain boundary as
+    request_review()/request_changes()/block_task()/complete_task().
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="secret comment", assignee="worker")
+        kb.add_comment(conn, tid, "worker", f"note: {_FAKE_GH_TOKEN}")
+
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert _FAKE_GH_TOKEN not in comments[0].body
+        assert _REDACTED_MARKER in comments[0].body
+    finally:
+        conn.close()
+
+
+def test_schedule_task_redacts_secrets_in_reason(kanban_home):
+    """schedule_task()'s ``reason`` lands in the closed run's summary and the
+    ``scheduled`` event's payload — same durable destinations as
+    block_task()'s ``reason``, but schedule_task() never called
+    redact_review_value() at all before this fix.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="secret schedule", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.schedule_task(
+            conn, tid, reason=f"waiting because {_FAKE_GH_TOKEN}",
+        ) is True
+
+        run = kb.latest_run(conn, tid)
+        assert _FAKE_GH_TOKEN not in (run.summary or "")
+        assert _REDACTED_MARKER in run.summary
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "scheduled"]
+        assert events
+        reason_payload = events[-1].payload.get("reason") or ""
+        assert _FAKE_GH_TOKEN not in reason_payload
+        assert _REDACTED_MARKER in reason_payload
+    finally:
+        conn.close()
+
+
+def test_redact_review_value_redacts_dict_keys_not_just_values(kanban_home):
+    """redact_review_value() walked dict VALUES but left KEYS verbatim — an
+    agent-tool caller supplies arbitrary metadata keys, and a token-shaped
+    key landed unredacted in the same durable rows/event payloads as the
+    (correctly redacted) values.
+    """
+    redacted = kb.redact_review_value({_FAKE_GH_TOKEN: "ordinary value"})
+    assert _FAKE_GH_TOKEN not in redacted
+    assert _REDACTED_MARKER in "".join(redacted.keys())
+
+
+def test_complete_task_preserves_secret_shaped_artifact_paths(kanban_home):
+    """complete_task() redacted `metadata` (including `artifacts`) BEFORE
+    _persist_scratch_completion_artifacts() resolves those paths to real
+    files on disk. A legitimate scratch artifact whose filename merely
+    resembles a secret pattern (e.g. a worker's report about a discovered
+    API key) got its path string mangled by redaction, so it no longer
+    resolved to a real file — completion raised ArtifactPreservationError
+    and the task was never marked done.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="render report", assignee="worker")
+        task = kb.get_task(conn, tid)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        artifact = ws / f"{_FAKE_GH_TOKEN}.txt"
+        artifact.write_bytes(b"report contents")
+
+        assert kb.complete_task(
+            conn, tid,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        ) is True
+
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        persisted = Path(completed.payload["artifacts"][0])
+        assert persisted.exists()
+        assert persisted.read_bytes() == b"report contents"
+    finally:
+        conn.close()
 
 
 

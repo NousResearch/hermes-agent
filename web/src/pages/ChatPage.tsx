@@ -61,7 +61,11 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
-import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
+import {
+  computeKeyboardInset,
+  KEYBOARD_INSET_MIN_PX,
+  shouldPinScroll,
+} from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -514,9 +518,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const host = hostRef.current;
     if (!host) return;
-    // Captured once so the effect cleanup doesn't re-read the ref (which
-    // may point elsewhere by then — react-hooks/exhaustive-deps).
-    const termWrap = termWrapRef.current;
 
     const token = window.__HERMES_SESSION_TOKEN__;
     const gated = !!window.__HERMES_AUTH_REQUIRED__;
@@ -807,6 +808,90 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+    // ── Touch scroll (coarse pointers only) ─────────────────────────
+    // xterm v6's TouchScrollManager is dead code in the browser bundle:
+    // no target is ever registered with it and it dispatches a custom
+    // event nothing consumes, so a finger drag over the terminal falls
+    // through to the page — the mobile column scrolls (and at its edge
+    // Firefox Mobile fires pull-to-refresh). On coarse pointers we take
+    // the gesture over and drive xterm's own scrollable element
+    // (`.xterm-viewport` — the same element xterm's wheel path moves via
+    // scrollLines) 1:1 with the finger. Native `scroll` events keep
+    // xterm's scroll position + the resume follow-scroll pin in sync.
+    // Gated on `pointer: coarse` so desktop/trackpad input is untouched.
+    const coarsePointerMql = window.matchMedia("(pointer: coarse)");
+    let touchScrollCleanup: (() => void) | null = null;
+    let reapplyTouchAction: (() => void) | null = null;
+    if (coarsePointerMql.matches) {
+      const findViewport = () =>
+        host.querySelector<HTMLDivElement>(".xterm-viewport");
+      const applyTouchAction = (value: string) => {
+        host.style.touchAction = value;
+        findViewport()?.style.setProperty("touch-action", value);
+      };
+      // Claim every touch gesture on the terminal so the browser can't
+      // pan the page / pull-to-refresh from it; our handler below does
+      // the scrolling. (Tap-to-focus survives: we never preventDefault
+      // touchstart, so the browser still synthesises the click.)
+      applyTouchAction("none");
+      let touchId: number | null = null;
+      let lastY = 0;
+      const onTouchStart = (ev: TouchEvent) => {
+        // Single finger only — let two-finger gestures (pinch/zoom) do
+        // whatever the page does; a scroll drag is one finger.
+        if (ev.touches.length !== 1) return;
+        touchId = ev.touches[0].identifier;
+        lastY = ev.touches[0].clientY;
+      };
+      const onTouchMove = (ev: TouchEvent) => {
+        if (touchId === null) return;
+        let found: Touch | null = null;
+        for (let i = 0; i < ev.touches.length; i++) {
+          if (ev.touches[i].identifier === touchId) {
+            found = ev.touches[i];
+            break;
+          }
+        }
+        if (!found) return; // our finger lifted mid-gesture
+        const delta = found.clientY - lastY;
+        lastY = found.clientY;
+        if (delta !== 0) {
+          const vp = findViewport();
+          if (vp) {
+            // Finger down (delta > 0) reveals earlier output.
+            vp.scrollTop -= delta;
+          }
+        }
+        ev.preventDefault(); // no page pan, no pull-to-refresh
+      };
+      const endTouch = (ev: TouchEvent) => {
+        if (touchId === null) return;
+        for (let i = 0; i < ev.changedTouches.length; i++) {
+          if (ev.changedTouches[i].identifier === touchId) {
+            touchId = null;
+            break;
+          }
+        }
+      };
+      host.addEventListener("touchstart", onTouchStart, { passive: true });
+      // preventDefault on move requires a non-passive listener.
+      host.addEventListener("touchmove", onTouchMove, { passive: false });
+      host.addEventListener("touchend", endTouch);
+      host.addEventListener("touchcancel", endTouch);
+      const onCoarseChange = () =>
+        applyTouchAction(coarsePointerMql.matches ? "none" : "");
+      coarsePointerMql.addEventListener("change", onCoarseChange);
+      reapplyTouchAction = () => applyTouchAction(coarsePointerMql.matches ? "none" : "");
+      touchScrollCleanup = () => {
+        host.removeEventListener("touchstart", onTouchStart);
+        host.removeEventListener("touchmove", onTouchMove);
+        host.removeEventListener("touchend", endTouch);
+        host.removeEventListener("touchcancel", endTouch);
+        coarsePointerMql.removeEventListener("change", onCoarseChange);
+        applyTouchAction("");
+      };
+    }
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -821,6 +906,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       sendComposedText(data);
     });
     term.open(host);
+
+    // xterm created `.xterm-viewport` inside the host during open() —
+    // apply the coarse-pointer touch-action claim to it now (the earlier
+    // application only reached the host). The host-level `touch-action:
+    // none` already disables browser gestures for the whole subtree; this
+    // styles the actual hit target directly so there is no reliance on
+    // the ancestor-intersection rule.
+    reapplyTouchAction?.();
 
     // IME composition guard (fixes #52111).
     //
@@ -923,7 +1016,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       hostSyncRaf = requestAnimationFrame(() => {
         hostSyncRaf = 0;
         syncTerminalMetrics();
+        exposeTermDebug();
       });
+    };
+
+    // ?debug=inset: expose live terminal geometry so the diagnostic chip can
+    // localize a keyboard/URL-bar overlap into (a) host not shrinking,
+    // (b) xterm not re-fitting its grid, or (c) PTY not re-rendering at the
+    // new row count. Writes a harmless global read only by InsetDebugSentinel
+    // when ?debug=inset is present — no behaviour or desktop change.
+    const exposeTermDebug = () => {
+      if (typeof window === "undefined") return;
+      const r = host.getBoundingClientRect();
+      const buf = term.buffer.active;
+      // Rows the xterm viewport sits above the buffer bottom: 0 = the
+      // visible window is pinned to the newest rows (where the TUI's
+      // composer/input line lives); >0 = scrolled back N rows, so the
+      // prompt line is BELOW the visible window.
+      const offBottom =
+        Math.max(0, buf.baseY - buf.viewportY - (term.rows - 1));
+      (window as unknown as Record<string, unknown>).__HERMES_TERM_DEBUG__ = {
+        rows: term.rows,
+        cols: term.cols,
+        fs: term.options.fontSize,
+        hostTop: Math.round(r.top),
+        hostBot: Math.round(r.bottom),
+        hostH: Math.round(r.height),
+        docTop: Math.round(window.scrollY || 0),
+        offBottom,
+        // NS-434b: the keyboard-row reservation currently applied (0 = none).
+        kbReserve: kbReservePx,
+      };
     };
 
     let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -963,6 +1086,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ) {
         wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
       }
+      exposeTermDebug();
     };
     syncMetricsRef.current = syncTerminalMetrics;
 
@@ -978,19 +1102,129 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ro.observe(host);
 
     // NS-434: soft-keyboard inset. On mobile the keyboard overlays the
-    // layout viewport instead of resizing it (iOS always; Android Chrome
-    // under the default `resizes-visual` — we ask for `resizes-content`
-    // in the viewport meta, but can't rely on it). The host's bounding
-    // box therefore doesn't change when the keyboard opens, fit() computes
-    // identical (cols, rows), and Ink keeps drawing the input line under
-    // the keyboard. Measure the obscured region via visualViewport and
-    // apply it as bottom padding on the terminal wrapper — that *does*
-    // shrink the host, so the ResizeObserver refit path kicks in and the
-    // PTY re-lays-out above the keyboard.
-    let appliedKeyboardInset = 0;
+    // layout viewport instead of resizing it (iOS always; FF Mobile
+    // always — it ignores `resizes-content`; Android Chrome under the
+    // default `resizes-visual`). The compensation itself is now
+    // shell-wide: `trackMobileViewportInset` (lib/mobile-viewport-inset.ts)
+    // publishes `--hermes-mobile-bottom-inset`, which the ≤768px block in
+    // index.css subtracts from the page column height. Shrinking the
+    // column shrinks the terminal host, so the ResizeObserver refit path
+    // kicks in and the PTY re-lays-out above the keyboard. This listener
+    // keeps the iOS scroll-pin and schedules a refit so the host doesn't
+    // wait for the observer to notice the shell change.
+    // NS-434b: reserve ONE terminal row while the soft keyboard is open.
+    // Some mobile browsers resize the *layout* viewport for the keyboard
+    // (innerHeight drops by the keyboard height — Android Firefox observed
+    // 2026-08-21), so the shell-wide inset computes to 0 and the grid fits
+    // snug against the keyboard edge: the input row's row box (descenders,
+    // cursor) then reads as cut off at the keyboard line. While a keyboard
+    // is present we reserve one cell row of bottom padding on the terminal
+    // wrapper; the existing RO→fit→onResize→RESIZE path then drops the grid
+    // by exactly one row and the TUI input line lifts clear of the keyboard.
+    // The reservation is released the moment the keyboard closes.
+    //
+    // Overlay-mode browsers (iOS, FF in overlay mode) already compensate the
+    // whole keyboard through the shell inset (`--hermes-mobile-bottom-inset`)
+    // — the input line sits far above the keyboard there — so this extra
+    // reservation is intentionally a no-op for them.
+    //
+    // Detection: the keyboard is "present" when the shell inset is 0 AND the
+    // layout viewport has shrunk ≥ KEYBOARD_INSET_MIN_PX from the largest
+    // height seen at the current width (the keyboard's own height on
+    // resize-mode phones). A width change re-baselines, so rotation can't
+    // leave a stale reservation. Desktop never sees a ≥80px layout drop from
+    // a keyboard, and the 768px media gate below is belt-and-suspenders.
+    const KEYBOARD_ROW_DROP_MIN_PX = KEYBOARD_INSET_MIN_PX;
+    const kbRowMql = window.matchMedia("(max-width: 768px)");
+    const kbBaseline = { h: 0, w: 0 };
+    let kbReservePx = 0;
+    const cellHeightCssPx = () => {
+      try {
+        const h =
+          (term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } } })
+            ._core?._renderService?.dimensions?.css?.cell?.height;
+        if (Number.isFinite(h) && (h as number) > 0) return h as number;
+      } catch {
+        /* fall through to the options estimate */
+      }
+      return (term.options.fontSize ?? 12) * (term.options.lineHeight ?? 1.02);
+    };
+    const syncKeyboardRowReserve = () => {
+      const vv = window.visualViewport;
+      const inset = computeKeyboardInset(
+        vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
+        window.innerHeight,
+      );
+      const h = window.innerHeight;
+      const w = window.innerWidth;
+      let want = 0;
+      if (inset === 0 && kbRowMql.matches) {
+        if (kbBaseline.h === 0 || w !== kbBaseline.w) {
+          // First sample or (ro)width change: (re)baseline. No reservation
+          // yet — a keyboard already open at mount can't be distinguished
+          // from the at-rest size, and that's fine: the next close→open
+          // cycle catches it. A width change also invalidates any held
+          // reservation (cell/rows change).
+          kbBaseline.h = h;
+          kbBaseline.w = w;
+        } else if (h >= kbBaseline.h - 1) {
+          // Layout back to (near) its at-rest height → keyboard closed →
+          // release.
+          kbBaseline.h = h;
+        } else {
+          // Layout still shrunk below baseline: the keyboard is present
+          // when the shrink is keyboard-scale. Reserve exactly ONE row of
+          // host height — computed ONCE per open from the at-rest host
+          // height (pure CSS flex, so it has already settled to the
+          // post-collapse size by the time visualViewport fires), then
+          // HELD while the keyboard stays up: re-deriving it from the
+          // already-padded host would measure our own padding.
+          if (kbBaseline.h - h >= KEYBOARD_ROW_DROP_MIN_PX) {
+            if (kbReservePx === 0) {
+              const hostEl = hostRef.current;
+              const h0 = hostEl ? hostEl.clientHeight : 0;
+              if (h0 > 0) {
+                const cell = cellHeightCssPx();
+                const rem = h0 % cell;
+                // Padding just over the slack fit() leaves below the last
+                // row (a full cell when the remainder is ~0 — the 385px =
+                // 31×12.42 "1 too many lines" case). With
+                // h0 = N·cell + rem and R = ceil(rem + 1.5) ∈ (rem, rem + 2),
+                // floor((h0 − R)/cell) = N − 1 for any cell ≥ ~3px: exactly
+                // one row down, never two.
+                want = Math.ceil(rem + 1.5);
+              }
+            } else {
+              want = kbReservePx; // hold
+            }
+          }
+        }
+      }
+      if (want === kbReservePx) return;
+      kbReservePx = want;
+      const el = termWrapRef.current;
+      if (el) {
+        if (want === 0) {
+          el.style.removeProperty("padding-bottom");
+        } else {
+          // ADD to the wrapper's class padding (p-2 → 8px mobile,
+          // p-3 → 12px sm+) — replacing it would shrink the host instead.
+          const classPad = parseFloat(
+            window.getComputedStyle(el).paddingBottom,
+          );
+          const base = Number.isFinite(classPad) ? classPad : 0;
+          el.style.setProperty(
+            "padding-bottom",
+            `${Math.round(base + want)}px`,
+          );
+        }
+      }
+      // The wrapper's content box just changed → refit on the next frame so
+      // the grid tracks the new available height (idempotent: RO also fires).
+      scheduleHostSync();
+    };
+
     const syncKeyboardInset = () => {
-      const wrap = termWrap;
-      if (!wrap) return;
       const vv = window.visualViewport;
       const inset = computeKeyboardInset(
         vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
@@ -998,46 +1232,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       );
       if (shouldPinScroll(inset)) {
         // iOS auto-scrolls the page to reveal xterm's hidden textarea when
-        // the keyboard opens. The shell is a fixed h-dvh column that must
-        // never scroll — pin it back so the terminal chrome stays put.
+        // the keyboard opens. The shell is a fixed column that must not
+        // scroll — pin it back so the terminal chrome stays put.
         window.scrollTo(0, 0);
         const scroller = document.scrollingElement;
         if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
       }
-      if (inset === appliedKeyboardInset) return;
-      appliedKeyboardInset = inset;
-      if (inset > 0) {
-        wrap.style.paddingBottom = `${inset}px`;
-        // Keep the freshly-resized input line in view.
-        try {
-          term.scrollToBottom();
-        } catch {
-          /* ignore */
-        }
-      } else {
-        wrap.style.paddingBottom = "";
-      }
-      // The wrapper padding change resizes the host; the ResizeObserver
-      // will refit, but schedule one explicitly in case the observer
-      // coalesces with an in-flight frame.
       scheduleHostSync();
     };
     const onViewportChange = () => {
       syncKeyboardInset();
+      syncKeyboardRowReserve();
       scheduleSyncTerminalMetrics();
     };
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
+    // A (ro)resize changes the layout baseline the keyboard-row reservation
+    // measures against, so re-evaluate it on window resize too.
+    const onWindowResizeForKbRow = () => {
+      syncKeyboardRowReserve();
+    };
+    window.addEventListener("resize", onWindowResizeForKbRow);
     // The visualViewport listeners that drive `onViewportChange` are NOT
     // attached here: ChatPage is persistently mounted (hidden) on every
     // dashboard route, so they are attached/detached by the isActive-gated
     // effect below via these refs. Attaching them unconditionally made the
     // scroll pin fire when a soft keyboard opened on any page.
     keyboardInsetSyncRef.current = onViewportChange;
-    keyboardInsetResetRef.current = () => {
-      appliedKeyboardInset = 0;
-      if (termWrap) termWrap.style.paddingBottom = "";
-    };
+    // No per-terminal state to clear anymore: the inset is shell-wide
+    // (`--hermes-mobile-bottom-inset`), so deactivating /chat just stops
+    // the scroll pin via the listener effect's cleanup below.
+    keyboardInsetResetRef.current = () => undefined;
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1474,16 +1699,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
+      touchScrollCleanup?.();
       compositionForwarder.dispose();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      window.removeEventListener("resize", onWindowResizeForKbRow);
+      // Drop any keyboard-row reservation so a keyboard left open during a
+      // remount can't leave the wrapper padded with a stale value.
+      if (kbReservePx !== 0) {
+        kbReservePx = 0;
+        termWrapRef.current?.style.removeProperty("padding-bottom");
+      }
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
-      const wrap = termWrap;
-      if (wrap) wrap.style.paddingBottom = "";
       ro.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
@@ -1548,6 +1779,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       vv.removeEventListener("resize", onViewportChange);
       vv.removeEventListener("scroll", onViewportChange);
       keyboardInsetResetRef.current?.();
+      // ChatPage stays mounted (display:none) on other routes — clear any
+      // keyboard-row reservation applied while the keyboard was open so a
+      // keyboard left open during navigation can't keep the hidden wrapper
+      // padded with a stale value.
+      const el = termWrapRef.current;
+      if (el && el.style.getPropertyValue("padding-bottom") !== "") {
+        el.style.removeProperty("padding-bottom");
+      }
     };
   }, [isActive]);
 
@@ -1707,6 +1946,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           aria-label={modelToolsLabel}
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "hermes-dvh-surface",
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",

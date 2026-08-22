@@ -151,6 +151,63 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[2]["reference"] is None
 
 
+@pytest.mark.asyncio
+async def test_send_strips_reaction_manifest_and_adds_action_reaction(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_msg = SimpleNamespace(id=1001, add_reaction=AsyncMock())
+    channel = SimpleNamespace(id=555, send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    manifest = {"actions": [{"emoji": "\u2705", "action": "dismiss"}]}
+
+    result = await adapter.send(
+        "555",
+        "Dismiss shortcuts:\n1. archive"
+        f" [HERMES_REACTION_ACTIONS] {json.dumps(manifest)}",
+    )
+
+    assert result.success is True
+    assert channel.send.await_args.kwargs["content"] == "Dismiss shortcuts:\n1. archive"
+    sent_msg.add_reaction.assert_awaited_once_with("\u2705")
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_manifest_messages_send_explicit_parts(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_msgs = [
+        SimpleNamespace(id=1001, add_reaction=AsyncMock()),
+        SimpleNamespace(id=1002, add_reaction=AsyncMock()),
+    ]
+    channel = SimpleNamespace(id=555, send=AsyncMock(side_effect=sent_msgs))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    manifest = {
+        "discord_messages": [
+            {"content": "Search queries:", "actions": [{"emoji": "\U0001f50e"}]},
+            {"content": "Dismiss shortcuts:", "actions": [{"emoji": "\u2705"}]},
+        ]
+    }
+
+    result = await adapter.send(
+        "555",
+        f"fallback [HERMES_REACTION_ACTIONS] {json.dumps(manifest)}",
+    )
+
+    assert result.success is True
+    assert [call.kwargs["content"] for call in channel.send.await_args_list] == [
+        "Search queries:",
+        "Dismiss shortcuts:",
+    ]
+    sent_msgs[0].add_reaction.assert_awaited_once_with("\U0001f50e")
+    sent_msgs[1].add_reaction.assert_awaited_once_with("\u2705")
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
@@ -416,5 +473,4 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
-
 

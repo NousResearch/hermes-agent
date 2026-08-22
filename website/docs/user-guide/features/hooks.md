@@ -463,6 +463,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
+| [`on_discord_reaction_add`](#on_discord_reaction_add) | Platform action hook | After an authorized user adds a reaction to a bot-authored Discord message; bot self-reactions and non-bot-authored messages are ignored. | `emoji`, `user_id`, `channel_id`, `message_id`, `guild_id`, `message_content`, `message_author_id` | Discord ids plus the bot message content. No raw Discord SDK objects, adapter handles, or bot clients are exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
@@ -1262,6 +1263,77 @@ Every payload is additive and event-specific; there is no monolithic gateway pay
 The bot's own progressive message edits (streaming) never fire `message_edited` on Discord — bot-authored events are dropped at the fire-site.
 
 This hook is observer-only: it does **not** add raw-event access or adapter access. **Raw SDK payload access is deliberately not shipped** — adapter SDK objects change shape without notice and would become un-evolvable API surface; where genuinely needed it requires its own explicit capability (`gateway.raw_events`) with a "no stability guarantee" label and its own design (tracked in #64228). For *acting* on a platform (adding a reaction, renaming a thread), use the capability-gated `ctx.platform_actions` facade documented in the [plugins guide](plugins.md#platform-actions) — it is gated off by default behind the `gateway.platform_actions` capability. `PluginContext.dispatch_tool()` can only call tools registered in the tool registry; `send_message` is intentionally not registered there (its transport is reserved for explicit CLI, cron, kanban, and MCP delivery paths). A future outbound-delivery contract must first provide stable delivered content/handles across all adapters; this slice does not pre-register an inert `gateway_message_delivered` hook.
+
+---
+
+### `on_discord_reaction_add`
+
+Fires when a subscribed plugin needs to handle user reactions on bot-authored Discord messages. This is intentionally narrower than [`gateway_platform_event`](#gateway_platform_event): it is for plugin-owned Discord reaction actions, not for routing every raw Discord reaction into the agent.
+
+The Discord adapter applies the same profile-level Discord gates before dispatching this hook:
+
+- the reacting user must pass the configured Discord user/role policy
+- the channel must pass `discord.allowed_channels` / `discord.ignored_channels`
+- bot self-reactions are ignored
+- the target message must be authored by a bot
+
+```python
+def handle_decision(emoji, user_id, channel_id, message_id, message_content, **kwargs):
+    if emoji == "✅":
+        return {
+            "actions": [
+                {"action": "remove_user_reaction", "emoji": emoji},
+                {"action": "add_reaction", "emoji": "☑️"},
+                {"action": "send_message", "content": f"Recorded approval from <@{user_id}>."},
+            ]
+        }
+
+def register(ctx):
+    ctx.register_hook("on_discord_reaction_add", handle_decision)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `emoji` | `str` | The reaction emoji as rendered by Discord. |
+| `user_id` | `str` | Discord id of the user who added the reaction. |
+| `channel_id` | `str` | Discord channel id where the reaction happened. |
+| `message_id` | `str` | Discord id of the reacted-to bot message. |
+| `guild_id` | `str \| None` | Discord guild id, or `None` for DMs. |
+| `message_content` | `str` | Current content of the reacted-to bot message. |
+| `message_author_id` | `str \| None` | Discord id of the message author, if available. |
+
+Callbacks may return a single action dict, a list of action dicts, or `{"actions": [...]}`. Supported best-effort actions are:
+
+| Action | Fields | Effect |
+|--------|--------|--------|
+| `send_message` | `content` or `message` | Sends a follow-up message in the same channel. |
+| `add_reaction` / `add_bot_reaction` | `emoji` | Adds a bot reaction to the reacted-to message. |
+| `remove_bot_reaction` | `emoji` | Removes the bot's reaction from the reacted-to message. |
+| `remove_user_reaction` | `emoji` optional | Removes the reacting user's emoji from the reacted-to message; defaults to the triggering emoji. |
+
+Side-effect failures are logged at debug level and do not crash the gateway. The hook receives plain strings only; raw Discord SDK objects, adapter handles, and the bot client are deliberately not part of the stable contract.
+
+Plugins or profile code can attach reaction actions to outbound Discord messages by appending a reaction manifest to text delivered through `send_message`, cron, kanban, MCP delivery, or other send paths. The Discord sender strips the marker before message splitting, sends any Discord-specific message sections, then adds the configured bot reactions to the delivered Discord messages:
+
+Discord reactions are exposed through plugin hooks/manifests and adapter delivery helpers, not as direct core Discord tool actions.
+
+```text
+Decision summary for today.
+[HERMES_REACTION_ACTIONS]{
+  "actions": [
+    {"emoji": "✅", "anchor": "Decision summary"},
+    {"emoji": "🗑️", "anchor": "Decision summary"}
+  ],
+  "discord_messages": [
+    {
+      "content": "Decision summary for today.",
+      "actions": [{"emoji": "✅"}, {"emoji": "🗑️"}]
+    }
+  ]
+}
+```
+
+The manifest is valid only when it contains at least one top-level `actions` entry or one `discord_messages` entry with content or actions. `emoji` is the only required action field; optional fields such as `message_index`, `anchor`, `target_text`, `section`, or `target` help Hermes choose which delivered message should receive the reaction when a send is split into multiple Discord messages. Invalid manifests fail open: the original text is sent unchanged so Hermes does not silently delete user-visible content it could not parse.
 
 ---
 

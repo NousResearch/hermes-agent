@@ -79,6 +79,7 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
     ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip",
 }
 
+
 # Per-platform native caption length limits (characters). Text longer than
 # the limit can't ride on the media bubble and stays a separate body message.
 # Telegram's photo/video caption cap is 1024; WhatsApp and Discord are far
@@ -221,7 +222,7 @@ SEND_MESSAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["send", "list", "react", "unreact"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks; Discord reactions are plugin-owned through hooks/manifests). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
@@ -292,6 +293,11 @@ def _handle_react(args, remove=False):
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
+    if platform_name == "discord":
+        return tool_error(
+            "Discord reactions are plugin-owned; use Discord reaction hooks or "
+            "reaction manifests instead of send_message react/unreact."
+        )
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     prepare_send_message_platforms()
@@ -1014,44 +1020,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # historically went straight to the HTTP path; we preserve that by
     # explicitly invoking the registry hook here so behavior is unchanged.
     if platform == Platform.DISCORD:
+        from plugins.platforms.discord.reaction_delivery import (
+            send_standalone_discord_with_manifest,
+        )
         from gateway.platform_registry import platform_registry
+
         entry = platform_registry.get("discord")
         if entry is None or entry.standalone_sender_fn is None:
             return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
-        # MEDIA:<path> caption: single captionable file + short text rides as
-        # the media message content instead of a separate message before the
-        # attachment (single enforced decision in _media_caption_split). Cap on
-        # the platform's own message limit so the caption is always deliverable.
-        _dc_caption, _ = _media_caption_split(
-            message, media_files,
-            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        return await send_standalone_discord_with_manifest(
+            pconfig=pconfig,
+            chat_id=chat_id,
+            message=message,
+            thread_id=thread_id,
+            media_files=media_files,
+            max_len=max_len,
+            default_caption_limit=_DEFAULT_CAPTION_LIMIT,
+            caption_split=_media_caption_split,
+            standalone_sender_fn=entry.standalone_sender_fn,
         )
-        if _dc_caption is not None:
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                "",
-                thread_id=thread_id,
-                media_files=media_files,
-                caption=_dc_caption,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            return result
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files if is_last else [],
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
 
     # --- Matrix: route ALL sends through the native adapter so text is
     # encrypted in E2EE rooms too (issue: text-only sends arrived with a red

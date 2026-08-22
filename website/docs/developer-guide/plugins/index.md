@@ -937,11 +937,14 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`gateway_platform_event`](/user-guide/features/hooks#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
+| [`on_discord_reaction_add`](/user-guide/features/hooks#on_discord_reaction_add) | An authorized user reacts to a bot-authored Discord message | `emoji: str, user_id: str, channel_id: str, message_id: str, guild_id: str \| None, message_content: str, message_author_id: str \| None` | optional best-effort Discord action dict(s) |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation; `pre_tool_call`, which can return a block/approve directive; and `on_discord_reaction_add`, whose return value can request best-effort Discord side effects on the reacted message.
+
+Discord reaction behavior is plugin-owned: use reaction hooks, outbound manifests, and adapter delivery helpers rather than adding direct core Discord tool actions.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

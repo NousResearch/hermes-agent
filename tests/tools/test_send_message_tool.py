@@ -383,6 +383,21 @@ class TestSendMessageTool:
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
 
+    def test_discord_reactions_are_not_model_callable(self):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "react",
+                    "target": "discord:123",
+                    "emoji": "👍",
+                    "message_id": "456",
+                }
+            )
+        )
+
+        assert "error" in result
+        assert "Discord reactions are plugin-owned" in result["error"]
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_photo_with_caption_for_media_tag(self, tmp_path, monkeypatch):
@@ -490,6 +505,146 @@ class TestSendToPlatformChunking:
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
 
+    def test_discord_without_manifest_does_not_add_manifest_reactions(self, monkeypatch):
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        add_reaction = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "plugins.platforms.discord.reaction_delivery.add_manifest_reaction_with_retry",
+            add_reaction,
+        )
+
+        with _patch_discord_sender(send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "ch",
+                    "plain Discord message",
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "ch",
+            "plain Discord message",
+            thread_id=None,
+            media_files=[],
+        )
+        add_reaction.assert_not_awaited()
+
+    def test_discord_invalid_manifest_remains_visible(self, monkeypatch):
+        sent_messages = []
+
+        async def mock_send(token, chat_id, message, thread_id=None, media_files=None):
+            sent_messages.append(message)
+            return {"success": True, "message_id": "1"}
+
+        add_reaction = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "plugins.platforms.discord.reaction_delivery.add_manifest_reaction_with_retry",
+            add_reaction,
+        )
+        original = "visible [HERMES_REACTION_ACTIONS] {not json"
+
+        with _patch_discord_sender(AsyncMock(side_effect=mock_send)):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "ch",
+                    original,
+                )
+            )
+
+        assert result["success"] is True
+        assert sent_messages == [original]
+        add_reaction.assert_not_awaited()
+
+    def test_discord_manifest_is_stripped_before_chunking_and_reacts(self, monkeypatch):
+        call_log = []
+
+        async def mock_send(token, chat_id, message, thread_id=None, media_files=None):
+            message_id = f"msg-{len(call_log)}"
+            call_log.append({"message": message, "message_id": message_id})
+            return {"success": True, "message_id": message_id}
+
+        add_reaction = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "plugins.platforms.discord.reaction_delivery.add_manifest_reaction_with_retry",
+            add_reaction,
+        )
+        manifest = {
+            "actions": [
+                {"emoji": "\u2705", "action": "dismiss", "anchor": "Dismiss shortcuts:"}
+            ]
+        }
+        message = (
+            ("A " * 1100)
+            + "\nDismiss shortcuts:\n1. archive\n"
+            + f"[HERMES_REACTION_ACTIONS] {json.dumps(manifest)}"
+        )
+
+        with _patch_discord_sender(AsyncMock(side_effect=mock_send)):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "ch",
+                    message,
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) >= 2
+        assert all("[HERMES_REACTION_ACTIONS]" not in call["message"] for call in call_log)
+        target_message_id = next(
+            call["message_id"]
+            for call in call_log
+            if "Dismiss shortcuts:" in call["message"]
+        )
+        add_reaction.assert_awaited_once()
+        assert add_reaction.await_args.args[1:] == ("ch", target_message_id, "\u2705")
+
+    def test_discord_manifest_messages_send_explicit_parts(self, monkeypatch):
+        sent_messages = []
+
+        async def mock_send(token, chat_id, message, thread_id=None, media_files=None):
+            message_id = f"msg-{len(sent_messages)}"
+            sent_messages.append({"message": message, "message_id": message_id})
+            return {"success": True, "message_id": message_id}
+
+        add_reaction = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "plugins.platforms.discord.reaction_delivery.add_manifest_reaction_with_retry",
+            add_reaction,
+        )
+        manifest = {
+            "discord_messages": [
+                {"content": "Search queries:", "actions": [{"emoji": "\U0001f50e"}]},
+                {"content": "Dismiss shortcuts:", "actions": [{"emoji": "\u2705"}]},
+            ]
+        }
+
+        with _patch_discord_sender(AsyncMock(side_effect=mock_send)):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "ch",
+                    f"fallback [HERMES_REACTION_ACTIONS] {json.dumps(manifest)}",
+                )
+            )
+
+        assert result["success"] is True
+        assert [call["message"] for call in sent_messages] == [
+            "Search queries:",
+            "Dismiss shortcuts:",
+        ]
+        assert [call.args[3] for call in add_reaction.await_args_list] == [
+            "\U0001f50e",
+            "\u2705",
+        ]
 
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):
         """Pre-escaped HTML entities survive tool-layer formatting without double-escaping."""
@@ -835,7 +990,7 @@ class TestSendTelegramThreadIdMapping:
 
         # Create a test file
         test_file = tmp_path / "doc.txt"
-        test_file.write_text("test content")
+        test_file.write_text("test content", encoding="utf-8")
 
         asyncio.run(
             _send_telegram(

@@ -83,6 +83,7 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+_AGENT_REACTION_MEMORY = 1024
 _DISCORD_SELECT_FIELD_LIMIT = 100
 # Discord caps a single select menu at 25 options; a View holds at most 5 rows.
 _DISCORD_SELECT_MAX_OPTIONS = 25
@@ -146,6 +147,23 @@ try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
+
+try:
+    from .reaction_actions import dispatch_raw_reaction_add
+    from .reaction_delivery import attach_manifest_actions_live
+    from .reaction_manifest import (
+        extract_reaction_manifest,
+        manifest_actions,
+        manifest_discord_messages,
+    )
+except ImportError:
+    from reaction_actions import dispatch_raw_reaction_add  # type: ignore
+    from reaction_delivery import attach_manifest_actions_live  # type: ignore
+    from reaction_manifest import (  # type: ignore
+        extract_reaction_manifest,
+        manifest_actions,
+        manifest_discord_messages,
+    )
 
 from gateway.config import Platform, PlatformConfig
 
@@ -1168,6 +1186,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Reaction helpers default to the message that triggered the active
+        # turn. Store both a thread and its parent for auto-threaded turns.
+        self._last_inbound_by_chat: Dict[str, str] = {}
+        self._agent_reactions: Dict[Tuple[str, str], str] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -1406,6 +1428,10 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_message(message: DiscordMessage):
                 await adapter_self._dispatch_discord_message(message)
+
+            @self._client.event
+            async def on_raw_reaction_add(payload):
+                await dispatch_raw_reaction_add(adapter_self, payload, discord_module=discord)
 
             @self._client.event
             async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
@@ -3336,6 +3362,86 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] add_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    def _record_inbound_reaction_target(self, event: MessageEvent) -> None:
+        """Remember an inbound message as the default reaction target."""
+        source = getattr(event, "source", None)
+        message_id = str(
+            getattr(event, "message_id", "")
+            or getattr(getattr(event, "raw_message", None), "id", "")
+            or ""
+        )
+        if not message_id:
+            return
+        for chat_key in (getattr(source, "chat_id", None), getattr(source, "parent_chat_id", None)):
+            if chat_key:
+                self._last_inbound_by_chat[str(chat_key)] = message_id
+
+    async def _fetch_reaction_target(self, chat_id: str, message_id: str) -> Optional[Any]:
+        """Fetch a reaction target, trying a thread's parent when needed."""
+        if not self._client:
+            return None
+        try:
+            channel_id, target_id = int(chat_id), int(message_id)
+        except (TypeError, ValueError):
+            return None
+        channel = self._client.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._client.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.debug("[%s] reaction channel fetch failed: %s", self.name, exc)
+                return None
+        for candidate in (channel, self._thread_parent_channel(channel)):
+            fetch_message = getattr(candidate, "fetch_message", None)
+            if not callable(fetch_message):
+                continue
+            try:
+                message = await fetch_message(target_id)
+            except Exception as exc:
+                logger.debug("[%s] reaction message fetch failed: %s", self.name, exc)
+                continue
+            if message is not None:
+                return message
+        return None
+
+    def _resolve_reaction_target_id(self, chat_id: str, message_id: Optional[str]) -> Optional[str]:
+        target = message_id or self._last_inbound_by_chat.get(str(chat_id))
+        return str(target) if target else None
+
+    async def add_reaction(
+        self, chat_id: str, emoji: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Add an explicit plugin/adapter reaction to a delivered Discord message."""
+        target = self._resolve_reaction_target_id(chat_id, message_id)
+        if not target:
+            return {"success": False, "error": "no message to react to — pass message_id"}
+        message = await self._fetch_reaction_target(chat_id, target)
+        if message is None:
+            return {"success": False, "error": f"message {target} not found in chat {chat_id}"}
+        if not await self._add_reaction(message, emoji):
+            return {"success": False, "error": "reaction failed (see gateway debug log)"}
+        self._agent_reactions[(str(chat_id), target)] = emoji
+        while len(self._agent_reactions) > _AGENT_REACTION_MEMORY:
+            self._agent_reactions.pop(next(iter(self._agent_reactions)))
+        return {"success": True, "message_id": target}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None, emoji: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Remove an explicit bot reaction, defaulting to the remembered emoji."""
+        target = self._resolve_reaction_target_id(chat_id, message_id)
+        if not target:
+            return {"success": False, "error": "no message to unreact — pass message_id"}
+        reaction = emoji or self._agent_reactions.get((str(chat_id), target))
+        if not reaction:
+            return {"success": False, "error": f"no reaction of ours to retract on message {target}"}
+        message = await self._fetch_reaction_target(chat_id, target)
+        if message is None:
+            return {"success": False, "error": f"message {target} not found in chat {chat_id}"}
+        if not await self._remove_reaction(message, reaction):
+            return {"success": False, "error": "unreact failed (see gateway debug log)"}
+        self._agent_reactions.pop((str(chat_id), target), None)
+        return {"success": True, "message_id": target}
     async def _remove_reaction(self, message: Any, emoji: str) -> bool:
         """Remove the bot's own emoji reaction from a Discord message."""
         if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
@@ -3354,6 +3460,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
+        self._record_inbound_reaction_target(event)
         acked = False
         if self._reactions_enabled() and hasattr(message, "add_reaction"):
             acked = await self._add_reaction(message, "👀")
@@ -3450,7 +3557,11 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if not (content or "").strip():
+
+        send_content, discord_manifest = extract_reaction_manifest(content or "")
+        discord_manifest_messages = manifest_discord_messages(discord_manifest)
+
+        if not (send_content or "").strip() and not discord_manifest_messages:
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
                 self.name,
@@ -3469,7 +3580,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._record_discord_response,
                 reply_to=reply_to,
                 result=result,
-                content=content,
+                content=send_content,
                 final=bool(metadata and metadata.get("notify")),
             )
             return result
@@ -3499,61 +3610,85 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                forum_content = send_content
+                if not forum_content.strip() and discord_manifest_messages:
+                    forum_content = "\n\n".join(
+                        item["content"] for item in discord_manifest_messages if item["content"].strip()
+                    )
+                result = await self._send_to_forum(channel, forum_content)
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
                     result=result,
-                    content=content,
+                    content=forum_content,
                     final=final_delivery,
                 )
                 return result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
-
             message_ids = []
+            sent_messages: list[dict[str, Any]] = []
+            warnings: list[str] = []
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel)
 
-            for i, chunk in enumerate(chunks):
-                if self._reply_to_mode == "all":
-                    chunk_reference = reference
-                else:  # "first" (default) or "off"
-                    chunk_reference = reference if i == 0 else None
-                try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
-                except Exception as e:
-                    err_text = str(e)
-                    if (
-                        chunk_reference is not None
-                        and (
-                            (
-                                "error code: 50035" in err_text
-                                and "Cannot reply to a system message" in err_text
-                            )
-                            or "error code: 10008" in err_text
-                        )
-                    ):
-                        logger.warning(
-                            "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
-                            self.name,
-                            reply_to,
-                        )
-                        reference = None
+            async def _send_chunks(message_text: str, *, action_entries=None) -> list[dict[str, Any]]:
+                nonlocal reference
+                formatted = self.format_message(message_text)
+                chunks = self._cap_split_chunks(
+                    self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                )
+                local_sent: list[dict[str, Any]] = []
+                for chunk in chunks:
+                    message_number = len(message_ids)
+                    if self._reply_to_mode == "all":
+                        chunk_reference = reference
+                    else:  # "first" (default) or "off"
+                        chunk_reference = reference if message_number == 0 else None
+                    try:
                         msg = await channel.send(
                             content=chunk,
-                            reference=None,
+                            reference=chunk_reference,
                         )
-                    else:
-                        raise
-                message_ids.append(str(msg.id))
+                    except Exception as e:
+                        err_text = str(e)
+                        if (
+                            chunk_reference is not None
+                            and (
+                                (
+                                    "error code: 50035" in err_text
+                                    and "Cannot reply to a system message" in err_text
+                                )
+                                or "error code: 10008" in err_text
+                            )
+                        ):
+                            logger.warning(
+                                "[%s] Reply target %s rejected the reply reference; retrying send without reply reference",
+                                self.name,
+                                reply_to,
+                            )
+                            reference = None
+                            msg = await channel.send(
+                                content=chunk,
+                                reference=None,
+                            )
+                        else:
+                            raise
+                    message_ids.append(str(msg.id))
+                    record = {"content": chunk, "message": msg, "message_id": str(msg.id)}
+                    sent_messages.append(record)
+                    local_sent.append(record)
+                if action_entries:
+                    warnings.extend(await attach_manifest_actions_live(self, action_entries, local_sent))
+                return local_sent
+
+            if discord_manifest_messages:
+                for item in discord_manifest_messages:
+                    if item["content"].strip():
+                        await _send_chunks(item["content"], action_entries=item.get("actions", []))
+                warnings.extend(await attach_manifest_actions_live(self, manifest_actions(discord_manifest), sent_messages))
+            else:
+                await _send_chunks(send_content)
+                warnings.extend(await attach_manifest_actions_live(self, manifest_actions(discord_manifest), sent_messages))
 
             # Track the last message we sent in this channel for history
             # backfill — avoids a full channel.history() scan on hot paths.
@@ -3561,19 +3696,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 if nonconversational:
                     self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
+                elif not _looks_like_nonconversational_history_message(send_content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
+            raw_response: Dict[str, Any] = {"message_ids": message_ids}
+            if warnings:
+                raw_response["warnings"] = warnings
             result = SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                raw_response=raw_response,
             )
             await asyncio.to_thread(
                 self._record_discord_response,
                 reply_to=reply_to,
                 result=result,
-                content=content,
+                content=send_content,
                 final=final_delivery,
             )
             return result
@@ -3585,7 +3723,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._record_discord_response,
                 reply_to=reply_to,
                 result=result,
-                content=content,
+                content=send_content,
                 final=bool(metadata and metadata.get("notify")),
             )
             return result

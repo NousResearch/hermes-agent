@@ -31150,15 +31150,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
 def main():
     """CLI entry point for the gateway."""
-    # Advertise the agent harness to child processes (AI_AGENT is the
-    # cross-agent standard; HERMES_AGENT the Hermes-specific marker — see
-    # _advertise_agent_env in hermes_cli/main.py, kept inline here to avoid
-    # importing that module's startup side effects). The value must equal our
-    # public agent-harness registry id (``hermes-agent``) — standard-var
-    # matching is exact. setdefault so an outer harness is never clobbered.
-    os.environ.setdefault("AI_AGENT", "hermes-agent")
-    os.environ.setdefault("HERMES_AGENT", "true")
-
     # Positive process identity: ledger registration + Windows job-object
     # self-attach, so update-time reapers can identify this gateway (and its
     # child tree dies with it on Windows). Best-effort — never blocks startup.

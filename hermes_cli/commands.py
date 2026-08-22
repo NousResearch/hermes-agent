@@ -229,6 +229,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
+    CommandDef("bot-ping", "Reply with 'pong' for liveness check", "Info",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

@@ -178,9 +178,10 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     """
     admin_key, cmd_key = _keys_for_scope(scope)
     admin_ids = _coerce_id_list(extra.get(admin_key))
+    dm_cmds_configured = cmd_key in extra
     cmds = _coerce_command_list(extra.get(cmd_key))
 
-    if scope == "dm" and not cmds:
+    if scope == "dm" and not dm_cmds_configured:
         # DM didn't specify — let group's user_allowed_commands fall through
         # so operators only need to list it once if it's the same.
         cmds = _coerce_command_list(extra.get("group_user_allowed_commands"))

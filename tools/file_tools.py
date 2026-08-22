@@ -18,7 +18,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
@@ -560,12 +560,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
-    Guard order: device-path blocklist (no I/O) → stat-based special-file
-    guard (host only) → document extraction → binary-extension guard → Hermes
-    internal denylist → negative-result cache → dedup stub → real read.
+    Guard order: NT/device-namespace prefix (raw string, no resolution) →
+    device-path blocklist (no I/O) → stat-based special-file guard (host only)
+    → document extraction → binary-extension guard → Hermes internal denylist
+    → negative-result cache → dedup stub → real read.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        # On the RAW model-supplied string, before any expanduser()/resolve():
+        # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
+        # leak); on POSIX the task-base join would anchor the prefix as a
+        # relative segment and hide it from every resolved-path check below.
+        nt_err = get_nt_namespace_error(path, verb="Read")
+        if nt_err:
+            return tool_error(nt_err)
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
@@ -991,6 +1000,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 pattern=pattern,
                 already_searched=count)
 
+        # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
+        # trigger and the task-base join would hide the prefix (see read_file_tool).
+        nt_err = get_nt_namespace_error(path, verb="Search")
+        if nt_err:
+            return tool_error(nt_err)
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:

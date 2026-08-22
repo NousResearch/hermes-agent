@@ -14,6 +14,7 @@ import fnmatch
 import os
 from pathlib import Path
 
+from agent.file_safety import get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
@@ -138,6 +139,14 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    # NT/device-namespace guard on the RAW string, BEFORE the task-base join:
+    # on POSIX a leading "\??\" reads as a relative segment and gets anchored
+    # under the base dir, hiding the prefix from the resolved-path checks,
+    # while the same string relayed to a Windows host (remote backend, desktop
+    # bridge) triggers the NTLM-leak vector. See agent/file_safety.py.
+    nt_err = get_nt_namespace_error(filepath, verb="Write")
+    if nt_err:
+        return nt_err
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (

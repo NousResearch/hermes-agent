@@ -471,6 +471,25 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_infra_cooldown_seconds() -> int:
+    """Return the infra spawn-failure cooldown in seconds.
+
+    Mirrors ``_resolve_rate_limit_cooldown_seconds``: reads
+    ``HERMES_KANBAN_INFRA_COOLDOWN_SECONDS`` from the environment; falls back
+    to ``DEFAULT_INFRA_COOLDOWN_SECONDS`` when absent, empty, non-integer, or
+    negative. A value of 0 disables the cooldown (re-spawn on the next tick).
+    """
+    raw = os.environ.get("HERMES_KANBAN_INFRA_COOLDOWN_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_INFRA_COOLDOWN_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -7994,6 +8013,28 @@ _RESPAWN_BLOCKER_RE = re.compile(
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
+# Patterns that identify a spawn failure as an *infrastructure / environment*
+# problem rather than a task defect: workspace resolution errors (bad repo,
+# worktree branch collisions, missing mounts), disk exhaustion, etc. These
+# affect every task equally and resolve on their own (or need operator
+# action), so they must not consume the per-task retry budget — otherwise one
+# bad environment trips every queued task's circuit breaker into ``blocked``
+# at once.
+_SPAWN_INFRA_RE = re.compile(
+    r"^\s*workspace:\s"
+    r"|\bis not inside a git repo\b"
+    r"|\balready used by worktree\b"
+    r"|\bNo space left on device\b",
+    re.IGNORECASE,
+)
+
+# Cooldown after an infra-classified spawn failure before the dispatcher
+# probes the task again. Mirrors the rate-limit cooldown: without it, a task
+# whose spawn keeps failing on a broken workspace would be re-claimed every
+# tick, burning a worker slot and spamming spawn_failed events. Overridable
+# via ``HERMES_KANBAN_INFRA_COOLDOWN_SECONDS``; 0 disables the cooldown.
+DEFAULT_INFRA_COOLDOWN_SECONDS = 300  # 5 minutes
+
 # Cooldown after a rate-limited (quota-wall) requeue before the dispatcher
 # re-spawns the worker. Without this, a task released by the rate-limit path
 # would be re-spawned on the very next tick and immediately bounce off the
@@ -9203,6 +9244,15 @@ def _record_task_failure(
     ``detect_crashed_workers``, which resolves the per-task
     ``max_retries`` override against the violation streak itself. The
     failure is still counted into ``consecutive_failures``.
+
+    Infra-classified spawn failures: when ``outcome == "spawn_failed"`` and
+    the error matches ``_SPAWN_INFRA_RE`` (workspace resolution failures,
+    worktree branch collisions, disk exhaustion), the failure is an
+    *environment* problem rather than a task defect. It is recorded (event +
+    ``last_failure_error``) but does NOT increment ``consecutive_failures``
+    and can never trip the breaker — one broken environment must not park
+    every queued task in ``blocked``. Back-off is handled by the respawn
+    guard's ``infra_cooldown`` reason instead.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -9219,7 +9269,19 @@ def _record_task_failure(
             if release_claim
             else ("review" if row["status"] == "review" else "ready")
         )
-        failures = int(row["consecutive_failures"]) + 1
+        # Infra-classified spawn failures (broken workspace, disk full, …)
+        # are environment problems, not task defects: they hit every task
+        # equally and consume no per-task retry budget. The respawn guard
+        # applies its own cooldown (``infra_cooldown``) so the dispatcher
+        # backs off without ever parking the task in ``blocked``.
+        infra_only = (
+            outcome == "spawn_failed"
+            and not force_trip
+            and bool(_SPAWN_INFRA_RE.search(error or ""))
+        )
+        failures = int(row["consecutive_failures"]) + (
+            0 if infra_only else 1
+        )
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -9233,7 +9295,7 @@ def _record_task_failure(
             effective_limit = int(failure_limit)
             limit_source = "dispatcher"
 
-        if force_trip or failures >= effective_limit:
+        if not infra_only and (force_trip or failures >= effective_limit):
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
@@ -9303,22 +9365,30 @@ def _record_task_failure(
                 )
             if end_run:
                 # Spawn path: close the open run with outcome.
+                _spawn_payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                    "retry_status": retry_status,
+                }
+                _spawn_run_meta = {
+                    "failures": failures,
+                    "retry_status": retry_status,
+                }
+                if infra_only:
+                    # Mark environment-classified failures so board tooling
+                    # can distinguish them from task defects.
+                    _spawn_payload["infra"] = True
+                    _spawn_run_meta["infra"] = True
+                # Spawn path: close the open run with outcome.
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
-                    metadata={
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    metadata=_spawn_run_meta,
                 )
                 _append_event(
                     conn, task_id, outcome,
-                    {
-                        "error": error[:500],
-                        "failures": failures,
-                        "retry_status": retry_status,
-                    },
+                    _spawn_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
@@ -9400,8 +9470,9 @@ def check_respawn_guard(
     ``recent_success`` and ``active_pr`` rules are skipped: a recent PR
     URL comment (and often a recent completed run) is the *precondition*
     of the canonical review handoff — a worker opened a PR and requested
-    review — not a duplicate-work signal. Rate-limit cooldown and the
-    auth-blocker check still apply in every lane.
+    review — not a duplicate-work signal. Rate-limit cooldown, the
+    infra spawn-failure cooldown and the auth-blocker check still apply in
+    every lane.
 
     Checks in priority order:
 
@@ -9416,6 +9487,18 @@ def check_respawn_guard(
         auth-blocker regex and park the task forever (the rate-limit path
         never increments ``consecutive_failures``, so the breaker can't free
         it). Once the cooldown elapses the task falls through and respawns.
+
+    ``"infra_cooldown"``
+        The task's most recent run ended with the ``spawn_failed`` outcome
+        and the error matches ``_SPAWN_INFRA_RE`` (workspace resolution
+        failure, worktree branch collision, disk exhaustion). These are
+        environment problems, not task defects: they consume no retry
+        budget and can never trip the breaker, so instead of hammering the
+        same broken workspace every tick we defer on a cooldown (mirrors
+        the rate-limit cooldown; ``HERMES_KANBAN_INFRA_COOLDOWN_SECONDS``,
+        default 300s) and then allow a cheap probe. Checked BEFORE
+        ``blocker_auth`` because workspace errors often embed branch names /
+        paths whose text can accidentally match auth-ish patterns.
 
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
@@ -9489,8 +9572,32 @@ def check_respawn_guard(
         # crash/completion supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.
+    # 2. Infra spawn-failure cooldown. The most recent ended run was an
+    #    infra-classified ``spawn_failed`` (bad workspace, worktree
+    #    collision, disk full) — defer on a cooldown, then allow a cheap
+    #    probe. Must run BEFORE the blocker_auth regex check: workspace
+    #    errors embed branch names / paths that can accidentally match
+    #    auth-ish patterns (e.g. a branch literally named
+    #    ``dev/3627-auth-login-...``) and would otherwise park the task as a
+    #    phantom auth blocker forever — infra failures never increment the
+    #    counter, so the breaker can't free it.
     err = row["last_failure_error"]
+    if (
+        latest_run is not None
+        and latest_run["outcome"] == "spawn_failed"
+        and err
+        and _SPAWN_INFRA_RE.search(err)
+    ):
+        if _resolve_infra_cooldown_seconds() <= 0:
+            return None
+        ended_at = latest_run["ended_at"]
+        if ended_at is None or (now - int(ended_at)) < _resolve_infra_cooldown_seconds():
+            return "infra_cooldown"
+        # Cooldown elapsed — allow the respawn, skipping the blocker_auth
+        # regex for the same reason as the rate-limit path above.
+        return None
+
+    # 3. Quota / auth blocker: retrying immediately will not help.
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
@@ -9500,7 +9607,7 @@ def check_respawn_guard(
     if lane == "review":
         return None
 
-    # 3. Completed run within guard window — proof of recent success.
+    # 4. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
     #    dragging done→ready, a dependency re-promotion, an unblock, a
     #    reclaim) is a deliberate "run it again" — honor it instead of

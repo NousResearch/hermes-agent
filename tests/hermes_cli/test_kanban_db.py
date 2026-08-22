@@ -367,6 +367,133 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+def test_infra_spawn_failures_never_trip_breaker(kanban_home):
+    """Workspace/environment spawn failures are infra problems: they must
+    not increment ``consecutive_failures`` nor trip the auto-block breaker,
+    no matter how many times they repeat — otherwise one broken environment
+    parks every queued task in ``blocked`` at once."""
+    err = (
+        "workspace: git worktree add failed for /mnt/wt/main/t_x on branch "
+        "dev/3627-auth-login-and-change-password-share: fatal: already used "
+        "by worktree at '/mnt/wt/main/t_y'"
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="infra-spawn", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+        for _ in range(kb.DEFAULT_FAILURE_LIMIT * 3):
+            blocked = kb._record_task_failure(
+                conn, tid, error=err,
+                outcome="spawn_failed",
+                failure_limit=kb.DEFAULT_FAILURE_LIMIT,
+                release_claim=False, end_run=False,
+            )
+            assert not blocked
+            row = conn.execute(
+                "SELECT status, consecutive_failures FROM tasks WHERE id=?",
+                (tid,),
+            ).fetchone()
+            assert row["status"] == "ready"
+            assert row["consecutive_failures"] == 0
+
+
+def test_non_infra_spawn_failures_still_trip_breaker(kanban_home):
+    """Regular spawn failures keep the old behaviour — counter increments
+    and the breaker trips at ``failure_limit``."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="plain-spawn", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+        blocked = False
+        for _ in range(4):
+            blocked = kb._record_task_failure(
+                conn, tid, error="worker exited before ready (exit 1)",
+                outcome="spawn_failed",
+                failure_limit=kb.DEFAULT_FAILURE_LIMIT,
+                release_claim=False, end_run=False,
+            )
+        assert blocked
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "blocked"
+        # Counter freezes at the trip value: once 'blocked', further
+        # failure-record updates no-op on the status guard.
+        assert row["consecutive_failures"] == kb.DEFAULT_FAILURE_LIMIT
+
+
+def test_respawn_guard_defers_infra_spawn_failure_within_cooldown(
+    kanban_home, monkeypatch,
+):
+    """After an infra-classified spawn failure the guard defers on its own
+    cooldown, then allows a probe — and does NOT fall into ``blocker_auth``
+    even though the workspace error embeds branch slugs containing
+    ``auth``."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_INFRA_COOLDOWN_SECONDS", "300")
+    now = 6_000_000
+    err = (
+        "workspace: git worktree add failed for /mnt/wt/main/t_x on branch "
+        "dev/3627-auth-auth-login-and-auth-change-password-share: fatal: "
+        "already used by worktree at '/mnt/wt/main/t_y'"
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="infra-guard", assignee="a")
+        # Seed a spawn_failed run that just ended + the stamped error.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', "
+            "status='spawn_failed', ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (err, tid),
+        )
+        conn.commit()
+
+        # Inside cooldown → defer with the infra-specific reason.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kb.check_respawn_guard(conn, tid) == "infra_cooldown"
+
+        # Past cooldown → allowed (None), NOT trapped by blocker_auth.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+        # Cooldown disabled via env → respawn immediately.
+        monkeypatch.setenv("HERMES_KANBAN_INFRA_COOLDOWN_SECONDS", "0")
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_real_spawn_failure_not_deferred_as_infra(kanban_home):
+    """A genuine (non-infra) spawn failure must still hit the normal paths —
+    here the auth blocker — rather than the infra cooldown."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="real-failure", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', "
+            "status='spawn_failed', ended_at=? WHERE id=?",
+            (5_900_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("provider returned 403 Forbidden: invalid api key", tid),
+        )
+        conn.commit()
+        assert kb.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
 
 
 

@@ -484,3 +484,65 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestSystemPromptPreludeAssembly:
+    """End-to-end: an operator-configured per-model prelude leads the assembled
+    system prompt AND is folded into the cacheable static prefix, resolved
+    through a temp HERMES_HOME (profile-aware) with no env override."""
+
+    @staticmethod
+    def _setup_home(tmp_path, monkeypatch, rules, *, base_files=None):
+        import yaml
+
+        home = tmp_path / "home"
+        (home / "system-prompts").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for name, body in (base_files or {}).items():
+            with open(home / "system-prompts" / name, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        blk = {"enabled": True, "first_match": True, "rules": rules}
+        with open(home / "config.yaml", "w", encoding="utf-8") as fh:
+            yaml.safe_dump({"system_prompt_prelude": blk}, fh)
+
+    def _build(self, agent):
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value="context"),
+        ):
+            return build_system_prompt(agent)
+
+    def test_prelude_leads_prompt_and_is_in_static_prefix(self, tmp_path, monkeypatch):
+        # A bare model + separate provider must still match a provider-qualified
+        # rule (the sweeper's provider-arg concern), resolved from the temp home.
+        self._setup_home(
+            tmp_path, monkeypatch,
+            [{"match": "anthropic/*", "files": ["op.md"]}],
+            base_files={"op.md": "OPERATOR_PRELUDE"},
+        )
+        agent = _make_agent(model="claude-opus-4-6", provider="anthropic")
+        prompt = self._build(agent)
+        # Prelude is the VERY FIRST system content.
+        assert prompt.startswith("OPERATOR_PRELUDE")
+        # And it is part of the cacheable static prefix (cache-aware): the full
+        # prompt starts with _cached_system_prompt_static, which itself begins
+        # with the prelude.
+        static = agent._cached_system_prompt_static
+        assert static.startswith("OPERATOR_PRELUDE")
+        assert prompt.startswith(static)
+
+    def test_no_prelude_leaves_static_prefix_unchanged(self, tmp_path, monkeypatch):
+        # No matching rule -> empty prelude -> prompt is byte-identical to the
+        # no-prelude build and the static prefix carries no prelude text.
+        self._setup_home(
+            tmp_path, monkeypatch,
+            [{"match": "*gpt*", "files": ["op.md"]}],
+            base_files={"op.md": "OPERATOR_PRELUDE"},
+        )
+        agent = _make_agent(model="claude-opus-4-6", provider="anthropic")
+        prompt = self._build(agent)
+        assert "OPERATOR_PRELUDE" not in prompt
+        assert agent._cached_system_prompt_static
+        assert "OPERATOR_PRELUDE" not in agent._cached_system_prompt_static

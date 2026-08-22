@@ -953,6 +953,23 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Per-model system-prompt prelude (operator-supplied leading system content).
+    # Disabled by default. When enabled, one or more verbatim Markdown files are
+    # injected as the FIRST system content (ahead of Hermes' own stable/context/
+    # volatile tiers), resolved per model via a glob map, so an operator can hand
+    # a model a full model-appropriate operating prompt. Fully fail-soft: any
+    # missing file / malformed config yields an empty prelude and never breaks
+    # prompt build. Relative file paths resolve under base_dir; when base_dir is
+    # empty it defaults to the profile-aware <hermes_home>/system-prompts.
+    # See website/docs/developer-guide/prompt-assembly.md and
+    # cli-config.yaml.example for the full rule schema.
+    "system_prompt_prelude": {
+        "enabled": False,
+        "base_dir": "",
+        "first_match": True,
+        "rules": [],
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

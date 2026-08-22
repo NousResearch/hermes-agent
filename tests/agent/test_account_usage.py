@@ -40,10 +40,12 @@ def codex_usage_payload():
             "primary_window": {
                 "used_percent": 21,
                 "reset_at": 1779846359,
+                "limit_window_seconds": 18000,
             },
             "secondary_window": {
                 "used_percent": 4,
                 "reset_at": 1780230796,
+                "limit_window_seconds": 604800,
             },
         },
         "credits": {"has_credits": False},
@@ -76,6 +78,37 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
+
+
+def test_codex_usage_keeps_fallback_labels_for_unknown_window_durations(
+    monkeypatch, codex_usage_payload
+):
+    calls = []
+    payload = {
+        **codex_usage_payload,
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 21,
+            },
+            "secondary_window": {
+                "used_percent": 4,
+                "limit_window_seconds": 604000,
+            },
+        },
+    }
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert [window.label for window in snapshot.windows] == ["Session", "Weekly"]
 
 
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):

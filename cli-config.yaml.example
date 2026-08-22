@@ -1520,6 +1520,9 @@ display:
   #   true:  Compact single-line banner
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
+  # Show weekly subscription usage in the CLI status bar (off by default).
+  # Can also be toggled interactively with /planusage on|off|status.
+  plan_usage: false
 
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response

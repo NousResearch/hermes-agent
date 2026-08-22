@@ -1,3 +1,4 @@
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -14,6 +15,12 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj._status_usage_snapshot = None
+    cli_obj._status_usage_checked_at = 0.0
+    cli_obj._status_usage_refreshing = False
+    cli_obj._status_usage_completed_before_app = False
+    cli_obj._status_usage_generation = 0
+    cli_obj._status_usage_lock = threading.Lock()
     return cli_obj
 
 
@@ -55,6 +62,72 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_weekly_plan_usage_shows_used_and_remaining_when_enabled(self):
+        cli_obj = _make_cli(model="openai-codex/gpt-5.4")
+        cli_obj._plan_usage_visible = True
+        cli_obj._status_usage_snapshot = SimpleNamespace(
+            windows=(SimpleNamespace(label="Weekly", used_percent=37.0),)
+        )
+        cli_obj._status_usage_lock = MagicMock()
+        cli_obj._status_usage_refreshing = True
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "plan W 63%" in text
+
+    def test_codex_usage_refresh_lets_resolver_choose_quota_credential(self, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.3-codex")
+        cli_obj.agent = SimpleNamespace(provider="openai-codex", api_key="runtime-key")
+        calls = []
+
+        def fake_fetch(provider, **kwargs):
+            calls.append((provider, kwargs))
+            return SimpleNamespace(
+                windows=(SimpleNamespace(label="Weekly", used_percent=37.0),)
+            )
+
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+        cli_obj._plan_usage_visible = True
+        cli_obj._maybe_refresh_status_usage()
+        deadline = time.time() + 1
+        while cli_obj._status_usage_refreshing and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert calls == [("openai-codex", {})]
+        assert cli_obj._get_status_bar_snapshot()["plan_usage_label"] == "plan W 63%"
+
+    def test_usage_refresh_replays_invalidation_after_app_is_attached(self, monkeypatch):
+        cli_obj = _make_cli(model="gpt-5.3-codex")
+        cli_obj.agent = SimpleNamespace(provider="openai-codex")
+        cli_obj._plan_usage_visible = True
+        cli_obj._app = None
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider: SimpleNamespace(windows=()),
+        )
+        cli_obj._maybe_refresh_status_usage()
+        deadline = time.time() + 1
+        while cli_obj._status_usage_refreshing and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli_obj._status_usage_completed_before_app is True
+        app = SimpleNamespace(invalidate=MagicMock())
+        cli_obj._app = app
+        cli_obj._replay_status_usage_invalidation()
+        app.invalidate.assert_called_once_with()
+
+    def test_status_usage_cache_reset_forces_fresh_snapshot(self):
+        cli_obj = _make_cli()
+        cli_obj._status_usage_snapshot = SimpleNamespace(windows=())
+        cli_obj._status_usage_checked_at = 123.0
+        generation = cli_obj._status_usage_generation
+
+        cli_obj._reset_status_usage_cache()
+
+        assert cli_obj._status_usage_snapshot is None
+        assert cli_obj._status_usage_checked_at == 0.0
+        assert cli_obj._status_usage_generation == generation + 1
+
     def test_session_title_is_right_aligned_after_it_is_queued(self):
         cli_obj = _make_cli()
         cli_obj._pending_title = "weekly-digest"

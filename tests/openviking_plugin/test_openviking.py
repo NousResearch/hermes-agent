@@ -657,7 +657,7 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
                     uri = query.get("uri", [""])[0]
-                    if uri == "viking://~/memories/profile.md":
+                    if uri == "viking://user/default/memories/profile.md":
                         self._send_json({"result": "E2E user profile."})
                         return
                     records["reads"].append(uri)
@@ -667,7 +667,7 @@ class TestOpenVikingAutoRecallPrefetch:
                     query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
                     records["listings"].append(query)
                     uri = query.get("uri")
-                    if uri == "viking://~/memories/preferences":
+                    if uri == "viking://user/default/memories/preferences":
                         self._send_json({
                             "result": [
                                 {"isDir": True, "rel_path": "owner", "abstract": "ignored"},
@@ -679,7 +679,7 @@ class TestOpenVikingAutoRecallPrefetch:
                             ]
                         })
                         return
-                    if uri == "viking://~/memories/entities":
+                    if uri == "viking://user/default/memories/entities":
                         self._send_json({
                             "result": [
                                 {
@@ -758,8 +758,8 @@ class TestOpenVikingAutoRecallPrefetch:
         assert "E2E abstract should not be injected." not in block
         assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
         assert [listing["uri"] for listing in records["listings"]] == [
-            "viking://~/memories/preferences",
-            "viking://~/memories/entities",
+            "viking://user/default/memories/preferences",
+            "viking://user/default/memories/entities",
         ]
         assert all(listing["output"] == "agent" for listing in records["listings"])
         assert all(listing["recursive"].lower() == "true" for listing in records["listings"])
@@ -818,7 +818,7 @@ class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
     OpenViking's current memory layout stores peer-scoped memories under
-    viking://~/peers/{peer_id}/...
+    viking://user/{user}/peers/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -831,7 +831,7 @@ class TestOpenVikingMemoryUriBuilder:
         """URI must contain /peers/{peer_id}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://~/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/default/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
 
@@ -921,7 +921,7 @@ class TestEnsureClientReloadsEnv:
         assert instances[1].posts[0][1]["content"] == "stable fact"
         assert instances[1].posts[0][1]["mode"] == "create"
         assert instances[1].posts[0][1]["uri"].startswith(
-            "viking://~/peers/hermes/memories/"
+            "viking://user/default/peers/hermes/memories/"
         )
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
@@ -1287,3 +1287,47 @@ class TestUnavailableWarningsPromiseRetry:
         assert client is not None
         assert client.endpoint == "https://remote.example"
         assert len(probes) == 2
+
+
+# ===================================================================
+# Explicit-uid URIs (#91995 review) — `~` only expands for USER/ADMIN
+# ===================================================================
+
+class TestResolveUserSpace:
+    def test_uses_server_asserted_user(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                return {"status": "ok", "result": {"user": "alice"}}
+
+        assert _resolve_user_space(_Client()) == "alice"
+
+    def test_probe_failure_falls_back_to_default(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                raise RuntimeError("probe down")
+
+        assert _resolve_user_space(_Client()) == "default"
+
+    def test_missing_user_field_falls_back_to_default(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                return {"status": "ok", "result": {}}
+
+        assert _resolve_user_space(_Client()) == "default"
+
+
+class TestOpenVikingMemoryUriBuilderUserSpace:
+    def test_cached_user_space_flows_into_uri(self):
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._agent = "coder"
+        p._user_space_cache = "alice"
+        uri = p._build_memory_uri("preferences")
+        assert uri.startswith("viking://user/alice/peers/coder/memories/preferences/mem_")
+        assert uri.endswith(".md")

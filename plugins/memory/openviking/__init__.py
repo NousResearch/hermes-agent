@@ -93,13 +93,40 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
-# `viking://~` is the current-user home alias (OpenViking #4167, server 0.4.16+).
-# The uid-less `viking://user/<segment>` shorthand was removed upstream (#4196,
-# 2026-08-21): reserved segments like `memories`/`peers` no longer expand to the
-# caller's space and the server rejects them with HTTP 400.
-_PROFILE_URI = "viking://~/memories/profile.md"
-_PREFERENCES_URI = "viking://~/memories/preferences"
-_ENTITIES_URI = "viking://~/memories/entities"
+# Explicit-uid URIs are canonical and work under every OpenViking auth mode
+# (dev/ROOT, trusted/USER, api-key) on every server version. The `~` home
+# alias only expands for USER/ADMIN roles (#4167/#4196): the DEFAULT dev auth
+# mode resolves every request as ROOT, and the canonical parser rejects `~`
+# with 400 — so `~` must not be the primary spelling the plugin emits. The
+# user space is resolved client-side from /api/v1/system/status (server-
+# asserted), mirroring the upstream first-party plugin pattern (#91995).
+_PROFILE_SUFFIX = "memories/profile.md"
+_PREFERENCES_SUFFIX = "memories/preferences"
+_ENTITIES_SUFFIX = "memories/entities"
+
+
+def _resolve_user_space(client) -> str:
+    """Server-asserted current user for explicit-uid URIs.
+
+    Falls back to ``"default"`` (the trusted-mode default user, identical to
+    the on-disk layout ``viking/default/user/default/...``) when the probe
+    fails or reports no user.
+    """
+    try:
+        status = client.get("/api/v1/system/status")
+        result = (status or {}).get("result") or {}
+        user = str(result.get("user") or "").strip()
+        if user:
+            return user
+    except Exception:
+        logger.debug(
+            "OpenViking user-space probe failed; using 'default'", exc_info=True
+        )
+    return "default"
+
+
+def _user_scoped_uri(user_space: str, suffix: str) -> str:
+    return f"viking://user/{user_space}/{suffix}"
 _SESSION_START_LIST_PARAMS = {
     "output": "agent",
     "recursive": True,
@@ -2241,6 +2268,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        # Server-asserted user space for explicit-uid URIs (#91995); resolved
+        # lazily from /api/v1/system/status on first use.
+        self._user_space_cache: Optional[str] = None
         self._hermes_home = ""
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
@@ -3875,6 +3905,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
         ).lstrip()
         return f"{head}{marker}{tail}" if tail else _head_only()
 
+    def _user_space(self, client=None) -> str:
+        """Resolve (and cache) the server-asserted user space for URIs."""
+        if getattr(self, "_user_space_cache", None) is None:
+            active = client or getattr(self, "_client", None)
+            self._user_space_cache = (
+                _resolve_user_space(active) if active is not None else "default"
+            )
+        return self._user_space_cache
+
+    def _user_scoped_uri(self, suffix: str, client=None) -> str:
+        return _user_scoped_uri(self._user_space(client), suffix)
+
+    def _session_start_uris(self) -> tuple:
+        user = self._user_space()
+        return (
+            _user_scoped_uri(user, _PROFILE_SUFFIX),
+            _user_scoped_uri(user, _PREFERENCES_SUFFIX),
+            _user_scoped_uri(user, _ENTITIES_SUFFIX),
+        )
+
     def _read_session_start_profile(
         self,
         client: _VikingClient,
@@ -3886,7 +3936,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             timeout = self._remaining_recall_timeout(deadline, request_timeout)
             resp = client.get(
                 "/api/v1/content/read",
-                params={"uri": _PROFILE_URI},
+                params={"uri": self._user_scoped_uri(_PROFILE_SUFFIX, client)},
                 timeout=timeout,
             )
         except Exception as e:
@@ -3936,13 +3986,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "profile": profile,
             "preferences": self._list_session_start_memories(
                 active_client,
-                _PREFERENCES_URI,
+                self._user_scoped_uri(_PREFERENCES_SUFFIX, active_client),
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
             "entities": self._list_session_start_memories(
                 active_client,
-                _ENTITIES_URI,
+                self._user_scoped_uri(_ENTITIES_SUFFIX, active_client),
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
@@ -3953,11 +4003,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         profile: str,
         preference_lines: List[str],
         entity_lines: List[str],
+        profile_uri: str = "viking://user/default/memories/profile.md",
     ) -> str:
         lines: List[str] = []
         if profile:
             lines.extend([
-                f'<user-profile uri="{_PROFILE_URI}">',
+                f'<user-profile uri="{profile_uri}">',
                 profile,
                 "</user-profile>",
             ])
@@ -4013,7 +4064,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         preferences: List[Dict[str, str]],
         entities: List[Dict[str, str]],
         token_budget: int,
+        uris: Optional[tuple] = None,
     ) -> str:
+        profile_uri, preferences_uri, entities_uri = uris or (
+            _user_scoped_uri("default", _PROFILE_SUFFIX),
+            _user_scoped_uri("default", _PREFERENCES_SUFFIX),
+            _user_scoped_uri("default", _ENTITIES_SUFFIX),
+        )
         profile = profile.strip()
         if not profile and not preferences and not entities:
             return ""
@@ -4023,6 +4080,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             placeholder if profile else "",
             [placeholder] if preferences else [],
             [placeholder] if entities else [],
+            profile_uri=profile_uri,
         )
         placeholder_count = int(bool(profile)) + int(bool(preferences)) + int(bool(entities))
         overhead_units = cls._token_units(scaffold) - placeholder_count
@@ -4041,13 +4099,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         else:
             preference_budget = available_units
         preference_lines, preference_units = cls._format_memory_listing(
-            _PREFERENCES_URI,
+            preferences_uri,
             preferences,
             preference_budget,
         )
         available_units -= preference_units
         entity_lines, _ = cls._format_memory_listing(
-            _ENTITIES_URI,
+            entities_uri,
             entities,
             available_units,
         )
@@ -4056,6 +4114,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             profile_text,
             preference_lines,
             entity_lines,
+            profile_uri=profile_uri,
         )
 
     def _session_start_memory_context(self, session_id: str) -> str:
@@ -4081,6 +4140,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             preferences=raw_parts.get("preferences") or [],
             entities=raw_parts.get("entities") or [],
             token_budget=self._profile_token_budget(),
+            uris=self._session_start_uris(),
         )
 
     @staticmethod
@@ -4783,9 +4843,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _build_memory_uri(self, subdir: str) -> str:
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        # `~` home alias: `viking://user/peers/...` is uid-less and was removed
-        # upstream (#4196) — the memory-mirroring write path 400s on new servers.
-        return f"viking://~/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        # Explicit-uid URIs are canonical under every auth mode; the uid-less
+        # `viking://user/peers/...` shorthand was removed upstream (#4196) and
+        # `viking://~/...` only expands for USER/ADMIN roles, not dev/ROOT.
+        return _user_scoped_uri(
+            self._user_space(),
+            f"peers/{self._agent}/memories/{subdir}/mem_{slug}.md",
+        )
 
     def on_memory_write(
         self,

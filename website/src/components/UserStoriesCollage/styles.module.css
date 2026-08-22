@@ -68,7 +68,11 @@
 }
 .filterActive {
   background: var(--ifm-color-emphasis-900);
-  color: var(--ifm-background-color);
+  /* emphasis-0 (lightest in light mode) keeps the label readable on the
+     near-black pill. --ifm-background-color resolves to `transparent` in
+     Infima's light theme, which rendered the default-active pills with
+     invisible labels (#91491). */
+  color: var(--ifm-color-emphasis-0);
   border-color: var(--ifm-color-emphasis-900);
 }
 [data-theme='dark'] .filterActive {

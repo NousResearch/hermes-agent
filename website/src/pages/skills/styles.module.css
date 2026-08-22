@@ -1004,5 +1004,9 @@
 
 .pickBtn:hover {
   background: var(--ifm-color-primary);
-  color: var(--ifm-background-color, #0b0b0e);
+  /* Same bug class as #91491: --ifm-background-color is `transparent` in
+     Infima's light theme (and the fallback never applies because the
+     variable IS defined), so the hover label turned invisible. emphasis-0
+     is the theme-aware contrast color on the primary background. */
+  color: var(--ifm-color-emphasis-0, #f7f8fa);
 }

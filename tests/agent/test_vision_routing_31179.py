@@ -215,6 +215,83 @@ model:
         assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
 
 
+class TestOpenRouterTextOnlyMainFallsBackToItsVisionDefault:
+    """#50426: a text-only main model on an aggregator (OpenRouter) must still
+    resolve a vision backend via that aggregator's dedicated vision default.
+
+    Pre-fix, the fallback loop's ``if candidate == main_provider: continue``
+    guard skipped OpenRouter precisely because it is the main provider — even
+    though the main-provider branch never built a client (the chat model is
+    text-only). That left only the unconfigured aggregators, so ``provider=auto``
+    resolved to *no* backend and every image failed with ``No LLM provider
+    configured for task=vision provider=auto``.
+    """
+
+    def test_openrouter_text_only_main_resolves_via_openrouter_vision_default(
+        self, isolated_home, monkeypatch
+    ):
+        from unittest.mock import MagicMock, patch
+
+        from agent import auxiliary_client as ac
+
+        _write_config(isolated_home, """
+model:
+  provider: openrouter
+  default: deepseek/deepseek-v4-flash
+""")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        _fresh_modules()
+
+        mock_client = MagicMock()
+
+        def fake_strict_backend(provider, model=None):
+            if provider == "openrouter":
+                return mock_client, ac._OPENROUTER_MODEL
+            return None, None
+
+        with (
+            patch.object(ac, "_main_model_supports_vision", return_value=False),
+            patch.object(
+                ac, "_resolve_strict_vision_backend", side_effect=fake_strict_backend
+            ),
+        ):
+            provider, client, model = ac.resolve_vision_provider_client(provider="auto")
+
+        assert provider == "openrouter", (
+            "OpenRouter (the main provider, text-only chat model) must resolve "
+            "through its own dedicated vision default, not be skipped"
+        )
+        assert client is mock_client
+        assert model == ac._OPENROUTER_MODEL
+
+    def test_native_text_only_main_still_returns_no_client_without_aggregator(
+        self, isolated_home, monkeypatch
+    ):
+        """Removing the guard must NOT cause a native (non-aggregator) main
+        provider to be returned to the fallback loop as a vision backend."""
+        from unittest.mock import patch
+
+        from agent import auxiliary_client as ac
+
+        _write_config(isolated_home, """
+model:
+  provider: deepseek
+  default: deepseek-v4-pro
+""")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        _fresh_modules()
+
+        with (
+            patch.object(ac, "_main_model_supports_vision", return_value=False),
+            patch.object(ac, "_resolve_strict_vision_backend", return_value=(None, None)),
+        ):
+            provider, client, _model = ac.resolve_vision_provider_client(provider="auto")
+
+        # deepseek is not in _VISION_AUTO_PROVIDER_ORDER, so removing the guard
+        # must not change behaviour — still no backend when no aggregator works.
+        assert client is None
+
+
 # ---------------------------------------------------------------------------
 # Fix 3: check_vision_requirements + check_browser_vision_requirements parity
 # ---------------------------------------------------------------------------

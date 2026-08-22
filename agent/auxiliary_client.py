@@ -7453,10 +7453,14 @@ def resolve_vision_provider_client(
                         main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators (uses their dedicated vision model,
-        # not the user's main model) when main provider has no client.
+        # not the user's main model) when main provider has no client. Note we
+        # deliberately do NOT skip ``candidate == main_provider`` here: the
+        # aggregators in ``_VISION_AUTO_PROVIDER_ORDER`` carry their own
+        # dedicated vision default that may differ from the user's (text-only)
+        # chat model, and this loop only runs when the main-provider branch
+        # above failed to build a client. A native/direct main provider never
+        # appears in this order, so nothing valid is re-tried (#50426).
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
-            if candidate == main_provider:
-                continue  # already tried above
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)

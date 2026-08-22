@@ -55,6 +55,7 @@ _AUDIO_MIME_TYPES = {
     ".wav": "audio/wav",
     ".m4a": "audio/m4a",
     ".flac": "audio/flac",
+    ".amr": "audio/amr",
 }
 _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio

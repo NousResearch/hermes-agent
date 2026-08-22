@@ -3426,7 +3426,13 @@ def _text_to_speech_single(
         # formats for local/CLI playback and only convert when the current
         # platform actually needs Opus voice delivery.
         voice_compatible = False
-        if command_provider_config is not None:
+        # WeCom renders native voice bubbles only as ``audio/amr``
+        # (VOICE_SUPPORTED_MIMES in the WeCom adapter); transcoding AMR to
+        # Opus there would make the bubble undeliverable. Keep AMR as-is and
+        # mark it voice-compatible for WeCom sessions (#78595).
+        if platform == "wecom" and file_str.endswith(".amr"):
+            voice_compatible = True
+        elif command_provider_config is not None:
             # Command providers are documents by default. Voice-bubble
             # delivery only kicks in when the user explicitly opts in
             # via ``voice_compatible: true`` in their provider config.

@@ -1600,6 +1600,56 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _has_live_gateway_delivery_context(adapters: Any, loop: Any) -> bool:
+    """Return True when this process can deliver through live gateway adapters."""
+    if not adapters or loop is None:
+        return False
+    try:
+        return bool(getattr(loop, "is_running", lambda: False)())
+    except Exception:
+        return False
+
+
+def _live_gateway_running_for_profile() -> bool:
+    """Return True when a live gateway owns the active profile's runtime lock."""
+    try:
+        from gateway.status import resolve_gateway_liveness
+
+        return resolve_gateway_liveness(
+            profile_dir=_get_hermes_home().resolve(),
+            use_cache=True,
+        ).running
+    except Exception:
+        # Fail open: an unreadable PID/lock probe must not suppress cron forever.
+        return False
+
+
+def _job_needs_live_gateway_for_continuation(job: dict) -> bool:
+    """Whether direct execution would lose continuable platform delivery state."""
+    try:
+        if not _cron_mirror_delivery_enabled(job):
+            return False
+        targets = _resolve_delivery_targets(job)
+    except Exception:
+        return False
+    for target in targets:
+        platform = str(target.get("platform") or "").strip().lower()
+        if platform in _KNOWN_DELIVERY_PLATFORMS:
+            return True
+    return False
+
+
+def _should_yield_cron_to_live_gateway(
+    job: dict, adapters: Any = None, loop: Any = None
+) -> bool:
+    """True when an adapter-less owner should leave this job for the gateway tick."""
+    if _has_live_gateway_delivery_context(adapters, loop):
+        return False
+    if not _job_needs_live_gateway_for_continuation(job):
+        return False
+    return _live_gateway_running_for_profile()
+
+
 def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool:
     """Whether a cron delivery should also be mirrored into the target chat's
     gateway session transcript.
@@ -7356,6 +7406,20 @@ def tick(
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+
+        gateway_handoff_ids = {
+            job.get("id")
+            for job in due_jobs
+            if _should_yield_cron_to_live_gateway(job, adapters, loop)
+        }
+        if gateway_handoff_ids:
+            logger.info(
+                "Cron tick yielded %d continuable platform job(s) to live gateway",
+                len(gateway_handoff_ids),
+            )
+            due_jobs = [job for job in due_jobs if job.get("id") not in gateway_handoff_ids]
+            if not due_jobs:
+                return 0
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.

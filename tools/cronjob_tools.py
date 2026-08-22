@@ -724,6 +724,12 @@ def _execute_job_now(
 ) -> Dict[str, Any]:
     """Execute a cron job immediately, outside the scheduler tick.
 
+    Adapter-less callers must not run continuable platform deliveries while a
+    live gateway owns the profile: the gateway process has the Discord/Slack/etc.
+    adapter state needed to create or reuse continuation threads. Queue the job
+    for the next gateway tick before taking the fire claim so the direct caller
+    cannot advance ``next_run_at`` or fall back to standalone delivery.
+
     Atomically claims the job first via ``claim_job_for_fire`` — the same
     at-most-once CAS the scheduler/external-provider fire path uses — so a
     concurrently-running gateway ticker cannot also fire it (the claim both
@@ -738,6 +744,26 @@ def _execute_job_now(
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    try:
+        from cron.scheduler import _should_yield_cron_to_live_gateway
+
+        if _should_yield_cron_to_live_gateway(job):
+            from hermes_time import now as _hermes_now
+
+            update_job(job_id, {"next_run_at": _hermes_now().isoformat()})
+            return {
+                "claimed": False,
+                "success": True,
+                "queued_for_gateway": True,
+                "error": (
+                    "A live gateway is running for this profile; queued this "
+                    "continuable platform cron for the gateway scheduler so "
+                    "delivery can use the live adapter/thread context."
+                ),
+            }
+    except Exception as e:
+        logger.debug("Gateway handoff check failed for cron job %s: %s", job_id, e)
+
     claimed_job = None
     try:
         # At-most-once claim: bail without running if a tick/other fire owns it.
@@ -1505,13 +1531,18 @@ def cronjob(
             # external one-shot for the same occurrence. If Chronos loses that
             # claim, its consumed fire cannot re-arm itself; reconcile from the
             # winning direct path after the run has persisted its final state.
-            if exec_result.get("claimed", False):
+            if exec_result.get("claimed", False) or exec_result.get(
+                "queued_for_gateway", False
+            ):
                 _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
             result["execution_success"] = exec_result.get("success", False)
-            if not exec_result.get("claimed", False):
+            if exec_result.get("queued_for_gateway", False):
+                result["execution_queued"] = True
+                result["execution_skipped"] = exec_result.get("error")
+            elif not exec_result.get("claimed", False):
                 result["execution_skipped"] = exec_result.get("error") or (
                     "Already being fired by the scheduler; not run again."
                 )

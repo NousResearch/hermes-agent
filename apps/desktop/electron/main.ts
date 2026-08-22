@@ -45,6 +45,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { type BackendChildProcess, isBackendExitPending, restartLocalBackend, waitForBackendExit } from './backend-restart'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -248,7 +249,7 @@ import {
   spliceRegistrySessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { type ActiveWork, confirmRestart, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   RemoteLivenessTracker,
@@ -9051,6 +9052,8 @@ const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PA
 const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 let sshQuitTeardownDone = false
+let sshRestartRequest: { scope: string; token: string } | null = null
+let restartCurrentBackendInFlight: Promise<any> | null = null
 let backendQuitTeardownDone = false
 
 function sshScopeKey(profile) {
@@ -9217,18 +9220,26 @@ function effectiveSshConfigFingerprint(sshConfig) {
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
-async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
+async function bootstrapSshConnection(profile, sshConfig, reuseToken, source, options: any = {}) {
   const scope = sshScopeKey(profile)
   const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
   const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
   const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
 
   return sshBootstrapCoordinator.start(scope, fingerprint, lease =>
-    bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, fingerprint, lease)
+    bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, fingerprint, lease, options)
   )
 }
 
-async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, fingerprint, lease) {
+async function bootstrapSshConnectionInner(
+  profile,
+  sshConfig,
+  reuseToken,
+  source,
+  fingerprint,
+  lease,
+  options: any = {}
+) {
   const scope = sshScopeKey(profile)
   const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
   const existing = sshConnections.get(scope)
@@ -9251,6 +9262,17 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   }
 
   const created = !ssh
+  const reusedSshForForcedRestart = Boolean(options.forceRestart && ssh && !created)
+
+  if (options.forceRestart) {
+    const previous = sshConnections.get(scope)
+
+    if (previous?.localPort && previous?.remotePort) {
+      await previous.ssh.cancelForward(previous.localPort, previous.remotePort).catch(() => undefined)
+    }
+
+    sshConnections.delete(scope)
+  }
 
   let removeForceCleanup = () => {}
 
@@ -9286,10 +9308,12 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
-      signal: lease.signal
+      signal: lease.signal,
+      forceRestart: options.forceRestart === true,
+      skipExistingLock: options.skipExistingLock === true
     })
   } catch (error: any) {
-    if (created) {
+    if (created || reusedSshForForcedRestart) {
       try {
         await ssh.close()
       } catch {
@@ -9364,6 +9388,20 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   return { ...connection, remoteHermesVersion: result.hermesVersion || '' }
 }
 
+function sshRestartOptions(scope: string, fallbackToken: string) {
+  const request = sshRestartRequest
+
+  if (request?.scope !== scope) {
+    return { forceRestart: false, reuseToken: fallbackToken }
+  }
+
+  // One-shot: consume the request so a later same-scope resolve cannot reuse
+  // the stale restart token and force-kill the freshly restarted backend.
+  sshRestartRequest = null
+
+  return { forceRestart: true, reuseToken: request.token }
+}
+
 function persistSshConnectionToken(profile, source, token) {
   try {
     // Registry-scoped ssh backend (source "registry:<connectionId>"): the
@@ -9426,11 +9464,17 @@ async function resolveRemoteBackend(profile) {
   let connection
 
   if (route.kind === 'ssh') {
+    const restart = sshRestartOptions(
+      sshScopeKey(route.source === 'profile' ? profile : null),
+      decryptDesktopSecret(route.token)
+    )
+
     connection = await bootstrapSshConnection(
       route.source === 'profile' ? profile : null,
       route.ssh,
-      decryptDesktopSecret(route.token),
-      route.source
+      restart.reuseToken,
+      route.source,
+      restart
     )
   } else {
     const token =
@@ -9775,7 +9819,10 @@ function resetHermesConnection({ soft = false } = {}) {
 async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   // Capture the reference before resetHermesConnection() invalidates it.
   const hermesProcess = backendConnectionState.getProcess()
-  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  // `.killed` means a signal was sent, not that the child exited. Keep waiting
+  // for the exit event after an earlier stop attempt or restart can overlap a
+  // still-draining backend.
+  const dying = isBackendExitPending(hermesProcess) ? hermesProcess : null
 
   if (soft) {
     softRehomeInProgress = true
@@ -9783,7 +9830,19 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
 
   try {
     resetHermesConnection({ soft })
-    await waitForBackendExit(dying)
+    await waitForBackendExit(dying, {
+      onTimeout: () => {
+        try {
+          if (IS_WINDOWS && Number.isInteger(dying?.pid)) {
+            forceKillProcessTree(dying.pid)
+          } else {
+            dying?.kill('SIGKILL')
+          }
+        } catch {
+          // Already gone.
+        }
+      }
+    })
   } finally {
     if (soft) {
       softRehomeInProgress = false
@@ -9791,7 +9850,7 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   }
 }
 
-function sendConnectionApplied() {
+function sendConnectionApplied(payload: { preserveSession?: boolean } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -9802,7 +9861,7 @@ function sendConnectionApplied() {
     return
   }
 
-  webContents.send('hermes:connection:applied')
+  webContents.send('hermes:connection:applied', payload)
 }
 
 // Registry lifecycle push: a connection was removed or materially edited, so
@@ -9818,55 +9877,6 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
       webContents.send('hermes:connections:changed', payload)
     }
   }
-}
-
-async function waitForBackendExit(child, timeoutMs = 5000) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
-    return
-  }
-
-  const exited = () => child.exitCode !== null || child.signalCode !== null
-
-  const wait = delay =>
-    new Promise<void>(resolve => {
-      if (exited()) {
-        resolve()
-
-        return
-      }
-
-      const timer = setTimeout(resolve, delay)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        resolve()
-      })
-    })
-
-  await wait(timeoutMs)
-
-  if (exited()) {
-    return
-  }
-
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else if (Number.isInteger(child.pid)) {
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        child.kill('SIGKILL')
-      }
-    } else {
-      child.kill('SIGKILL')
-    }
-  } catch {
-    return
-  }
-
-  // Await the escalation as well; do not let shutdown or failed adoption race
-  // a still-running backend.
-  await wait(1000)
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -10464,7 +10474,28 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 const poolStopper = createPoolStopper({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  waitForExit: child =>
+    waitForBackendExit(child as BackendChildProcess | null | undefined, {
+      onTimeout: () => {
+        try {
+          const pid = (child as { pid?: number } | null | undefined)?.pid
+          if (IS_WINDOWS && Number.isInteger(pid)) {
+            forceKillProcessTree(pid)
+          } else if (Number.isInteger(pid)) {
+            try {
+              process.kill(-pid, 'SIGKILL')
+            } catch {
+              (child as BackendChildProcess | null | undefined)?.kill('SIGKILL')
+            }
+          } else {
+            (child as BackendChildProcess | null | undefined)?.kill('SIGKILL')
+          }
+        } catch {
+          // Already gone.
+        }
+      },
+      escalationGraceMs: 1000
+    })
 })
 
 function stopPoolBackend(profile) {
@@ -12249,6 +12280,117 @@ function createWindow() {
   })
 }
 
+async function performCurrentBackendRestart() {
+  const current = await backendConnectionState.getPromise()?.catch(() => null)
+  const profile = primaryProfileKey()
+  const config = readDesktopConnectionConfig()
+  const profileSsh = profileSshOverride(config, profile)
+  const profileRemote = profileRemoteOverride(config, profile)
+  const envRemote = Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+
+  const sshMode =
+    current?.remoteKind === 'ssh' || Boolean(profileSsh) || (!profileRemote && !envRemote && config.mode === 'ssh')
+
+  if (!sshMode && (current?.mode === 'remote' || profileRemote || envRemote || modeIsRemoteLike(config.mode))) {
+    return { ok: false, reason: 'remote-not-owned' }
+  }
+
+  const confirmed = await confirmRestart(mergeActiveWork(activeWorkByWebContents.values()), async prompt => {
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+
+    if (!parent || parent.isDestroyed()) {
+      return false
+    }
+
+    try {
+      const { response } = await dialog.showMessageBox(parent, {
+        buttons: ['Keep Running', 'Restart Backend'],
+        cancelId: 0,
+        defaultId: 0,
+        detail: prompt.detail,
+        message: prompt.message,
+        type: 'question'
+      })
+
+      return response === 1
+    } catch {
+      return false
+    }
+  })
+
+  if (!confirmed) {
+    return { ok: false, reason: 'cancelled' }
+  }
+
+  if (!sshMode) {
+    return restartLocalBackend({
+      teardown: () => teardownPrimaryBackendAndWait({ soft: true }),
+      start: () => startHermes(),
+      notifyApplied: () => sendConnectionApplied({ preserveSession: true })
+    })
+  }
+
+  // The resolver keys the request by the scope it will actually check:
+  // per-profile overrides use sshScopeKey(profile); the global SSH path uses
+  // ''. Mismatching here silently skips the forced restart.
+  const scope = profileSsh ? sshScopeKey(profile) : ''
+
+  const token =
+    current?.token ||
+    (profileSsh
+      ? decryptDesktopSecret(config.profiles?.[connectionScopeKey(profile)]?.token)
+      : decryptDesktopSecret(config.remote?.token))
+
+  if (!token) {
+    return {
+      ok: false,
+      reason: 'not-ready',
+      message: 'Current SSH backend has no served session token.'
+    }
+  }
+
+  sshRestartRequest = { scope, token }
+
+  try {
+    resetHermesConnection({ soft: true })
+    await startHermes()
+    sendConnectionApplied({ preserveSession: true })
+
+    return { ok: true, mode: 'ssh' }
+  } catch (error: any) {
+    sendConnectionApplied({ preserveSession: true })
+
+    return {
+      ok: false,
+      reason: error?.sshError === 'ownership-failed' ? 'ownership-failed' : 'restart-failed',
+      message: error?.message || String(error)
+    }
+  } finally {
+    if (sshRestartRequest?.scope === scope) {
+      console.warn(`[hermes] SSH restart request was not consumed during reconnect (scope=${scope || 'global'})`)
+    }
+
+    sshRestartRequest = null
+  }
+}
+
+function restartCurrentBackend() {
+  if (!restartCurrentBackendInFlight) {
+    restartCurrentBackendInFlight = performCurrentBackendRestart()
+      .catch((error: any) => ({
+        ok: false,
+        reason: error?.sshError === 'ownership-failed' ? 'ownership-failed' : 'restart-failed',
+        message: error?.message || String(error)
+      }))
+      .finally(() => {
+        restartCurrentBackendInFlight = null
+      })
+  }
+
+  return restartCurrentBackendInFlight
+}
+
+ipcMain.handle('hermes:backend:restart-current', () => restartCurrentBackend())
 ipcMain.handle('hermes:connection', async (_event, profile) => {
   const connection = await ensureBackend(profile)
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)

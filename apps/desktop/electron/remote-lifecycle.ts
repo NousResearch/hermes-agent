@@ -474,33 +474,18 @@ async function pidIsOurDashboard(
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
-  if (
-    pidAlive &&
-    lock &&
-    (await pidIsOurDashboard(
+  if (pidAlive && lock && Number.isInteger(Number(lock.pid))) {
+    const outcome = await runTerminateProgram(
       ssh,
-      lock.pid,
-      lock.spawnNonce,
+      Number(lock.pid),
       lock.hermesPath,
-      lock.hermesHome,
-      ownershipId,
-      lock.profile
-    ))
-  ) {
-    try {
-      const result = (
-        await ssh.exec(
-          `kill ${Number(lock.pid)} && ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
-        )
-      ).trim()
+      lock.spawnNonce,
+      'Could not terminate the stale SSH backend.'
+    )
 
-      void result
-    } catch (cause) {
+    if (outcome === 'STILL-ALIVE') {
       const error: any = new Error('Could not terminate the stale SSH backend.')
       error.kind = 'transient-transport-error'
-      error.cause = cause
       throw error
     }
   }
@@ -516,6 +501,132 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   }
 
   await removeLockfile(ssh, ownershipId)
+}
+
+function ownershipFailure(message) {
+  const error: any = new Error(message)
+  error.kind = 'ownership-failed'
+
+  return error
+}
+
+// One remote program that (a) re-verifies the cmdline ownership args and (b)
+// sends the signal and confirms the exact pid exits, so a pid reused between
+// separate round trips can never be killed. Prints DEAD / FOREIGN / KILLED /
+// STILL-ALIVE and always exits 0; the caller maps the outcome. shq() doubles
+// the script's single quotes on the wire, which is harmless to Python.
+function terminateOwnedProgram(pid: number, hermesPath: string, spawnNonce: string): string {
+  return (
+    'import os,shlex,subprocess,sys,time\n' +
+    `pid=${pid}\n` +
+    `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+    `nonce=${shq(spawnNonce)}\n` +
+    'try:\n' +
+    ' os.kill(pid,0)\n' +
+    'except OSError:\n' +
+    " print('DEAD'); sys.exit(0)\n" +
+    'try:\n' +
+    ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
+    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+    'except OSError:\n' +
+    ' try:\n' +
+    '  line=subprocess.check_output(["ps","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    '  args=shlex.split(line)\n' +
+    ' except subprocess.CalledProcessError:\n' +
+    '  args=[]\n' +
+    'ok=False\n' +
+    'try:\n' +
+    ' serve=args.index("serve")\n' +
+    ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
+    ' direct=args[0]==expected\n' +
+    ' python_entry=len(args)>1 and args[1]==expected and os.path.basename(args[0]).startswith("python")\n' +
+    ' ok=(direct or python_entry) and "--isolated" in args[serve+1:] and args[owner+1]==nonce\n' +
+    'except (ValueError,IndexError):pass\n' +
+    'if not ok:\n' +
+    " print('FOREIGN'); sys.exit(0)\n" +
+    'os.kill(pid,15)\n' +
+    'deadline=time.time()+5.0\n' +
+    'while time.time()<deadline:\n' +
+    ' try:\n' +
+    '  os.kill(pid,0)\n' +
+    ' except OSError:\n' +
+    "  print('KILLED'); sys.exit(0)\n" +
+    ' time.sleep(0.1)\n' +
+    "print('STILL-ALIVE')"
+  )
+}
+
+async function runTerminateProgram(
+  ssh,
+  pid: number,
+  hermesPath: string,
+  spawnNonce: string,
+  transportMessage: string
+): Promise<string> {
+  try {
+    return (await ssh.exec(`python3 -c ${shq(terminateOwnedProgram(pid, hermesPath, spawnNonce))}`)).trim()
+  } catch (cause) {
+    const error: any = new Error(transportMessage)
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+}
+
+// Restart proof is stricter than stale cleanup: no lock or log is removed until
+// the live process has passed every ownership check and the exact pid exits.
+// Validation and termination run in ONE remote program (see
+// terminateOwnedProgram) so a pid reused between checks can never be killed.
+async function terminateOwned(ssh, ownershipId, lock) {
+  const pid = Number(lock.pid)
+
+  if (!pid || !Number.isInteger(pid)) {
+    throw ownershipFailure('SSH backend ownership record has an invalid pid; no process was terminated.')
+  }
+
+  const outcome = await runTerminateProgram(
+    ssh,
+    pid,
+    lock.hermesPath,
+    lock.spawnNonce,
+    'Could not verify and terminate the owned SSH backend.'
+  )
+
+  if (outcome === 'FOREIGN') {
+    throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+  }
+
+  if (outcome === 'DEAD') {
+    throw ownershipFailure('SSH backend is no longer alive; no process was terminated.')
+  }
+
+  if (outcome !== 'KILLED') {
+    const error: any = new Error('Could not terminate the owned SSH backend.')
+    error.kind = 'restart-failed'
+    throw error
+  }
+
+  // Lock artifacts are removed only after the remote program confirmed the
+  // exact owned pid exited.
+  if (lock.logPath === spawnLogPath(ownershipId, lock.spawnNonce)) {
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`)
+    } catch (cause) {
+      const error: any = new Error('Could not remove the SSH backend log after termination.')
+      error.kind = 'restart-failed'
+      error.cause = cause
+      throw error
+    }
+  }
+
+  try {
+    await ssh.exec(`rm -f ${expandRemotePath(lockfilePath(ownershipId))}`)
+  } catch (cause) {
+    const error: any = new Error('Could not remove the SSH backend ownership record.')
+    error.kind = 'restart-failed'
+    error.cause = cause
+    throw error
+  }
 }
 
 // Detach so the backend survives the SSH channel closing: setsid (Linux)
@@ -775,7 +886,65 @@ async function connect(deps) {
 
   const reuseToken = deps.reuseToken || ''
   const hermesHome = await probeRemoteHermesHome(ssh)
-  const lock = await readLockfile(ssh, ownershipId)
+  const lock = deps.skipExistingLock ? null : await readLockfile(ssh, ownershipId)
+
+  if (deps.forceRestart) {
+    if (!lock) {
+      throw ownershipFailure('SSH backend ownership record is missing; no process was terminated.')
+    }
+
+    const metadataMatches =
+      lock.port > 0 &&
+      lock.profile === profile &&
+      Boolean(reuseToken) &&
+      lock.tokenFingerprint === fingerprintToken(reuseToken) &&
+      lock.hermesPath === hermesPath &&
+      lock.hermesHome === hermesHome
+
+    if (!metadataMatches) {
+      throw ownershipFailure('SSH backend ownership metadata changed; no process was terminated.')
+    }
+
+    if (!(await remotePidAlive(ssh, lock.pid))) {
+      throw ownershipFailure('SSH backend is no longer alive; no process was terminated.')
+    }
+
+    if (!(await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
+      throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+    }
+
+    assertNotAborted(signal)
+    const localPort = await openForward(deps, lock.port)
+
+    try {
+      const classification = await probeReuseProof(`http://127.0.0.1:${localPort}`, reuseToken, lock.spawnNonce)
+
+      if (classification !== 'authenticated-ok') {
+        throw ownershipFailure('SSH backend served identity proof failed; no process was terminated.')
+      }
+    } catch (cause: any) {
+      if (cause?.kind === 'ownership-failed') {
+        throw cause
+      }
+
+      const error: any = new Error('Could not verify the owned SSH backend; no process was terminated.')
+      error.kind = 'ownership-failed'
+      error.cause = cause
+      throw error
+    } finally {
+      await cancelForwardSafe(deps, localPort, lock.port)
+    }
+
+    assertNotAborted(signal)
+    await terminateOwned(ssh, ownershipId, lock)
+
+    return connect({
+      ...deps,
+      forceRestart: false,
+      reuseToken: '',
+      skipExistingLock: true
+    })
+  }
 
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
@@ -987,6 +1156,7 @@ export {
   spawnRemoteDashboard,
   spawnTokenPath,
   SUPPORTED_REMOTE_OS,
+  terminateOwned,
   validateRemotePath,
   writeLockfile
 }

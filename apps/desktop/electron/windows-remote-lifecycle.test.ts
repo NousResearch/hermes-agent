@@ -5,6 +5,7 @@ import { test } from 'vitest'
 
 import {
   buildWindowsInteractiveCommand,
+  connectWindowsRemote,
   detectRemotePlatform,
   encodedPowerShell,
   helperCommand,
@@ -146,4 +147,182 @@ test('Windows integrated terminal uses encoded PowerShell and preserves cwd as l
   const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
   assert.match(script, /Set-Location -LiteralPath 'C:\\Users\\O''Brien\\repo'/)
   assert.match(script, /powershell\.exe -NoLogo/)
+})
+
+function windowsRestartConnection(owned = true, terminated = true) {
+  const oldNonce = '0123456789abcdef'
+  const token = 'stored-token'
+
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: oldNonce,
+    pid: 333,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: '',
+    tokenFingerprint: crypto.createHash('sha256').update(token).digest('hex').slice(0, 32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  const calls: string[] = []
+  let lockReads = 0
+
+  const ssh = {
+    calls,
+    async exec(command: string) {
+      calls.push(command)
+      const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+      const operation = script.match(/hermes_cli\.windows_ssh_runtime' '([^']+)/)?.[1]
+
+      if (!operation) {
+        return JSON.stringify({
+          os: 'Windows',
+          arch: 'AMD64',
+          hermesHome: 'C:\\h',
+          hermesPath: 'C:\\h\\hermes.exe',
+          python: 'C:\\h\\python.exe'
+        })
+      }
+
+      if (operation === 'inspect') {
+        return JSON.stringify({ supported: true, path: 'C:\\h\\hermes.exe', version: 'Hermes 1' })
+      }
+
+      if (operation === 'read-lock') {
+        lockReads += 1
+
+        return JSON.stringify(lock)
+      }
+
+      if (operation === 'process-state') {
+        return JSON.stringify({ alive: true, owned })
+      }
+
+      if (operation === 'spawn') {
+        return JSON.stringify({ pid: 999, creationTimeNs: '1784219690452757999' })
+      }
+
+      if (operation === 'read-log') {
+        return JSON.stringify({ content: 'HERMES_DASHBOARD_READY port=4321\n' })
+      }
+
+      if (operation === 'terminate') {
+        return JSON.stringify({ terminated })
+      }
+
+      return JSON.stringify({})
+    }
+  }
+
+  return { lock, ssh, token, oldNonce, getLockReads: () => lockReads }
+}
+
+test('Windows force restart terminates owned process and spawns fresh pid and nonce', async () => {
+  const fixture = windowsRestartConnection()
+
+  const result = await connectWindowsRemote({
+    ssh: fixture.ssh,
+    ownershipId,
+    profile: '',
+    reuseToken: fixture.token,
+    pickLocalPort: async () => 50001,
+    forward: async () => {},
+    cancelForward: async () => {},
+    waitForHermes: async () => {},
+    probeReuseProof: async () => 'authenticated-ok',
+    forceRestart: true
+  })
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 999)
+  assert.notEqual(result.spawnNonce, fixture.oldNonce)
+  assert.equal(fixture.getLockReads(), 1, 'fresh recursive connect must skip the old lock')
+
+  const terminateCalls = fixture.ssh.calls.filter(command => {
+    const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+
+    return script.includes("'terminate'")
+  })
+
+  assert.equal(terminateCalls.length, 1)
+})
+
+test('Windows force restart never terminates when process ownership proof fails', async () => {
+  const fixture = windowsRestartConnection(false)
+
+  await assert.rejects(
+    () =>
+      connectWindowsRemote({
+        ssh: fixture.ssh,
+        ownershipId,
+        profile: '',
+        reuseToken: fixture.token,
+        pickLocalPort: async () => 50001,
+        forward: async () => {},
+        cancelForward: async () => {},
+        waitForHermes: async () => {},
+        probeReuseProof: async () => 'authenticated-ok',
+        forceRestart: true
+      }),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+  assert.ok(
+    fixture.ssh.calls.every(
+      command => !Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le').includes("'terminate'")
+    )
+  )
+})
+
+test('Windows force restart preserves ownership artifacts when termination is not proven', async () => {
+  const fixture = windowsRestartConnection(true, false)
+
+  await assert.rejects(
+    () =>
+      connectWindowsRemote({
+        ssh: fixture.ssh,
+        ownershipId,
+        profile: '',
+        reuseToken: fixture.token,
+        pickLocalPort: async () => 50001,
+        forward: async () => {},
+        cancelForward: async () => {},
+        waitForHermes: async () => {},
+        probeReuseProof: async () => 'authenticated-ok',
+        forceRestart: true
+      }),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+
+  const scripts = fixture.ssh.calls.map(command => Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le'))
+  assert.ok(scripts.some(script => script.includes("'terminate'")))
+  assert.ok(!scripts.some(script => script.includes("'remove-lock'")))
+})
+
+test('Windows force restart keeps the ownership failure when forward teardown rejects', async () => {
+  const fixture = windowsRestartConnection(true)
+
+  await assert.rejects(
+    () =>
+      connectWindowsRemote({
+        ssh: fixture.ssh,
+        ownershipId,
+        profile: '',
+        reuseToken: fixture.token,
+        pickLocalPort: async () => 50001,
+        forward: async () => {},
+        cancelForward: async () => {
+          throw new Error('forward teardown blew up')
+        },
+        waitForHermes: async () => {},
+        probeReuseProof: async () => {
+          throw new Error('probe transport failed')
+        },
+        forceRestart: true
+      }),
+    (error: any) =>
+      error.kind === 'ownership-failed' && /Could not verify the owned SSH backend/.test(error.message)
+  )
 })

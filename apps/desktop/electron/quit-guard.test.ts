@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { confirmRestart, mergeActiveWork, normalizeActiveWork, quitPromptFor, restartPromptFor } from './quit-guard'
 
 test('normalizeActiveWork drops junk and keeps the count at least the title count', () => {
   assert.deepEqual(normalizeActiveWork(null), { count: 0, titles: [] })
@@ -59,4 +59,36 @@ test('quitPromptFor speaks singular for one chat', () => {
   assert.ok(prompt)
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
   assert.ok(prompt.detail.includes('mid-turn'))
+})
+
+test('restart confirmation allows idle work without showing a dialog', async () => {
+  let prompted = false
+
+  const confirmed = await confirmRestart({ count: 0, titles: [] }, async () => {
+    prompted = true
+
+    return true
+  })
+
+  assert.equal(confirmed, true)
+  assert.equal(prompted, false)
+})
+
+test('restart confirmation blocks active work when user cancels', async () => {
+  const prompt = restartPromptFor({ count: 1, titles: ['Fix login'] })
+  assert.ok(prompt)
+  assert.match(prompt.detail, /interrupts active turns/i)
+
+  assert.equal(
+    await confirmRestart({ count: 1, titles: ['Fix login'] }, async received => {
+      assert.deepEqual(received, prompt)
+
+      return false
+    }),
+    false
+  )
+})
+
+test('restart confirmation permits active work after explicit confirmation', async () => {
+  assert.equal(await confirmRestart({ count: 1, titles: ['Fix login'] }, async () => true), true)
 })

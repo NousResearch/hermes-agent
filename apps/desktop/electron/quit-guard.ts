@@ -65,11 +65,7 @@ export interface QuitPrompt {
  * are the app replacing itself, not the user walking away, and a modal there
  * would strand the detached script waiting on a PID that never exits.
  */
-export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): null | QuitPrompt {
-  if (quittingForHandoff || work.count < 1) {
-    return null
-  }
-
+function promptDetail(work: ActiveWork, closing: string): string {
   const listed = work.titles.slice(0, MAX_LISTED)
   const remaining = work.count - listed.length
   const lines = listed.map(title => `• ${title}`)
@@ -78,15 +74,46 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
     lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
   }
 
+  return [lines.join('\n'), lines.length > 0 ? '' : null, closing]
+    .filter(line => line !== null)
+    .join('\n')
+    .trim()
+}
+
+export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): null | QuitPrompt {
+  if (quittingForHandoff || work.count < 1) {
+    return null
+  }
+
   return {
-    detail: [
-      lines.join('\n'),
-      lines.length > 0 ? '' : null,
-      'Quitting stops the agent mid-turn. Any work it has not finished writing is lost.'
-    ]
-      .filter(line => line !== null)
-      .join('\n')
-      .trim(),
+    detail: promptDetail(work, 'Quitting stops the agent mid-turn. Any work it has not finished writing is lost.'),
     message: work.count === 1 ? 'Hermes is still working on 1 chat.' : `Hermes is still working on ${work.count} chats.`
   }
+}
+
+/** Confirmation copy for restarting a backend while turns are in flight. */
+export function restartPromptFor(work: ActiveWork): null | QuitPrompt {
+  if (work.count < 1) {
+    return null
+  }
+
+  return {
+    detail: promptDetail(
+      work,
+      'Restarting the backend interrupts active turns. Work not yet finished may be lost.'
+    ),
+    message:
+      work.count === 1
+        ? 'Hermes has 1 active turn. Restart the backend now?'
+        : `Hermes has ${work.count} active turns. Restart the backend now?`
+  }
+}
+
+export async function confirmRestart(
+  work: ActiveWork,
+  confirm: (prompt: QuitPrompt) => Promise<boolean>
+): Promise<boolean> {
+  const prompt = restartPromptFor(work)
+
+  return prompt ? confirm(prompt) : true
 }

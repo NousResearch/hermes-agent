@@ -44,7 +44,9 @@ export const $gatewaySwitching = atom(false)
  * close route overlays (Settings). Clear chat state in place; leave the URL
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
-export function wipeSessionListsForGatewaySwitch(): void {
+export function wipeSessionListsForGatewaySwitch({
+  preserveSelectedSessionId = null
+}: { preserveSelectedSessionId?: string | null } = {}): void {
   // The next backend is a different runtime — don't carry the old one's
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
@@ -82,7 +84,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetSessionsLimit()
 
   setActiveSessionId(null)
-  setSelectedStoredSessionId(null)
+
+  if (!preserveSelectedSessionId) {
+    setSelectedStoredSessionId(null)
+  }
+
   setMessages([])
   setFreshDraftReady(true)
 

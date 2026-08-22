@@ -488,7 +488,10 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
     hermesPath: '/x/hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
   })
-  assert.ok(ours.calls.some(c => /kill 9\b/.test(c)))
+  assert.ok(
+    ours.calls.some(c => /os\.kill\(pid/.test(c) && /pid=9/.test(c)),
+    'must terminate the exact owned pid inside the validated program'
+  )
   assert.ok(ours.calls.some(c => /rm -f/.test(c)))
 })
 
@@ -710,6 +713,127 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
   assert.equal(result.remotePort, 40000)
   // never spawned
   assert.ok(!ssh.calls.some(c => /setsid/.test(c)), 'reuse path must not spawn a new dashboard')
+})
+
+// The combined validation+termination program embeds the pid, the ownership
+// nonce, and the kill in ONE remote command. shq() doubles the script's single
+// quotes on the wire, so match prints quote-agnostically.
+const killProgram = (command: string) => /os\.kill\(pid/.test(command) && /print\([^)]*KILLED[^)]*\)/.test(command)
+
+function forceRestartSsh(lock: any, over: any = {}) {
+  return fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0/, over.alive === false ? 'DEAD' : 'ALIVE'],
+    [/print\("OWNED"/, over.owned === false ? 'FOREIGN\n' : 'OWNED\n'],
+    [killProgram, over.killOut ?? 'KILLED\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '999\n'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=43000\n']
+  ])
+}
+
+test('force restart proves ownership, kills exact old pid, and returns fresh pid and nonce', async () => {
+  const ssh = forceRestartSsh(ownedLock())
+
+  const result = await connect(
+    connectDeps(ssh, {
+      forceRestart: true,
+      reuseToken: 'stored-token',
+      adoptServedToken: async (_baseUrl, token) =>
+        token === 'stored-token' ? 'fresh-served-token' : 'fresh-served-token'
+    })
+  )
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 999)
+  assert.notEqual(result.spawnNonce, SPAWN_NONCE)
+
+  const killProgram = ssh.calls.find(command => /os\.kill\(pid/.test(command))
+  assert.ok(killProgram, 'kill must run inside the combined validation+termination program')
+  assert.match(killProgram!, /pid=333/)
+  assert.match(killProgram!, /nonce=.*0123456789abcdef/)
+  assert.ok(/print\([^)]*KILLED[^)]*\)/.test(killProgram!), 'program must confirm exact-pid exit')
+  const killIndex = ssh.calls.findIndex(command => /os\.kill\(pid/.test(command))
+  const cleanupIndex = ssh.calls.findIndex(command => /rm -f/.test(command))
+  assert.ok(cleanupIndex > killIndex, 'lock artifacts removed only after confirmed termination')
+  assert.ok(ssh.calls.some(command => /setsid/.test(command)), 'must spawn a fresh dashboard')
+})
+
+test('force restart never kills when lock ownership ID does not match', async () => {
+  const ssh = forceRestartSsh({ ...ownedLock(), ownershipId: 'f'.repeat(32) })
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+  assert.ok(!ssh.calls.some(command => /os\.kill\(pid/.test(command)))
+})
+
+test('force restart never kills a dead or foreign process', async () => {
+  for (const over of [{ alive: false }, { owned: false }]) {
+    const ssh = forceRestartSsh(ownedLock(), over)
+
+    await assert.rejects(
+      () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+      (error: any) => error.kind === 'ownership-failed'
+    )
+    assert.ok(!ssh.calls.some(command => /os\.kill\(pid/.test(command)))
+  }
+})
+
+test('force restart refuses to kill when the pid was reused before termination (PID-reuse safe)', async () => {
+  for (const [killOut, message] of [
+    ['FOREIGN\n', /ownership proof failed/],
+    ['DEAD\n', /no longer alive/]
+  ] as const) {
+    // Pre-checks pass, but between them and the kill the pid is taken over by a
+    // foreign process (or dies): the combined program must refuse to kill.
+    const ssh = forceRestartSsh(ownedLock(), { killOut })
+
+    await assert.rejects(
+      () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+      (error: any) => error.kind === 'ownership-failed' && message.test(error.message)
+    )
+
+    const killProgram = ssh.calls.find(command => /os\.kill\(pid/.test(command))
+    assert.ok(killProgram, 'validation and kill must live in the same remote program')
+    assert.ok(
+      /print\([^)]*FOREIGN[^)]*\)/.test(killProgram!) && /print\([^)]*DEAD[^)]*\)/.test(killProgram!),
+      'program must re-verify ownership before issuing the signal'
+    )
+    assert.ok(!ssh.calls.some(command => /rm -f/.test(command)), 'no ownership artifacts removed on refusal')
+  }
+})
+
+test('force restart reports restart-failed when the owned pid survives the kill window', async () => {
+  const ssh = forceRestartSsh(ownedLock(), { killOut: 'STILL-ALIVE\n' })
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+    (error: any) =>
+      error.kind === 'restart-failed' && /Could not terminate the owned SSH backend/.test(error.message)
+  )
+  assert.ok(!ssh.calls.some(command => /rm -f/.test(command)), 'no ownership artifacts removed on failure')
+})
+
+test('force restart never kills when served identity proof has gone stale', async () => {
+  const ssh = forceRestartSsh(ownedLock())
+
+  await assert.rejects(
+    () =>
+      connect(
+        connectDeps(ssh, {
+          forceRestart: true,
+          reuseToken: 'stored-token',
+          probeReuseProof: async () => 'authenticated-stale'
+        })
+      ),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+  assert.ok(!ssh.calls.some(command => /os\.kill\(pid/.test(command)))
 })
 
 test('connect() respawns when the requested remote profile differs from the lockfile profile', async () => {
@@ -952,7 +1076,7 @@ test('connect() preserves an owned backend when a reuse transport throws', async
       ),
     /network reset/
   )
-  assert.ok(!ssh.calls.some(cmd => /kill 333\b/.test(cmd)))
+  assert.ok(!ssh.calls.some(cmd => /os\.kill\(pid/.test(cmd)))
 })
 
 test('validateRemotePath accepts absolute POSIX paths', () => {
@@ -1264,7 +1388,7 @@ test('connect preserves an exact-owned backend when reuse proof transport fails'
       ),
     (error: any) => error.kind === 'transient-transport-error'
   )
-  assert.ok(!ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(!ssh.calls.some(command => /os\.kill\(pid/.test(command)))
   assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
 
@@ -1278,6 +1402,7 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n'],
+    [killProgram, 'KILLED\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
     [/setsid/, '999\n'],
@@ -1299,7 +1424,10 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
   )
 
   assert.equal(result.reused, false)
-  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
+  const killProgramCall = ssh.calls.find(command => /os\.kill\(pid/.test(command))
+  assert.ok(killProgramCall, 'kill must run inside the combined validation+termination program')
+  assert.match(killProgramCall!, /pid=333/)
+  assert.ok(/print\([^)]*KILLED[^)]*\)/.test(killProgramCall!))
 })
 
 test('remote SSH ownership capability requires both secure bootstrap flags', async () => {

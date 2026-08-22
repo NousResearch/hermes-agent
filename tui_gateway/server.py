@@ -3467,6 +3467,20 @@ def _clear_pending(sid: str | None = None) -> None:
             if sid is None or owner_sid == sid:
                 _answers[rid] = ""
                 ev.set()
+                # #86036 follow-up: tell the client the wait is GONE. Without
+                # this, a desktop clarify parked on a wait-forever request
+                # stays actionable after /stop cleared the server side —
+                # clicking it can only produce a failed response.
+                event, payload = _pending_prompt_payloads.get(rid, ("", {}))
+                if event.startswith("clarify.request"):
+                    cancel_event = event.replace("clarify.request", "clarify.cancel", 1)
+                    try:
+                        _emit(cancel_event, owner_sid, dict(payload))
+                    except Exception:
+                        logger.debug(
+                            "failed to emit %s for rid %s", cancel_event, rid,
+                            exc_info=True,
+                        )
 
 
 # ── Agent factory ────────────────────────────────────────────────────

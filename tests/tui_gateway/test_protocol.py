@@ -423,6 +423,47 @@ def test_clear_pending(server):
     assert server._answers["r1"] == ""
 
 
+def test_clear_pending_emits_clarify_cancel_for_clarify_prompts(server, monkeypatch):
+    """#86036 follow-up (keeltrace review): when /stop releases a parked
+    clarify, the client must learn the wait is gone — otherwise a
+    wait-forever dialog stays actionable-but-dead forever."""
+    ev = threading.Event()
+    server._pending["r-clarify"] = ("sid-x", ev)
+    server._pending_prompt_payloads["r-clarify"] = (
+        "clarify.request",
+        {"request_id": "r-clarify", "question": "which?", "choices": ["a"]},
+    )
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
+
+    server._clear_pending("sid-x")
+
+    assert ev.is_set()
+    assert emitted == [
+        (
+            "clarify.cancel",
+            "sid-x",
+            {"request_id": "r-clarify", "question": "which?", "choices": ["a"]},
+        )
+    ]
+
+
+def test_clear_pending_does_not_emit_cancel_for_non_clarify_prompts(server, monkeypatch):
+    ev = threading.Event()
+    server._pending["r-sudo"] = ("sid-x", ev)
+    server._pending_prompt_payloads["r-sudo"] = (
+        "approval.request",
+        {"command": "rm -rf /"},
+    )
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload: emitted.append((event, sid, payload)))
+
+    server._clear_pending("sid-x")
+
+    assert ev.is_set()
+    assert emitted == []
+
+
 # ── Session lookup ───────────────────────────────────────────────────
 
 

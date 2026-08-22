@@ -4328,6 +4328,53 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _wait_for_tcp_port_free(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 10.0,
+    clock=time.monotonic,
+    sleeper=time.sleep,
+    connect=None,
+) -> bool:
+    """Wait until nothing accepts TCP connections on host:port.
+
+    PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a
+    restart that wins the race logs EADDRINUSE and keeps running with no API.
+    Connection-refused means the listener is gone.
+    """
+    probe = connect
+    if probe is None:
+        def probe(target_host: str, target_port: int) -> bool:
+            with socket.create_connection((target_host, target_port), timeout=0.2):
+                return True
+
+    deadline = clock() + timeout
+    while clock() < deadline:
+        try:
+            probe(host, port)
+        except OSError:
+            return True
+        sleeper(0.1)
+    return False
+
+
+def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
+    """Wait for the configured api_server listen address to stop accepting."""
+    host = os.getenv("API_SERVER_HOST", "127.0.0.1") or "127.0.0.1"
+    try:
+        port = int(os.getenv("API_SERVER_PORT", "8642"))
+    except ValueError:
+        port = 8642
+    freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
+    if not freed:
+        print(
+            f"⚠ {host}:{port} still accepting connections — "
+            "new api_server may fail to bind"
+        )
+    return freed
+
+
 def _launchd_kickstart(label: str, domain: str) -> None:
     """``launchctl kickstart -k domain/label``; raises so callers own per-label failure accounting."""
     subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=True, timeout=90, **_CAPTURE_TEXT)
@@ -4382,6 +4429,7 @@ def launchd_restart():
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
         # Captured: an unloaded job (3/113/125) is the expected case below, which
         # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
+        _wait_for_api_server_port_free()
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
         _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
@@ -6364,6 +6412,7 @@ def _cmd_start(args):
         if killed:
             print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _wait_for_api_server_port_free()
 
     if is_termux():
         _no_backend_exit("start", "termux")
@@ -6419,6 +6468,7 @@ def _restart_all(system: bool) -> None:
     if total:
         print(f"✓ Stopped {total} gateway process(es) across all profiles")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_api_server_port_free()
 
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
@@ -6492,6 +6542,7 @@ def _cmd_restart(args):
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_api_server_port_free()
     print("Starting gateway...")
     run_gateway(verbose=0, force=force)
 

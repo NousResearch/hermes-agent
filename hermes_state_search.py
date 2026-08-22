@@ -1250,9 +1250,38 @@ class SessionSearchMixin:
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
 
         # Step 4: Remove dangling boolean operators at start/end that would
-        # cause syntax errors (e.g. "hello AND" or "OR world")
-        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
-        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        # cause syntax errors (e.g. "hello AND" or "OR world"). Loop to a
+        # fixpoint so stacked operators are fully stripped — a single pass
+        # leaves the next operator dangling ("AND NOT docker" -> "NOT docker",
+        # still invalid) (#56871).
+        while True:
+            stripped = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
+            stripped = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", stripped.strip())
+            if stripped == sanitized:
+                break
+            sanitized = stripped
+
+        # Step 4b: Collapse adjacent mid-query operator runs ("docker AND OR
+        # kubernetes", "docker AND AND kubernetes"). Every adjacent pair is an
+        # FTS5 syntax error, which the execute site swallows into a silent
+        # zero-result return even though matching content exists (#56871).
+        # "x AND NOT y" collapses to "x NOT y" — FTS5's NOT is binary, so that
+        # keeps the user's exclusion intent — all other pairs collapse to
+        # their first operator. Loop to a fixpoint so three-plus runs
+        # ("a AND NOT AND b") settle too.
+        def _collapse_op_pair(m):
+            first, second = m.group(1).upper(), m.group(2).upper()
+            if (first, second) == ("AND", "NOT"):
+                return "NOT"
+            return m.group(1)
+
+        while True:
+            collapsed = re.sub(
+                r"(?i)\b(AND|OR|NOT)\s+(AND|OR|NOT)\b", _collapse_op_pair, sanitized
+            )
+            if collapsed == sanitized:
+                break
+            sanitized = collapsed
 
         # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning

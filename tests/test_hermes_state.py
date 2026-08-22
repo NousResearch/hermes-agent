@@ -2865,6 +2865,56 @@ class TestAutoMaintenance:
 # FTS5 indexing of tool_calls / tool_name (#16751)
 # =========================================================================
 
+class TestFTS5BooleanOperatorSanitization:
+    """Regression tests: stacked/adjacent boolean operators must not silently
+    return zero results (#56871).
+
+    ``_sanitize_fts5_query``'s dangling-operator pass ran only once, so
+    stacked leading operators ("AND NOT docker") left the second operator
+    dangling, and adjacent mid-query runs ("docker AND OR kubernetes",
+    "docker AND AND kubernetes") passed through untouched. Every one of
+    those is an FTS5 syntax error, which the execute site swallows into a
+    silent empty return even though matching content exists — the same
+    silent-empty failure class previously fixed for the ``:`` column-filter
+    operator.
+    """
+
+    def _seed(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="docker and kubernetes deployment notes"
+        )
+        db.append_message("s1", role="user", content="docker only notes")
+
+    def test_adjacent_operators_still_find_content(self, db):
+        self._seed(db)
+        assert len(db.search_messages("docker AND kubernetes")) == 1  # control
+        assert len(db.search_messages("docker AND OR kubernetes")) == 1
+        assert len(db.search_messages("docker AND AND kubernetes")) == 1
+
+    def test_stacked_leading_operators_are_fully_stripped(self, db):
+        self._seed(db)
+        # Single-pass stripping left a dangling "NOT"; the fixpoint pass must
+        # remove the whole run.
+        results = db.search_messages("AND NOT docker")
+        assert len(results) == 2
+
+    def test_trailing_operator_still_stripped(self, db):
+        self._seed(db)
+        assert len(db.search_messages("docker kubernetes OR")) == 1
+
+    def test_and_not_collapses_to_binary_not_keeping_exclusion(self, db):
+        self._seed(db)
+        # FTS5's NOT is binary: "x AND NOT y" collapses to "x NOT y" so the
+        # user's exclusion intent survives instead of flipping to AND.
+        results = db.search_messages("docker AND NOT kubernetes")
+        assert [r for r in results] and len(results) == 1
+
+    def test_triple_operator_run_settles(self, db):
+        self._seed(db)
+        assert len(db.search_messages("docker AND NOT AND kubernetes")) == 1
+
+
 class TestFTS5ToolCallIndexing:
     """Regression tests: search_messages must see tool_name and tool_calls.
 

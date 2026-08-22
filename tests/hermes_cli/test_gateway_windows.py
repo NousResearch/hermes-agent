@@ -212,7 +212,7 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     monkeypatch.setattr(
         gateway_windows,
         "_launch_elevated_install",
-        lambda force=False, start_now=None, start_on_login=None: calls.append(("elevate", force, start_now, start_on_login)) or True,
+        lambda force=False, start_now=None, start_on_login=None, at_boot=False, password=None: calls.append(("elevate", force, start_now, start_on_login, at_boot, password)) or True,
     )
 
     def fake_install_startup_entry(path: Path) -> Path:
@@ -312,6 +312,121 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "//B //Nologo" in xml_seen["text"]
     assert "Hermes_Gateway_alice.vbs" in xml_seen["text"]
     assert "cmd.exe" not in xml_seen["text"]
+
+
+def test_install_scheduled_task_at_boot_uses_boot_trigger_and_password(monkeypatch, tmp_path):
+    """--at-boot installs a BootTrigger task with stored credentials (/RP).
+
+    Boot tasks run before any user logs on, so they need the account password
+    stored in Task Scheduler. The XML must use a BootTrigger and
+    LogonType=Password, and the schtasks invocation must pass /RP (not /NP).
+    """
+    calls = []
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    xml_seen = {}
+
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    monkeypatch.setattr(gateway_windows, "_prompt_task_password", lambda user: "s3cret")
+
+    def fake_schtasks(args):
+        calls.append(tuple(args))
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_seen["text"] = xml_path.read_text(encoding="utf-16")
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, detail = gateway_windows._install_scheduled_task(
+        "Hermes_Gateway_alice", script_path, at_boot=True
+    )
+
+    assert ok is True
+    assert "<BootTrigger>" in xml_seen["text"]
+    assert "<LogonTrigger>" not in xml_seen["text"]
+    assert "<LogonType>Password</LogonType>" in xml_seen["text"]
+    assert "<LogonType>InteractiveToken</LogonType>" not in xml_seen["text"]
+    # The boot variant must carry /RP with the prompted password, never /NP.
+    create_call = [c for c in calls if c[0] == "/Create"][0]
+    assert "/RP" in create_call
+    assert "s3cret" in create_call
+    assert "/NP" not in create_call
+    assert "/IT" not in create_call
+
+
+def test_install_scheduled_task_at_boot_cancelled_without_password(monkeypatch, tmp_path):
+    """A boot install with no password must fail cleanly, not fall through to a
+    credential-less /NP variant that Task Scheduler would reject."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    monkeypatch.setattr(gateway_windows, "_prompt_task_password", lambda user: None)
+    monkeypatch.delenv("HERMES_GATEWAY_INSTALL_PASSWORD", raising=False)
+
+    ok, detail = gateway_windows._install_scheduled_task(
+        "Hermes_Gateway_alice", script_path, at_boot=True
+    )
+    assert ok is False
+    assert "no password" in detail
+
+
+def test_install_scheduled_task_at_boot_reads_password_from_env(monkeypatch, tmp_path):
+    """The elevated handoff passes the password via env (never argv); the
+    boot install must use it without prompting."""
+    calls = []
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    monkeypatch.setattr(gateway_windows, "_prompt_task_password", lambda user: (_ for _ in ()).throw(AssertionError("must not prompt when env password is set")))
+    monkeypatch.setenv("HERMES_GATEWAY_INSTALL_PASSWORD", "env-s3cret")
+
+    def fake_schtasks(args):
+        calls.append(tuple(args))
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create":
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, detail = gateway_windows._install_scheduled_task(
+        "Hermes_Gateway_alice", script_path, at_boot=True
+    )
+    assert ok is True
+    create_call = [c for c in calls if c[0] == "/Create"][0]
+    assert "/RP" in create_call
+    assert "env-s3cret" in create_call
+
+
+def test_build_scheduled_task_xml_defaults_to_logon_trigger():
+    """The default (non --at-boot) XML keeps the historical LogonTrigger."""
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway", Path("C:/Hermes/gateway-service/Hermes_Gateway.vbs"), "alice"
+    )
+    assert "<LogonTrigger>" in xml
+    assert "<BootTrigger>" not in xml
+    assert "<LogonType>InteractiveToken</LogonType>" in xml
+
+
+def test_task_has_boot_trigger_detects_boot_xml(monkeypatch):
+    """_task_has_boot_trigger matches the stable trigger XML, not localized
+    schedule-type text."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (0, "<Task><Triggers><BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers></Task>", ""),
+    )
+    assert gateway_windows._task_has_boot_trigger("Hermes_Gateway") is True
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (0, "<Task><Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers></Task>", ""),
+    )
+    assert gateway_windows._task_has_boot_trigger("Hermes_Gateway") is False
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", "error"))
+    assert gateway_windows._task_has_boot_trigger("Hermes_Gateway") is False
 
 
 def test_gateway_vbs_script_is_console_less(monkeypatch):

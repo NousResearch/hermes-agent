@@ -1841,6 +1841,207 @@ class TestWebServerEndpoints:
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
 
+    def test_custom_endpoint_extra_headers_round_trip(self):
+        """Headers saved from the panel must come back through the GET.
+
+        The Desktop form submits ``extra_headers`` and re-reads the saved
+        entry to repopulate the field — a response that omits them would
+        silently wipe the user's headers on the next edit.
+        """
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "gateway",
+                "name": "Gateway",
+                "base_url": "https://llm.gw.example/v1",
+                "model": "m",
+                "extra_headers": {"X-Team-ID": "hermes", "X-Privacy-Tier": "enterprise"},
+            },
+        )
+        assert resp.status_code == 200
+
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "gateway")
+        assert endpoint["extra_headers"] == {
+            "X-Team-ID": "hermes",
+            "X-Privacy-Tier": "enterprise",
+        }
+
+        # And the on-disk entry is what the runtime's _lift_extra_headers
+        # reads — same normalized shape, no drift.
+        entry = load_config()["providers"]["gateway"]
+        assert entry["extra_headers"] == {
+            "X-Team-ID": "hermes",
+            "X-Privacy-Tier": "enterprise",
+        }
+
+    def test_custom_endpoint_save_without_headers_preserves_hand_written(self):
+        """Omitting ``extra_headers`` from the payload must not wipe them.
+
+        The merge-not-replace contract on providers.<name> blocks means a
+        hand-written ``extra_headers`` (Cloudflare Access token, proxy auth)
+        survives an unrelated edit — the same guarantee the api_key field
+        gets via its tri-state.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "cf": {
+                "name": "CF",
+                "base_url": "https://llm.cf.example/v1",
+                "model": "m",
+                "extra_headers": {"Cf-Access-Client-Id": "abc", "Cf-Access-Client-Secret": "s3cr3t"},
+                "models": {"m": {}},
+            }
+        }
+        save_config(cfg)
+
+        # Edit that does NOT touch headers (payload omits the field).
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "cf",
+                "name": "CF",
+                "base_url": "https://llm.cf.example/v1",
+                "model": "m2",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = load_config()["providers"]["cf"]
+        assert entry["extra_headers"] == {
+            "Cf-Access-Client-Id": "abc",
+            "Cf-Access-Client-Secret": "s3cr3t",
+        }
+        assert entry["model"] == "m2"
+
+    def test_custom_endpoint_empty_headers_clears_existing(self):
+        """An explicit empty dict means "clear", not "leave alone"."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "cf": {
+                "name": "CF",
+                "base_url": "https://llm.cf.example/v1",
+                "model": "m",
+                "extra_headers": {"X-Old": "stale"},
+                "models": {"m": {}},
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "cf",
+                "name": "CF",
+                "base_url": "https://llm.cf.example/v1",
+                "model": "m",
+                "extra_headers": {},
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = load_config()["providers"]["cf"]
+        assert "extra_headers" not in entry
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "cf")
+        assert endpoint["extra_headers"] == {}
+
+    def test_custom_endpoint_validate_probe_sends_extra_headers(self, monkeypatch):
+        """The Test button must send the configured headers on /models.
+
+        Gateways that require a custom header on EVERY request (Cloudflare
+        Access, proxy auth) reject the probe without them, so the panel
+        would report "endpoint rejected" for a perfectly good endpoint.
+        """
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "local-model"}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "Local",
+                "base_url": "http://localhost:8000/v1",
+                "model": "local-model",
+                "extra_headers": {"X-Team-ID": "hermes"},
+            },
+        )
+
+        assert response.json()["ok"] is True
+        assert captured["headers"]["X-Team-ID"] == "hermes"
+        assert captured["headers"]["Accept"] == "application/json"
+
+    def test_custom_endpoint_validate_probe_headers_can_override_bearer(self, monkeypatch):
+        """A user-supplied Authorization header wins over the derived one.
+
+        Some gateways take the credential in a custom header and reject a
+        second Authorization; the form's headers are applied after the
+        bearer so the user's value is the one that goes out.
+        """
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "m"}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "Local",
+                "base_url": "http://localhost:8000/v1",
+                "model": "m",
+                "api_key": "sk-bearer",
+                "extra_headers": {"Authorization": "Token custom-scheme"},
+            },
+        )
+
+        assert response.json()["ok"] is True
+        assert captured["headers"]["Authorization"] == "Token custom-scheme"
+
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
         from hermes_cli.config import load_config, save_config

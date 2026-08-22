@@ -83,6 +83,7 @@ from hermes_cli.config import (
     redact_key,
     write_platform_config_field,
     _deep_merge,
+    normalize_extra_headers,
 )
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
@@ -8053,6 +8054,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "discover_models": bool(raw_entry.get("discover_models", True)),
                 "has_api_key": has_api_key,
                 "api_key_preview": api_key_preview,
+                "extra_headers": normalize_extra_headers(raw_entry.get("extra_headers")),
                 "is_current": endpoint_id == current_provider,
                 "source": "providers",
             })
@@ -8069,6 +8071,9 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "discover_models": True,
             "has_api_key": has_api_key,
             "api_key_preview": api_key_preview,
+            # The bare ``model:`` block has no per-provider header field;
+            # headers live on ``providers.<name>`` entries.
+            "extra_headers": {},
             "is_current": True,
             "source": "direct-config",
         })
@@ -8161,6 +8166,18 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
+
+    # ``extra_headers`` is tri-state like ``api_key``: omitted (``None``)
+    # means "leave what's on disk alone" — the merge above already preserved
+    # hand-written headers — while a submitted dict (possibly empty) replaces
+    # them. Normalizing here keeps the on-disk shape identical to what the
+    # runtime's ``_lift_extra_headers`` will read back.
+    if body.extra_headers is not None:
+        normalized = normalize_extra_headers(body.extra_headers)
+        if normalized:
+            entry["extra_headers"] = normalized
+        else:
+            entry.pop("extra_headers", None)
 
     # API keys never belong in config.yaml (#69449). Write to .env and
     # reference it via ``key_env`` — the same indirection built-in providers
@@ -8309,6 +8326,11 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    # Custom headers (Cloudflare Access tokens, proxy auth, ...) are required
+    # by some gateways on EVERY request, including /models. Apply them after
+    # the bearer so a user-supplied Authorization header can override it.
+    for header_name, header_value in normalize_extra_headers(body.extra_headers).items():
+        headers[header_name] = header_value
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

@@ -60,6 +60,11 @@ class CustomEndpointUpdate(BaseModel):
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+    # ``None`` = "leave existing headers alone"; a dict (possibly empty) =
+    # "replace with exactly these". The tri-state mirrors ``api_key`` so an
+    # edit that doesn't touch the headers field can't wipe credentials the
+    # user hand-wrote into config.yaml.
+    extra_headers: Optional[Dict[str, str]] = None
 
 
 class MessagingPlatformUpdate(BaseModel):

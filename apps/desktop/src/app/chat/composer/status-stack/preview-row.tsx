@@ -8,6 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
@@ -50,7 +51,15 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     setOpening(true)
 
     try {
-      openPreview(await resolveTarget(), 'tool-result')
+      const target = await resolveTarget()
+      // Same loopback-reach resolution the address bar and the agent's own
+      // preview.open tool call already get: a localhost URL detected here
+      // from tool/terminal output (the artifact this row exists for) names
+      // the GATEWAY's loopback on a remote connection, not this machine's.
+      const reached =
+        target.kind === 'url' ? { ...target, url: await reachablePreviewUrl(target.url) } : target
+
+      openPreview(reached, 'tool-result')
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     } finally {

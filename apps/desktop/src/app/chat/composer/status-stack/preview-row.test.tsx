@@ -112,6 +112,48 @@ describe('PreviewStatusRow', () => {
     expect($previewTabs.get()).toEqual([])
   })
 
+  // A localhost URL detected in tool/terminal output (the artifact this row
+  // exists for) names the GATEWAY's loopback on a remote connection, not this
+  // machine's — ⌘/Ctrl-click into the in-app pane must get the same reach
+  // resolution the address bar and the agent's own preview.open tool call
+  // already get.
+  it('resolves a detected localhost artifact through loopback reach before opening it in-app', async () => {
+    const target = 'http://localhost:5173/'
+    const reachPreviewUrl = vi.fn(async () => 'http://127.0.0.1:45173/')
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'url',
+          label: 'localhost:5173',
+          source: target,
+          url: target
+        })),
+        reachPreviewUrl
+      }
+    })
+
+    render(
+      <PreviewStatusRow
+        item={{ cwd: '/home/agent', id: target, label: 'localhost:5173', target }}
+        onDismiss={() => undefined}
+      />
+    )
+
+    fireEvent.click(screen.getByText('localhost:5173'), { ctrlKey: true })
+
+    await waitFor(() => expect(reachPreviewUrl).toHaveBeenCalledWith(target))
+    await waitFor(() => {
+      expect($previewTabs.get()).toEqual([
+        expect.objectContaining({
+          target: expect.objectContaining({ kind: 'url', source: target, url: 'http://127.0.0.1:45173/' })
+        })
+      ])
+    })
+  })
+
   it('keeps remote HTML on the staged browser-open path, not the in-app pane', async () => {
     const remotePath = '/home/agent/index.html'
     const html = '<!doctype html><html><body>hi</body></html>'

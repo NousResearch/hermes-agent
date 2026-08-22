@@ -174,6 +174,26 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
+// Clear every project-sidebar atom on a gateway/profile switch. The backend
+// tree, list, active pointer, drill-in scope, tombstones, and the RPC
+// capability verdict are all per-profile — the next gateway has its own
+// projects.db and has never seen them. Without this wipe the sidebar keeps
+// painting the previous profile's project tree (and a stale drill-in id that
+// doesn't exist in the new catalog), which is exactly the "Projects view
+// doesn't work on other profiles" symptom. Mirrors the session/cron/messaging
+// wipes in wipeSessionListsForGatewaySwitch.
+export function resetProjectsForGatewaySwitch(): void {
+  $projects.set([])
+  $activeProjectId.set(null)
+  $projectTree.set([])
+  $projectTreeLoading.set(false)
+  $projectsRpcAvailable.set(null)
+  $removedSessionIds.set(new Set())
+  $sessionMutationsInFlight.set(new Set())
+  $reposScanning.set(false)
+  $projectScope.set(ALL_PROJECTS)
+}
+
 // A project's working root: its primary folder, else the first repo that has
 // one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
 // the same rule over the same tree — this is the store-side copy so the store

@@ -1,7 +1,7 @@
 """Signal messenger platform adapter.
 
 Connects to a signal-cli daemon running in HTTP mode.
-Inbound messages arrive via SSE (Server-Sent Events) streaming.
+Inbound messages arrive via polling.
 Outbound messages and actions use JSON-RPC 2.0 over HTTP.
 
 Based on PR #268 by ibhagwan, rebuilt with bug fixes.
@@ -16,7 +16,7 @@ import base64
 import json
 import logging
 import os
-import random
+
 import shutil
 import subprocess
 import tempfile
@@ -66,10 +66,7 @@ logger = logging.getLogger(__name__)
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
-SSE_RETRY_DELAY_INITIAL = 2.0
-SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
-HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +262,41 @@ class SignalAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
+        try:
+            self.poll_interval = max(1.0, float(extra.get("poll_interval", 1.0)))
+        except (TypeError, ValueError):
+            self.poll_interval = 1.0
         self.ignore_stories = extra.get("ignore_stories", True)
+
+        # signal-cli-rest-api supports two transport shapes:
+        #   ``native``         — REST only. Inbound: ``GET /v1/receive/{number}``
+        #                       polling. Outbound: ``POST /v2/send``.
+        #   ``json-rpc``       — WebSocket inbound (subscribeReceive), JSON-RPC
+        #                       outbound via ``POST /v1/rpc``.
+        # Operators pick the mode when they start the daemon (``MODE=native``
+        # / ``MODE=json-rpc`` in the docker-compose env). Hermes auto-detects
+        # by probing ``GET /v1/about`` and ``GET /v1/receive/{number}`` during
+        # ``connect()``; the result is cached on ``self.transport_mode`` so the
+        # rest of the adapter picks the right outbound URL. ``native`` is the
+        # default for the docker-compose default (``MODE=native``).
+        _mode_cfg = (extra.get("transport_mode") or "auto").lower()
+        self._transport_mode_cfg = _mode_cfg  # remembered for connect()
+        self.transport_mode: str = "native"   # set during connect()
+        # Outbound path for the active mode. ``/v2/send`` is the REST endpoint
+        # for ``MODE=native``; ``/v1/rpc`` is the JSON-RPC endpoint used by
+        # both ``MODE=json-rpc`` and ``MODE=normal``. This attribute records
+        # the probe result for diagnostics/tests; the actual request routing
+        # is decided per-call inside ``_rpc()`` (JSON-RPC envelope to
+        # ``/v1/rpc`` vs per-operation REST endpoints via
+        # ``_native_rest_call()``, #71884).
+        # Seed from the operator override so tests that don't call
+        # ``connect()`` (or operators who skip the probe) still hit the
+        # right URL out of the box.
+        if _mode_cfg in ("native", "json-rpc", "jsonrpc"):
+            self.transport_mode = "native" if _mode_cfg == "native" else "json-rpc"
+        self._outbound_path: str = (
+            "/v2/send" if self.transport_mode == "native" else "/v1/rpc"
+        )
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -292,7 +323,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.client: Optional[httpx.AsyncClient] = None
 
         # Background tasks
-        self._sse_task: Optional[asyncio.Task] = None
+        self._receive_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Per-chat typing-indicator backoff. When signal-cli reports
@@ -304,8 +335,6 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_failures: Dict[str, int] = {}
         self._typing_skip_until: Dict[str, float] = {}
         self._running = False
-        self._last_sse_activity = 0.0
-        self._sse_response: Optional[httpx.Response] = None
 
         # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
@@ -345,7 +374,7 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to signal-cli daemon and start SSE listener."""
+        """Connect to signal-cli daemon and start polling."""
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
             return False
@@ -365,17 +394,24 @@ class SignalAdapter(BasePlatformAdapter):
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
-                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
-                if resp.status_code != 200:
+                resp = await self.client.get(f"{self.http_url}/v1/health", timeout=10.0)
+                if resp.status_code not in (200, 204):
                     logger.error("Signal: health check failed (status %d)", resp.status_code)
                     return False
             except Exception as e:
                 logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
 
+            # Detect transport mode so outbound picks the right route
+            # (``/v2/send`` for ``MODE=native``; ``/v1/rpc`` for
+            # ``MODE=json-rpc``). Without this, every outbound message in a
+            # ``MODE=native`` deployment would silently fail at ``/v1/rpc``
+            # (404 on the native server, which doesn't speak JSON-RPC).
+            # (#71636 / #71884 reviewer feedback.)
+            self.transport_mode, self._outbound_path = await self._detect_transport_mode()
+
             self._running = True
-            self._last_sse_activity = time.time()
-            self._sse_task = asyncio.create_task(self._sse_listener())
+            self._receive_task = asyncio.create_task(self._receive_loop())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
             logger.info("Signal: connected to %s", self.http_url)
@@ -389,13 +425,13 @@ class SignalAdapter(BasePlatformAdapter):
                     self._release_platform_lock()
 
     async def disconnect(self) -> None:
-        """Stop SSE listener and clean up."""
+        """Stop polling and clean up."""
         self._running = False
 
-        if self._sse_task:
-            self._sse_task.cancel()
+        if self._receive_task:
+            self._receive_task.cancel()
             try:
-                await self._sse_task
+                await self._receive_task
             except asyncio.CancelledError:
                 pass
 
@@ -420,114 +456,142 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal: disconnected")
 
     # ------------------------------------------------------------------
-    # SSE Streaming (inbound messages)
+    # Polling (inbound messages)
     # ------------------------------------------------------------------
 
-    async def _sse_listener(self) -> None:
-        """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
-        backoff = SSE_RETRY_DELAY_INITIAL
+    async def _detect_transport_mode(self) -> Tuple[str, str]:
+        """Probe the daemon and decide which transport shape it speaks.
 
+        Returns ``(transport_mode, outbound_path)``:
+
+        - ``("native", "/v2/send")`` — ``MODE=native`` docker image.
+          Inbound: ``GET /v1/receive/{number}`` (polling, this PR's primary
+          path). Outbound: ``POST /v2/send`` (the REST endpoint documented
+          for native mode).
+        - ``("json-rpc", "/v1/rpc")`` — ``MODE=json-rpc`` docker image.
+          Outbound uses JSON-RPC over HTTP. Inbound is over a WebSocket
+          channel that this adapter does NOT speak yet; if we land here,
+          ``connect()`` should already have warned the operator.
+
+        The user can override the probe by setting ``transport_mode`` in
+        the platform config (``native`` / ``json-rpc``). ``auto`` (default)
+        is the probe path described below.
+
+        Probe order:
+        1. Operator override wins (no network round-trip).
+        2. ``GET /v1/about`` — 200 indicates a working REST API; we then
+           check ``GET /v1/receive/{number}``. If it returns 200 (even
+           with ``[]`` body), it's ``native`` mode. 404 means the receive
+           endpoint is gated by json-rpc — fall through to json-rpc.
+           The receive probe is a DESTRUCTIVE read on native-mode daemons
+           (it dequeues whatever is queued), so any envelopes returned by
+           the probe are dispatched through ``_handle_envelope`` rather
+           than discarded — a message that arrived while the daemon was
+           starting up must not be eaten by the probe (#71884).
+        3. ``OPTIONS /v1/receive/{number}`` — 200 / 405 with an Allow header
+           that *lacks* ``GET`` indicates json-rpc-only mode.
+        4. Fallback: ``native`` (most common docker-compose default), with
+           a warning logged so the operator notices when the assumption is
+           wrong.
+
+        See signal-cli-rest-api docs (bbernhard) and #71636 / #71884
+        reviewer feedback for the route layout.
+        """
+        cfg_mode = getattr(self, "_transport_mode_cfg", "auto")
+        if cfg_mode in ("native", "json-rpc", "jsonrpc"):
+            chosen = "native" if cfg_mode == "native" else "json-rpc"
+            outbound = "/v2/send" if chosen == "native" else "/v1/rpc"
+            logger.info(
+                "Signal transport mode locked by config: %s (outbound %s)",
+                chosen, outbound,
+            )
+            return chosen, outbound
+
+        try:
+            about = await self.client.get(f"{self.http_url}/v1/about", timeout=5.0)
+            if about.status_code == 200:
+                # REST is up. Probe the receive endpoint specifically.
+                rcv_url = f"{self.http_url}/v1/receive/{quote(self.account, safe='')}"
+                rcv = await self.client.get(rcv_url, timeout=5.0)
+                if rcv.status_code == 200:
+                    # The probe is a destructive read on native-mode daemons:
+                    # any envelope queued during startup is returned (and
+                    # dequeued) right here. Dispatch it instead of dropping it
+                    # so the message still reaches the agent (#71884).
+                    try:
+                        probe_data = rcv.json()
+                    except Exception:
+                        probe_data = None
+                    if isinstance(probe_data, list):
+                        for envelope in probe_data:
+                            if envelope:
+                                await self._handle_envelope(envelope)
+                    elif probe_data:
+                        await self._handle_envelope(probe_data)
+                    logger.info(
+                        "Signal transport detected: native "
+                        "(REST /v1/about + /v1/receive both 200); "
+                        "outbound will use /v2/send",
+                    )
+                    return "native", "/v2/send"
+                logger.info(
+                    "Signal transport detected: json-rpc "
+                    "(/v1/receive returned %d — endpoint gated by "
+                    "subscribeReceive WebSocket); outbound will use "
+                    "/v1/rpc. Inbound over WebSocket is not yet "
+                    "implemented by this adapter (#71636).",
+                    rcv.status_code,
+                )
+                return "json-rpc", "/v1/rpc"
+        except Exception as e:
+            logger.debug("Signal transport probe failed: %s", e)
+
+        # Conservative fallback: docker-compose default is native.
+        logger.warning(
+            "Signal transport mode probe inconclusive; defaulting to "
+            "native (outbound /v2/send). If your daemon runs MODE=json-rpc "
+            "set platforms.signal.extra.transport_mode: \"json-rpc\" in "
+            "config.yaml (#71636).",
+        )
+        return "native", "/v2/send"
+
+    async def _receive_loop(self) -> None:
+        """Poll signal-cli for inbound envelopes."""
+        url = f"{self.http_url}/v1/receive/{quote(self.account, safe='')}"
         while self._running:
             try:
-                logger.debug("Signal SSE: connecting to %s", url)
-                async with self.client.stream(
-                    "GET", url,
-                    headers={"Accept": "text/event-stream"},
-                    timeout=None,
-                ) as response:
-                    self._sse_response = response
-                    backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
-                    self._last_sse_activity = time.time()
-                    logger.info("Signal SSE: connected")
-
-                    buffer = ""
-                    async for chunk in response.aiter_text():
-                        if not self._running:
-                            break
-                        buffer += chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            # SSE keepalive comments (":") prove the connection
-                            # is alive — update activity so the health monitor
-                            # doesn't report false idle warnings.
-                            if line.startswith(":"):
-                                self._last_sse_activity = time.time()
-                                continue
-                            # Parse SSE data lines
-                            if line.startswith("data:"):
-                                data_str = line[5:].strip()
-                                if not data_str:
-                                    continue
-                                self._last_sse_activity = time.time()
-                                try:
-                                    data = json.loads(data_str)
-                                    await self._handle_envelope(data)
-                                except json.JSONDecodeError:
-                                    logger.debug("Signal SSE: invalid JSON: %s", data_str[:100])
-                                except Exception:
-                                    logger.exception("Signal SSE: error handling event")
-
+                response = await self.client.get(url, timeout=10.0)
+                response.raise_for_status()
+                data = response.json()
+                envelopes = data if isinstance(data, list) else [data]
+                for envelope in envelopes:
+                    if envelope:
+                        await self._handle_envelope(envelope)
             except asyncio.CancelledError:
                 break
-            except httpx.HTTPError as e:
-                if self._running:
-                    logger.warning("Signal SSE: HTTP error: %s (reconnecting in %.0fs)", e, backoff)
             except Exception as e:
                 if self._running:
-                    logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
-
+                    logger.warning("Signal receive poll failed: %s", e)
             if self._running:
-                # Add 20% jitter to prevent thundering herd on reconnection
-                jitter = backoff * 0.2 * random.random()
-                await asyncio.sleep(backoff + jitter)
-                backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
-
-        self._sse_response = None
+                await asyncio.sleep(self.poll_interval)
 
     # ------------------------------------------------------------------
     # Health Monitor
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """Monitor SSE connection health and force reconnect if stale."""
+        """Periodically verify daemon health."""
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
-
-            elapsed = time.time() - self._last_sse_activity
-            if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
-                try:
-                    resp = await self.client.get(
-                        f"{self.http_url}/api/v1/check", timeout=10.0
-                    )
-                    if resp.status_code == 200:
-                        # Daemon is alive but SSE is idle — update activity to
-                        # avoid repeated warnings (connection may just be quiet)
-                        self._last_sse_activity = time.time()
-                        logger.debug("Signal: daemon healthy, SSE idle")
-                    else:
-                        logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
-                        self._force_reconnect()
-                except Exception as e:
-                    logger.warning("Signal: health check error: %s, forcing reconnect", e)
-                    self._force_reconnect()
-
-    def _force_reconnect(self) -> None:
-        """Force SSE reconnection by closing the current response."""
-        if self._sse_response and not self._sse_response.is_stream_consumed:
             try:
-                task = asyncio.create_task(self._sse_response.aclose())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            except Exception:
-                pass
-            self._sse_response = None
+                resp = await self.client.get(f"{self.http_url}/v1/health", timeout=10.0)
+                if resp.status_code not in (200, 204):
+                    logger.warning("Signal: health check failed (%d)", resp.status_code)
+            except Exception as e:
+                logger.warning("Signal: health check error: %s", e)
+
 
     # ------------------------------------------------------------------
     # Message Handling
@@ -953,6 +1017,22 @@ class SignalAdapter(BasePlatformAdapter):
             logger.warning("Signal: RPC called but client not connected")
             return None
 
+        # In native mode the daemon exposes per-operation REST endpoints
+        # (POST /v2/send, PUT/DELETE /v1/typing-indicator/{number},
+        # POST/DELETE /v1/reactions/{number}, GET /v1/contacts/{number},
+        # GET /v1/attachments/{id}) that take flat payloads, NOT the
+        # JSON-RPC 2.0 envelope used by /v1/rpc. Route each method to its
+        # documented REST endpoint with the matching payload shape
+        # (#71884 reviewer feedback: the previous code retargeted every
+        # JSON-RPC method to /v2/send without migrating the payloads).
+        if self.transport_mode == "native":
+            return await self._native_rest_call(
+                method, params,
+                log_failures=log_failures,
+                raise_on_rate_limit=raise_on_rate_limit,
+                timeout=timeout,
+            )
+
         if rpc_id is None:
             rpc_id = f"{method}_{int(time.time() * 1000)}"
 
@@ -965,7 +1045,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         try:
             resp = await self.client.post(
-                f"{self.http_url}/api/v1/rpc",
+                f"{self.http_url}/v1/rpc",
                 json=payload,
                 timeout=timeout,
             )
@@ -1004,6 +1084,264 @@ class SignalAdapter(BasePlatformAdapter):
             else:
                 logger.debug("Signal RPC %s failed: %s", method, e)
             return None
+
+    async def _native_rest_call(
+        self,
+        method: str,
+        params: dict,
+        *,
+        log_failures: bool = True,
+        raise_on_rate_limit: bool = False,
+        timeout: float = 30.0,
+    ) -> Any:
+        """Translate a JSON-RPC method call to the native-mode REST API.
+
+        signal-cli-rest-api in ``MODE=native`` serves per-operation REST
+        endpoints with flat payloads, not the JSON-RPC 2.0 envelope that
+        ``/v1/rpc`` accepts (which native deployments do not expose):
+
+        ==============  =============================  ======================
+        JSON-RPC name   Native REST endpoint           HTTP
+        ==============  =============================  ======================
+        send            /v2/send                       POST
+        sendTyping      /v1/typing-indicator/{number}  PUT (start) / DELETE (stop)
+        sendReaction    /v1/reactions/{number}         POST
+        removeReaction  /v1/reactions/{number}         DELETE
+        listContacts    /v1/contacts/{number}          GET
+        getAttachment   /v1/attachments/{id}           GET
+        getContact      /v1/contacts/{number}/{uuid}   GET
+        ==============  =============================  ======================
+
+        Payloads differ from JSON-RPC params as well (see the signal-cli-rest-api
+        OpenAPI spec): ``send`` wants ``{number, message, recipients, ...}``
+        with group ids prefixed ``group.``; reactions use ``target_author`` /
+        ``timestamp``; typing uses ``recipient``; contacts are GET queries.
+        Responses are flat JSON (or 204 No Content), never a ``result`` wrapper.
+        """
+        if not self.client:
+            logger.warning("Signal: RPC called but client not connected")
+            return None
+
+        account = str(params.get("account") or self.account)
+
+        try:
+            if method == "send":
+                return await self._native_send(account, params, timeout, log_failures, raise_on_rate_limit)
+            if method == "sendTyping":
+                return await self._native_send_typing(account, params, timeout, log_failures)
+            if method == "sendReaction":
+                return await self._native_send_reaction(account, params, timeout, log_failures, remove=False)
+            if method == "removeReaction":
+                return await self._native_send_reaction(account, params, timeout, log_failures, remove=True)
+            if method == "listContacts":
+                return await self._native_list_contacts(account, params, timeout, log_failures)
+            if method == "getAttachment":
+                return await self._native_get_attachment(account, params, timeout, log_failures)
+            if method == "getContact":
+                return await self._native_get_contact(account, params, timeout, log_failures)
+
+            if log_failures:
+                logger.warning("Signal: no native REST route for method %s", method)
+            else:
+                logger.debug("Signal: no native REST route for method %s", method)
+            return None
+
+        except SignalRateLimitError:
+            raise
+        except Exception as e:
+            if log_failures:
+                logger.warning("Signal REST %s failed: %s", method, e)
+            else:
+                logger.debug("Signal REST %s failed: %s", method, e)
+            return None
+
+    # ------------------------------------------------------------------
+    # Native-mode REST outbound helpers (signal-cli-rest-api MODE=native)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _native_recipients(params: dict, account: str) -> List[str]:
+        """Build the ``recipients`` array for native REST sends.
+
+        DM recipients pass through as-is; group ids get the ``group.`` prefix
+        that the native REST API requires (the ``id`` form returned by
+        ``GET /v1/groups/{number}``, not the raw base64 ``internal_id``).
+        """
+        if params.get("groupId"):
+            gid = str(params["groupId"])
+            if not gid.startswith("group."):
+                gid = f"group.{gid}"
+            return [gid]
+        recipients = params.get("recipient") or []
+        if isinstance(recipients, str):
+            recipients = [recipients]
+        return [str(r) for r in recipients]
+
+    async def _native_send(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+        raise_on_rate_limit: bool,
+    ) -> Any:
+        """POST /v2/send with the flat SendMessageV2 payload.
+
+        Attachments are sent as ``base64_attachments`` data URIs
+        (``data:;filename=...;base64,...``) — the native API does not accept
+        server-side file paths.
+        """
+        recipients = self._native_recipients(params, account)
+        if not recipients:
+            if log_failures:
+                logger.warning("Signal: native send requires a recipient or groupId")
+            else:
+                logger.debug("Signal: native send requires a recipient or groupId")
+            return None
+
+        body: Dict[str, Any] = {
+            "number": account,
+            "message": params.get("message", ""),
+            "recipients": recipients,
+        }
+        if params.get("textStyles") or params.get("textStyle"):
+            body["text_mode"] = "styled"
+
+        attachments = params.get("attachments")
+        if attachments:
+            data_uris = []
+            for path in attachments:
+                try:
+                    p = Path(path)
+                    raw = p.read_bytes()
+                except OSError as e:
+                    if log_failures:
+                        logger.warning("Signal: cannot read attachment %s: %s", path, e)
+                    return None
+                data_uris.append(
+                    "data:;filename={};base64,{}".format(
+                        quote(p.name, safe=""), base64.b64encode(raw).decode("ascii")
+                    )
+                )
+            body["base64_attachments"] = data_uris
+
+        resp = await self.client.post(
+            f"{self.http_url}/v2/send",
+            json=body,
+            timeout=timeout,
+        )
+        if resp.status_code == 429 and raise_on_rate_limit:
+            raise SignalRateLimitError("Rate limit exceeded", retry_after=None)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _native_send_typing(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+    ) -> Any:
+        """PUT (start) / DELETE (stop) /v1/typing-indicator/{number}."""
+        recipients = self._native_recipients(params, account)
+        if not recipients:
+            return None
+        url = f"{self.http_url}/v1/typing-indicator/{quote(account, safe='')}"
+        body = {"recipient": recipients[0]}
+        if params.get("stop"):
+            resp = await self.client.delete(url, json=body, timeout=timeout)
+        else:
+            resp = await self.client.put(url, json=body, timeout=timeout)
+        if resp.status_code in (200, 204):
+            return True
+        resp.raise_for_status()
+        return True
+
+    async def _native_send_reaction(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+        remove: bool = False,
+    ) -> Any:
+        """POST / DELETE /v1/reactions/{number} with a SendReactionRequest.
+
+        The shared JSON-RPC path encodes removal via ``params[\"remove\"]``
+        (the adapter's remove_reaction() calls sendReaction with an empty
+        emoji + remove flag), so honor that here as well.
+        """
+        recipients = self._native_recipients(params, account)
+        if not recipients:
+            return None
+        remove = remove or bool(params.get("remove"))
+        body = {
+            "reaction": params.get("emoji", ""),
+            "recipient": recipients[0],
+            "target_author": params.get("targetAuthor", ""),
+            "timestamp": params.get("targetTimestamp", 0),
+        }
+        url = f"{self.http_url}/v1/reactions/{quote(account, safe='')}"
+        if remove:
+            resp = await self.client.delete(url, json=body, timeout=timeout)
+        else:
+            resp = await self.client.post(url, json=body, timeout=timeout)
+        if resp.status_code in (200, 204):
+            return True
+        resp.raise_for_status()
+        return True
+
+    async def _native_list_contacts(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+    ) -> Any:
+        """GET /v1/contacts/{number}?all_recipients=true (if requested)."""
+        url = f"{self.http_url}/v1/contacts/{quote(account, safe='')}"
+        query = {}
+        if params.get("allRecipients"):
+            query["all_recipients"] = "true"
+        resp = await self.client.get(url, params=query, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _native_get_attachment(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+    ) -> Any:
+        """GET /v1/attachments/{id}; returns raw bytes (base64-encoded by
+        the caller-facing contract of _fetch_attachment)."""
+        att_id = params.get("id")
+        if not att_id:
+            return None
+        url = f"{self.http_url}/v1/attachments/{quote(str(att_id), safe='')}"
+        resp = await self.client.get(url, timeout=timeout)
+        resp.raise_for_status()
+        # Native REST serves the attachment file directly; the JSON-RPC
+        # contract returned {"data": "<base64>"}. Keep that shape so the
+        # shared _fetch_attachment consumer works unchanged.
+        return {"data": base64.b64encode(resp.content).decode("ascii")}
+
+    async def _native_get_contact(
+        self,
+        account: str,
+        params: dict,
+        timeout: float,
+        log_failures: bool,
+    ) -> Any:
+        """GET /v1/contacts/{number}/{uuid} — resolve by contact uuid."""
+        contact = params.get("contactAddress") or params.get("uuid")
+        if not contact:
+            return None
+        url = f"{self.http_url}/v1/contacts/{quote(account, safe='')}/{quote(str(contact), safe='')}"
+        resp = await self.client.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
 
     # ------------------------------------------------------------------
     # Formatting — markdown → Signal body ranges

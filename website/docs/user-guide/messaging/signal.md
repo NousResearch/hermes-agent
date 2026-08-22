@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Signal messenger bot via signal-cli daemo
 
 # Signal Setup
 
-Hermes connects to Signal through the [signal-cli](https://github.com/AsamK/signal-cli) daemon running in HTTP mode. The adapter streams messages in real-time via SSE (Server-Sent Events) and sends responses via JSON-RPC.
+Hermes connects to Signal through the [signal-cli](https://github.com/AsamK/signal-cli) daemon running in HTTP mode. The adapter polls for inbound messages via HTTP and sends responses via JSON-RPC.
 
 Signal is the most privacy-focused mainstream messenger — end-to-end encrypted by default, open-source protocol, minimal metadata collection. This makes it ideal for security-sensitive agent workflows.
 
@@ -72,8 +72,8 @@ Keep this running in the background. You can use `systemd`, `tmux`, `screen`, or
 Verify it's running:
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/check
-# Should return: {"versions":{"signal-cli":...}}
+curl http://127.0.0.1:8080/v1/health
+# Should return 200/204 (healthy)
 ```
 
 ---
@@ -108,8 +108,34 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
-SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
+SIGNAL_HOME_CHANNEL=+123****7890                  # Default delivery target for cron jobs
 ```
+
+#### Transport mode (advanced)
+
+`signal-cli-rest-api` ships two transport shapes (selected via the daemon's `MODE=` env var):
+
+| Daemon `MODE` | Outbound route | Inbound route |
+|---------------|----------------|---------------|
+| `native` (docker-compose default) | Per-operation REST: `POST /v2/send`, `PUT/DELETE /v1/typing-indicator/{number}`, `POST/DELETE /v1/reactions/{number}`, `GET /v1/contacts/{number}`, `GET /v1/attachments/{id}` | `GET /v1/receive/{number}` (HTTP polling — Hermes supports this) |
+| `json-rpc` | `POST /v1/rpc` (JSON-RPC 2.0 envelope for every method) | WebSocket `subscribeReceive` — **not yet implemented** in Hermes |
+| `json-rpc-native` | `POST /v2/send` (REST) | Hybrid — Hermes uses native polling |
+
+Hermes auto-detects the right outbound route during `connect()` by probing `GET /v1/about` and `GET /v1/receive/{number}`. To lock the choice, add `transport_mode` under `platforms.signal.extra` in `config.yaml`:
+
+```yaml
+platforms:
+  signal:
+    enabled: true
+    extra:
+      http_url: http://127.0.0.1:8080
+      account: "+123****7890"
+      transport_mode: native   # or "json-rpc" (outbound only — inbound WebSocket is unimplemented)
+```
+
+Defaults to `auto` (probe), which falls back to `native` if the probe fails (matches the docker-compose default). Operators running `MODE=json-rpc` should set `transport_mode: json-rpc` explicitly so outbound JSON-RPC calls land on `/v1/rpc` instead of the native REST routes (which would 404).
+
+Outbound payloads are translated per transport: native mode sends flat REST bodies (`{number, message, recipients}` with `group.<id>` for groups, base64 data-URI attachments, snake_case reaction fields), while json-rpc mode keeps the JSON-RPC 2.0 envelope. This is automatic — no per-call configuration is needed.
 
 Then start the gateway:
 
@@ -212,9 +238,9 @@ Just send a message to yourself from your phone — signal-cli picks it up and H
 
 ### Health Monitoring
 
-The adapter monitors the SSE connection and automatically reconnects if:
-- The connection drops (with exponential backoff: 2s → 60s)
-- No activity is detected for 120 seconds (pings signal-cli to verify)
+The adapter monitors the daemon via periodic HTTP health checks (`/v1/health`) and automatically reconnects if:
+- A health check returns a non-200/204 status (with exponential backoff: 2s → 60s)
+- No activity is detected for 120 seconds
 
 ---
 
@@ -225,7 +251,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **"Cannot reach signal-cli"** during setup | Ensure signal-cli daemon is running: `signal-cli --account +YOUR_NUMBER daemon --http 127.0.0.1:8080` |
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
-| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
+| **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. Verify health check passes: `curl http://127.0.0.1:8080/v1/health` |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |

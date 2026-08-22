@@ -1282,6 +1282,11 @@ class CredentialPool:
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
 
+                # Fresh pool tokens are landing on the singleton state: drop
+                # any stale terminal-failure marker so auth.json does not
+                # advertise ``relogin_required`` alongside live tokens.
+                state.pop("last_auth_error", None)
+
                 if is_from_root and _wt_provider_id:
                     # Grant was resolved from root — write back to root
                     # only.  Do NOT call _store_provider_state on the

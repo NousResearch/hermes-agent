@@ -3135,6 +3135,9 @@ def _spotify_token_payload_to_state(
     expires_in = _coerce_ttl_seconds(token_payload.get("expires_in", 0))
     expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=timezone.utc)
     state = dict(previous_state or {})
+    # This builder only runs for successful token payloads: do not carry a
+    # quarantine marker from a previous terminal failure into the new state.
+    state.pop("last_auth_error", None)
     state.update({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -3854,6 +3857,10 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         # overwritten — see #39236).
         previous_singleton_tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
         state["tokens"] = tokens
+        # A successful save supersedes any quarantine marker written by a
+        # terminal refresh failure; without this pop the stale
+        # ``relogin_required`` diagnostic survives re-login indefinitely.
+        state.pop("last_auth_error", None)
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         if label and str(label).strip():
@@ -5482,6 +5489,9 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
         value = shared.get(key)
         if value not in {None, ""}:
             state[key] = value
+    # The state now carries live shared tokens; a stale quarantine marker
+    # (``relogin_required``) must not coexist with them on disk.
+    state.pop("last_auth_error", None)
     return True
 
 
@@ -6096,6 +6106,9 @@ def resolve_nous_access_token(
             access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
             state["access_token"] = refreshed["access_token"]
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+            # Refresh succeeded: drop any stale quarantine marker so it
+            # cannot coexist with live tokens in auth.json.
+            state.pop("last_auth_error", None)
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
             state["obtained_at"] = now.isoformat()
@@ -6554,6 +6567,9 @@ def resolve_nous_runtime_credentials(
                         previous_refresh_token = refresh_token
                         state["access_token"] = refreshed["access_token"]
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+                        # Refresh succeeded: drop any stale quarantine marker
+                        # so it cannot coexist with live tokens in auth.json.
+                        state.pop("last_auth_error", None)
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
                         # Heal a poisoned stored value (see refresh_nous_oauth_pure):
@@ -8792,6 +8808,10 @@ def _refresh_minimax_oauth_state(
     )
     expires_in_s = max(0, int(expires_at_unix - now_dt.timestamp()))
     new_state = dict(state)
+    # Refresh succeeded: drop any stale quarantine marker. The pop lives
+    # here, NOT in _minimax_save_auth_state — the quarantine path calls
+    # that helper with the marker it has just written.
+    new_state.pop("last_auth_error", None)
     new_state.update({
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),

@@ -8961,6 +8961,35 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     return in_memory_fallback
 
 
+def _reconcile_finished_run_thread(session: dict) -> bool:
+    """Clear a stale busy projection after its prompt worker has exited.
+
+    A dropped transport must not leave ``running`` and ``inflight_turn`` pinned
+    forever after the worker is already dead.  Reconnect callers use the live
+    payload as their authority, so reconcile that impossible state before
+    returning it.  A missing thread is left untouched because other session
+    paths can briefly set ``running`` before their worker is registered.
+    """
+    if not session.get("running"):
+        return False
+
+    run_thread = session.get("_run_thread")
+    if run_thread is None:
+        return False
+
+    try:
+        alive = run_thread.is_alive()
+    except Exception:
+        return False
+
+    if alive:
+        return False
+
+    session["running"] = False
+    _clear_inflight_turn(session)
+    return True
+
+
 def _live_session_payload(
     sid: str,
     session: dict,
@@ -8971,6 +9000,7 @@ def _live_session_payload(
     omit_messages: bool = False,
 ) -> dict:
     with session["history_lock"]:
+        _reconcile_finished_run_thread(session)
         if cols is not None:
             session["cols"] = cols
         if transport is not None:

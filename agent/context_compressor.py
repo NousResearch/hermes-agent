@@ -2929,7 +2929,15 @@ class ContextCompressor(ContextEngine):
         50% trigger already leaves ample post-compaction headroom.
         """
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
-            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+            effective = max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+            if effective > threshold_percent:
+                logger.warning(
+                    "compression.threshold=%.2f raised to %.2f: small-context "
+                    "floor for models under %d tokens (configured value is "
+                    "kept in config but takes no effect)",
+                    threshold_percent, effective, _SMALL_CTX_WINDOW_LIMIT,
+                )
+            return effective
         return threshold_percent
 
     @staticmethod

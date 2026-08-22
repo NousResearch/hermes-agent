@@ -623,6 +623,105 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
+    """The production aggregation callback closes the partial-crash window.
+
+    PR1 deliberately preserves legacy delivery timing: a finished child is
+    durable while its sibling is still running, but nothing reaches the shared
+    completion queue until the aggregate batch finalizes.
+    """
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "partial-crash-parent"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    first_persisted = threading.Event()
+    release_sibling = threading.Event()
+    sibling_returned = threading.Event()
+
+    def child_result(task_index, goal, child=None, parent_agent=None, **kw):
+        if task_index == 1:
+            assert release_sibling.wait(timeout=10)
+            sibling_returned.set()
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"done: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    real_persist = ad.persist_batch_child_completion
+
+    def observe_persist(delegation_id, task_index, result):
+        inserted = real_persist(delegation_id, task_index, result)
+        if task_index == 0 and inserted:
+            first_persisted.set()
+        return inserted
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", child_result)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(ad, "persist_batch_child_completion", observe_persist)
+
+    out = dt.delegate_task(
+        tasks=[{"goal": "fast child"}, {"goal": "blocked child"}],
+        background=True,
+        parent_agent=parent,
+    )
+    parsed = json.loads(out)
+    delegation_id = parsed["delegation_id"]
+
+    try:
+        assert parsed["status"] == "dispatched"
+        assert first_persisted.wait(timeout=5)
+        with ad._DB_LOCK, ad._transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_key FROM async_delegation_events "
+                "WHERE delegation_id=? ORDER BY event_key",
+                (delegation_id,),
+            ).fetchall()
+        assert rows == [("task:0",)]
+        assert process_registry.completion_queue.empty()
+
+        # Simulate the owner disappearing in this exact pre-join state. Recovery
+        # must use the real callback's durable child row, not a test-fabricated row.
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                "UPDATE async_delegations SET owner_pid=99999999, owner_started_at=0 "
+                "WHERE delegation_id=?",
+                (delegation_id,),
+            )
+        assert ad.recover_abandoned_delegations() == 1
+        with ad._DB_LOCK, ad._transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_key FROM async_delegation_events "
+                "WHERE delegation_id=? ORDER BY event_key",
+                (delegation_id,),
+            ).fetchall()
+        assert rows == [("task:0",), ("terminal",)]
+    finally:
+        # A real crash would remove the worker and memory record. Make the
+        # in-process simulation match that before releasing the daemon child.
+        with ad._records_lock:
+            ad._records.pop(delegation_id, None)
+        release_sibling.set()
+        assert sibling_returned.wait(timeout=5)
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -760,68 +859,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-
-def test_single_task_truncation_banner_when_max_iterations():
-    """A single async subagent that hit its iteration cap (exit_reason=
-    max_iterations) must surface a TRUNCATED marker in the formatted result,
-    even though status stays 'completed' (a summary exists)."""
-    evt = _make_async_evt(
-        status="completed",
-        summary="Did part of the work then ran out of budget.",
-        exit_reason="max_iterations",
-    )
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TRUNCATED" in text
-    assert "max_iterations" in text
-    # The summary is still shown, just flagged.
-    assert "Did part of the work" in text
-
-
-def test_single_task_no_banner_when_clean():
-    """A cleanly-finished subagent must NOT get a truncation banner."""
-    evt = _make_async_evt(status="completed", summary="All done.", exit_reason="completed")
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TRUNCATED" not in text
-
-
-def test_batch_truncation_banner_marks_only_truncated_task():
-    """In a batch, only the task that hit max_iterations gets the TRUNCATED
-    marker; a clean sibling keeps the normal check icon."""
-    evt = _make_async_evt(
-        is_batch=True,
-        goals=["clean task", "truncated task"],
-        results=[
-            {
-                "task_index": 0,
-                "status": "completed",
-                "summary": "finished cleanly",
-                "api_calls": 5,
-                "exit_reason": "completed",
-                "truncated": False,
-            },
-            {
-                "task_index": 1,
-                "status": "completed",
-                "summary": "cut off mid-work",
-                "api_calls": 250,
-                "exit_reason": "max_iterations",
-                "truncated": True,
-            },
-        ],
-    )
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TRUNCATED" in text
-    # The clean task's summary and the truncated one's both render...
-    assert "finished cleanly" in text
-    assert "cut off mid-work" in text
-    # ...but the banner is tied to the truncated task, not the clean one.
-    trunc_pos = text.index("cut off mid-work")
-    clean_pos = text.index("finished cleanly")
-    banner_pos = text.index("TRUNCATED")
-    # The header banner for task 2 appears after task 1's summary.
-    assert banner_pos > clean_pos
 

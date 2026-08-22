@@ -3797,6 +3797,12 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    if not live_deleg_id:
+        # Child-scoped durable rows and the optional live transcript must share
+        # one stable parent identity, even when transcript creation is disabled.
+        from tools.async_delegation import _new_delegation_id
+
+        live_deleg_id = _new_delegation_id()
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -3887,6 +3893,27 @@ def delegate_task(
             setattr(child, "_delegation_id", live_deleg_id)
         children.append((i, t, child))
 
+    def _persist_ready_result(entry: Dict[str, Any]) -> None:
+        """Persist one ready child while preserving aggregate delivery timing."""
+        if not background:
+            return
+        task_index = int(entry.get("task_index", 0))
+        payload = dict(entry)
+        if 0 <= task_index < len(live_paths):
+            payload.setdefault("live_transcript", live_paths[task_index])
+        try:
+            from tools.async_delegation import persist_batch_child_completion
+
+            persist_batch_child_completion(live_deleg_id, task_index, payload)
+        except Exception:
+            # Batch finalization inserts every missing child idempotently as the
+            # durable safety net for callback/persistence failures.
+            logger.exception(
+                "Failed to persist ready child %s/%s",
+                live_deleg_id,
+                task_index,
+            )
+
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
@@ -3910,6 +3937,7 @@ def delegate_task(
                 owner_session_record=_origin_owner_session_record,
             )
             results.append(result)
+            _persist_ready_result(result)
         else:
             # Batch -- run in parallel with per-task progress lines
             completed_count = 0
@@ -3984,6 +4012,7 @@ def delegate_task(
                                     ),
                                 }
                             results.append(entry)
+                            _persist_ready_result(entry)
                             completed_count += 1
                         break
 
@@ -4009,6 +4038,7 @@ def delegate_task(
                                 ),
                             }
                         results.append(entry)
+                        _persist_ready_result(entry)
                         completed_count += 1
 
                         # Print per-task completion line above the spinner

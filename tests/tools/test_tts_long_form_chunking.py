@@ -52,6 +52,85 @@ class TestSplitTextForTts:
         assert all(len(c) <= 30 for c in chunks)
         assert "".join(chunks) == text
 
+    def test_splits_chinese_on_cjk_punctuation(self):
+        """CJK text has no spaces: breaks must land after CJK punctuation,
+        not mid-word (regression: whole paragraph became one word and was
+        hard-split at arbitrary characters, e.g. 发现三个隐|患点)."""
+        text = (
+            "今天安全审计进展汇报。我们完成了核心系统全面排查，发现三个隐患点。"
+            "第一是认证模块会话管理存在过期时间过长风险。"
+        )
+        chunks = _split_text_for_tts(text, 30)
+        assert all(len(c) <= 30 for c in chunks)
+        # No content loss (chunk join inserts spaces — strip for comparison)
+        assert "".join(chunks).replace(" ", "") == text
+        # Every chunk boundary must follow a CJK punctuation mark
+        for i, c in enumerate(chunks[1:], start=1):
+            assert chunks[i - 1][-1] in "。！？；，、：", (
+                f"chunk {i} does not start after CJK punctuation: "
+                f"{chunks[i - 1][-1]!r}"
+            )
+
+    def test_english_smart_quotes_not_split(self):
+        """Regression (triage #84622): U+201D/U+2019 are Latin closing-quote /
+        curly-apostrophe codepoints (don’t, it’s). They must NOT be hard
+        breaks — otherwise English smart-quoted text splits mid-word into
+        'don’' + 't'."""
+        text = "I don’t think it’s wise to go. " * 6
+        chunks = _split_text_for_tts(text, 80)
+        assert all(len(c) <= 80 for c in chunks)
+        # No chunk may end with a bare curly apostrophe (mid-word split), and
+        # no chunk may START with a curly apostrophe continuation ('t / 's).
+        # These boundary assertions are impossible to satisfy under the old
+        # hard-break regex — that is exactly how the bug stayed masked.
+        for chunk in chunks:
+            assert not chunk.endswith(("don’", "it’")), (
+                f"chunk split mid-word, ends with dangling apostrophe: {chunk!r}"
+            )
+            assert not chunk.startswith(("’t", "’s")), (
+                f"chunk split mid-word, starts with apostrophe tail: {chunk!r}"
+            )
+        # The words survive intact somewhere (no content loss).
+        joined = " ".join(chunks)
+        assert "don’t" in joined and "it’s" in joined
+
+    def test_cjk_closing_quote_not_orphaned_at_chunk_start(self):
+        """Regression (AI review #84622): '…你好。”然后…' must not leave the
+        closing ” orphaned at the START of the next chunk. Chunk starts must
+        be clean (no dangling closing quote). Under the old regex this
+        scenario produced '” 然后他走了。' as a chunk start."""
+        text = "他说：“你好。”然后他走了。"
+        chunks = _split_text_for_tts(text, 8)
+        assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+        # No chunk may start with a closing quote.
+        for chunk in chunks:
+            assert not chunk.startswith(("”", "’")), (
+                f"chunk starts with orphaned closing quote: {chunk!r}"
+            )
+        assert len(chunks) >= 2
+
+    def test_cjk_closing_quote_still_breaks_via_preceding_punct(self):
+        """A Chinese closing quote at sentence end is preceded by 。/！/？,
+        so removing ”’ from the hard-break class does not break CJK
+        chunking (triage #84622)."""
+        text = "他说：“你好。”然后他走了。她说“再见”！"
+        chunks = _split_text_for_tts(text, 20)
+        assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+        # Still splits into multiple chunks (the 。/！ breaks remain).
+        assert len(chunks) >= 2
+
+    def test_chinese_short_sentence_stays_whole(self):
+        text = "今天天气不错，适合散步。"
+        chunks = _split_text_for_tts(text, 30)
+        assert chunks == [text]
+
+    def test_english_decimal_point_not_split(self):
+        """A Latin period followed by non-space must NOT break (3.14 / Dr.)."""
+        text = "Use 3.14 for pi and Dr. Smith agrees."
+        chunks = _split_text_for_tts(text, 100)
+        assert len(chunks) == 1
+        assert "3.14" in chunks[0]
+
 
 class TestSplitOversizedSentence:
     def test_short_sentence_returns_as_is(self):

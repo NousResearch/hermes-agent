@@ -10,6 +10,50 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Maximum file size allowed for inline base64 embedding (25 MB).
+# Files exceeding this threshold fall back to STT / tool execution to prevent
+# memory spikes and provider HTTP 413 (Payload Too Large) errors.
+MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+
+AUDIO_FORMAT_TO_MIME: Dict[str, str] = {
+    "mp3": "audio/mpeg",
+    "mpeg": "audio/mpeg",
+    "mp4": "audio/mp4",
+    "m4a": "audio/mp4",
+    "ogg": "audio/ogg",
+    "oga": "audio/ogg",
+    "opus": "audio/ogg",
+    "wav": "audio/wav",
+    "wave": "audio/wav",
+    "flac": "audio/flac",
+    "aac": "audio/aac",
+    "webm": "audio/webm",
+}
+
+
+def normalize_audio_format(path: Optional[Path] = None, mime: str = "") -> str:
+    """Return the canonical format identifier for OpenAI input_audio (e.g. mp3, ogg, wav, flac)."""
+    fmt = ""
+    if path and path.suffix:
+        fmt = path.suffix.lower().lstrip(".")
+    if not fmt and mime:
+        fmt = mime.rsplit("/", 1)[-1].lower()
+    if fmt in ("mpeg", "mp3"):
+        return "mp3"
+    if fmt in ("ogg", "oga", "opus"):
+        return "ogg"
+    if fmt in ("wav", "wave"):
+        return "wav"
+    return fmt or "mp3"
+
+
+def normalize_audio_mime(fmt_or_ext: str) -> str:
+    """Convert an audio format or extension to a canonical MIME type."""
+    clean = (fmt_or_ext or "").strip().lower().lstrip(".")
+    if "/" in clean:
+        return clean
+    return AUDIO_FORMAT_TO_MIME.get(clean, f"audio/{clean or 'mpeg'}")
+
 
 def supported_input_modalities(provider: str, model: str) -> Set[str]:
     """Return the model's known native input modalities.
@@ -32,8 +76,20 @@ def supported_input_modalities(provider: str, model: str) -> Set[str]:
         return set()
 
 
-def _read_as_base64(path: Path) -> Optional[str]:
+def _read_as_base64(
+    path: Path,
+    max_size_bytes: int = MAX_ATTACHMENT_SIZE_BYTES,
+) -> Optional[str]:
     try:
+        size = path.stat().st_size
+        if size > max_size_bytes:
+            logger.warning(
+                "media_routing: file %s exceeds %d MB limit (%d bytes), skipping native attachment",
+                path,
+                max_size_bytes // (1024 * 1024),
+                size,
+            )
+            return None
         return base64.b64encode(path.read_bytes()).decode("ascii")
     except Exception as exc:
         logger.warning("media_routing: failed to read %s: %s", path, exc)
@@ -50,6 +106,7 @@ def _mime_type(path: Path, declared_mime: str) -> str:
 def build_native_media_content_parts(
     user_text: str,
     attachments: Iterable[Dict[str, str]],
+    max_size_bytes: int = MAX_ATTACHMENT_SIZE_BYTES,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build OpenRouter/OpenAI-style multimodal content parts.
 
@@ -63,17 +120,27 @@ def build_native_media_content_parts(
 
     for attachment in attachments:
         raw_path = str(attachment.get("path") or "")
-        modality = str(attachment.get("modality") or "").lower()
         path = Path(raw_path)
         if not raw_path or not path.is_file():
             skipped.append(raw_path)
             continue
 
-        encoded = _read_as_base64(path)
+        encoded = _read_as_base64(path, max_size_bytes=max_size_bytes)
         if encoded is None:
             skipped.append(raw_path)
             continue
         mime = _mime_type(path, str(attachment.get("mime_type") or ""))
+
+        modality = str(attachment.get("modality") or "").lower()
+        if not modality:
+            if mime.startswith("image/"):
+                modality = "image"
+            elif mime.startswith("audio/"):
+                modality = "audio"
+            elif mime.startswith("video/"):
+                modality = "video"
+            elif mime == "application/pdf" or path.suffix.lower() == ".pdf":
+                modality = "pdf"
 
         if modality == "image":
             media_parts.append({
@@ -89,9 +156,7 @@ def build_native_media_content_parts(
                 },
             })
         elif modality == "audio":
-            audio_format = path.suffix.lower().lstrip(".") or mime.rsplit("/", 1)[-1]
-            if audio_format == "mpeg":
-                audio_format = "mp3"
+            audio_format = normalize_audio_format(path, mime)
             media_parts.append({
                 "type": "input_audio",
                 "input_audio": {"data": encoded, "format": audio_format},
@@ -121,4 +186,12 @@ def build_native_media_content_parts(
     return parts, skipped
 
 
-__all__ = ["build_native_media_content_parts", "supported_input_modalities"]
+__all__ = [
+    "AUDIO_FORMAT_TO_MIME",
+    "MAX_ATTACHMENT_SIZE_BYTES",
+    "build_native_media_content_parts",
+    "normalize_audio_format",
+    "normalize_audio_mime",
+    "supported_input_modalities",
+]
+

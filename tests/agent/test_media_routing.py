@@ -74,3 +74,56 @@ def test_unreadable_attachment_falls_back_without_fake_media(tmp_path):
     )
     assert parts == [{"type": "text", "text": "read this"}]
     assert skipped == [str(missing)]
+
+
+def test_attachment_exceeding_size_ceiling_is_skipped(tmp_path):
+    oversized = tmp_path / "large_voice.ogg"
+    oversized.write_bytes(b"x" * 200)
+
+    # Test with custom max_size_bytes
+    parts, skipped = build_native_media_content_parts(
+        "listen",
+        [{"path": str(oversized), "mime_type": "audio/ogg", "modality": "audio"}],
+        max_size_bytes=100,
+    )
+    assert parts == [{"type": "text", "text": "listen"}]
+    assert skipped == [str(oversized)]
+
+
+def test_audio_format_and_mime_normalization():
+    from agent.media_routing import normalize_audio_format, normalize_audio_mime
+    from pathlib import Path
+
+    assert normalize_audio_format(Path("audio.mp3")) == "mp3"
+    assert normalize_audio_format(Path("audio.ogg")) == "ogg"
+    assert normalize_audio_format(Path("audio.opus")) == "ogg"
+    assert normalize_audio_format(Path("audio.wav")) == "wav"
+    assert normalize_audio_format(Path("audio.flac")) == "flac"
+    assert normalize_audio_format(mime="audio/mpeg") == "mp3"
+    assert normalize_audio_format(mime="audio/ogg") == "ogg"
+
+    assert normalize_audio_mime("mp3") == "audio/mpeg"
+    assert normalize_audio_mime("mpeg") == "audio/mpeg"
+    assert normalize_audio_mime("ogg") == "audio/ogg"
+    assert normalize_audio_mime("opus") == "audio/ogg"
+    assert normalize_audio_mime("wav") == "audio/wav"
+    assert normalize_audio_mime("flac") == "audio/flac"
+    assert normalize_audio_mime("audio/custom") == "audio/custom"
+
+
+def test_modality_auto_derived_when_omitted(tmp_path):
+    img = tmp_path / "screenshot.png"
+    img.write_bytes(b"png-data")
+    audio = tmp_path / "memo.ogg"
+    audio.write_bytes(b"ogg-data")
+
+    parts, skipped = build_native_media_content_parts(
+        "check",
+        [
+            {"path": str(img), "mime_type": "image/png"},
+            {"path": str(audio), "mime_type": "audio/ogg"},
+        ],
+    )
+    assert skipped == []
+    assert [part["type"] for part in parts] == ["text", "image_url", "input_audio"]
+

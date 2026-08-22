@@ -311,16 +311,9 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
             fmt = str(audio_info.get("format") or "").strip().lower()
             if not isinstance(encoded, str) or not encoded:
                 continue
-            if fmt == "mp3" or fmt == "mpeg":
-                mime = "audio/mpeg"
-            elif fmt in {"ogg", "oga", "opus"}:
-                mime = "audio/ogg"
-            elif fmt == "wav":
-                mime = "audio/wav"
-            elif "/" in fmt:
-                mime = fmt
-            else:
-                mime = f"audio/{fmt or 'mpeg'}"
+            from agent.media_routing import normalize_audio_mime
+
+            mime = normalize_audio_mime(fmt)
             parts.append(
                 {
                     "inlineData": {

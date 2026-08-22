@@ -137,3 +137,68 @@ class TestUnknownAxesNeverStrand:
         failed = _id("custom")
         candidate = _id("custom", "some-model")
         assert not should_skip_candidate(candidate, failed, FailureScope.MODEL)
+
+
+class TestCredentialAxis:
+    """Two explicit different credentials under one provider+model+URL are
+    two deployments (per-account quota plans) — #91077."""
+
+    def _pair(self, cred_a, cred_b):
+        a = BackendIdentity.build(
+            provider="custom", model="glm-5-turbo",
+            base_url="https://api.z.ai/v4", credential=cred_a)
+        b = BackendIdentity.build(
+            provider="custom", model="glm-5-turbo",
+            base_url="https://api.z.ai/v4", credential=cred_b)
+        return a, b
+
+    def test_incident_91077_different_keys_same_url_is_two_deployments(self):
+        a, b = self._pair("sha:aaaa", "sha:bbbb")
+        assert not same_deployment(b, a)
+        assert not should_skip_candidate(b, a, FailureScope.MODEL)
+
+    def test_same_explicit_credential_still_one_deployment(self):
+        a, b = self._pair("sha:aaaa", "sha:aaaa")
+        assert same_deployment(b, a)
+        assert should_skip_candidate(b, a, FailureScope.MODEL)
+
+    def test_unknown_credential_on_either_side_is_non_distinguishing(self):
+        """No fingerprint on one side must not newly split an identity that
+        matches on provider+model+URL (backward compatible with every
+        existing call site that passes no credential)."""
+        a, b = self._pair("sha:aaaa", "")
+        assert same_deployment(b, a)
+        a, b = self._pair("", "sha:bbbb")
+        assert same_deployment(b, a)
+
+    def test_credential_axis_needs_the_other_axes_to_match(self):
+        """A different key does NOT rescue a different model — model
+        mismatch stays a non-skip via same_deployment's model gate."""
+        a = BackendIdentity.build(
+            provider="custom", model="glm-5-turbo",
+            base_url="https://api.z.ai/v4", credential="sha:aaaa")
+        b = BackendIdentity.build(
+            provider="custom", model="glm-4.7",
+            base_url="https://api.z.ai/v4", credential="sha:bbbb")
+        assert not same_deployment(b, a)
+
+    def test_credential_surface_different_fingerprints_are_different(self):
+        a, b = self._pair("sha:aaaa", "sha:bbbb")
+        assert not same_credential_surface(b, a)
+
+    def test_credential_surface_same_fingerprint_proves_shared_key(self):
+        """Same fingerprint is positive evidence of one shared credential,
+        stronger than the label-equality heuristic."""
+        a, b = self._pair("sha:aaaa", "sha:aaaa")
+        assert same_credential_surface(b, a)
+
+    def test_credential_surface_fingerprint_overrides_label_mismatch(self):
+        """Different provider labels carrying one identical explicit key are
+        the same credential surface (relay aliases, #22548 family)."""
+        a = BackendIdentity.build(
+            provider="custom-a", model="m", base_url="https://r/v1",
+            credential="sha:aaaa")
+        b = BackendIdentity.build(
+            provider="custom-b", model="m", base_url="https://r/v1",
+            credential="sha:aaaa")
+        assert same_credential_surface(b, a)

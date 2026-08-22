@@ -2508,15 +2508,30 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # see #22548, #70893, #62984. Do not re-implement comparisons here.
     from agent.backend_identity import BackendIdentity, should_skip_candidate
 
+    # Credential fingerprints (#91077): two explicit different keys under one
+    # provider+model+URL are two deployments (per-account quota plans), so
+    # the failed primary's key and the entry's key must both reach the
+    # predicate. ``agent.api_key`` may be callable (Entra ID); an unresolvable
+    # side simply contributes no fingerprint (non-distinguishing). The
+    # entry side prefers the resolved key, else the stable ``key_env`` name.
+    from agent.backend_identity import credential_fingerprint
+    from hermes_cli.fallback_config import resolve_entry_api_key
+
+    _current_key = getattr(agent, "api_key", "")
+    _current_cred = _current_key if isinstance(_current_key, str) else ""
+    _fb_cred = resolve_entry_api_key(fb) or str(fb.get("key_env")
+                                        or fb.get("api_key_env") or "")
     current_ident = BackendIdentity.build(
         provider=getattr(agent, "provider", ""),
         model=getattr(agent, "model", ""),
         base_url=str(getattr(agent, "base_url", "") or ""),
+        credential=credential_fingerprint(_current_cred),
     )
     fb_ident = BackendIdentity.build(
         provider=fb_provider,
         model=fb_model,
         base_url=(fb.get("base_url") or ""),
+        credential=credential_fingerprint(_fb_cred),
     )
     if should_skip_candidate(fb_ident, current_ident):
         logger.warning(

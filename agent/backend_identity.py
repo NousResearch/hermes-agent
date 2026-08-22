@@ -84,6 +84,22 @@ def _norm_base_url(value: Optional[str]) -> str:
     return (value or "").strip().rstrip("/").lower()
 
 
+def credential_fingerprint(secret: Optional[str]) -> str:
+    """Stable non-reversible fingerprint of one explicit credential.
+
+    Call sites pass the resolved api_key (or any stable per-credential
+    token, e.g. the key_env name when the key itself is unavailable).
+    The fingerprint is safe to keep on a frozen identity (never logged,
+    never compared to the raw secret elsewhere). Empty input -> empty
+    fingerprint ("unknown", non-distinguishing).
+    """
+    import hashlib
+
+    if not secret:
+        return ""
+    return "sha:" + hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
+
+
 @dataclass(frozen=True)
 class BackendIdentity:
     """Normalized identity of one (provider, model, endpoint) deployment.
@@ -96,6 +112,7 @@ class BackendIdentity:
     provider: str = ""
     model: str = ""
     base_url: str = ""
+    credential: str = ""
 
     @classmethod
     def build(
@@ -103,11 +120,13 @@ class BackendIdentity:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
+        credential: Optional[str] = None,
     ) -> "BackendIdentity":
         return cls(
             provider=_norm_provider(provider),
             model=_norm_model(model),
             base_url=_norm_base_url(base_url),
+            credential=_norm_provider(credential),
         )
 
 
@@ -139,6 +158,13 @@ def same_credential_surface(a: BackendIdentity, b: BackendIdentity) -> bool:
     never proves a shared credential; it is only used as a weak signal
     when a provider label is missing entirely.
     """
+    # Explicit fingerprints are positive evidence in BOTH directions and
+    # outrank the label heuristics below: identical fingerprints prove one
+    # shared credential even under different labels (relay aliases, the
+    # #22548 family); different fingerprints prove distinct accounts on one
+    # endpoint (#91077 — per-account quota plans behind one URL).
+    if a.credential and b.credential:
+        return a.credential == b.credential
     if a.provider and b.provider:
         # Same label = same configured credential. Different labels =
         # different credential config (first-class registry providers
@@ -163,8 +189,10 @@ def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:
 
     Provider+model must match; the base_url axis distinguishes only when BOTH
     sides carry an explicit URL (#62984: same provider+model on two different
-    explicit URLs is two deployments — a pool).  A side with an unknown URL
-    inherits the provider default and cannot prove difference.
+    explicit URLs is two deployments — a pool), and the credential axis only
+    when BOTH sides carry an explicit fingerprint (#91077: same URL under two
+    accounts is two deployments when quotas are per-account).  A side with an
+    unknown axis inherits the provider default and cannot prove difference.
     """
     if not (a.provider and b.provider and a.provider == b.provider):
         # Same-host different-label shims: same URL + same model IS the same
@@ -183,6 +211,8 @@ def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:
         return False
     if a.base_url and b.base_url and a.base_url != b.base_url:
         return False  # distinct explicit endpoints — a pool, not a dup
+    if a.credential and b.credential and a.credential != b.credential:
+        return False  # distinct explicit credentials — an account pool (#91077)
     return True
 
 

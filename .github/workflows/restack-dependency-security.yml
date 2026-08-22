@@ -81,5 +81,6 @@ jobs:
         with:
           name: dependency-security-restack-${{ github.event.pull_request.head.sha || github.sha }}
           path: generated/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7

@@ -57,6 +57,45 @@ class TestCheckRequirements(unittest.TestCase):
         self.assertTrue(check_email_requirements())
 
 
+class TestNormalizeAppPassword(unittest.TestCase):
+    """Gmail-style app passwords must be compacted before IMAP/SMTP login."""
+
+    def test_display_form_collapsed(self):
+        from plugins.platforms.email.adapter import _normalize_app_password
+        self.assertEqual(
+            _normalize_app_password("abcd efgh ijkl mnop"),
+            "abcdefghijklmnop",
+        )
+
+    def test_display_form_with_surrounding_whitespace(self):
+        from plugins.platforms.email.adapter import _normalize_app_password
+        self.assertEqual(
+            _normalize_app_password("  abcd efgh ijkl mnop\n"),
+            "abcdefghijklmnop",
+        )
+
+    def test_compact_form_unchanged(self):
+        from plugins.platforms.email.adapter import _normalize_app_password
+        self.assertEqual(
+            _normalize_app_password("abcdefghijklmnop"),
+            "abcdefghijklmnop",
+        )
+
+    def test_arbitrary_password_only_stripped(self):
+        # Passwords that are NOT the 4x4 display shape must be left intact
+        # except for surrounding whitespace (spaces inside are meaningful).
+        from plugins.platforms.email.adapter import _normalize_app_password
+        self.assertEqual(
+            _normalize_app_password("  my pass word with spaces  "),
+            "my pass word with spaces",
+        )
+
+    def test_empty_and_blank(self):
+        from plugins.platforms.email.adapter import _normalize_app_password
+        self.assertEqual(_normalize_app_password(""), "")
+        self.assertEqual(_normalize_app_password("   "), "")
+
+
 class TestHelperFunctions(unittest.TestCase):
     """Test email parsing helper functions."""
 

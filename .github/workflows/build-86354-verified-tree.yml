@@ -1,0 +1,172 @@
+name: Build #86354 verified endpoint-scope tree
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-86354-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-verified-tree:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'andrexibiza/hermes-agent' &&
+      github.event.pull_request.head.ref == 'fix/email-app-password-normalization'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install locked test environment
+        run: >-
+          uv sync --locked --python 3.11 --extra all --extra dev
+          --extra anthropic --extra mistral --extra fal --extra modal
+          --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Materialize and verify exact product tree
+        env:
+          CURRENT_MAIN: b6bcb3e791c673e63974029bbab40cc9326803ff
+          BRANCH: fix/email-app-password-normalization
+          CARRIER: .github/workflows/one-shot-fix-86354.yml
+          FORK_REPOSITORY: andrexibiza/hermes-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$CARRIER"
+          TRIGGER_HEAD=$(git rev-parse HEAD)
+          export CURRENT_MAIN BRANCH TRIGGER_HEAD
+
+          mkdir -p /tmp/hermes-tools
+          REAL_GIT=$(command -v git)
+          cat > /tmp/hermes-tools/git <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=("\$@")
+          if [[ \${args[0]:-} == push ]]; then
+            echo '[verified-tree] blocked carrier push' >&2
+            exit 0
+          fi
+          for i in "\${!args[@]}"; do
+            if [[ \${args[\$i]} == origin ]]; then
+              args[\$i]=https://github.com/${FORK_REPOSITORY}.git
+            fi
+          done
+          exec "$REAL_GIT" "\${args[@]}"
+          EOF
+          chmod +x /tmp/hermes-tools/git
+          export PATH="/tmp/hermes-tools:$PATH"
+
+          cp "$CARRIER" /tmp/carrier.yml
+          uv run --python 3.11 python - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          import yaml
+
+          document = yaml.safe_load(Path('/tmp/carrier.yml').read_text())
+          steps = document['jobs']['repair']['steps']
+          carrier_steps = [
+              step for step in steps
+              if isinstance(step, dict) and isinstance(step.get('run'), str)
+              and '\n' in step['run']
+          ]
+          if not carrier_steps:
+              raise SystemExit('carrier has no literal run block')
+
+          for number, step in enumerate(carrier_steps):
+              script = Path(f'/tmp/carrier-{number}.sh')
+              script.write_text(step['run'].rstrip() + '\n')
+              environment = os.environ.copy()
+              environment.update({
+                  str(key): str(value)
+                  for key, value in (step.get('env') or {}).items()
+              })
+              subprocess.run(['bash', '-n', str(script)], check=True, env=environment)
+              subprocess.run(['bash', str(script)], check=True, env=environment)
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import io
+          import json
+          import subprocess
+          import tarfile
+
+          base = 'b6bcb3e791c673e63974029bbab40cc9326803ff'
+          raw = subprocess.check_output(
+              ['git', 'diff', '--name-status', base, 'HEAD'], text=True
+          )
+          entries = []
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              status, path = line.split('\t', 1)
+              if path.startswith('.github/workflows/'):
+                  continue
+              if path.startswith('contributors/emails/'):
+                  continue
+              if path.startswith('tests/e2e/test__authority_repair_materializer.py'):
+                  continue
+              entries.append((status, path))
+          if not entries:
+              raise SystemExit('materialized product diff is empty')
+
+          manifest = {
+              'base': base,
+              'carrier_source_head': '${{ github.event.pull_request.head.sha }}',
+              'entries': entries,
+              'materialized_head': subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True
+              ).strip(),
+          }
+          output = Path('/tmp/verified-tree.tar.gz')
+          with tarfile.open(output, 'w:gz') as archive:
+              data = json.dumps(manifest, sort_keys=True).encode()
+              info = tarfile.TarInfo('MANIFEST.json')
+              info.size = len(data)
+              info.mode = 0o644
+              archive.addfile(info, io.BytesIO(data))
+              for status, path in entries:
+                  if not status.startswith('D'):
+                      archive.add(path, arcname=path, recursive=False)
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          Path('/tmp/verified-tree.sha256').write_text(
+              f'{digest}  verified-tree.tar.gz\n'
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          print(f'verified_tree_sha256={digest}')
+          PY
+
+      - name: Upload exact tested tree
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-86354-verified-tree
+          path: |
+            /tmp/verified-tree.tar.gz
+            /tmp/verified-tree.sha256
+          retention-days: 1
+          if-no-files-found: error

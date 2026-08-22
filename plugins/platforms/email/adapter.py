@@ -238,6 +238,28 @@ def check_email_requirements() -> bool:
     return all([addr, pwd, imap, smtp])
 
 
+_APP_PASSWORD_DISPLAY_RE = re.compile(
+    r"^[A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4}$"
+)
+
+
+def _normalize_app_password(value: str) -> str:
+    """Normalize an email app password before IMAP/SMTP login.
+
+    Google's app-password page displays (and copies) the 16-character code in
+    display form — ``abcd efgh ijkl mnop`` — with a space between each group of
+    four. Sending the spaced form to IMAP/SMTP ``LOGIN`` yields
+    ``[AUTHENTICATIONFAILED] Invalid credentials`` because the wire credential
+    is the compact 16-character string. Collapse the display form when the
+    value matches exactly that shape; otherwise only strip surrounding
+    whitespace so genuine passwords are never altered.
+    """
+    stripped = value.strip()
+    if _APP_PASSWORD_DISPLAY_RE.fullmatch(stripped):
+        return stripped.replace(" ", "")
+    return stripped
+
+
 _CHARSET_ALIASES = {
     # Aliases seen in the wild that Python's codec registry doesn't know.
     # "unknown-8bit" / "x-unknown" are RFC 1428 placeholders some MTAs (QQ
@@ -551,7 +573,7 @@ class EmailAdapter(BasePlatformAdapter):
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._password = _normalize_app_password(_get_secret("EMAIL_PASSWORD", ""))
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
@@ -1441,9 +1463,9 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
-    address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
-    password = _get_secret("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
+    address = (extra.get("address") or _get_secret("EMAIL_ADDRESS", "")).strip()
+    password = _normalize_app_password(_get_secret("EMAIL_PASSWORD", ""))
+    smtp_host = (extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")).strip()
     try:
         smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):

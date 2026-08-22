@@ -260,6 +260,17 @@ DEFAULT_CONFIG = {
         # TUI, desktop — and programmatic callers, off for conversational
         # messaging surfaces). Doc/markdown/skill-only edits never fire it.
         "verify_on_stop": False,
+        # False-stop detection: when the model produces finish_reason=stop
+        # with text indicating intent to continue (e.g., a colon-preamble
+        # that lost its tool_calls, or a narrated continuation) after a
+        # tool round, nudge it to issue the actual tool call instead of
+        # silently ending the turn (#42503). Bounded to 2 retries per turn;
+        # resets on successful tool round or genuine completion. Default is
+        # "auto" — surface-aware: on for interactive coding surfaces (CLI,
+        # TUI, desktop) and programmatic callers, off for conversational
+        # messaging surfaces. Set true to force on everywhere, or false to
+        # disable.
+        "false_stop_detection": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

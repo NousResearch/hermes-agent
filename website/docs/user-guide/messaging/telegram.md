@@ -104,6 +104,10 @@ platforms:
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
 
+### Forum topics
+
+In Telegram supergroups with topics enabled, the command menu does **not** inherit from the global `AllGroupChats` scope — each forum topic needs its own scoped command registration. Hermes handles this automatically: the first time a message arrives in a forum topic, the gateway lazily registers bot commands scoped to that specific chat (`BotCommandScopeChat`). This happens once per topic and is transparent to users — the `/` menu appears in forum topics just like in regular groups, without any configuration.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

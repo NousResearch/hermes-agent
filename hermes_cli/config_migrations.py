@@ -874,6 +874,90 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 )
 
 
+#: History of upstream default changes for keys users may have explicitly set.
+#: Maps dotted config key -> list of (config_version_where_change_landed, old_default).
+#: The last entry is the most recent pre-change default; the CURRENT default lives
+#: in DEFAULT_CONFIG and is never duplicated here. Purely informational — this
+#: registry never rewrites user values (#91501): the invariant "never overwrite
+#: user-set config" stays intact, this only tells users when a value they set may
+#: now behave differently than when they wrote it.
+DEFAULT_HISTORY: Dict[str, Tuple[Tuple[int, Any], ...]] = {
+    # 300s blanket cap introduced (#13770), then removed entirely (#45149):
+    # an explicit user value re-enables the removed wall-clock cap.
+    "delegation.child_timeout_seconds": ((31, None),),
+    # 400 was a plausible value under the old default era; upstream later
+    # standardized on 5000, so a stale 400 force-compresses ~12x earlier.
+    "compression.hygiene_hard_message_limit": ((33, 400),),
+}
+
+
+_MISSING_DEFAULT = object()  # sentinel: key absent from DEFAULT_CONFIG
+
+
+def collect_default_drift(
+    config: Optional[Dict[str, Any]],
+    previous_version: int,
+) -> List[Dict[str, str]]:
+    """Find user-set values whose upstream default changed at/after *previous_version*.
+
+    Non-destructive and purely informational: returns one record per drifted key
+    with the user value, the old default(s) and the current schema default. Only
+    keys the user explicitly set on disk are considered — anything absent from
+    *config* already tracks its default by definition. Called after the version
+    bump in ``migrate_config`` so *previous_version* is the on-disk version the
+    user upgraded FROM.
+    """
+    if not config or not isinstance(config, dict):
+        return []
+
+    try:
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+    except Exception:
+        return []
+
+    def _current_default(dotted: str) -> Any:
+        node: Any = DEFAULT_CONFIG
+        for part in dotted.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return _MISSING_DEFAULT
+            node = node[part]
+        return node
+
+    drifts: List[Dict[str, str]] = []
+    for key, history in DEFAULT_HISTORY.items():
+        # Must be explicitly set by the user.
+        node: Any = config
+        present = True
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                present = False
+                break
+            node = node[part]
+        if not present:
+            continue
+
+        changes = [h for h in history if h[0] > previous_version]
+        if not changes:
+            continue
+
+        current_default = _current_default(key)
+        if current_default is _MISSING_DEFAULT:
+            continue
+        # Unchanged intent: user value equals the current default → nothing to flag.
+        if node == current_default:
+            continue
+
+        old_desc = " → ".join(
+            "removed" if old is None else repr(old) for _, old in changes
+        )
+        drifts.append({
+            "key": key,
+            "value": repr(node),
+            "change": f"{old_desc} → {current_default!r}",
+        })
+    return drifts
+
+
 def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> None:
     """Apply every registered migration whose target version exceeds *current_ver*.
 

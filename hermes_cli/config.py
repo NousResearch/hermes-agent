@@ -2512,6 +2512,28 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config["_config_version"] = latest_ver
         _persist_migration(config)
 
+    # ── Default-drift notice (#91501) ────────────────────────────────────
+    # "Never overwrite user values" also meant "never tell users their values
+    # went stale." Surface — purely informationally — user-set keys whose
+    # upstream default changed in this upgrade window. Nothing is rewritten.
+    if current_ver < latest_ver and not floor_refused:
+        try:
+            from hermes_cli.config_migrations import collect_default_drift
+
+            for drift in collect_default_drift(read_raw_config(), current_ver):
+                msg = (
+                    f"  ⚠ {drift['key']} = {drift['value']} (user-set)\n"
+                    f"    Upstream default changed: {drift['change']}.\n"
+                    f"    Your value may now behave differently than when you set it."
+                )
+                results["warnings"].append(msg.strip())
+                if not quiet:
+                    print("\n⚠️  Config default changed since your last version:")
+                    print(msg)
+                    print("   Keep it if intentional; see docs for the new default.")
+        except Exception:
+            logger.debug("default-drift check skipped", exc_info=True)
+
     # ── Skill-declared config vars ──────────────────────────────────────
     # Skills can declare config.yaml settings they need via
     # metadata.hermes.config in their SKILL.md frontmatter.

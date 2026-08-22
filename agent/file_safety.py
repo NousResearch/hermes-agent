@@ -165,10 +165,10 @@ def _classify_write_denial(path: str) -> Optional[str]:
         # falsify conversation history and invalidate resume/compression state.
         try:
             if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
-                return True
+                return "session_state"
             sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
             if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
-                return True
+                return "session_state"
         except Exception:
             pass
         try:
@@ -744,3 +744,4 @@ def get_container_mirror_warning(
         f"(Defense-in-depth — not a security boundary; the terminal tool "
         f"can still bypass.)"
     )
+

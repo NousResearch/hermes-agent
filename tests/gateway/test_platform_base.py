@@ -92,10 +92,43 @@ class TestCacheAudioFromBytes:
 # ---------------------------------------------------------------------------
 
 
+class TestLooksLikeSlashCommand:
+    """Shared classifier for inbound adapters and MessageEvent.is_command()."""
+
+    def test_plain_command(self):
+        from gateway.platforms.base import looks_like_slash_command
+
+        assert looks_like_slash_command("/deny") is True
+
+    def test_invisible_padding(self):
+        from gateway.platforms.base import looks_like_slash_command
+
+        assert looks_like_slash_command("﻿⁠\n /deny⁠") is True
+
+    def test_plain_text(self):
+        from gateway.platforms.base import looks_like_slash_command
+
+        assert looks_like_slash_command("deny it") is False
+
+    def test_none_and_empty(self):
+        from gateway.platforms.base import looks_like_slash_command
+
+        assert looks_like_slash_command("") is False
+        assert looks_like_slash_command(None) is False
+
+
 class TestMessageEventIsCommand:
     def test_slash_command(self):
         event = MessageEvent(text="/new")
         assert event.is_command() is True
+
+    def test_slash_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060 \n/deny\u2060\n")
+        assert event.is_command() is True
+
+    def test_invisible_boundaries_do_not_bypass_gateway_control(self):
+        event = MessageEvent(text="\u2060/new", allow_gateway_control=False)
+        assert event.is_command() is False
 
 
 class TestMessageEventGetCommand:
@@ -111,11 +144,39 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    def test_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\ufeff\u2060\n /MODEL gpt-5\u2060")
+        assert event.get_command() == "model"
+
+    def test_command_token_wrapped_in_invisibles_with_args(self):
+        # The WeCom report: the client wrapped just the command token, so the
+        # trailing joiner sat between "/deny" and the reason.
+        event = MessageEvent(text="\u2060/deny\u2060 too risky")
+        assert event.get_command() == "deny"
+        assert event.get_command_args() == "too risky"
+
+    def test_interior_invisibles_are_not_normalized(self):
+        # Mid-word joiners must not rewrite command identity, or "/ne\u2060w"
+        # would silently become "/new".
+        event = MessageEvent(text="/ne\u2060w")
+        assert event.get_command() == "ne\u2060w"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_command_args_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060\n/steer follow up after tool\u2060\n")
+        assert event.get_command_args() == "follow up after tool"
+
+    def test_trailing_argument_spaces_survive_invisible_trim(self):
+        # Invisible padding is client-injected and goes; trailing whitespace
+        # is authored input this layer must not consume (see
+        # test_slack.py::test_typed_command_preserves_trailing_argument_whitespace).
+        event = MessageEvent(text="/queue  --flag  value  \u2060")
+        assert event.get_command_args() == "--flag  value  "
 
 
 # ---------------------------------------------------------------------------

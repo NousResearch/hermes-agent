@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -26,6 +27,76 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+
+def _is_command_boundary_char(ch: str) -> bool:
+    """Invisible padding that messaging clients wrap around pasted text.
+
+    Covers whitespace/newlines plus Unicode ``Cc`` (control) and ``Cf``
+    (format) — the latter is where the characters that actually show up in
+    chat transports live: U+2060 WORD JOINER, U+200B ZWSP, U+200C/D
+    ZWNJ/ZWJ, U+FEFF BOM, U+200E/F LRM/RLM.
+    """
+    return ch.isspace() or unicodedata.category(ch) in {"Cc", "Cf"}
+
+
+def _strip_command_boundary_chars(text: str) -> str:
+    """Trim invisible boundary padding from both ends of ``text``.
+
+    Only the outer edges are touched: interior characters are left alone so
+    a mid-word joiner (``/ne⁠w``) never gets normalized into a
+    different command identity.
+    """
+    start = 0
+    end = len(text)
+    while start < end and _is_command_boundary_char(text[start]):
+        start += 1
+    while end > start and _is_command_boundary_char(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
+def _lstrip_command_boundary_chars(text: str) -> str:
+    """Trim leading invisible padding only.
+
+    Used where the tail is argument payload. Per the contract established in
+    0a53663ef8 ("only the command delimiter is nonsemantic"), trailing
+    whitespace inside arguments is authored input this layer must not
+    consume — every handler that wants it gone calls ``.strip()`` itself.
+    """
+    start = 0
+    while start < len(text) and _is_command_boundary_char(text[start]):
+        start += 1
+    return text[start:]
+
+
+def _rstrip_invisible_chars(text: str) -> str:
+    """Drop trailing Cc/Cf characters while preserving trailing whitespace.
+
+    Client-injected padding wrapped around a whole message lands after the
+    arguments, so it still has to go. Whitespace does not: see
+    ``_lstrip_command_boundary_chars`` for why that distinction exists.
+    """
+    end = len(text)
+    while end > 0 and unicodedata.category(text[end - 1]) in {"Cc", "Cf"}:
+        end -= 1
+    return text[:end]
+
+
+def looks_like_slash_command(text: str) -> bool:
+    """Whether ``text`` reads as a slash command once padding is ignored.
+
+    Single source of truth for the inbound-classification side, shared with
+    ``MessageEvent.is_command()``. Adapters that tag ``MessageType.COMMAND``
+    must use this rather than a bare ``startswith("/")``: a plain prefix test
+    routes ``⁠/deny`` into the text-batching path, where the debounce
+    window merges it with whatever the user types next.
+
+    This answers "does it look like a command", not "may it run as one" —
+    authorization stays with ``allow_gateway_control`` and the slash-access
+    checks in gateway.run.
+    """
+    return _strip_command_boundary_chars(text or "").startswith("/")
 
 
 def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
@@ -2390,16 +2461,19 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
+        return self.allow_gateway_control and looks_like_slash_command(self.text)
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        command_text = (self.text or "").lstrip()
+        command_text = _strip_command_boundary_chars(self.text or "")
         parts = command_text.split(maxsplit=1)
-        raw = parts[0][1:].lower() if parts else None
+        # Re-trim the command token: when a client wraps just the command in
+        # invisible padding ("⁠/deny⁠ reason"), the trailing joiner
+        # sits inside the token and would leave the name unresolvable.
+        raw = _strip_command_boundary_chars(parts[0][1:]).lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
         # Reject file paths: valid command names never contain /
@@ -2411,9 +2485,11 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        command_text = (self.text or "").lstrip()
+        # Leading-only trim here: the tail is argument payload, whose trailing
+        # whitespace is authored input this layer must not consume.
+        command_text = _lstrip_command_boundary_chars(self.text or "")
         parts = command_text.split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
+        args = _rstrip_invisible_chars(parts[1]) if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args

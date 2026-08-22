@@ -67,6 +67,7 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    looks_like_slash_command,
 )
 from utils import env_float
 
@@ -881,6 +882,12 @@ class WeComAdapter(BasePlatformAdapter):
             return MessageType.TEXT if text else MessageType.PHOTO
         if str(body.get("msgtype") or "").lower() == "voice":
             return MessageType.VOICE
+        # Commands must not classify as TEXT: the caller sends TEXT through
+        # _enqueue_text_event, whose debounce window merges a pending command
+        # with the user's next message ("/deny" + "never mind" becomes a deny
+        # reason). The dispatch comment there always assumed this branch.
+        if looks_like_slash_command(text):
+            return MessageType.COMMAND
         return MessageType.TEXT
 
     # ------------------------------------------------------------------

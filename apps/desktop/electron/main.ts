@@ -268,6 +268,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { createVerifiedSqliteBackup } from './sqlite-backup'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -3580,7 +3581,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
+    await preflightStateDb(HERMES_HOME, rememberLog)
 
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked
@@ -3920,7 +3921,7 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
+async function preflightStateDb(hermesHome, rememberLog) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
   if (!fileExists(stateDbPath)) {
@@ -3960,7 +3961,7 @@ function preflightStateDb(hermesHome, rememberLog) {
       const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
 
       try {
-        fs.copyFileSync(stateDbPath, emergencyPath)
+        await createVerifiedSqliteBackup(stateDbPath, emergencyPath)
         const emergStat = fs.statSync(emergencyPath)
 
         rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
@@ -4028,7 +4029,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
+  await preflightStateDb(HERMES_HOME, rememberLog)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).

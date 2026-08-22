@@ -101,6 +101,27 @@ _PROVIDER_DEFAULT_MODELS = {
     "openai_compatible": "your-model-name",
 }
 
+# Providers that don't need an API key (mirrors ``_PROVIDERS_WITHOUT_API_KEY``
+# in the upstream hindsight llm_wrapper.py). When one of these is used
+# without an explicit key, we pass the provider name as a sentinel so the
+# hindsight-api daemon doesn't raise ValueError on early versions that
+# lack the ``requires_api_key()`` check (hindsight-client < 0.6.1 edge).
+# ``openai_compatible`` is included because it commonly points at a local
+# server (e.g. LM Studio) that requires no key.
+_LOCAL_PROVIDERS = frozenset({
+    "ollama",
+    "lmstudio",
+    "llamacpp",
+    "vertexai",
+    "litellm",
+    "litellmrouter",
+    "bedrock",
+    "nous",
+    "mock",
+    "none",
+    "openai_compatible",
+})
+
 
 def _parse_int_setting(value: Any, default: int) -> int:
     """Parse an integer config/env value, falling back on invalid input."""
@@ -585,7 +606,10 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 
     env_values = {
         "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
-        "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
+        # Check the ORIGINAL provider name against _LOCAL_PROVIDERS: the
+        # normalization above maps openai_compatible -> openai, which would
+        # otherwise drop LM Studio (openai_compatible) out of the no-key set.
+        "HINDSIGHT_API_LLM_API_KEY": str(current_key or (daemon_provider if current_provider in _LOCAL_PROVIDERS else "")),
         "HINDSIGHT_API_LLM_MODEL": str(current_model),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
@@ -1228,7 +1252,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
+                configured_provider = self._config.get("llm_provider", "")
+                llm_provider = configured_provider
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
@@ -1236,7 +1261,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
+                    # Sentinel decision uses the ORIGINAL provider name: the
+                    # normalization above maps openai_compatible -> openai,
+                    # which would otherwise drop LM Studio out of the no-key set.
+                    llm_api_key=(
+                        self._config.get("llmApiKey")
+                        or self._config.get("llm_api_key")
+                        or get_secret("HINDSIGHT_LLM_API_KEY", "")
+                        or (llm_provider if configured_provider in _LOCAL_PROVIDERS else "")
+                    ),
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:

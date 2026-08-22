@@ -370,6 +370,102 @@ class TestConfig:
         assert captured["llm_provider"] == "openai"
 
 
+class TestLocalLlmNoApiKey:
+    """Local LLM providers must not require an API key (PR #70886).
+
+    Covers the sentinel fix (provider name passed as the key when none is
+    configured) plus the openai_compatible/LM Studio normalization gap:
+    ``daemon_provider = "openai" if provider in {"openai_compatible", ...}``
+    used to drop openai_compatible out of ``_LOCAL_PROVIDERS``, so LM Studio
+    via openai_compatible still crashed on an empty key.
+    """
+
+    def test_build_env_local_provider_uses_sentinel_when_no_key(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "ollama",
+            "llm_model": "qwen3:8b",
+        })
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "ollama"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "ollama"
+
+    def test_build_env_openai_compatible_lmstudio_uses_sentinel_when_no_key(self):
+        # Regression: the daemon_provider normalization maps openai_compatible
+        # -> openai, which previously dropped it out of _LOCAL_PROVIDERS and
+        # made LM Studio crash with "LLM API key is required".
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "local-model",
+            "llm_base_url": "http://localhost:1234/v1",
+        })
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"  # daemon wire format
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "openai"   # sentinel, not ""
+
+    def test_build_env_cloud_provider_still_requires_key(self):
+        # Cloud providers must NOT receive the sentinel: empty key stays empty
+        # so the daemon's requires_api_key() check keeps enforcing it.
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == ""
+
+    def test_build_env_explicit_key_wins_over_sentinel(self):
+        env = _build_embedded_profile_env(
+            {"llm_provider": "ollama", "llm_model": "qwen3:8b"},
+            llm_api_key="secret-key",
+        )
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "secret-key"
+
+    def test_get_client_openai_compatible_lmstudio_no_key_passes_sentinel(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_model": "local-model",
+        }
+        p._llm_base_url = "http://localhost:1234/v1"
+
+        p._get_client()
+
+        assert captured["llm_provider"] == "openai"
+        assert captured["llm_api_key"] == "openai"  # sentinel, not ""
+
+    def test_get_client_cloud_provider_no_key_passes_empty(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+
+        p._get_client()
+
+        assert captured["llm_provider"] == "openai"
+        assert captured["llm_api_key"] == ""
+
+
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"

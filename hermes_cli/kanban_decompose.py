@@ -341,6 +341,28 @@ def decompose_task(
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
+    # Template enforcement (task t_e36247bb): force a separate implementer +
+    # independent reviewer for council paths (SL analysis/editorial, SL web
+    # ship). Skipped silently when no template matches or the template names a
+    # profile that isn't installed, so non-templated work is unaffected.
+    try:
+        from hermes_cli.kanban_decompose_templates import (
+            _apply_to_plan,
+            load_templates,
+            select_template,
+        )
+        _tpls = load_templates(cfg)
+        _tpl = select_template(task.title or "", _tpls)
+        if _tpl is not None:
+            parsed, _tpl_changed = _apply_to_plan(task, parsed, _tpl, valid_names)
+            if _tpl_changed:
+                logger.info(
+                    "decompose: template %r enforced separate implementer+reviewer "
+                    "on %s", _tpl.get("name"), task_id,
+                )
+    except Exception as exc:  # never let template logic break decomposition
+        logger.warning("decompose: template step failed (skipped): %s", exc)
+
     fanout = bool(parsed.get("fanout"))
     audit_author = author or _profile_author()
 

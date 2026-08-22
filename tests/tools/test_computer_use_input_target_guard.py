@@ -83,6 +83,27 @@ def test_type_with_matching_app_reaches_backend():
     assert out.get("ok") is True
 
 
+def test_type_forwards_captured_element_to_backend():
+    backend = _backend("kate")
+    calls = {}
+
+    def _type_text(text, **kw):
+        calls["text"] = text
+        calls.update(kw)
+        return _fake_action_result()
+
+    backend.type_text = _type_text
+    out = _dispatch_result(
+        backend,
+        "type",
+        {"text": "session-bound", "element": 7, "app": "kate"},
+    )
+
+    assert calls["text"] == "session-bound"
+    assert calls["element"] == 7
+    assert out.get("ok") is True
+
+
 def test_type_without_app_unchanged():
     """Legacy flows that never pass app= keep working (fail open)."""
     backend = _backend("kcalc")

@@ -3427,7 +3427,8 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._run_input_action("scroll", args, delivery_mode, bring_to_front)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+    def type_text(self, text: str, *, element: Optional[int] = None,
+                  delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
@@ -3435,6 +3436,19 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
         args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        if element is not None:
+            if not self._session.supports_input_property("type_text", "element_index"):
+                return ActionResult(
+                    ok=False,
+                    action="type_text",
+                    code="element_type_unsupported",
+                    message=(
+                        "The connected cua-driver does not support element-bound typing. "
+                        "Update cua-driver or use a separately verified input route; "
+                        "Hermes will not silently redirect text to the focused control."
+                    ),
+                )
+            args["element_index"] = element
         return self._run_input_action("type_text", args, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,
@@ -3897,9 +3911,11 @@ class CuaDriverBackend(ComputerUseBackend):
            supplied. Returns an explicit 'stale' error if the snapshot
            has been superseded."
 
-        Gated on the per-tool capability claim so we don't send the
-        field to drivers that predate the surface (which would reject
-        the schema with `additionalProperties: false`).
+        Gated on either the per-tool capability claim or the live action schema's
+        `element_token` property. cua-driver 0.20 exposes the schema property
+        without the legacy capability token; older drivers may advertise only
+        the capability. Requiring both would send a bare index to current
+        drivers, which correctly fail closed once snapshots are mandatory.
         """
         idx = args.get("element_index")
         if not isinstance(idx, int):
@@ -3907,9 +3923,10 @@ class CuaDriverBackend(ComputerUseBackend):
         token = self._snapshot_tokens.get(idx)
         if not token:
             return
-        if not self._session.supports_capability(
+        supports_token = self._session.supports_capability(
             "accessibility.element_tokens", tool=tool
-        ):
+        ) or self._session.supports_input_property(tool, "element_token")
+        if not supports_token:
             return
         args["element_token"] = token
 

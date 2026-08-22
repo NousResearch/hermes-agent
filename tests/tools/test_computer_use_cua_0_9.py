@@ -190,6 +190,42 @@ def test_invalid_delivery_mode_is_rejected_before_driver_call():
     assert session.calls == []
 
 
+def test_type_text_targets_captured_element_with_snapshot_token():
+    session = _FakeSession(
+        input_properties={"type_text": {"element_index", "element_token"}}
+    )
+    backend = _make_backend(session)
+    backend._snapshot_tokens = {7: "s12345678:7"}
+
+    result = backend.type_text("session-bound", element=7)
+
+    assert result.ok is True
+    assert session.calls == [
+        (
+            "type_text",
+            {
+                "pid": 42,
+                "window_id": 7,
+                "text": "session-bound",
+                "element_index": 7,
+                "element_token": "s12345678:7",
+                "session": "hermes-session",
+            },
+        )
+    ]
+
+
+def test_type_text_element_target_fails_closed_on_older_driver_schema():
+    session = _FakeSession()
+    backend = _make_backend(session)
+
+    result = backend.type_text("session-bound", element=7)
+
+    assert result.ok is False
+    assert result.code == "element_type_unsupported"
+    assert session.calls == []
+
+
 # ---------------------------------------------------------------------------
 # Deterministic verdict precedence and backend isolation
 # ---------------------------------------------------------------------------

@@ -510,19 +510,14 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
-# Per-session variables that the gateway bridges freshly onto every command's
-# process environment (via tools/environments/local._inject_session_context_env,
-# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
-# the shared bash session snapshot: a single long-lived backend serves many
+# Per-command session, profile, and Kanban context must NEVER be persisted into
+# the shared bash session snapshot. A single long-lived backend serves many
 # concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
 # collapse the terminal to one "default" environment), so ``export -p`` dumping
-# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
-# session ``source`` that stale value and see a FOREIGN session's identity —
-# overriding the correct per-command Popen env (issue: cross-session
-# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
-# snapshot is safe because they are re-injected on every command; a snapshot
-# should only carry the user's own shell state (PATH, functions, exports they
-# set), not Hermes' per-turn session identity.
+# the first command's identity can make a later command ``source`` stale context
+# and override the process environment it was launched with. A snapshot should
+# carry only user shell state (PATH, functions, exports they set), not Hermes'
+# runtime context.
 #
 # Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
 # with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
@@ -530,7 +525,8 @@ def _cwd_marker(session_id: str) -> str:
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT|HERMES_KANBAN_|"
+    "HERMES_HOME(?:=|$))"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -540,8 +536,9 @@ def _export_dump_excluding_session_vars(
     excluded_names: Iterable[str] = (),
 ) -> str:
     """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
-    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and any
-    additional names supplied by the caller.
+    per-command Hermes context (see
+    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``), plus any additional names supplied by
+    the caller.
 
     Unset the bridged vars in a subshell *before* ``export -p``. A line-based
     ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
@@ -574,14 +571,14 @@ def _export_dump_excluding_session_vars(
     return (
         "{ ( "
         "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
-        "${!HERMES_BROWSER_CONTROL_*} "
+        "${!HERMES_BROWSER_CONTROL_*} ${!HERMES_KANBAN_*} "
+        "HERMES_HOME HERMES_DELEGATED_CHILD_CONTEXT AI_AGENT HERMES_AGENT "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers
         # (re-exported by every _wrap_command with outer-harness-preserving
         # ${VAR:-default} semantics).  Persisting them into the snapshot
         # would make the FIRST command's value override a later outer
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
-        "AI_AGENT HERMES_AGENT "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "

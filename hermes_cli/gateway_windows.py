@@ -1214,6 +1214,39 @@ def _print_next_steps() -> None:
     print(f"  type {hermes_home}\\logs\\gateway.log       # View logs")
 
 
+def _tasks_referencing_script(script_path: Path) -> list[str] | None:
+    """Names of Scheduled Tasks whose action references ``script_path``.
+
+    The ``.cmd``/``.vbs`` pair under ``gateway-service/`` is shared
+    infrastructure: a manually-created boot task (e.g.
+    ``Hermes_Gateway_OnStart``) may still point at it after the standard
+    task is uninstalled. Scan ``schtasks /Query /FO CSV /V`` and match on
+    the script path substring (CSV column headers are localized, the path
+    is not).
+
+    Returns ``None`` when the scan itself fails (timeout, access denied) so
+    callers can fail safe instead of deleting shared files on a guess.
+    """
+    import csv
+    import io
+
+    code, out, _err = _exec_schtasks(["/Query", "/FO", "CSV", "/V"])
+    if code != 0:
+        return None
+    needles = [str(script_path).lower(), str(script_path.with_suffix(".vbs")).lower()]
+    referencing: list[str] = []
+    for row in csv.reader(io.StringIO(out)):
+        if not row:
+            continue
+        name = row[0].strip()
+        if not name:
+            continue
+        if any(needle in " ".join(row).lower() for needle in needles):
+            if name not in referencing:
+                referencing.append(name)
+    return referencing
+
+
 def uninstall() -> None:
     """Remove both the Scheduled Task and the Startup-folder fallback, if present."""
     _assert_windows()
@@ -1249,14 +1282,38 @@ def uninstall() -> None:
     for path, label in [
         (startup_entry, "Windows login item"),
         (legacy_startup_entry, "legacy Windows login item"),
-        (script_path, "Task script"),
-        (vbs_script_path, "Task launcher"),
     ]:
         try:
             path.unlink()
             print(f"✓ Removed {label}: {path}")
         except FileNotFoundError:
             pass
+
+    # The .cmd/.vbs pair is shared infrastructure: a manually-created boot
+    # task (e.g. Hermes_Gateway_OnStart) may still reference it. Only remove
+    # the files when no other registered task uses them, and never delete
+    # them when the scan failed (fail safe).
+    referencing = _tasks_referencing_script(script_path)
+    if referencing is None:
+        print(
+            f"⚠ Could not scan Scheduled Tasks; kept task scripts "
+            f"({script_path.name}, {vbs_script_path.name}) to be safe."
+        )
+    elif referencing:
+        print(
+            f"⚠ Kept task scripts ({script_path.name}, {vbs_script_path.name}): "
+            f"still referenced by Scheduled Task(s): {', '.join(referencing)}"
+        )
+    else:
+        for path, label in [
+            (script_path, "Task script"),
+            (vbs_script_path, "Task launcher"),
+        ]:
+            try:
+                path.unlink()
+                print(f"✓ Removed {label}: {path}")
+            except FileNotFoundError:
+                pass
 
     if is_task_registered() and not scheduled_task_removed:
         print(f"⚠ Scheduled Task still registered: {task_name}")

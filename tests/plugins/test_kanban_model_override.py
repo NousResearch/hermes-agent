@@ -117,6 +117,25 @@ def test_migration_adds_provider_override_column(conn):
 # ---------------------------------------------------------------------------
 
 
+def _unwrap_worker_log_wrapper(cmd: list) -> list:
+    """Strip the kanban_worker_log wrapper prefix, asserting its exact shape.
+
+    Mirrors the helper in test_kanban_worker_spawn_toolsets.py: fails loudly
+    on a malformed or missing wrapper so a future regression that drops the
+    wrapper entirely can't slip through as a false pass.
+    """
+    assert len(cmd) >= 6, f"cmd too short for the worker-log wrapper: {cmd}"
+    assert cmd[1:3] == ["-m", "hermes_cli.kanban_worker_log"], (
+        f"expected the kanban_worker_log wrapper module at cmd[1:3], got: {cmd[:5]}"
+    )
+    assert cmd[4] == "--", f"expected '--' right after the wrapper's log path, got: {cmd[:6]}"
+    inner = cmd[5:]
+    assert inner and inner[0] == "hermes", (
+        f"unwrapped command should start with the hermes executable, got: {inner[:2]}"
+    )
+    return inner
+
+
 def _spawn_and_capture(monkeypatch, tmp_path, task):
     monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
@@ -132,7 +151,7 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
     kb._default_spawn(task, str(workspace))
-    return captured["cmd"]
+    return _unwrap_worker_log_wrapper(captured["cmd"])
 
 
 def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):

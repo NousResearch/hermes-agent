@@ -11,9 +11,12 @@ parity across every registered verb.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
+import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_worker_log
 from hermes_cli.kanban import run_slash
 
 
@@ -221,6 +225,265 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
 
 
 
+def test_worker_log_file_created_owner_only(kanban_home):
+    log_path = kanban_home / "kanban" / "logs" / "t_secure.log"
+    log_path.parent.mkdir(parents=True)
+
+    with kanban_worker_log.open_worker_log_file(log_path) as handle:
+        handle.write(b"hello\n")
+
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert log_path.read_text() == "hello\n"
+
+
+def test_worker_log_stream_redacts_tokens_and_private_key_blocks():
+    source = io.BytesIO(
+        b"token=ghp_abcdefghijklmnopqrst\n"
+        b"-----BEGIN PRIVATE KEY-----\n"
+        b"MIIfakepayload\n"
+        b"-----END PRIVATE KEY-----\n"
+        b"done\n"
+    )
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    text = target.getvalue().decode("utf-8")
+    assert "ghp_abcdefghijklmnopqrst" not in text
+    assert "MIIfakepayload" not in text
+    assert "[REDACTED PRIVATE KEY]" in text
+    assert "done" in text
+
+
+def test_worker_log_wrapper_runs_child_with_redacted_log(tmp_path):
+    log_path = tmp_path / "logs" / "t_wrapper.log"
+
+    rc = kanban_worker_log.run_worker_with_redacted_log(
+        log_path,
+        [
+            sys.executable,
+            "-c",
+            "print('token=ghp_abcdefghijklmnopqrst')",
+        ],
+    )
+
+    assert rc == 0
+    text = log_path.read_text()
+    assert "ghp_abcdefghijklmnopqrst" not in text
+    assert "token=" in text
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
+
+class _ChunkedReader:
+    """Byte source that returns preset chunks one call at a time.
+
+    Ignores the requested size so tests can pin the exact boundary at
+    which the wrapper's chunk read splits.
+    """
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read(self, _size=-1):
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+def test_worker_log_stream_handles_newline_free_pipe_payload():
+    payload = b"A" * (128 * 1024)  # 128 KiB, no newline
+    source = io.BytesIO(payload)
+    target = io.BytesIO()
+
+    thread = threading.Thread(
+        target=kanban_worker_log.copy_redacted_worker_log_stream,
+        args=(source, target),
+    )
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "copy_redacted_worker_log_stream hung on a newline-free payload"
+    # The redacted output must contain the (unredacted, since no secret shape)
+    # payload bytes — 'A'*N passes through unchanged.
+    assert target.getvalue() == payload
+
+
+def test_worker_log_stream_redacts_secret_split_across_chunk_boundary():
+    secret = b"ghp_abcdefghijklmnopqrst"
+    # Split the secret across two chunks; wrap with harmless framing.
+    prefix = b"prefix line\ntoken="
+    suffix = b"\ntail line\n"
+    mid = len(secret) // 2
+    chunks = [prefix + secret[:mid], secret[mid:] + suffix]
+    source = _ChunkedReader(chunks)
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    text = target.getvalue().decode("utf-8")
+    assert "ghp_abcdefghijklmnopqrst" not in text
+    assert "prefix line" in text
+    assert "tail line" in text
+
+
+def test_worker_log_stream_redacts_unterminated_private_key_block_across_chunks():
+    chunks = [
+        b"noise line\n-----BEGIN PRIVATE KEY-----\nMIIfake",
+        b"payload\nmore body bytes here\n",
+        b"even more body\n-----END PRIVATE KEY-----\ntrailer\n",
+    ]
+    source = _ChunkedReader(chunks)
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    text = target.getvalue().decode("utf-8")
+    assert "MIIfakepayload" not in text
+    assert "more body bytes here" not in text
+    assert "even more body" not in text
+    assert "-----BEGIN PRIVATE KEY-----" not in text
+    assert "-----END PRIVATE KEY-----" not in text
+    assert "[REDACTED PRIVATE KEY]" in text
+    assert "noise line" in text
+    assert "trailer" in text
+
+
+def test_worker_log_stream_handles_truncated_utf8_chunk_boundary():
+    euro = "€".encode("utf-8")  # 3 bytes: b"\xe2\x82\xac"
+    chunks = [b"before " + euro[:2], euro[2:] + b" after\n"]
+    source = _ChunkedReader(chunks)
+    target = io.BytesIO()
+
+    # Must not raise UnicodeDecodeError.
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    text = target.getvalue().decode("utf-8")
+    assert "before" in text
+    assert "after" in text
+
+
+def test_worker_log_rotation_preserves_hardened_mode(tmp_path):
+    log_path = tmp_path / "worker.log"
+    log_path.write_text("content that exceeds one byte\n")
+    os.chmod(log_path, 0o644)
+
+    kb._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
+
+    rotated = tmp_path / "worker.log.1"
+    assert rotated.exists()
+    assert stat.S_IMODE(rotated.stat().st_mode) == 0o600
+
+    # A second rotation shifts .1 to .2 — verify shift-up chmod too.
+    log_path.write_text("more content for the next rotation cycle\n")
+    os.chmod(log_path, 0o644)
+    kb._rotate_worker_log(log_path, max_bytes=1, backup_count=2)
+    rotated2 = tmp_path / "worker.log.2"
+    assert rotated2.exists()
+    assert stat.S_IMODE(rotated2.stat().st_mode) == 0o600
+    assert stat.S_IMODE(rotated.stat().st_mode) == 0o600
+
+
+def test_worker_log_main_requires_command():
+    rc = kanban_worker_log.main(["/tmp/whatever-does-not-matter.log"])
+    assert rc == 2
+
+
+def _pid_alive_probe(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — test is POSIX-only, guarded below
+    except (ProcessLookupError, OSError):
+        return False
+    return True
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_worker_log_wrapper_terminates_child_ignoring_sigterm(tmp_path):
+    """RED against the wrapper without process-group semantics: a
+    SIGTERM-ignoring child survives when the wrapper is SIGKILL'd.
+    GREEN with the process-group setup in run_worker_with_redacted_log.
+    """
+    import signal as _sig
+
+    log_path = tmp_path / "wrapper.log"
+    pid_file = tmp_path / "child.pid"
+
+    child_script = (
+        "import os, signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "sys.stdout.flush()\n"
+        "while True:\n"
+        "    time.sleep(0.5)\n"
+    )
+
+    wrapper = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.kanban_worker_log",
+            str(log_path),
+            "--",
+            sys.executable,
+            "-c",
+            child_script,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    grandchild_pid = None
+    try:
+        # Wait for the grandchild to write its pid.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if pid_file.exists():
+                raw = pid_file.read_text().strip()
+                if raw.isdigit():
+                    grandchild_pid = int(raw)
+                    break
+            time.sleep(0.1)
+        assert grandchild_pid is not None, "grandchild never wrote its pid"
+
+        # SIGTERM the wrapper's process group (what the fixed dispatcher does).
+        # The grandchild ignores SIGTERM so it should remain alive.
+        os.killpg(os.getpgid(wrapper.pid), _sig.SIGTERM)
+        time.sleep(0.5)
+        assert _pid_alive_probe(grandchild_pid), (
+            "grandchild ignoring SIGTERM should still be alive"
+        )
+
+        # Now SIGKILL the wrapper's process group. The wrapper dies before
+        # any handler can run — the group send is what carries SIGKILL to
+        # the grandchild.
+        os.killpg(os.getpgid(wrapper.pid), _sig.SIGKILL)
+
+        # Poll for the wrapper to die.
+        deadline = time.time() + 5
+        while time.time() < deadline and wrapper.poll() is None:
+            time.sleep(0.1)
+        assert wrapper.poll() is not None, "wrapper did not die after SIGKILL"
+
+        # Poll for the grandchild to die.
+        deadline = time.time() + 5
+        while time.time() < deadline and _pid_alive_probe(grandchild_pid):
+            time.sleep(0.1)
+        assert not _pid_alive_probe(grandchild_pid), (
+            "grandchild survived wrapper SIGKILL — process-group fix regressed"
+        )
+    finally:
+        for pid in (wrapper.pid, grandchild_pid):
+            if pid:
+                try:
+                    os.kill(pid, _sig.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+        try:
+            wrapper.wait(timeout=2)
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+
+
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +559,8 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
 
             timed_out = kb.enforce_max_runtime(conn, signal_fn=_signal_fn)
             assert tid in timed_out
-            assert killed and killed[0][0] == os.getpid()
+            # Accept either positive pid or negative pid (process-group send)
+            assert killed and abs(killed[0][0]) == os.getpid()
 
             task = kb.get_task(conn, tid)
             assert task.status == "ready",                 f"timed-out task should reset to ready, got {task.status}"

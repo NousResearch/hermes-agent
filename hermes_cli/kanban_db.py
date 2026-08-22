@@ -8420,6 +8420,29 @@ def heartbeat_worker(
     return True
 
 
+def _send_worker_signal(
+    kill_fn, pid: int, sig: int, pg_capable: bool
+) -> bool:
+    """Send ``sig`` to the worker's process group, then fall back to pid.
+
+    Returns True if either send completed without raising. On POSIX we
+    try the negative pid first so the wrapper's child also receives the
+    signal; on Windows (no ``os.killpg``) we skip straight to the single
+    pid send.
+    """
+    if pg_capable:
+        try:
+            kill_fn(-pid, sig)
+            return True
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        kill_fn(pid, sig)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
@@ -8472,24 +8495,21 @@ def enforce_max_runtime(
         kill = signal_fn if signal_fn is not None else (
             os.kill if hasattr(os, "kill") else None
         )
+        # Prefer signalling the whole process group so a wrapper's
+        # SIGKILL also reaches its child; fall back to the single pid.
+        pg_capable = hasattr(os, "killpg")
         if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
+            _send_worker_signal(kill, pid, signal.SIGTERM, pg_capable)
             # Short polling wait — no time.sleep on the write txn.
             for _ in range(10):
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.5)
             if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
+                # signal.SIGKILL doesn't exist on Windows.
+                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                if _send_worker_signal(kill, pid, _sigkill, pg_capable):
                     killed = True
-                except (ProcessLookupError, OSError):
-                    pass
 
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, tid)
@@ -10491,11 +10511,22 @@ def _rotate_worker_log(
             src = _rotated_log_path(log_path, generation)
             if not src.exists():
                 continue
+            dst = _rotated_log_path(log_path, generation + 1)
             try:
-                src.rename(_rotated_log_path(log_path, generation + 1))
+                src.rename(dst)
+            except OSError:
+                continue
+            # Re-harden mode in case the file was created before 0600 was default.
+            try:
+                dst.chmod(0o600)
             except OSError:
                 pass
-        log_path.rename(_rotated_log_path(log_path, 1))
+        first = _rotated_log_path(log_path, 1)
+        log_path.rename(first)
+        try:
+            first.chmod(0o600)
+        except OSError:
+            pass
     except OSError:
         pass
 
@@ -10894,30 +10925,36 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
+    if cmd and _looks_like_path(cmd[0]) and not os.path.exists(cmd[0]):
+        raise RuntimeError(
+            "`hermes` executable not found on PATH. "
+            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+        )
+
+    wrapped_cmd = [
+        sys.executable,
+        "-m",
+        "hermes_cli.kanban_worker_log",
+        str(log_path),
+        "--",
+        *cmd,
+    ]
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
+            wrapped_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
-            stdout=log_f,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
-        log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
     return proc.pid
 
 

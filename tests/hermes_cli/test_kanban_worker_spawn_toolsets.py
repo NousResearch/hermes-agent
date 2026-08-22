@@ -3,6 +3,25 @@ from __future__ import annotations
 import subprocess
 
 
+def _unwrap_worker_log_wrapper(cmd: list) -> list:
+    """Strip the kanban_worker_log wrapper prefix, asserting its exact shape.
+
+    Fails loudly on a malformed or missing wrapper instead of silently
+    grabbing the wrong "--" or an empty inner command, so a future
+    regression that drops the wrapper can't slip through unnoticed.
+    """
+    assert len(cmd) >= 6, f"cmd too short for the worker-log wrapper: {cmd}"
+    assert cmd[1:3] == ["-m", "hermes_cli.kanban_worker_log"], (
+        f"expected the kanban_worker_log wrapper module at cmd[1:3], got: {cmd[:5]}"
+    )
+    assert cmd[4] == "--", f"expected '--' right after the wrapper's log path, got: {cmd[:6]}"
+    inner = cmd[5:]
+    assert inner and inner[0] == "hermes", (
+        f"unwrapped command should start with the hermes executable, got: {inner[:2]}"
+    )
+    return inner
+
+
 def _make_task(kb, *, assignee: str):
     return kb.Task(
         id="t_spawn_tools",
@@ -123,11 +142,12 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     kb._default_spawn(task, str(workspace))
 
     parser, _subparsers, _chat_parser = build_top_level_parser()
+    inner = _unwrap_worker_log_wrapper(captured["cmd"])
     # Profile selection is attached by the outer CLI bootstrap rather than
     # build_top_level_parser(); remove that already-validated prefix and parse
     # the worker flags/subcommand through the real shared parser.
-    assert captured["cmd"][1:3] == ["-p", "elias"]
-    args = parser.parse_args(captured["cmd"][3:])
+    assert inner[1:3] == ["-p", "elias"]
+    args = parser.parse_args(inner[3:])
 
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"

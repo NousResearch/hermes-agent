@@ -50,8 +50,11 @@ jobs:
 
       - name: Build Electron app (unpacked)
         working-directory: apps/desktop
-        # --dir = electron-builder without packaging: produces release/linux-unpacked
-        run: npm run builder -- --linux --dir
+        # Full build (renderer + bundled main) then electron-builder --dir
+        # (unpackaged) to produce release/linux-unpacked
+        run: |
+          npm run build
+          npm run builder -- --linux --dir
 
       - name: Upload unpacked build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

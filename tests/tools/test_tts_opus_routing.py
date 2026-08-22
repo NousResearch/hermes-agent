@@ -70,6 +70,24 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     convert.assert_called_once_with(str(out))
 
 
+def test_edge_explicit_telegram_ogg_repair_is_voice_compatible(tmp_path, monkeypatch):
+    """A repaired explicit .ogg output must retain the voice-message marker."""
+    out = tmp_path / "speech.ogg"
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_edge_tts", _write_edge_output)
+    monkeypatch.setattr(tts_tool, "_repair_ogg_container", lambda path: path)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(out)
+    assert result["voice_compatible"] is True
+    assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{out}"
+
+
 def test_edge_matrix_converts_to_opus_voice(tmp_path, monkeypatch):
     """Matrix voice bubbles need Ogg/Opus too (MSC3245, issue #14841)."""
     out = tmp_path / "speech.mp3"

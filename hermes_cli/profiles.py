@@ -2346,6 +2346,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
+    from utils import atomic_json_write
+
     old_host = f"hermes_{old_name}"
     legacy_old_host = f"hermes.{old_name}"
     new_host = f"hermes_{new_name}"
@@ -2361,7 +2363,15 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
         try:
             resolved = path.resolve()
         except OSError:
-            resolved = path
+            # Fail closed. The rewrite below is only safe when it is handed the
+            # REAL file (see the comment on the write), so a candidate whose
+            # target cannot be determined — ELOOP on a symlink cycle,
+            # ENAMETOOLONG, EACCES on a parent directory — must be skipped, not
+            # written through unresolved. Falling back to the candidate would
+            # hand the writer the very symlink this function must never pass it,
+            # and would also defeat the dedup below, since an unresolved entry
+            # cannot match a resolved one for the same file.
+            continue
         if resolved in seen or not path.is_file():
             continue
         seen.add(resolved)
@@ -2390,15 +2400,25 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
                 bare = source_host.split(".", 1)[1] if "." in source_host else source_host
             block["aiPeer"] = bare
         hosts[new_host] = hosts.pop(source_host)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        # Atomic write: these files carry the Honcho ``apiKey`` (the OAuth
+        # access token under a browser grant), and one candidate is the global
+        # ~/.honcho/config.json shared with every other Honcho app. A bare
+        # temp-write inherits the process umask and ``Path.replace`` swaps the
+        # symlink itself, so renaming a profile silently widened the mode and
+        # detached a symlinked config (#16743).
+        #
+        # Hand the helper the RESOLVED target, not the candidate: it stages its
+        # temp in the parent of whatever path it is given, so passing a symlink
+        # stages on the link's filesystem and renames onto the real file's.
+        # When those differ — a config linked into a dotfiles repo, an
+        # encrypted volume or a mounted secrets share — the rename fails EXDEV
+        # and the fallback copies onto the real file, truncating the user's
+        # credentials before the replacement exists. Staging beside the real
+        # file makes that rename same-filesystem by construction, and the
+        # symlink survives because it is never written through.
         try:
-            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            tmp.replace(path)
+            atomic_json_write(resolved, raw, mode=0o600)
         except OSError:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
             continue
 
         print(f"✓ Honcho host updated: {source_host} → {new_host}")

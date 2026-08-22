@@ -2912,6 +2912,13 @@ DEFAULT_CONFIG = {
         # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
 
+        # Seconds to suppress re-broadcast of the home-channel "gateway
+        # shutting down" notification across process restarts (#71180).
+        # WSL suspend/resume and similar host cycles restart the gateway and
+        # would otherwise flood the home channel. 0 disables dedup (always
+        # send). Config.yaml is the user-facing source of truth.
+        "shutdown_notify_cooldown": 60,
+
         # In-process event-loop liveness watchdog (#69089). A daemon OS thread
         # probes the gateway asyncio loop; after consecutive missed probes it
         # dumps all-thread stacks and hard-exits with the service-restart exit

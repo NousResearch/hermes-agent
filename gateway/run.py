@@ -2060,6 +2060,148 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+# ── #71180: persisted shutdown-notification dedup ─────────────────────────
+# WSL suspend/resume (and other host suspend/resume cycles) restart the
+# gateway process.  Each new process re-broadcasts the "gateway shutting
+# down" notification to every home channel, flooding the home channel
+# (240 messages in 10 minutes observed).  The in-memory ``notified`` set
+# in ``_notify_active_sessions_of_shutdown`` is per-process and doesn't
+# persist across restarts, so it can't prevent the flood.
+#
+# ``_shutdown_notify_sent_path()`` is a per-destination state file that
+# records the last-sent timestamp.  Before sending the home-channel
+# shutdown broadcast, ``_should_suppress_shutdown_notify`` checks whether
+# a notification was sent within a cooldown window (default 60 s).
+# Design constraints (issue #71180):
+#   * Fail open — an unreadable / corrupt state file must never silence a
+#     legitimate broadcast.
+#   * Clock skew — a future-dated timestamp from a skewed clock must not
+#     cause an infinite cooldown.
+#   * A cooldown of 0 disables dedup entirely (always-send behaviour).
+
+
+# Default cooldown window for home-channel shutdown notifications, in
+# seconds.  Override via config.yaml ``gateway.shutdown_notify_cooldown``.
+# Set to 0 to disable dedup (always send).
+DEFAULT_SHUTDOWN_NOTIFY_COOLDOWN_SECONDS: int = 60
+
+
+def _shutdown_notify_cooldown_seconds() -> int:
+    """Return the configured shutdown-notification cooldown in seconds.
+
+    Source of truth: ``gateway.shutdown_notify_cooldown`` in config.yaml
+    (default 60). A value of 0 disables dedup entirely. An internal env
+    override ``HERMES_GATEWAY_SHUTDOWN_NOTIFY_COOLDOWN`` is honoured only
+    when set (tests / emergency), matching other gateway bridges — it is
+    not a documented user-facing setting.
+    """
+    raw = os.environ.get("HERMES_GATEWAY_SHUTDOWN_NOTIFY_COOLDOWN")
+    if raw is None:
+        try:
+            from hermes_cli.config import read_user_config_raw
+
+            cfg = read_user_config_raw(_hermes_home / "config.yaml") or {}
+            gw = cfg.get("gateway") if isinstance(cfg, dict) else None
+            if isinstance(gw, dict) and "shutdown_notify_cooldown" in gw:
+                raw = gw.get("shutdown_notify_cooldown")
+        except Exception as exc:
+            logger.debug("shutdown_notify_cooldown config read failed: %s", exc)
+            raw = None
+    if raw is not None:
+        try:
+            val = int(raw)
+            if val < 0:
+                raise ValueError
+            return val
+        except (TypeError, ValueError):
+            logger.debug(
+                "Unparseable gateway.shutdown_notify_cooldown=%r, "
+                "falling back to default %ds",
+                raw, DEFAULT_SHUTDOWN_NOTIFY_COOLDOWN_SECONDS,
+            )
+    return DEFAULT_SHUTDOWN_NOTIFY_COOLDOWN_SECONDS
+
+
+def _shutdown_notify_sent_path() -> Path:
+    """Path to the persisted last-sent-timestamp state file (JSON).
+
+    Lives under HERMES_HOME so it survives process restarts.  The file is
+    a dict mapping destination keys (platform:chat_id[:thread_id]) to
+    float epoch timestamps of the last notification sent.
+    """
+    return _hermes_home / ".shutdown_notify_sent.json"
+
+
+def _shutdown_notify_dest_key(platform_value: str, chat_id: str, thread_id: str | None) -> str:
+    """Build a stable string key for a home-channel destination."""
+    if thread_id:
+        return f"{platform_value}:{chat_id}:{thread_id}"
+    return f"{platform_value}:{chat_id}"
+
+
+def _should_suppress_shutdown_notify(dest_key: str, cooldown_seconds: int) -> bool:
+    """Return True when a notification was sent within the cooldown window.
+
+    Fail-open: any error reading the state file returns False (send).  Clock
+    skew is handled by clamping a future-dated timestamp to "now" so it can
+    never cause an effectively-infinite cooldown.
+
+    A ``cooldown_seconds`` of 0 always returns False (dedup disabled).
+    """
+    if cooldown_seconds <= 0:
+        return False
+    try:
+        data = json.loads(_shutdown_notify_sent_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        # Fail open: unreadable / missing / corrupt → send.
+        logger.debug("shutdown-notify dedup state unreadable (%s); sending", exc)
+        return False
+    if not isinstance(data, dict):
+        logger.debug("shutdown-notify dedup state not a dict (%r); sending", type(data))
+        return False
+    last_sent_raw = data.get(dest_key)
+    if not last_sent_raw:
+        return False
+    try:
+        last_sent = float(last_sent_raw)
+    except (TypeError, ValueError):
+        logger.debug("shutdown-notify dedup timestamp unparseable (%r); sending", last_sent_raw)
+        return False
+    now = time.time()
+    # Clamp future-dated timestamps to "now" and rewrite the state file so a
+    # skewed clock cannot pin suppression forever (local-only clamp left the
+    # future value on disk, re-suppressing every subsequent check).
+    if last_sent > now:
+        last_sent = now
+        try:
+            data[dest_key] = now
+            atomic_json_write(_shutdown_notify_sent_path(), data)
+        except Exception as exc:
+            logger.debug("Failed to rewrite future shutdown-notify timestamp: %s", exc)
+    elapsed = now - last_sent
+    return elapsed < cooldown_seconds
+
+
+def _record_shutdown_notify_sent(dest_key: str) -> None:
+    """Persist (best-effort) the timestamp of a just-sent notification.
+
+    Failures are logged and swallowed — a write failure only means the next
+    restart *might* re-broadcast, which is the safer failure mode.
+    """
+    try:
+        path = _shutdown_notify_sent_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[dest_key] = time.time()
+        atomic_json_write(path, data)
+    except Exception as exc:
+        logger.debug("Failed to persist shutdown-notify timestamp: %s", exc)
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -10965,6 +11107,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if dedup_key in notified:
                 continue
 
+            # Persisted cross-process dedup (#71180): a prior gateway process
+            # that already broadcast to this home channel within the cooldown
+            # window suppresses this one. Fail-open — any state read error
+            # returns False and the send proceeds.
+            dest_key = _shutdown_notify_dest_key(
+                platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None
+            )
+            if _should_suppress_shutdown_notify(dest_key, _shutdown_notify_cooldown_seconds()):
+                logger.info(
+                    "Shutdown notification suppressed for home channel %s:%s (within cooldown)",
+                    platform.value,
+                    home.chat_id,
+                )
+                continue
+
             try:
                 metadata = self._thread_metadata_for_target(
                     platform,
@@ -10986,6 +11143,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 notified.add(dedup_key)
+                _record_shutdown_notify_sent(dest_key)
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,

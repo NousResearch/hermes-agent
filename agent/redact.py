@@ -1423,5 +1423,9 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
+        # Ensure session_tag exists — a third-party plugin may have replaced
+        # the global LogRecord factory without preserving Hermes' injector.
+        if not hasattr(record, "session_tag"):
+            record.session_tag = ""  # type: ignore[attr-defined]
         original = super().format(record)
         return redact_sensitive_text(original)

@@ -21,9 +21,9 @@
 
 /** System stacks reused from presets so "System" choices need no webfont. */
 const SYSTEM_SANS =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", sans-serif';
 const SYSTEM_MONO =
-  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "D2Coding", "Noto Sans Mono CJK KR", monospace';
 const SYSTEM_SERIF =
   'Georgia, Cambria, "Times New Roman", Times, serif';
 

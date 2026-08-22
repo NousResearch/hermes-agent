@@ -155,7 +155,7 @@ class TestReloadEnv:
     def test_removes_deleted_known_vars(self, tmp_path):
         """reload_env() removes known Hermes vars not present in .env."""
         env_file = tmp_path / ".env"
-        env_file.write_text("")  # empty .env
+        env_file.write_text("", encoding="utf-8")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
@@ -1022,6 +1022,13 @@ class TestWebServerEndpoints:
 
 
 
+    def test_get_dashboard_themes_includes_clarity_preset(self):
+        """The readable built-in theme is advertised by the dashboard API."""
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        names = {theme["name"] for theme in resp.json()["themes"]}
+        assert "clarity" in names
+
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 
@@ -1712,13 +1719,13 @@ class TestWebServerEndpoints:
         # actually received the write.
         env_var = custom_endpoint_key_env("worker-proxy")
 
-        worker_cfg = (worker_home / "config.yaml").read_text()
+        worker_cfg = (worker_home / "config.yaml").read_text(encoding="utf-8")
         assert "worker-proxy" in worker_cfg
         assert env_var in worker_cfg
-        assert "sk-worker-secret" in (worker_home / ".env").read_text()
+        assert "sk-worker-secret" in (worker_home / ".env").read_text(encoding="utf-8")
 
         for leaked in (default_home / "config.yaml", default_home / ".env"):
-            text = leaked.read_text() if leaked.exists() else ""
+            text = leaked.read_text(encoding="utf-8") if leaked.exists() else ""
             assert "worker-proxy" not in text, f"endpoint leaked into default profile ({leaked.name})"
             assert "sk-worker-secret" not in text, f"credential leaked into default profile ({leaked.name})"
 
@@ -3459,6 +3466,20 @@ class TestNormaliseThemeDefinition:
         assert result["palette"]["foreground"]["hex"] == "#ffffff"
         assert result["palette"]["foreground"]["alpha"] == 0.0
 
+    def test_default_typography_applied_when_missing(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+
+        result = _normalise_theme_definition({"name": "minimal"})
+        typo = result["typography"]
+        assert "fontSans" in typo
+        assert "fontMono" in typo
+        assert "Malgun Gothic" in typo["fontSans"]
+        assert "Noto Sans KR" in typo["fontSans"]
+        assert "D2Coding" in typo["fontMono"]
+        assert typo["baseSize"] == "15px"
+        assert typo["lineHeight"] == "1.55"
+        assert typo["letterSpacing"] == "0"
+
 
 
 
@@ -4872,8 +4893,6 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-
-
 class TestSessionPatchUnread:
     """PATCH /api/sessions/{id} with {"unread": bool} marks the session
     read/unread, and GET /api/sessions surfaces the derived flag."""

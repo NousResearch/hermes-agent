@@ -801,6 +801,96 @@ class TestWebServerEndpoints:
 
 
 
+    def test_memory_get_payloads_keep_setup_commands_server_side(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        install_command = "curl -fsSL https://byterover.dev/install.sh | sh"
+        check_command = "brv --version"
+        monkeypatch.setattr(
+            web_server,
+            "_memory_provider_dependencies_installed",
+            lambda setup: False,
+        )
+        monkeypatch.setattr(web_server, "_PLUGINS_HUB_CACHE_TTL_SECONDS", 0)
+        web_server._invalidate_plugins_hub_cache()
+
+        status_response = self.client.get("/api/memory")
+        config_response = self.client.get("/api/memory/providers/byterover/config")
+        hub_response = self.client.get("/api/dashboard/plugins/hub")
+
+        assert status_response.status_code == 200
+        assert config_response.status_code == 200
+        assert hub_response.status_code == 200
+        providers = {row["name"]: row for row in status_response.json()["providers"]}
+        hub_providers = {
+            row["name"]: row
+            for row in hub_response.json()["providers"]["memory_options"]
+        }
+        setups = [
+            providers["byterover"]["setup"],
+            config_response.json()["setup"],
+            hub_providers["byterover"]["setup"],
+        ]
+        for setup in setups:
+            assert setup["external_dependencies"] == [
+                {"name": "brv", "installable": True}
+            ]
+            assert setup["pip_dependencies"] == []
+            assert setup["required_env"] == []
+            assert setup["dependencies_installed"] is False
+            assert all(
+                "install" not in dependency and "check" not in dependency
+                for dependency in setup["external_dependencies"]
+            )
+        for response in (status_response, config_response, hub_response):
+            payload = json.dumps(response.json())
+            assert install_command not in payload
+            assert check_command not in payload
+
+    def test_post_memory_provider_setup_keeps_external_commands_internal(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        install_command = "curl -fsSL https://byterover.dev/install.sh | sh"
+        manifest = {
+            "external_dependencies": [
+                {
+                    "name": "brv",
+                    "install": install_command,
+                    "check": "brv --version",
+                }
+            ]
+        }
+        installed = []
+
+        monkeypatch.setattr(web_server, "_load_memory_provider", lambda name: object())
+        monkeypatch.setattr(web_server, "_memory_provider_manifest", lambda name: manifest)
+        monkeypatch.setattr(
+            web_server,
+            "_install_memory_provider_pip_dependencies",
+            lambda dependencies: [],
+        )
+
+        def fake_install_external(dependencies):
+            installed.extend(dependencies)
+            return [{"kind": "external_install", "name": "brv", "status": "installed"}]
+
+        monkeypatch.setattr(
+            web_server,
+            "_install_memory_provider_external_dependencies",
+            fake_install_external,
+        )
+        monkeypatch.setattr(web_server, "_discover_memory_provider_statuses", lambda: [])
+
+        response = self.client.post(
+            "/api/memory/providers/byterover/setup", json={"values": {}}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert installed == manifest["external_dependencies"]
+
     def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
         """NS-605: dashboard pip installs must use the environment-aware
         lazy_deps pipeline (durable-target redirect on immutable hosted

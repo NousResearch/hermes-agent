@@ -17,7 +17,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { CommandBlock, CopyButton } from "@nous-research/ui/ui/components/command-block";
+import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -28,6 +28,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { memorySetupHasInstallableSteps } from "@/lib/memory-provider-setup";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
@@ -68,28 +69,6 @@ function setupHasDetails(setup?: MemoryProviderSetupInfo) {
     setup.external_dependencies?.length ||
       setup.pip_dependencies?.length ||
       setup.required_env?.length,
-  );
-}
-
-function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.some((dep) => dep.install) ||
-      setup.pip_dependencies?.length,
-  );
-}
-
-function SetupCommandBlock({ code, label }: { code: string; label: string }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[0.6875rem] text-muted-foreground">{label}</span>
-        <CopyButton text={code} />
-      </div>
-      <div className="border border-border bg-background/40 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed">
-        <code className="break-all">{code}</code>
-      </div>
-    </div>
   );
 }
 
@@ -162,7 +141,7 @@ function MemoryProviderSetupHint({
 }) {
   const setup = provider.setup;
   const hasDetails = setupHasDetails(setup);
-  const hasInstallableSteps = setupHasInstallableSteps(setup);
+  const hasInstallableSteps = memorySetupHasInstallableSteps(setup);
   const dependenciesInstalled = setup?.dependencies_installed ?? !hasInstallableSteps;
   const hasResults = Boolean(results?.length);
   const needsDependencySetup = hasInstallableSteps && !dependenciesInstalled;
@@ -224,18 +203,6 @@ function MemoryProviderSetupHint({
               <p className="text-muted-foreground">
                 External dependency{dep.name ? `: ${dep.name}` : ""}
               </p>
-              {dep.install ? (
-                <SetupCommandBlock
-                  label={dep.name ? `Install ${dep.name}` : "Install dependency"}
-                  code={dep.install}
-                />
-              ) : null}
-              {dep.check ? (
-                <SetupCommandBlock
-                  label={dep.name ? `Verify ${dep.name}` : "Verify dependency"}
-                  code={dep.check}
-                />
-              ) : null}
             </div>
           ))}
 

@@ -5992,10 +5992,21 @@ def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
     }
 
 
-def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
+def _public_memory_provider_setup_info(name: str) -> Dict[str, Any]:
+    """Project manifest setup metadata without executable command bodies."""
     setup = _memory_provider_setup_manifest(name)
-    setup["dependencies_installed"] = _memory_provider_dependencies_installed(setup)
-    return setup
+    return {
+        "pip_dependencies": setup["pip_dependencies"],
+        "external_dependencies": [
+            {
+                "name": dependency["name"],
+                "installable": bool(dependency["install"]),
+            }
+            for dependency in setup["external_dependencies"]
+        ],
+        "required_env": setup["required_env"],
+        "dependencies_installed": _memory_provider_dependencies_installed(setup),
+    }
 
 
 _MEMORY_PROVIDER_IMPORT_NAMES = {
@@ -6544,7 +6555,7 @@ def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
         "name": name,
         "label": _memory_provider_label(name),
         "fields": fields,
-        "setup": _memory_provider_setup_info(name),
+        "setup": _public_memory_provider_setup_info(name),
     }
 
 
@@ -6658,7 +6669,7 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
     for name in sorted(discovered):
         row = discovered[name]
         provider = None if row["missing"] else _load_memory_provider(name)
-        setup = _memory_provider_setup_info(name)
+        setup = _public_memory_provider_setup_info(name)
         configured = False if row["missing"] else _memory_provider_is_configured(name, provider)
         schema_fields = [] if row["missing"] else _normalize_memory_provider_schema(name, provider)
         if row["missing"]:
@@ -6771,7 +6782,12 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             if provider is None:
                 # Undeclared providers (e.g. builtin) have no config surface. Return an
                 # empty schema so the generic panel simply renders nothing.
-                return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
+                return {
+                    "name": name,
+                    "label": name,
+                    "fields": [],
+                    "setup": _public_memory_provider_setup_info(name),
+                }
             return _memory_provider_payload(name, provider)
 
     return await asyncio.to_thread(_run)

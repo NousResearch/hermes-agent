@@ -152,6 +152,80 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 
 ---
 
+## Home channel persistence after `/sethome`
+
+If WhatsApp says `/sethome` succeeded but, after a restart or redeploy, Hermes still says `No home channel is set for Whatsapp`, check the Hermes home-channel setting. This is separate from the WhatsApp QR/login session.
+
+### Symptom
+
+`/sethome` replies with a success message such as `Home channel set to ...`, but after the gateway restarts, home delivery fails or new chats still receive the no-home-channel setup prompt.
+
+### Cause
+
+WhatsApp has two different pieces of persisted state:
+
+- `~/.hermes/platforms/whatsapp/session` is the Baileys/WhatsApp Web login session. If this is missing, Hermes asks you to scan the QR code again.
+- `WHATSAPP_HOME_CHANNEL` is the Hermes gateway home chat. If this is missing when the gateway starts, home-channel delivery and no-home-channel checks can fail even when WhatsApp itself is connected.
+
+Current Hermes saves `/sethome` to the active profile's `.env` file and updates the running gateway config. Older installs or deployments that do not persist the profile `.env` can still look like `/sethome` worked only until restart.
+
+### Fix
+
+From the WhatsApp chat you want to use as home, run:
+
+```text
+/sethome
+```
+
+Then restart the gateway so startup loads the persisted value:
+
+```bash
+hermes gateway restart
+```
+
+If the value still does not survive a redeploy, persist the active Hermes profile directory or inject the home channel through the service/container environment:
+
+```dotenv
+WHATSAPP_HOME_CHANNEL=<whatsapp-chat-id>
+# Optional display name for the configured home target:
+WHATSAPP_HOME_CHANNEL_NAME=Home
+# Optional thread/topic-style target when your deployment uses one:
+WHATSAPP_HOME_CHANNEL_THREAD_ID=
+```
+
+For Docker, systemd, launchd, or other redeploys, make sure the same Hermes profile home and `.env` file are preserved across restarts. In containers, mount the profile directory or set `WHATSAPP_HOME_CHANNEL` as a real environment variable; otherwise a rebuilt container can keep the WhatsApp bridge session while losing the Hermes home-channel target.
+
+### Verify
+
+Check only whether the value is present. Do not print the chat ID in logs or support tickets:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import subprocess
+
+env_path = Path(subprocess.check_output(['hermes', 'config', 'env-path'], text=True).strip()).expanduser()
+value = ''
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        if line.startswith('WHATSAPP_HOME_CHANNEL='):
+            value = line.split('=', 1)[1].strip()
+            break
+print('WHATSAPP_HOME_CHANNEL:', 'set' if value else 'missing')
+PY
+```
+
+Troubleshooting:
+
+| Symptom | Check |
+|---|---|
+| QR code appears again after restart | The Baileys session directory `~/.hermes/platforms/whatsapp/session` is missing or not writable. |
+| WhatsApp is connected, but home delivery says no home channel is set | `WHATSAPP_HOME_CHANNEL` is missing from the active profile `.env` or deployment environment. |
+| `/sethome` works until redeploy | The deployment is not persisting the profile `.env`, or the runtime service is starting with a different Hermes profile/home. |
+| A direct WhatsApp `@lid` send fails while home delivery works | Treat that separately from `/sethome`; it may be a direct-recipient alias/delivery issue rather than home-channel persistence. |
+
+For an upstream docs PR, place this section immediately after `## Session Persistence` in `website/docs/user-guide/messaging/whatsapp.md`, before `## Re-pairing`.
+
 ## Re-pairing
 
 If the session breaks (phone reset, WhatsApp update, manually unlinked), you'll see connection

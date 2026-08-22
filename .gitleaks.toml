@@ -1,0 +1,15 @@
+# Local-only gitleaks allowlist for this checkout.
+# Upstream test fixtures and public OAuth client IDs trip generic-api-key
+# rules. These are NOT secrets:
+#   - AT-live-abc123 / RT-live-xyz789  → dummy tokens in unit-test fixtures
+#   - 9d1c250a-...                     → public OAuth client_id (Microsoft-style, not a secret)
+title = "hermes-agent local allowlist"
+
+[allowlist]
+description = "Upstream test fixture tokens + public OAuth client IDs"
+paths = [
+    '''apps/desktop/electron/native-token-store\.test\.ts''',
+]
+regexes = [
+    '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',
+]

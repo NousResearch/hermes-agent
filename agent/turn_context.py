@@ -813,8 +813,16 @@ def build_turn_context(
             )
             # Post-compression target size: don't summarise a thread already
             # below what compaction would reduce it to.
-            _idle_floor = int(
-                _compressor.threshold_tokens * _compressor.summary_target_ratio
+            # getattr guard: summary_target_ratio is a ContextCompressor-only
+            # attribute; plugin context engines (ContextEngine ABC) may not
+            # implement it. A missing ratio yields floor 0 (no floor), so
+            # idle compaction proceeds and the engine's own compress() owns
+            # the policy — mirroring conversation_compression.py's guard.
+            _idle_ratio = getattr(_compressor, "summary_target_ratio", None)
+            _idle_floor = (
+                int(_compressor.threshold_tokens * _idle_ratio)
+                if isinstance(_idle_ratio, (int, float))
+                else 0
             )
             _idle_cooldown = getattr(
                 _compressor, "get_active_compression_failure_cooldown", lambda: None

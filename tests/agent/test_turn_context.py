@@ -9,6 +9,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 from __future__ import annotations
 
 import threading
+import time
 import types
 from unittest.mock import MagicMock, patch
 
@@ -216,6 +217,62 @@ def test_user_message_preserves_platform_event_timestamp():
     ctx = _build(agent, persist_user_timestamp=123.5)
 
     assert ctx.messages[-1]["timestamp"] == 123.5
+
+
+# ── Idle compaction with plugin context engines ─────────────────────────────
+#
+# Plugin context engines (ContextEngine ABC, e.g. raginject) occupy the
+# agent.context_compressor slot without implementing summary_target_ratio —
+# a ContextCompressor-only attribute. Before the getattr guard, any session
+# resumed after idle_compact_after_seconds crashed with
+# AttributeError ('RagInjectEngine' object has no attribute
+# 'summary_target_ratio'). A missing ratio must yield floor 0 (no floor) so
+# idle compaction proceeds and the engine's own compress() owns the policy.
+
+
+def _make_idle_plugin_agent(*, idle_after=1800, idle_gap=3600.0):
+    """Agent whose compressor lacks summary_target_ratio, idle past the gate."""
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.compression_idle_compact_after_seconds = idle_after
+    agent._last_activity_ts = time.time() - idle_gap
+    agent._compress_context = MagicMock(
+        side_effect=lambda messages, *_a, **_k: (messages, "SYSTEM")
+    )
+    # Engine-shaped compressor: has threshold_tokens but NO ratio attribute.
+    agent.context_compressor = types.SimpleNamespace(
+        threshold_tokens=40_000,
+        protect_first_n=2,
+        protect_last_n=2,
+        should_compress=lambda tokens=None: False,
+        should_compress_info=lambda tokens=None: (False, None),
+        get_active_compression_failure_cooldown=lambda: None,
+        emit_automatic_compaction_status=False,
+    )
+    return agent
+
+
+def test_idle_compaction_tolerates_engine_without_summary_target_ratio():
+    agent = _make_idle_plugin_agent()
+
+    ctx = _build(agent)
+
+    # No AttributeError; compaction fired (floor 0 → engine owns the policy).
+    assert isinstance(ctx, TurnContext)
+    agent._compress_context.assert_called_once()
+
+
+def test_idle_compaction_no_floor_means_small_context_still_compacts():
+    agent = _make_idle_plugin_agent()
+
+    # Even a tiny context compacts when the ratio is missing: floor is 0,
+    # so _should_idle_compact's tokens > floor check passes trivially.
+    ctx = _build(agent, conversation_history=[
+        {"role": "user", "content": "earlier turn"},
+    ])
+
+    assert isinstance(ctx, TurnContext)
+    agent._compress_context.assert_called_once()
 
 
 # ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────

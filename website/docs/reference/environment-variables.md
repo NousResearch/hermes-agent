@@ -129,6 +129,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
 | `HERMES_NOUS_TIMEOUT_SECONDS` | HTTP timeout for Nous credential / token flows |
+| `HERMES_SHARED_AUTH_DIR` | Override the directory for the shared Nous OAuth token store (`nous_auth.json`). Use the same value for profiled gateways, workers, cron jobs, and watchdogs that must share one Nous auth source. |
 | `HERMES_DUMP_REQUESTS` | Dump API request payloads to log files (`true`/`false`) |
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time |
 | `HERMES_TIMEZONE` | IANA timezone override (for example `America/New_York`) |

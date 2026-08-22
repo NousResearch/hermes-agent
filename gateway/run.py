@@ -19202,6 +19202,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # If the previous session expired and was auto-reset, deliver a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
+            # The `or 'idle'` default is a two-way fallback: it covers a
+            # legacy entry whose auto_reset_reason predates the field, AND
+            # any future policy mode this mapping has no branch for —
+            # unknown reasons intentionally degrade to the generic idle
+            # notice rather than skipping the fresh-session note (review
+            # on #89314). Add an explicit branch when a new mode lands.
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"

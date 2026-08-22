@@ -5878,6 +5878,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
         return self._session_row_dict(row) if row else None
 
+    def find_latest_reset_boundary_for_peer(
+        self,
+        *,
+        session_key: str,
+        source: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the peer's most recent intentional reset boundary row.
+
+        Recovery fences on these rows (#68539): when the fence is the reason
+        ``find_latest_gateway_session_for_peer`` returned nothing, the caller
+        still needs the boundary itself so it can tell the user their session
+        was auto-reset instead of silently starting fresh (#89314).
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT id, end_reason, ended_at,
+                       COALESCE(last_activity_at, started_at) AS last_activity,
+                       COALESCE(message_count, 0) AS message_count
+                FROM sessions
+                WHERE session_key = ?
+                  AND source = ?
+                  AND end_reason IN ({_RESET_END_REASONS_SQL})
+                ORDER BY ended_at DESC
+                LIMIT 1
+                """,
+                (session_key, source),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     # ── Orphaned gateway-session repair (#82616) ──────────────────────────
     # A write-path failure (corrupt FTS, crash between routing publication
     # and row creation) can leave the live conversation in a session row

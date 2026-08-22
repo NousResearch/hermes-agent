@@ -2825,6 +2825,44 @@ class SessionStore:
                     entry = published
                     _needs_save = True
 
+        # Recovery can also come back empty because the #68539 reset fence
+        # blocked it: the peer's latest durable row is an intentional
+        # ``session_reset`` boundary (the expiry watcher finalized it while the
+        # sessions.json entry went missing or stale). Nothing above sets
+        # was_auto_reset in that shape, so the user-facing "session
+        # automatically reset" notice is silently dropped even though the
+        # reset genuinely happened (#89314). Recover the boundary and flag the
+        # reset like the live-entry paths do. A manual /reset is not confused
+        # with this: it mints a fresh live row that recovery would have found,
+        # so reaching here with a session_reset boundary means the reset was
+        # never followed by a new conversation yet.
+        if entry is None and not was_auto_reset:
+            boundary_finder = getattr(
+                self._db, "find_latest_reset_boundary_for_peer", None
+            )
+            if callable(boundary_finder):
+                try:
+                    boundary = boundary_finder(
+                        session_key=session_key,
+                        source=source.platform.value,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Gateway session reset-boundary lookup failed for %s: %s",
+                        session_key, exc,
+                    )
+                    boundary = None
+                if boundary and boundary.get("end_reason") == "session_reset":
+                    policy = self.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=source.chat_type,
+                    )
+                    if policy.mode != "none":
+                        was_auto_reset = True
+                        auto_reset_reason = "daily" if policy.mode == "daily" else "idle"
+                        reset_had_activity = bool(boundary.get("message_count"))
+                        prev_session_id = boundary.get("id")
+
         if entry is None:
             # Create a candidate outside the lock, then publish only if another
             # worker has not already populated this routing key.

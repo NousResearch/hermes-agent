@@ -118,12 +118,13 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error'
+    or 'prepare failed', which are stale-session signals (same as
+    errcode=-14) rather than a genuine rate limit."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    msg = (errmsg or "").lower()
+    return msg == "unknown error" or msg == "prepare failed"
 
 
 MEDIA_IMAGE = 1

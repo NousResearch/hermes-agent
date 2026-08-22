@@ -497,12 +497,44 @@ class TestWeixinVoiceSending:
 
 
 class TestIsStaleSessionRet:
-    """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
+    """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2.
 
+    Covers the 'unknown error' variant fixed for #17228 and the
+    'prepare failed' variant observed on zh-CN / WSL2 setups (follow-up
+    to #18100): both are stale-session signals misreported under the
+    generic ret=-2 rate-limit code.
+    """
+
+
+    def test_ret_minus_2_unknown_error_is_stale(self):
+        # The original #17228 variant: stale context_token surfaces as
+        # errmsg="unknown error" under the generic -2 code.
+        assert weixin._is_stale_session_ret(-2, None, "unknown error") is True
+
+    def test_errcode_minus_2_prepare_failed_is_stale(self):
+        # Follow-up variant: iLink also reports stale sessions as
+        # errmsg="prepare failed" (observed on cron-initiated pushes).
+        assert weixin._is_stale_session_ret(None, -2, "prepare failed") is True
+
+    def test_prepare_failed_is_case_insensitive(self):
+        assert weixin._is_stale_session_ret(-2, None, "Prepare Failed") is True
+
+    def test_prepare_failed_with_non_rate_limit_code_is_not_stale(self):
+        # The helper only disambiguates -2; other codes are handled
+        # elsewhere (e.g. SESSION_EXPIRED_ERRCODE for -14).
+        assert weixin._is_stale_session_ret(0, None, "prepare failed") is False
+        assert weixin._is_stale_session_ret(None, -14, "prepare failed") is False
 
     def test_ret_minus_2_with_freq_limit_is_not_stale(self):
         # Genuine rate limit — must NOT be treated as stale session.
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
+
+    def test_ret_minus_2_with_empty_errmsg_is_not_stale(self):
+        # Empty/None errmsg stays a genuine rate limit here; the empty-errmsg
+        # stale variant is tracked separately in #18100 and is intentionally
+        # out of scope for this helper change.
+        assert weixin._is_stale_session_ret(-2, None, None) is False
+        assert weixin._is_stale_session_ret(-2, None, "") is False
 
 
     def test_errcode_minus_14_is_not_matched_here(self):

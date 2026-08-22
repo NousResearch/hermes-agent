@@ -338,6 +338,7 @@ async def mcp_oauth_callback(
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
+    iss: Optional[str] = None,
 ):
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
@@ -360,7 +361,7 @@ async def mcp_oauth_callback(
     if flow is None:
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:
-        flow.deliver_callback(code=code, state=state, error=error)
+        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
     except ValueError as exc:
         reason = str(exc)
         status_code = 409 if "already received" in reason else 400

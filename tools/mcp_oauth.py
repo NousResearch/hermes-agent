@@ -951,10 +951,11 @@ def _make_callback_waiter(
 
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
-            # The dashboard flow still speaks the legacy tuple; normalize it
-            # here so both callback sources hand the SDK one shape.
-            dash_code, dash_state = await dashboard_flow.wait_for_callback()
-            return _authorization_code_result(dash_code, dash_state)
+            # The dashboard flow now carries (code, state, iss); hand the SDK
+            # the same shape as the loopback handler so RFC 9207 issuer
+            # validation passes against providers that advertise it.
+            dash_code, dash_state, dash_iss = await dashboard_flow.wait_for_callback()
+            return _authorization_code_result(dash_code, dash_state, dash_iss)
 
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code

@@ -2131,6 +2131,153 @@ class TestTruncation:
 
 
 # ---------------------------------------------------------------------------
+# Turn-start detection — role+content matching (ignoring metadata)
+# Regression tests for #89891
+# ---------------------------------------------------------------------------
+
+
+class TestTurnStartDetection:
+    """Response-side turn-start detection uses role+content matching
+    (ignoring metadata) so it survives the agent's in-loop message
+    modifications (timestamps, content truncation, finish_reason).
+    """
+
+    def test_timestamps_on_messages_does_not_break_detection(self):
+        """Agent adds timestamp fields — must still detect turn start."""
+        history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+        result = {
+            "messages": [
+                {"role": "user", "content": "Hello", "timestamp": 1000},
+                {"role": "assistant", "content": "Hi there!", "timestamp": 1001},
+                {"role": "user", "content": "What is 2+2?", "timestamp": 1002},
+                {"role": "assistant", "content": "4", "timestamp": 1003},
+            ]
+        }
+        assert APIServerAdapter._response_messages_turn_start_index(
+            history, "What is 2+2?", result
+        ) == 3
+
+    def test_exact_match_still_works(self):
+        """Full dict equality path still works for unmodified messages."""
+        history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+        ]
+        result = {
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+                {"role": "user", "content": "Follow up"},
+                {"role": "assistant", "content": "OK"},
+            ]
+        }
+        assert APIServerAdapter._response_messages_turn_start_index(
+            history, "Follow up", result
+        ) == 3
+
+    def test_empty_history_matches_first_user(self):
+        """Empty history: match the first user message."""
+        result = {
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+            ]
+        }
+        assert APIServerAdapter._response_messages_turn_start_index(
+            [], "Hello", result
+        ) == 1
+
+    def test_tool_calls_with_timestamps(self):
+        """Tool call messages with timestamps — detect correctly."""
+        history = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        result = {
+            "messages": [
+                {"role": "user", "content": "Hi", "timestamp": 100},
+                {"role": "assistant", "content": "Hello!", "timestamp": 101},
+                {"role": "user", "content": "Compute", "timestamp": 102},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "1", "function": {"name": "calc", "arguments": "{}"}}],
+                    "timestamp": 103,
+                },
+                {"role": "tool", "content": "42", "tool_call_id": "1", "timestamp": 104},
+                {"role": "assistant", "content": "42", "timestamp": 105},
+            ]
+        }
+        assert APIServerAdapter._response_messages_turn_start_index(
+            history, "Compute", result
+        ) == 3
+
+    def test_truncated_content_matches(self):
+        """Agent may truncate long content — prefix match should still work."""
+        long_content = "A" * 200
+        history = [
+            {"role": "user", "content": long_content},
+            {"role": "assistant", "content": "OK"},
+        ]
+        truncated = "A" * 150 + "..."  # agent truncated
+        result = {
+            "messages": [
+                {"role": "user", "content": truncated, "timestamp": 1},
+                {"role": "assistant", "content": "OK", "timestamp": 2},
+                {"role": "user", "content": "Next", "timestamp": 3},
+                {"role": "assistant", "content": "Done", "timestamp": 4},
+            ]
+        }
+        # First 100 chars of expected content match the truncated version
+        assert APIServerAdapter._response_messages_turn_start_index(
+            history, "Next", result
+        ) == 3
+
+    def test_no_match_returns_zero(self):
+        """No prefix match at all — return 0 (use full messages)."""
+        history = [
+            {"role": "user", "content": "Completely different"},
+        ]
+        result = {
+            "messages": [
+                {"role": "user", "content": "Something else"},
+                {"role": "assistant", "content": "???"},
+            ]
+        }
+        assert APIServerAdapter._response_messages_turn_start_index(
+            history, "Something else", result
+        ) == 0
+
+    def test_empty_messages_returns_zero(self):
+        """Empty or missing messages list — return 0."""
+        assert APIServerAdapter._response_messages_turn_start_index([], "Hi", {"messages": []}) == 0
+        assert APIServerAdapter._response_messages_turn_start_index([], "Hi", {}) == 0
+        assert APIServerAdapter._response_messages_turn_start_index([], "Hi", {"messages": None}) == 0
+
+    def test_turn_transcript_messages_returns_current_turn_only(self):
+        """_turn_transcript_messages returns only the current turn, not full history."""
+        history = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        result = {
+            "messages": [
+                {"role": "user", "content": "Hi", "timestamp": 100},
+                {"role": "assistant", "content": "Hello!", "timestamp": 101},
+                {"role": "user", "content": "What is 2+2?", "timestamp": 102},
+                {"role": "assistant", "content": "4", "timestamp": 103},
+            ]
+        }
+        turn = APIServerAdapter._turn_transcript_messages(history, "What is 2+2?", result)
+        # Only the assistant's "4" reply should be in the turn transcript
+        assert len(turn) == 1
+        assert turn[0].get("content") == "4"
+
+
+# ---------------------------------------------------------------------------
 # Response-side truncation / failure handling (issue #22496)
 # ---------------------------------------------------------------------------
 

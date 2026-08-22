@@ -571,6 +571,15 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
         if t.env:
             cfg["env"] = dict(t.env)
+        # Wire auth.env credentials into the stdio child's environment.
+        # install_entry() already saved these to .env via _prompt_env_vars(),
+        # but without an env-backed reference here, _build_safe_env() would
+        # exclude them and the child would start without its API key (#89316).
+        if entry.auth.type == "api_key" and entry.auth.env:
+            env = cfg.get("env") or {}
+            for spec in entry.auth.env:
+                env[spec.name] = f"${{{spec.name}}}"
+            cfg["env"] = env
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

@@ -153,10 +153,22 @@ export function subscribeToThreadForeground(shouldReanchor: () => boolean, onRea
 
   document.addEventListener('visibilitychange', onForeground)
   window.addEventListener('focus', onForeground)
+  // Third edge, because the two above can BOTH miss a wake. A macOS screen
+  // lock or display sleep freezes rAF and ResizeObserver, but an Electron
+  // window that is never occluded and never loses focus stays
+  // `visibilityState: 'visible'` and fires no `focus`, so nothing re-anchors
+  // and the transcript is left holding measurements taken before the freeze
+  // (#92180). The main process already publishes the signal that does fire:
+  // powerMonitor `resume` / `unlock-screen` -> `hermes:power-resume`.
+  // use-gateway-boot subscribes to it as a peer of focus/visibility for
+  // exactly this reason; this view documents the same need and was listening
+  // to only two of the three.
+  const offPowerResume = window.hermesDesktop?.onPowerResume?.(onForeground)
 
   return () => {
     document.removeEventListener('visibilitychange', onForeground)
     window.removeEventListener('focus', onForeground)
+    offPowerResume?.()
 
     if (frameId !== null) {
       cancelAnimationFrame(frameId)

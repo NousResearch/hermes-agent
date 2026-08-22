@@ -7161,6 +7161,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=auto_archive_duration,
                 reason=reason,
             )
+            # A slash command runs as the bot, so the bot is the new thread's
+            # only member and the invoker cannot see it — the link we return
+            # renders as #unknown for the person who asked for it.
+            try:
+                await thread.add_user(interaction.user)
+            except Exception as add_user_error:
+                logger.warning(
+                    "[Discord] Failed to add /thread invoker %s to thread %s: %s",
+                    getattr(getattr(interaction, "user", None), "id", "?"),
+                    getattr(thread, "id", "?"),
+                    add_user_error,
+                )
             if starter_message:
                 await thread.send(starter_message)
             return {

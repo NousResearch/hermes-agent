@@ -2500,21 +2500,13 @@ class HermesACPAgent(acp.Agent):
             approx_tokens = estimate_request_tokens_rough(
                 state.history, system_prompt=_sys_prompt, tools=_tools
             )
-            original_session_db = getattr(agent, "_session_db", None)
-
-            try:
-                # ACP sessions must keep a stable session id, so avoid the
-                # SQLite session-splitting side effect inside _compress_context.
-                agent._session_db = None
-                compressed, _ = agent._compress_context(
-                    state.history,
-                    getattr(agent, "_cached_system_prompt", "") or "",
-                    approx_tokens=approx_tokens,
-                    task_id=state.session_id,
-                    force=True,
-                )
-            finally:
-                agent._session_db = original_session_db
+            compressed, _ = agent._compress_context(
+                state.history,
+                getattr(agent, "_cached_system_prompt", "") or "",
+                approx_tokens=approx_tokens,
+                task_id=state.session_id,
+                force=True,
+            )
 
             state.history = compressed
             self.session_manager.save_session(state.session_id)

@@ -336,15 +336,15 @@ CLI:
 
 ```bash
 # Inspect current rules and pairing state
-python -m gateway.platforms.feishu_comment_rules status
+python -m plugins.platforms.feishu.feishu_comment_rules status
 
 # Simulate an access check for a specific doc + user
-python -m gateway.platforms.feishu_comment_rules check <fileType:fileToken> <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules check <fileType:fileToken> <user_open_id>
 
 # Manage pairing grants at runtime
-python -m gateway.platforms.feishu_comment_rules pairing list
-python -m gateway.platforms.feishu_comment_rules pairing add <user_open_id>
-python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules pairing list
+python -m plugins.platforms.feishu.feishu_comment_rules pairing add <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules pairing remove <user_open_id>
 ```
 
 ### Required Feishu App Configuration

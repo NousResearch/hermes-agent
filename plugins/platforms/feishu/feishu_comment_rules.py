@@ -357,7 +357,7 @@ def _main() -> int:
         pass
 
     usage = (
-        "Usage: python -m gateway.platforms.feishu_comment_rules <command> [args]\n"
+        "Usage: python -m plugins.platforms.feishu.feishu_comment_rules <command> [args]\n"
         "\n"
         "Commands:\n"
         "  status                              Show rules config and pairing state\n"

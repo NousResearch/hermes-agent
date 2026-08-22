@@ -2659,7 +2659,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_drive_comment_event(self, data: Any) -> None:
         """Handle drive document comment notification (drive.notice.comment_add_v1).
 
-        Delegates to :mod:`gateway.platforms.feishu_comment` for parsing,
+        Delegates to :mod:`plugins.platforms.feishu.feishu_comment` for parsing,
         logging, and reaction.  Scheduling follows the same
         ``run_coroutine_threadsafe`` pattern used by ``_on_message_event``.
         """

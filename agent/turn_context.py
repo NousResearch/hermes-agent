@@ -19,7 +19,10 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    neutralize_user_forged_memory_context,
+)
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
@@ -90,7 +93,7 @@ def compose_user_api_content(
     injections = [part for part in (fenced, plugin_user_context) if part]
     if not injections:
         return None
-    return content + "\n\n" + "\n\n".join(injections)
+    return neutralize_user_forged_memory_context(content) + "\n\n" + "\n\n".join(injections)
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:

@@ -149,6 +149,8 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugi
 
 **General plugins and user-installed backends are disabled by default** — discovery finds them (so they show up in `hermes plugins` and `/plugins`), but nothing with hooks or tools loads until you add the plugin's name to `plugins.enabled` in `~/.hermes/config.yaml`. This stops third-party code from running without your explicit consent.
 
+> **`plugins.enabled` is per-profile.** Each profile has its own `config.yaml` (`~/.hermes/profiles/<name>/config.yaml`), and the gate reads the *active profile's* config — a plugin enabled in the default profile is invisible to every other profile. If you use multiple profiles, add the plugin to each one's `plugins.enabled` (or run `hermes plugins enable <name>` while that profile is active). This is opt-in working as designed: consent to run third-party code is per-workspace, not machine-wide. Bundled platform plugins are the exception — several categories bypass this gate entirely (see "What bypasses the gate" below).
+
 ```yaml
 plugins:
   enabled:

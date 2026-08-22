@@ -17,43 +17,43 @@ jobs:
           ref: fix/memory-prefetch-cancel
           fetch-depth: 0
 
-      - name: Execute reviewed carrier with current-main structural anchors
+      - name: Execute reviewed base carrier with current-main structural anchors
         run: |
           set -euo pipefail
-          previous_carrier_commit=161e0e0538dbd8ba22f08c51be392baedb7853aa
+          original_carrier_commit=96e61712cbe19bfe6d258bb83647e574a7d03346
           carrier_path=.github/workflows/one-shot-fix-88796.yml
 
-          git fetch --no-tags origin "$previous_carrier_commit"
-          git show "$previous_carrier_commit:$carrier_path" > /tmp/previous-88796-carrier.yml
+          git fetch --no-tags origin "$original_carrier_commit"
+          git show "$original_carrier_commit:$carrier_path" > /tmp/original-88796-carrier.yml
 
           python3 - <<'PY'
           from pathlib import Path
 
-          source = Path('/tmp/previous-88796-carrier.yml').read_text(encoding='utf-8')
+          source = Path('/tmp/original-88796-carrier.yml').read_text(encoding='utf-8')
           lines = source.splitlines()
           starts = [i for i, line in enumerate(lines) if line.strip() == 'run: |']
           if len(starts) != 1:
-              raise SystemExit(f'expected one outer run block, found {len(starts)}')
+              raise SystemExit(f'expected one run block, found {len(starts)}')
           start = starts[0]
           key_indent = len(lines[start]) - len(lines[start].lstrip())
           content_indent = key_indent + 2
           prefix = ' ' * content_indent
-          body = [
-              line[len(prefix):] if line.startswith(prefix) else line
-              for line in lines[start + 1:]
-          ]
-          script = '\n'.join(body) + '\n'
-
-          needle = 'bash -n /tmp/materialize-88796-base.sh'
-          if script.count(needle) != 1:
-              raise SystemExit(f'base execution marker drifted: {script.count(needle)}')
-          script = script.replace(
-              needle,
-              'python3 .github/workflows/patch-88796-carrier-idempotence.py\n' + needle,
-              1,
+          body = []
+          for line in lines[start + 1:]:
+              if line.strip():
+                  indent = len(line) - len(line.lstrip())
+                  if indent <= key_indent:
+                      break
+                  if indent < content_indent:
+                      raise SystemExit(f'invalid block indentation: {line!r}')
+                  body.append(line[len(prefix):])
+              else:
+                  body.append('')
+          Path('/tmp/materialize-88796-base.sh').write_text(
+              '\n'.join(body) + '\n', encoding='utf-8'
           )
-          Path('/tmp/execute-88796.sh').write_text(script, encoding='utf-8')
           PY
 
-          bash -n /tmp/execute-88796.sh
-          bash /tmp/execute-88796.sh
+          python3 .github/workflows/patch-88796-carrier-idempotence.py
+          bash -n /tmp/materialize-88796-base.sh
+          bash /tmp/materialize-88796-base.sh

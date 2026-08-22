@@ -42,18 +42,18 @@ def _build_full_manifest(
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
 
-    By default, this keeps Hermes on Slack's older Assistant messaging
-    experience (``assistant_view``) for backward compatibility. Pass
-    ``messaging_experience="agent"`` (``--agent-view``) to emit Slack's Agent
-    messaging experience (``agent_view`` + ``app_home_opened``). Pass
-    ``include_assistant=False`` or ``messaging_experience="none"``
+    By default, this emits Slack's Agent messaging experience (``agent_view``).
+    Pass ``messaging_experience="assistant"`` (``--assistant-view``) only when
+    updating an existing app that still uses the older Assistant messaging
+    experience. Pass ``include_assistant=False`` or
+    ``messaging_experience="none"``
     (``--no-assistant``) to omit Slack AI messaging features and get a flat DM
     surface where ``/help``, ``/new``, etc. work inline.
     """
     from hermes_cli.commands import slack_app_manifest
 
     if messaging_experience is None:
-        messaging_experience = "assistant" if include_assistant else "none"
+        messaging_experience = "agent" if include_assistant else "none"
     messaging_experience = str(messaging_experience).strip().lower()
     if messaging_experience not in {"assistant", "agent", "none"}:
         raise ValueError(
@@ -118,13 +118,17 @@ def _build_full_manifest(
         )
     elif messaging_experience == "agent":
         features["agent_view"] = {
-            "agent_description": "Chat with Hermes in Slack Messages.",
+            "agent_description": (
+                bot_description or "Your Hermes agent on Slack"
+            )[:300],
         }
         bot_scopes.append("assistant:write")
         # Slack includes current viewing context in Agent DM events only after
         # this subscription is enabled; the adapter consumes that context to
         # preserve the referred channel across the agent turn.
-        bot_events.extend(["app_context_changed", "app_home_opened"])
+        bot_events.extend(
+            ["agent_session_stopped", "app_context_changed", "app_home_opened"]
+        )
 
     bot_scopes.sort()
     bot_events.sort()
@@ -179,9 +183,11 @@ def slack_manifest_command(args) -> int:
                       assistant:write scope, assistant_thread_* events) so
                       DMs render as a flat chat where bare slash commands
                       work inline instead of the Assistant thread pane.
-      --agent-view    Use Slack's Agent messaging experience (agent_view,
-                      app_home_opened + message.im) instead of the legacy
-                      Assistant messaging experience.
+      --agent-view    Explicitly use the default Agent messaging experience.
+      --assistant-view
+                      Keep an existing app on the legacy Assistant messaging
+                      experience while preparing for its February 2027
+                      deprecation.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
@@ -231,12 +237,12 @@ def slack_manifest_command(args) -> int:
             file=sys.stderr,
         )
         return 2
-    if getattr(args, "agent_view", False):
-        messaging_experience = "agent"
+    if getattr(args, "assistant_view", False):
+        messaging_experience = "assistant"
     elif getattr(args, "no_assistant", False):
         messaging_experience = "none"
     else:
-        messaging_experience = "assistant"
+        messaging_experience = "agent"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
@@ -249,6 +255,14 @@ def slack_manifest_command(args) -> int:
             messaging_experience=messaging_experience,
             long_description=long_description,
         )
+        if messaging_experience == "assistant":
+            print(
+                "Note: --assistant-view is only for existing assistant_view "
+                "apps. Slack plans to deprecate the Assistant messaging "
+                "experience in February 2027; new apps should use the default "
+                "agent_view.",
+                file=sys.stderr,
+            )
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

@@ -75,6 +75,18 @@ class TestSlackManifestConsoleExitStatus:
 class TestSlackManifestArgparse:
     """Slack manifest messaging-experience flags wire through argparse."""
 
+    def test_assistant_view_is_an_explicit_compatibility_mode(self, capsys):
+        args = _parse_slack_args(["slack", "manifest", "--assistant-view"])
+
+        assert slack_manifest_command(args) == 0
+
+        captured = capsys.readouterr()
+        manifest = json.loads(captured.out)
+        assert "assistant_view" in manifest["features"]
+        assert "agent_view" not in manifest["features"]
+        assert "February 2027" in captured.err
+        assert "existing assistant_view apps" in captured.err
+
 
 
 
@@ -121,14 +133,24 @@ class TestSlackFullManifest:
 
 
 
-    def test_assistant_features_remain_enabled(self):
-        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+    def test_agent_features_are_enabled_by_default(self):
+        manifest = _build_full_manifest("Hermes", "A workspace-specific agent")
 
-        assert "assistant_view" in manifest["features"]
-        assert "agent_view" not in manifest["features"]
+        assert "agent_view" in manifest["features"]
+        assert "assistant_view" not in manifest["features"]
+        assert (
+            manifest["features"]["agent_view"]["agent_description"]
+            == "A workspace-specific agent"
+        )
         assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
-        assert "assistant_thread_started" in bot_events
+        for event in ("app_context_changed", "app_home_opened", "agent_session_stopped"):
+            assert event in bot_events
+
+    def test_agent_description_respects_slack_limit(self):
+        manifest = _build_full_manifest("Hermes", "x" * 301)
+
+        assert manifest["features"]["agent_view"]["agent_description"] == "x" * 300
 
 
 

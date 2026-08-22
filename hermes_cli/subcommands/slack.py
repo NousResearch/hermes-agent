@@ -85,9 +85,14 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
     slack_messaging.add_argument(
         "--agent-view",
         action="store_true",
-        help="Emit Slack's Agent messaging experience (agent_view, "
-        "app_home_opened + message.im) instead of the legacy assistant_view "
-        "experience. This changes Slack's app messaging surface and cannot "
-        "be reversed in Slack after applying the manifest.",
+        help="Explicitly emit Slack's default Agent messaging experience "
+        "(agent_view, app_home_opened + message.im).",
+    )
+    slack_messaging.add_argument(
+        "--assistant-view",
+        action="store_true",
+        help="Emit the legacy Assistant messaging experience for an existing "
+        "assistant_view app. Slack plans to deprecate it in February 2027; "
+        "new apps should use the default Agent experience.",
     )
     slack_parser.set_defaults(func=cmd_slack)

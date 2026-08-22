@@ -516,6 +516,11 @@ DEFAULT_CONFIG = {
         #           is also excluded from the keyless ring)
         #   unset — auto: keyed when the API key is present, else the ring
         "provider_tier": {},
+        "xai": {
+            # Opt in to xAI Web Search image results under data.images
+            # (docs.x.ai web_search enable_image_search). Default off.
+            "enable_image_search": False,
+        },
     },
 
     "browser": {

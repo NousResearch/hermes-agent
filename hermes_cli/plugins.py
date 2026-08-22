@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import contextvars
 import importlib.metadata
 import importlib.util
 import inspect
@@ -46,6 +47,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -63,6 +65,7 @@ from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get, load_config_readonly
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+from agent.deadline import run_bounded_sync
 from hermes_cli.plugin_capabilities import (  # noqa: F401 — re-exported
     CAPABILITY_REGISTRY,
     VALID_CAPABILITY_IDS,
@@ -76,7 +79,6 @@ from hermes_cli.relay_plugin_cutover import (
     RELAY_PLUGINS_CONFIG_ENV,
     legacy_relay_plugin_keys,
 )
-
 
 def get_bundled_plugins_dir() -> Path:
     """Locate the bundled ``plugins/`` directory.
@@ -396,6 +398,17 @@ SHELL_UNSUPPORTED_HOOKS: Set[str] = {
     "transform_api_error_classification",
 }
 
+_DEFAULT_HOOK_TIMEOUT_SECONDS = 2.0
+_HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "post_tool_call", "transform_terminal_output", "transform_tool_result",
+    "transform_llm_output", "pre_llm_call", "post_llm_call",
+    "pre_api_request", "post_api_request", "api_request_error", "pre_verify",
+    "on_session_start", "on_session_end",
+}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
@@ -616,6 +629,20 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled)
     except Exception:
         return None
+
+
+def _get_hook_timeout_seconds() -> float:
+    """Return the per-callback lifecycle hook deadline in seconds."""
+    try:
+        config = load_config_readonly()
+        raw_value = cfg_get(
+            config, "plugins", "hook_timeout_seconds",
+            default=_DEFAULT_HOOK_TIMEOUT_SECONDS,
+        )
+        value = float(raw_value)
+        return value if value > 0 else _DEFAULT_HOOK_TIMEOUT_SECONDS
+    except Exception:
+        return _DEFAULT_HOOK_TIMEOUT_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -3467,6 +3494,11 @@ class PluginManager:
         # full plugin loads.
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
+        self._hook_timeout_seconds = _get_hook_timeout_seconds()
+        self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_running_callbacks: Dict[tuple, threading.Event] = {}
+        self._hook_timeout_lock = threading.Lock()
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -3665,8 +3697,30 @@ class PluginManager:
             ]
 
         found = bool(target_keys or registrations)
+        hook_names = {registration.key for registration in registrations if registration.kind == "hook"}
         self._dispose_registrations(registrations)
         self._forget_registrations(registrations)
+
+        stale_events = []
+        if not unload_all and hook_names:
+            with self._hook_timeout_lock:
+                live_callback_keys = {
+                    (hook_name, id(callback))
+                    for hook_name in hook_names
+                    for callback in self._hooks.get(hook_name, [])
+                }
+                stale_keys = [
+                    key
+                    for key in self._hook_running_callbacks
+                    if key[0] in hook_names and key not in live_callback_keys
+                ]
+                for key in stale_keys:
+                    event = self._hook_running_callbacks.pop(key, None)
+                    if event is not None:
+                        stale_events.append(event)
+                    self._hook_timeout_suppressed_until.pop(key, None)
+            for event in stale_events:
+                event.set()
 
         if unload_all:
             # The handles are authoritative for global registries, while the
@@ -3719,6 +3773,10 @@ class PluginManager:
             self._ownership_ledger.clear()
             self._plugins.clear()
             self._hooks.clear()
+            with self._hook_timeout_lock:
+                self._hook_timeout_suppressed_until.clear()
+                stale_events.extend(self._hook_running_callbacks.values())
+                self._hook_running_callbacks.clear()
             self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
@@ -3737,6 +3795,9 @@ class PluginManager:
         else:
             for key in target_keys:
                 self._plugins.pop(key, None)
+
+        for event in stale_events:
+            event.set()
 
         return found
 
@@ -5133,15 +5194,130 @@ class PluginManager:
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
+            callback_name = getattr(cb, "__name__", repr(cb))
+            callback_key = (hook_name, id(cb))
+            bounded = hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+            if (
+                hook_name in _HOOK_CALLER_THREAD_HOOKS
+                or not bounded
+                or callback_name.startswith("shell_hook[")
+            ):
+                try:
+                    ret = self._invoke_hook_callback(cb, kwargs)
+                    if ret is not None:
+                        results.append(ret)
+                except Exception as exc:
+                    logger.warning("Hook '%s' callback %s raised: %s", hook_name, callback_name, exc)
+                continue
+            skip_reason = None
+            while True:
+                now = time.monotonic()
+                with self._hook_timeout_lock:
+                    callback_live = any(
+                        registered is cb
+                        for registered in self._hooks.get(hook_name, [])
+                    )
+                    if not callback_live:
+                        skip_reason = "unloaded"
+                        running_event = None
+                    else:
+                        suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
+                        if suppressed_until is not None and suppressed_until > now:
+                            skip_reason = "suppressed"
+                            running_event = None
+                        else:
+                            if suppressed_until is not None:
+                                self._hook_timeout_suppressed_until.pop(callback_key, None)
+                            running_event = self._hook_running_callbacks.get(callback_key)
+                            if running_event is None:
+                                running_event = threading.Event()
+                                self._hook_running_callbacks[callback_key] = running_event
+                                break
+                if skip_reason is not None:
+                    break
+                if running_event.wait(self._hook_timeout_seconds):
+                    continue
+                with self._hook_timeout_lock:
+                    if self._hook_running_callbacks.get(callback_key) is running_event:
+                        self._hook_timeout_suppressed_until[callback_key] = (
+                            time.monotonic() + self._hook_timeout_suppression_seconds
+                        )
+                        skip_reason = "active callback timed out"
+                        break
+                continue
+            if skip_reason is not None:
+                logger.warning(
+                    "Hook '%s' callback %s skipped while %s; continuing %s",
+                    hook_name,
+                    callback_name,
+                    skip_reason,
+                    "fail-closed" if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS else "fail-open",
+                )
+                if (
+                    hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+                    and skip_reason != "unloaded"
+                ):
+                    results.append({"action": "block", "message": "pre_tool_call plugin callback timed out or is still running"})
+                continue
+            context = contextvars.copy_context()
+
+            def bounded_callback(
+                callback=cb,
+                callback_key=callback_key,
+                context=context,
+                running_event=running_event,
+            ) -> Any:
+                try:
+                    with self._hook_timeout_lock:
+                        callback_live = any(
+                            registered is callback
+                            for registered in self._hooks.get(hook_name, [])
+                        )
+                        state_is_current = (
+                            callback_live
+                            and self._hook_running_callbacks.get(callback_key) is running_event
+                        )
+                    if not state_is_current:
+                        return None
+                    return context.run(self._invoke_hook_callback, callback, kwargs)
+                finally:
+                    with self._hook_timeout_lock:
+                        if self._hook_running_callbacks.get(callback_key) is running_event:
+                            self._hook_running_callbacks.pop(callback_key, None)
+                    running_event.set()
             try:
-                ret = self._invoke_hook_callback(cb, kwargs)
+                bounded_result = run_bounded_sync(
+                    bounded_callback,
+                    self._hook_timeout_seconds,
+                    label=f"plugin-hook:{hook_name}:{callback_name}",
+                )
+                if bounded_result.timed_out:
+                    with self._hook_timeout_lock:
+                        callback_live = any(
+                            registered is cb
+                            for registered in self._hooks.get(hook_name, [])
+                        )
+                        state_is_current = (
+                            callback_live
+                            and self._hook_running_callbacks.get(callback_key) is running_event
+                        )
+                        if state_is_current:
+                            self._hook_timeout_suppressed_until[callback_key] = (
+                                time.monotonic() + self._hook_timeout_suppression_seconds
+                            )
+                    if not state_is_current:
+                        continue
+                    if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+                        results.append({"action": "block", "message": "pre_tool_call plugin callback timed out or is still running"})
+                    continue
+                ret = bounded_result.value
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
-                    getattr(cb, "__name__", repr(cb)),
+                    callback_name,
                     exc,
                 )
         return results

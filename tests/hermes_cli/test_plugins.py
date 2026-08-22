@@ -3,12 +3,16 @@
 import logging
 import json
 import sys
+import time
+import threading
+from contextvars import ContextVar
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+import hermes_cli.plugins as plugins
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
@@ -781,7 +785,37 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
+    def test_hook_policies_are_disjoint_and_valid(self):
+        policies = (
+            plugins._HOOK_TIMEOUT_BOUNDED_HOOKS,
+            plugins._HOOK_TIMEOUT_FAIL_CLOSED_HOOKS,
+            plugins._HOOK_CALLER_THREAD_HOOKS,
+        )
+        assert all(policy <= VALID_HOOKS for policy in policies)
+        assert all(
+            left.isdisjoint(right)
+            for index, left in enumerate(policies)
+            for right in policies[index + 1:]
+        )
+        assert {"pre_verify", "on_session_start", "on_session_end"} <= (
+            plugins._HOOK_TIMEOUT_BOUNDED_HOOKS
+        )
+        assert plugins._HOOK_TIMEOUT_FAIL_CLOSED_HOOKS == {"pre_tool_call"}
+        assert plugins._HOOK_CALLER_THREAD_HOOKS == {"subagent_stop"}
 
+    def test_hook_timeout_config_uses_positive_values_only(self, monkeypatch):
+        configs = iter(
+            [
+                {"plugins": {"hook_timeout_seconds": 1.5}},
+                {"plugins": {"hook_timeout_seconds": 0}},
+                {"plugins": {"hook_timeout_seconds": "invalid"}},
+            ]
+        )
+        monkeypatch.setattr(plugins, "load_config_readonly", lambda: next(configs))
+
+        assert plugins._get_hook_timeout_seconds() == 1.5
+        assert plugins._get_hook_timeout_seconds() == plugins._DEFAULT_HOOK_TIMEOUT_SECONDS
+        assert plugins._get_hook_timeout_seconds() == plugins._DEFAULT_HOOK_TIMEOUT_SECONDS
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
@@ -810,6 +844,435 @@ class TestPluginHooks:
 
 
 
+    def test_invoke_hook_adds_observer_schema_version(self, tmp_path, monkeypatch):
+        """invoke_hook() supplies the observer schema version for all hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "schema_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: kw.get("telemetry_schema_version"))'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
+            "hermes.observer.v1"
+        ]
+
+    def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
+        """A hook callback that raises does NOT crash the caller."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "bad_hook",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: 1/0)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Should not raise despite 1/0
+        mgr.invoke_hook("post_tool_call", tool_name="x", args={}, result="r", task_id="")
+
+    def test_slow_hook_times_out_and_later_callbacks_still_run(self, caplog):
+        """A hung callback is skipped after the deadline and dispatch continues."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        calls = []
+        release = threading.Event()
+
+        def before(**kwargs):
+            calls.append("before")
+            return "before-result"
+
+        def slow(**kwargs):
+            calls.append("slow-start")
+            release.wait(30)
+            calls.append("slow-end")
+            return "slow-result"
+
+        def after(**kwargs):
+            calls.append("after")
+            return "after-result"
+
+        mgr._hooks["pre_llm_call"] = [before, slow, after]
+
+        start = time.perf_counter()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+        elapsed = time.perf_counter() - start
+
+        try:
+            assert elapsed < 0.20
+            assert results == ["before-result", "after-result"]
+            assert calls[:3] == ["before", "slow-start", "after"]
+            assert any("timed out" in r.getMessage() for r in caplog.records)
+        finally:
+            release.set()
+
+    def test_distinct_hung_callbacks_do_not_starve_healthy_hooks(self, caplog):
+        """Each timed-out callback has isolated capacity."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        mgr._hook_timeout_suppression_seconds = 30.0
+        calls = []
+        release = threading.Event()
+
+        def slow(index):
+            def callback(**kwargs):
+                calls.append((index, "start"))
+                release.wait(30)
+                calls.append((index, "end"))
+            return callback
+
+        def healthy(**kwargs):
+            calls.append(("healthy", "run"))
+            return "healthy-result"
+
+        slow_callbacks = [slow(index) for index in range(4)]
+        mgr._hooks["pre_llm_call"] = [*slow_callbacks, healthy]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            started = time.perf_counter()
+            results = mgr.invoke_hook("pre_llm_call", session_id="s1")
+            elapsed = time.perf_counter() - started
+
+        try:
+            assert elapsed < 0.20
+            assert results == ["healthy-result"]
+            assert calls.count(("healthy", "run")) == 1
+            assert all(calls.count((index, "start")) == 1 for index in range(4))
+            assert any("timed out" in record.getMessage() for record in caplog.records)
+        finally:
+            release.set()
+
+    @pytest.mark.parametrize("hook_name", ["on_session_start", "on_session_end"])
+    def test_session_hooks_are_bounded(self, hook_name, caplog):
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        release = threading.Event()
+
+        def slow(**kwargs):
+            release.wait(30)
+        mgr._hooks[hook_name] = [slow]
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                started = time.perf_counter()
+                assert mgr.invoke_hook(hook_name, session_id="s1") == []
+                elapsed = time.perf_counter() - started
+            assert elapsed < 0.20
+            assert any(hook_name in record.getMessage() for record in caplog.records)
+        finally:
+            release.set()
+
+    def test_pre_tool_call_timeout_and_suppression_block(self, monkeypatch):
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.02
+        release = threading.Event()
+        started = []
+
+        def slow(**kwargs):
+            started.append(True)
+            release.wait(30)
+
+        mgr._hooks["pre_tool_call"] = [slow]
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: mgr)
+
+        try:
+            first = get_pre_tool_call_block_message("terminal", {})
+            second = get_pre_tool_call_block_message("terminal", {})
+            assert first and "timed out" in first
+            assert second and "timed out" in second
+            assert started == [True]
+        finally:
+            release.set()
+
+    def test_concurrent_healthy_callbacks_wait_without_blocking(self):
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.2
+        entered = threading.Event()
+        release = threading.Event()
+        second_started = threading.Event()
+        results = []
+        errors = []
+
+        def healthy(**kwargs):
+            entered.set()
+            release.wait(1)
+
+        def invoke():
+            try:
+                results.append(mgr.invoke_hook("pre_tool_call", tool_name="terminal"))
+            except BaseException as exc:
+                errors.append(exc)
+
+        mgr._hooks["pre_tool_call"] = [healthy]
+        first = threading.Thread(target=invoke)
+        second = threading.Thread(
+            target=lambda: (second_started.set(), invoke()),
+        )
+        first.start()
+        assert entered.wait(1)
+        second.start()
+        assert second_started.wait(1)
+        time.sleep(0.05)
+        release.set()
+        first.join(1)
+        second.join(1)
+
+        assert errors == []
+        assert results == [[], []]
+
+    def test_shell_hook_callback_keeps_its_caller_thread_and_timeout(self):
+        mgr = PluginManager()
+        entered = threading.Event()
+        release = threading.Event()
+        callback_thread = []
+        caller_thread = []
+
+        def shell_hook(**kwargs):
+            callback_thread.append(threading.current_thread())
+            entered.set()
+            release.wait(1)
+            return {"action": "allow"}
+
+        shell_hook.__name__ = "shell_hook[pre_tool_call:echo]"
+        mgr._hooks["pre_tool_call"] = [shell_hook]
+
+        def invoke():
+            caller_thread.append(threading.current_thread())
+            return mgr.invoke_hook("pre_tool_call", tool_name="terminal")
+
+        thread = threading.Thread(target=invoke)
+        thread.start()
+        assert entered.wait(1)
+        release.set()
+        thread.join(1)
+
+        assert callback_thread == caller_thread
+
+
+    def test_bounded_hook_uses_shared_adapter_and_caller_context(self):
+        mgr = PluginManager()
+        marker = ContextVar("plugin-test-marker", default="missing")
+        marker.set("caller-context")
+
+        def narrow(session_id, telemetry_schema_version):
+            return marker.get(), session_id, telemetry_schema_version
+
+        mgr._hooks["pre_llm_call"] = [narrow]
+        with patch("hermes_cli.plugins.run_bounded_sync", wraps=plugins.run_bounded_sync) as bounded:
+            assert mgr.invoke_hook("pre_llm_call", session_id="session-1", extra="ignored") == [
+                ("caller-context", "session-1", "hermes.observer.v1")
+            ]
+
+        bounded.assert_called_once()
+        assert bounded.call_args.args[1] == mgr._hook_timeout_seconds
+        assert bounded.call_args.kwargs["label"].startswith("plugin-hook:pre_llm_call:narrow")
+
+    def test_bounded_callback_closes_over_registered_callback(self, monkeypatch):
+        mgr = PluginManager()
+        calls = []
+        deferred = []
+
+        def first(**kwargs):
+            calls.append("first")
+            return "first-result"
+
+        def second(**kwargs):
+            calls.append("second")
+            return "second-result"
+
+        mgr._hooks["pre_llm_call"] = [first, second]
+
+        def delayed_runner(callback, timeout, **kwargs):
+            deferred.append(callback)
+            if len(deferred) == 1:
+                return types.SimpleNamespace(timed_out=True, value=None)
+            return types.SimpleNamespace(timed_out=False, value=callback())
+
+        monkeypatch.setattr(plugins, "run_bounded_sync", delayed_runner)
+
+        assert mgr.invoke_hook("pre_llm_call", session_id="session-1") == [
+            "second-result"
+        ]
+        deferred[0]()
+        assert calls == ["second", "first"]
+
+    def test_hook_exception_still_allows_later_return_values(self, caplog):
+        """Bounded dispatch keeps the prior fail-open exception behavior."""
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.1
+
+        def before(**kwargs):
+            return "before-result"
+
+        def broken(**kwargs):
+            raise RuntimeError("boom")
+
+        def after(**kwargs):
+            return "after-result"
+
+        mgr._hooks["pre_llm_call"] = [before, broken, after]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = mgr.invoke_hook(
+                "pre_llm_call",
+                session_id="s1",
+                user_message="hi",
+                conversation_history=[],
+                is_first_turn=True,
+                model="test",
+            )
+
+        assert results == ["before-result", "after-result"]
+        assert any("raised: boom" in r.getMessage() for r in caplog.records)
+
+    def test_unload_clears_hook_timeout_state(self):
+        mgr = PluginManager()
+        callback_key = ("pre_tool_call", 1)
+        mgr._hook_timeout_suppressed_until[callback_key] = time.monotonic() + 60
+        event = threading.Event()
+        mgr._hook_running_callbacks[callback_key] = event
+
+        mgr.unload()
+
+        assert mgr._hook_timeout_suppressed_until == {}
+        assert mgr._hook_running_callbacks == {}
+        assert event.is_set()
+
+    def test_scoped_unload_clears_removed_hook_timeout_state(self):
+        mgr = PluginManager()
+        callback = lambda **kwargs: None
+        PluginContext(PluginManifest(name="test-plugin"), mgr).register_hook(
+            "pre_tool_call", callback
+        )
+        callback_key = ("pre_tool_call", id(callback))
+        mgr._hook_timeout_suppressed_until[callback_key] = time.monotonic() + 60
+        mgr._hook_running_callbacks[callback_key] = threading.Event()
+
+        mgr.unload("test-plugin")
+
+        assert mgr._hook_timeout_suppressed_until == {}
+        assert mgr._hook_running_callbacks == {}
+
+    def test_scoped_unload_invalidates_waiting_callback_snapshot(self):
+        mgr = PluginManager()
+        mgr._hook_timeout_seconds = 0.2
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def callback(**kwargs):
+            calls.append(True)
+            entered.set()
+            release.wait(1)
+
+        PluginContext(PluginManifest(name="test-plugin"), mgr).register_hook(
+            "pre_tool_call", callback
+        )
+        results = []
+        first = threading.Thread(
+            target=lambda: results.append(mgr.invoke_hook("pre_tool_call"))
+        )
+        second = threading.Thread(
+            target=lambda: results.append(mgr.invoke_hook("pre_tool_call"))
+        )
+        first.start()
+        assert entered.wait(1)
+        second.start()
+        time.sleep(0.05)
+        mgr.unload("test-plugin")
+        release.set()
+        first.join(1)
+        second.join(1)
+
+        assert calls == [True]
+        assert results == [[], []]
+
+    def test_unload_prevents_timeout_state_repopulation(self, monkeypatch):
+        mgr = PluginManager()
+        PluginContext(PluginManifest(name="test-plugin"), mgr).register_hook(
+            "pre_tool_call", lambda **kwargs: None
+        )
+
+        def timed_out_runner(callback, timeout, **kwargs):
+            mgr.unload("test-plugin")
+            return types.SimpleNamespace(timed_out=True, value=None)
+
+        monkeypatch.setattr(plugins, "run_bounded_sync", timed_out_runner)
+
+        assert mgr.invoke_hook("pre_tool_call") == []
+        assert mgr._hook_timeout_suppressed_until == {}
+        assert mgr._hook_running_callbacks == {}
+
+    def test_non_hot_hook_stays_on_caller_thread(self):
+        """Lifecycle hooks preserve caller-thread semantics outside hot paths."""
+        mgr = PluginManager()
+        seen_threads = []
+        caller_thread = threading.current_thread()
+
+        def capture(**kwargs):
+            seen_threads.append(threading.current_thread())
+
+        mgr._hooks["subagent_stop"] = [capture]
+
+        mgr.invoke_hook(
+            "subagent_stop",
+            parent_session_id="parent-1",
+            child_status="completed",
+        )
+
+        assert seen_threads == [caller_thread]
+
+    def test_hook_return_values_collected(self, tmp_path, monkeypatch):
+        """invoke_hook() collects non-None return values from callbacks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "ctx_plugin",
+            register_body=(
+                'ctx.register_hook("pre_llm_call", '
+                'lambda **kw: {"context": "memory from plugin"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook("pre_llm_call", session_id="s1", user_message="hi",
+                                  conversation_history=[], is_first_turn=True, model="test")
+        assert len(results) == 1
+        assert results[0] == {"context": "memory from plugin"}
+
+    def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
+        """invoke_hook() excludes None returns from the result list."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "none_hook",
+            register_body='ctx.register_hook("post_llm_call", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook("post_llm_call", session_id="s1",
+                                  user_message="hi", assistant_response="bye", model="test")
+        assert results == []
 
     def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

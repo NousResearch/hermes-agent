@@ -147,8 +147,18 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
+# NOTE (#89278): "Hermes Agent" (not "Nous Research") is the exact trigger
+# phrase for z.ai's (GLM Coding Plan) content filter. Bisected against the
+# live API: "You are Hermes Agent, an assistant." is refused, disguised as
+# capacity trouble (HTTP 429/1305 on the OpenAI-compatible surface, 529/1305
+# on the Anthropic surface); "You are Hermes, an assistant." and "You are an
+# agent for Nous Research." both return 200. Same failure class as #82154
+# (Anthropic content-filtering a different sentence, disguised as a billing
+# error) -- a different provider keying on the product name itself this
+# time. If you rewrite "Hermes" back to "Hermes Agent" here, re-verify
+# against a live z.ai GLM Coding Plan key.
 DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
+    "You are Hermes, an intelligent AI assistant created by Nous Research. "
     "You are helpful, knowledgeable, and direct. You assist users with a wide "
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
@@ -158,7 +168,7 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
+    "You run on Hermes (by Nous Research). When the user needs help with "
     "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
     "it — or when you need to understand your own features, tools, or capabilities, "
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
@@ -2179,7 +2189,7 @@ def _build_skills_system_prompt_inner(
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "or troubleshoot Hermes itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"

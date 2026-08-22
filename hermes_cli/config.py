@@ -870,12 +870,16 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME, upgrading legacy empty templates.
+    """Seed a default SOUL.md into HERMES_HOME, upgrading known legacy templates.
 
     First run: write DEFAULT_SOUL_MD. Existing installs whose SOUL.md is still
-    the old comment-only scaffold (seeded by older install.sh / install.ps1 /
-    docker images, which shadowed the runtime default) get upgraded in place to
-    DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+    a known legacy template -- the old comment-only scaffold (seeded by older
+    install.sh / install.ps1 / docker images, which shadowed the runtime
+    default), OR the old DEFAULT_SOUL_MD persona text (pre-#89278, containing
+    the z.ai content-filter trigger phrase) -- get upgraded in place to the
+    current DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never
+    touched. See is_legacy_template_soul() for the exact-match safety
+    reasoning behind each recognized template.
     """
     soul_path = home / "SOUL.md"
     if soul_path.exists():

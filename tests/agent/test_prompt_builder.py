@@ -442,7 +442,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "Hermes Agent" in result
+        assert "intelligent AI assistant created by Nous Research" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -1050,6 +1050,65 @@ class TestParallelToolCallGuidance:
     def test_has_a_heading(self):
         # Heading delimits it as its own section in the assembled prompt.
         assert PARALLEL_TOOL_CALL_GUIDANCE.lstrip().startswith("#")
+
+
+class TestAgentIdentityAvoidsZaiContentFilter:
+    """Regression for issue #89278: z.ai's (GLM Coding Plan) content filter
+    keys on the exact phrase "Hermes Agent" in the system role and disguises
+    the refusal as fake capacity trouble (429/1305, 529/1305). Bisected live
+    against the API: "You are Hermes Agent, an assistant." is refused;
+    "You are Hermes, an assistant." and "You are an agent for Nous Research."
+    both return 200 -- the product name itself is the trigger, not "Nous
+    Research" (a separate concern for a different provider)."""
+
+    def test_default_agent_identity_does_not_contain_the_trigger_phrase(self):
+        assert "Hermes Agent" not in DEFAULT_AGENT_IDENTITY
+        assert DEFAULT_AGENT_IDENTITY.startswith("You are Hermes, ")
+
+    def test_default_agent_identity_still_credits_nous_research(self):
+        """Sanity: only the "Hermes Agent" -> "Hermes" phrase changed --
+        this fix is scoped to the z.ai trigger specifically, not a
+        broader removal of attribution (that's #81812's separate,
+        Antigravity-specific concern)."""
+        assert "Nous Research" in DEFAULT_AGENT_IDENTITY
+
+    def test_help_guidance_does_not_contain_the_trigger_phrase(self):
+        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+
+        assert "Hermes Agent" not in HERMES_AGENT_HELP_GUIDANCE
+        assert HERMES_AGENT_HELP_GUIDANCE.startswith("You run on Hermes")
+        assert "Hermes Agent" not in HERMES_AGENT_HELP_GUIDANCE
+
+    def test_default_soul_md_does_not_contain_the_trigger_phrase(self):
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert "Hermes Agent" not in DEFAULT_SOUL_MD
+        assert DEFAULT_SOUL_MD.startswith("You are Hermes, ")
+
+    def test_default_soul_md_matches_default_agent_identity(self):
+        """These two are deliberately kept in sync (see the code comment
+        on _LEGACY_TEMPLATE_SOULS) -- a fix to one must not silently
+        diverge from the other."""
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert DEFAULT_SOUL_MD == DEFAULT_AGENT_IDENTITY
+
+    def test_legacy_template_souls_comparison_strings_are_untouched(self):
+        """The frozen historical comparison strings used to detect an
+        un-customized SOUL.md from older installers must NOT be touched
+        by this content-filter fix -- they are exact-match templates
+        against real files already on users' disks, not injected prompt
+        content, and changing them would break the upgrade-detection
+        they exist for."""
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        assert any(
+            "# Hermes Agent Persona" in template
+            for template in _LEGACY_TEMPLATE_SOULS
+        ), (
+            "the legacy comparison templates must still match historical "
+            "installer output verbatim, unmodified by this fix"
+        )
 
 
 

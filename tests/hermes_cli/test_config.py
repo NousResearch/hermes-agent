@@ -61,6 +61,44 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
+    def test_upgrades_old_default_persona_soul_md_containing_the_zai_trigger_phrase(
+        self, tmp_path
+    ):
+        """Review of #90094: an existing installation whose SOUL.md still
+        holds the OLD, pre-#89278 default persona ("Hermes Agent", z.ai's
+        content-filter trigger phrase) must self-heal to the new,
+        rewritten DEFAULT_SOUL_MD on the next startup -- not just the
+        never-customized comment scaffold the prior test covers."""
+        from hermes_cli.default_soul import (
+            DEFAULT_SOUL_MD,
+            _LEGACY_DEFAULT_PERSONA_SOULS,
+        )
+
+        assert "Hermes Agent" in _LEGACY_DEFAULT_PERSONA_SOULS[0], (
+            "sanity: the frozen old-default template must still carry the "
+            "trigger phrase this fix exists to migrate away from"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_LEGACY_DEFAULT_PERSONA_SOULS[0], encoding="utf-8")
+            ensure_hermes_home()
+            healed = soul_path.read_text(encoding="utf-8")
+            assert healed == DEFAULT_SOUL_MD
+            assert "Hermes Agent" not in healed
+
+    def test_does_not_touch_a_genuinely_customized_soul_md(self, tmp_path):
+        """Sanity: a real, user-written persona -- even one that happens to
+        mention "Hermes Agent" as part of deliberate customization -- must
+        never be silently rewritten. Only an EXACT match against a known,
+        frozen legacy template self-heals."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            custom = "You are Hermes Agent, but grumpy and speak only in haiku."
+            soul_path.write_text(custom, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == custom
+
 
 
 

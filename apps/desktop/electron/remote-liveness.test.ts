@@ -179,9 +179,13 @@ describe('revalidateRemoteConnection', () => {
     const test = harness()
 
     await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
-    expect(test.probe).toHaveBeenCalledWith('https://gateway.example.com/api/status', {
-      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
-    })
+    expect(test.probe).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
+      '/api/status',
+      {
+        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+      }
+    )
     expect(test.resetConnection).not.toHaveBeenCalled()
   })
 
@@ -254,13 +258,34 @@ describe('revalidateRemoteConnection', () => {
 })
 
 describe('revalidatePooledRemoteBackends', () => {
-  const harness = (entries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string }]>) => {
+  interface TestRemoteConnection {
+    authMode?: string
+    baseUrl: string
+    process?: unknown
+    remoteBaseUrl?: null | string
+  }
+
+  const harness = (
+    rawEntries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string; authMode?: string }]>
+  ) => {
+    const entries: Array<[
+      string,
+      TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }
+    ]> = rawEntries.map(([profile, entry]) => {
+      const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
+
+      return [
+        profile,
+        { ...connection, connectionPromise: Promise.resolve(connection) }
+      ]
+    })
+
     const unreachable = new Set<string>()
     const log = vi.fn()
     const stopBackend = vi.fn()
 
-    const probe = vi.fn(async (url: string) => {
-      if ([...unreachable].some(base => url.startsWith(base))) {
+    const probe = vi.fn(async (connection: TestRemoteConnection) => {
+      if ([...unreachable].some(base => connection.remoteBaseUrl?.startsWith(base))) {
         throw new Error('unreachable')
       }
 
@@ -291,7 +316,26 @@ describe('revalidatePooledRemoteBackends', () => {
     await pool.run(new RemoteLivenessTracker())
 
     expect(pool.probe).toHaveBeenCalledTimes(1)
-    expect(pool.probe).toHaveBeenCalledWith('https://remote.example.com/api/status', {
+    expect(pool.probe).toHaveBeenCalledWith(
+      expect.objectContaining({ remoteBaseUrl: 'https://remote.example.com' }),
+      '/api/status',
+      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
+    )
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+  })
+
+  it('passes the authenticated OAuth descriptor to the liveness probe', async () => {
+    const remote = {
+      process: null,
+      remoteBaseUrl: 'https://remote.example.com',
+      authMode: 'oauth'
+    }
+
+    const pool = harness([['oauth', remote]])
+
+    await pool.run(new RemoteLivenessTracker())
+
+    expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/status', {
       timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
     })
     expect(pool.stopBackend).not.toHaveBeenCalled()

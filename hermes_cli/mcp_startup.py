@@ -17,6 +17,14 @@ def _has_configured_mcp_servers() -> bool:
         from hermes_cli.config import read_raw_config
 
         raw_config = read_raw_config() or {}
+        # Honor Managed Scope before deciding: mcp_servers published by an
+        # administrator (/etc/hermes/config.yaml) are part of the effective
+        # config and honored at connect time, so the discovery gate must see
+        # them too — this is the shared overlay every other self-built config
+        # reader already applies (#91073). Fail-open like the overlay itself.
+        from hermes_cli import managed_scope
+
+        raw_config = managed_scope.apply_managed_overlay(raw_config)
         mcp_servers = raw_config.get("mcp_servers")
         if isinstance(mcp_servers, dict) and len(mcp_servers) > 0:
             return True

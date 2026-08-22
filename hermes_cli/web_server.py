@@ -12774,6 +12774,27 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
 
 
 
+def _resolve_cron_job_in_profile(profile: str, ref: str) -> Optional[Dict[str, Any]]:
+    """The job ``ref`` names inside ``profile``, or None.
+
+    ``ref`` is whatever the caller had: the canonical id, or the human name
+    ``_find_cron_job_profile`` also matches on. ``cron.jobs.get_job`` compares
+    against the id alone, so a name-referenced job resolved to no record and
+    left the caller scanning run-session ids under a name that never appears
+    in one. ``resolve_job_ref`` accepts both, preferring an exact id match.
+
+    An ambiguous name is reported as unresolved rather than guessing between
+    the jobs it matches: the callers below degrade to an empty history, which
+    is the honest answer to a reference that names more than one job.
+    """
+    from cron.jobs import AmbiguousJobReference
+
+    try:
+        return _call_cron_for_profile(profile, "resolve_job_ref", ref)
+    except AmbiguousJobReference:
+        return None
+
+
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
@@ -12793,7 +12814,19 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
     if selected:
-        job = _call_cron_for_profile(selected, "get_job", job_id)
+        job = _resolve_cron_job_in_profile(selected, job_id)
+        if not job:
+            # ``profile`` scopes the REQUEST, not the job. The desktop cron view
+            # lists jobs across every profile (``_list_cron_jobs_sync("all")``)
+            # but tags its REST calls with whichever profile is active, so the
+            # two disagree the moment the opened job lives somewhere else. The
+            # requested profile provably does not own this job, and its state.db
+            # therefore cannot hold a single one of the runs, so read the owner's
+            # instead of returning an empty history (#87882).
+            owner = _find_cron_job_profile(job_id)
+            if owner and owner != selected:
+                selected = owner
+                job = _resolve_cron_job_in_profile(selected, job_id)
         if job and job.get("id"):
             canonical = str(job["id"])
 

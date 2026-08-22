@@ -1187,3 +1187,155 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+def _make_job_in(monkeypatch, profile: str, name: str):
+    """Create a cron job inside ``profile`` without a live scheduler."""
+    from cron.scheduler_provider import CronScheduler
+    from hermes_cli import web_server
+
+    class SilentProvider(CronScheduler):
+        @property
+        def name(self):
+            return "silent"
+
+        def start(self, stop_event, **kw):
+            pass
+
+        def register_job(self, job):
+            pass
+
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        lambda: SilentProvider(),
+    )
+
+    return web_server._call_cron_for_profile(
+        profile,
+        "create_job",
+        prompt="fires somewhere else",
+        schedule="every 1h",
+        name=name,
+    )
+
+
+def _seed_cron_run(profile: str, job_id: str, idx: int = 1) -> str:
+    """Write one finished cron run session into ``profile``'s state.db."""
+    from hermes_cli import web_server
+
+    session_id = f"cron_{job_id}_{idx:08d}"
+    db = web_server._open_session_db_for_profile(profile, read_only=False)
+    try:
+        db.create_session(session_id=session_id, source="cron")
+        db.append_message(session_id, role="user", content="fired")
+        db.append_message(session_id, role="assistant", content="done")
+        db.end_session(session_id, "completed")
+    finally:
+        db.close()
+
+    return session_id
+
+
+@pytest.mark.asyncio
+async def test_run_history_follows_the_owning_profile(isolated_profiles, monkeypatch):
+    """A request scoped to a profile that does not own the job still gets its runs.
+
+    The desktop cron view lists jobs across every profile but tags its REST
+    calls with whichever profile is active, so the two disagree the moment the
+    opened job lives elsewhere.  Trusting the request scope reads a state.db
+    that provably cannot hold the runs, and the panel says "No runs yet"
+    (#87882).
+    """
+    from hermes_cli import web_server
+
+    job = _make_job_in(monkeypatch, "worker_alpha", "alpha-job")
+    session_id = _seed_cron_run("worker_alpha", job["id"])
+
+    payload = await web_server.list_cron_job_runs(job["id"], profile="default")
+
+    assert [run["id"] for run in payload["runs"]] == [session_id]
+    assert payload["runs"][0]["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_run_history_reads_the_requested_profile_when_it_owns_the_job(
+    isolated_profiles, monkeypatch
+):
+    """The owner lookup is a fallback, not a re-route: a matching scope is kept."""
+    from hermes_cli import web_server
+
+    job = _make_job_in(monkeypatch, "worker_alpha", "alpha-job")
+    session_id = _seed_cron_run("worker_alpha", job["id"])
+
+    payload = await web_server.list_cron_job_runs(job["id"], profile="worker_alpha")
+
+    assert [run["id"] for run in payload["runs"]] == [session_id]
+    assert payload["runs"][0]["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_run_history_is_empty_for_a_job_no_profile_owns(
+    isolated_profiles, monkeypatch
+):
+    """An unknown job stays empty rather than falling back to a wrong store."""
+    from hermes_cli import web_server
+
+    job = _make_job_in(monkeypatch, "worker_alpha", "alpha-job")
+    _seed_cron_run("worker_alpha", job["id"])
+
+    payload = await web_server.list_cron_job_runs("no-such-job", profile="default")
+
+    assert payload["runs"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_history_resolves_a_job_named_rather_than_identified(
+    isolated_profiles, monkeypatch
+):
+    """The owner fallback must still map a human name to the canonical id.
+
+    Run-session ids carry the canonical job id, so a lookup that finds the
+    owner but keeps the human name scans the wrong id prefix and comes back
+    empty.
+    """
+    from hermes_cli import web_server
+
+    job = _make_job_in(monkeypatch, "worker_alpha", "alpha-job")
+    session_id = _seed_cron_run("worker_alpha", job["id"])
+
+    payload = await web_server.list_cron_job_runs("alpha-job", profile="default")
+
+    assert [run["id"] for run in payload["runs"]] == [session_id]
+
+
+@pytest.mark.asyncio
+async def test_run_history_resolves_a_name_on_the_unscoped_path_too(
+    isolated_profiles, monkeypatch
+):
+    """The name lookup is not conditional on the owner fallback running."""
+    from hermes_cli import web_server
+
+    job = _make_job_in(monkeypatch, "worker_alpha", "alpha-job")
+    session_id = _seed_cron_run("worker_alpha", job["id"])
+
+    payload = await web_server.list_cron_job_runs("alpha-job", profile=None)
+
+    assert [run["id"] for run in payload["runs"]] == [session_id]
+
+
+@pytest.mark.asyncio
+async def test_run_history_is_empty_for_an_ambiguous_name(
+    isolated_profiles, monkeypatch
+):
+    """A name matching two jobs has no single history to show."""
+    from hermes_cli import web_server
+
+    first = _make_job_in(monkeypatch, "worker_alpha", "twin")
+    second = _make_job_in(monkeypatch, "worker_alpha", "twin")
+    assert first["id"] != second["id"]
+    _seed_cron_run("worker_alpha", first["id"])
+    _seed_cron_run("worker_alpha", second["id"])
+
+    payload = await web_server.list_cron_job_runs("twin", profile="worker_alpha")
+
+    assert payload["runs"] == []

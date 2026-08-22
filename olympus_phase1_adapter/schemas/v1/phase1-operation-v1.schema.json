@@ -1,0 +1,199 @@
+{
+  "$defs": {
+    "phase0_request": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "additionalProperties": false,
+          "properties": {
+            "granted": {
+              "type": "boolean"
+            },
+            "scope": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "granted"
+          ],
+          "type": "object"
+        },
+        "contract_id": {
+          "const": "olympus.repo-analysis.request/v1"
+        },
+        "controls": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_cloud_fallback": {
+              "type": "boolean"
+            },
+            "allow_response_repair": {
+              "type": "boolean"
+            },
+            "allow_retries": {
+              "type": "boolean"
+            },
+            "fake_transports_only": {
+              "type": "boolean"
+            },
+            "max_pair_a_attempts": {
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_pair_b_attempts": {
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "offline": {
+              "type": "boolean"
+            },
+            "tools": {
+              "items": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 16,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "offline",
+            "fake_transports_only",
+            "tools",
+            "max_pair_a_attempts",
+            "max_pair_b_attempts",
+            "allow_retries",
+            "allow_response_repair",
+            "allow_cloud_fallback"
+          ],
+          "type": "object"
+        },
+        "limits": {
+          "additionalProperties": false,
+          "properties": {
+            "max_file_bytes": {
+              "maximum": 10485760,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_files": {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_findings": {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_model_json_bytes": {
+              "maximum": 10485760,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_total_bytes": {
+              "maximum": 104857600,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "max_files",
+            "max_file_bytes",
+            "max_total_bytes",
+            "max_findings",
+            "max_model_json_bytes"
+          ],
+          "type": "object"
+        },
+        "purpose": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository_id": {
+          "pattern": "^synthetic-[a-z0-9][a-z0-9._-]{0,62}$",
+          "type": "string"
+        },
+        "repository_kind": {
+          "enum": [
+            "SYNTHETIC",
+            "LIVE"
+          ],
+          "type": "string"
+        },
+        "repository_path": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "request_id": {
+          "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+          "type": "string"
+        },
+        "requested_paths": {
+          "items": {
+            "maxLength": 240,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 192,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "contract_id",
+        "request_id",
+        "repository_id",
+        "repository_kind",
+        "repository_path",
+        "requested_paths",
+        "purpose",
+        "authority",
+        "limits",
+        "controls"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "olympus.hermes.phase1.operation/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "correlation_id": {
+      "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+      "type": "string"
+    },
+    "engine_contract_digest": {
+      "const": "2c5860582fcc73192b4e301544e043189dac1079b47078bad3c1f93371b8ee85"
+    },
+    "idempotency_key": {
+      "pattern": "^idem-[a-z0-9][a-z0-9._-]{0,122}$",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/phase0_request"
+    },
+    "schema_version": {
+      "const": "olympus.hermes.phase1.operation/v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "correlation_id",
+    "idempotency_key",
+    "engine_contract_digest",
+    "payload"
+  ],
+  "title": "olympus.hermes.phase1.operation/v1",
+  "type": "object"
+}

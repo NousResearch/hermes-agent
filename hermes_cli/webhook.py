@@ -10,6 +10,8 @@ Subscriptions persist to ~/.hermes/webhook_subscriptions.json and are
 hot-reloaded by the webhook adapter without a gateway restart.
 """
 
+import copy
+
 import json
 import os
 import re
@@ -20,8 +22,9 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_replace
 from hermes_cli.config import cfg_get
+from gateway.platforms.webhook_models import to_legacy_route
+from gateway.platforms.webhook_store import WebhookRouteStore
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -37,47 +40,90 @@ def _subscriptions_path() -> Path:
     return _hermes_home() / _SUBSCRIPTIONS_FILENAME
 
 
-def _load_subscriptions() -> Dict[str, dict]:
-    path = _subscriptions_path()
-    if not path.exists():
-        return {}
+def _route_store() -> WebhookRouteStore:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name() or "default"
+        if profile == "custom":
+            profile = "default"
     except Exception:
-        return {}
+        profile = "default"
+    return WebhookRouteStore.for_hermes_home(_hermes_home(), profile)
+
+
+# WEBHOOK_REVOLUTION_TASK6_ATOMIC_SNAPSHOT_V1
+class ConcurrentWebhookUpdateError(RuntimeError):
+    """A route changed divergently after a caller loaded its snapshot."""
+
+
+class _SubscriptionSnapshot(dict):
+    """Legacy dict view retaining the baseline for a three-way atomic save."""
+
+    def __init__(self, value: dict[str, dict]):
+        super().__init__(copy.deepcopy(value))
+        self._baseline = copy.deepcopy(value)
+
+
+def _merge_subscription_snapshot(
+    baseline: dict[str, dict],
+    desired: dict[str, dict],
+    current: dict[str, dict],
+) -> dict[str, dict]:
+    """Three-way merge preserving unrelated concurrent route mutations.
+
+    A route is safe to apply when either the caller did not change it or no
+    other writer changed it since the snapshot. Divergent writes to the same
+    route fail closed rather than silently dropping one writer.
+    """
+    missing = object()
+    merged: dict[str, dict] = {}
+    conflicts: list[str] = []
+    for name in sorted(set(baseline) | set(desired) | set(current)):
+        before = baseline.get(name, missing)
+        wanted = desired.get(name, missing)
+        live = current.get(name, missing)
+        if wanted == before:
+            chosen = live
+        elif live == before or live == wanted:
+            chosen = wanted
+        else:
+            conflicts.append(name)
+            continue
+        if chosen is not missing:
+            merged[name] = copy.deepcopy(chosen)
+    if conflicts:
+        raise ConcurrentWebhookUpdateError(
+            "Concurrent webhook route update conflict: " + ", ".join(conflicts)
+        )
+    return merged
+
+
+def _load_subscriptions() -> Dict[str, dict]:
+    current = {
+        name: to_legacy_route(route)
+        for name, route in _route_store().load().items()
+    }
+    return _SubscriptionSnapshot(current)
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
-    path = _subscriptions_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # webhook_subscriptions.json contains per-route HMAC secrets — write
-    # via tempfile + chmod 0o600 before the atomic rename so a permissive
-    # umask cannot leave the secrets readable to other local users in the
-    # window between create and rename.
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(subs, fh, indent=2, ensure_ascii=False)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
-        atomic_replace(tmp_path, path)
-        # Re-assert after rename in case the destination existed with a
-        # broader mode and atomic_replace preserved it.
-        os.chmod(path, _SUBSCRIPTIONS_FILE_MODE)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    store = _route_store()
+    if not isinstance(subs, _SubscriptionSnapshot):
+        store.save(subs)
+        return
+
+    baseline = copy.deepcopy(subs._baseline)
+    desired = copy.deepcopy(dict(subs))
+
+    def _mutate(current_models):
+        current = {
+            name: to_legacy_route(route)
+            for name, route in current_models.items()
+        }
+        return _merge_subscription_snapshot(baseline, desired, current)
+
+    store.update(_mutate)
+    subs._baseline = copy.deepcopy(desired)
 
 
 def _get_webhook_config() -> dict:

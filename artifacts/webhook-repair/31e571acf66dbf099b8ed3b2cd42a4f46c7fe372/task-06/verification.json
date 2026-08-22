@@ -1,0 +1,15 @@
+{
+  "branch": "wr/task-06-route-model-store",
+  "changed_files": [
+    "hermes_cli/webhook.py",
+    "tests/hermes_cli/test_webhook_atomic_mutations.py"
+  ],
+  "head": "b84a954121a777bc69e9a8a4d605c9c0967ff4c4",
+  "head_before_commit": "b84a954121a777bc69e9a8a4d605c9c0967ff4c4",
+  "phase": "verification",
+  "repository": "D:\\HERMES-TEMP\\webhook-revolution\\task-06-route-model-store",
+  "schema_version": 1,
+  "status": "pass",
+  "task": 6,
+  "timestamp": "2026-08-14T22:43:32Z"
+}

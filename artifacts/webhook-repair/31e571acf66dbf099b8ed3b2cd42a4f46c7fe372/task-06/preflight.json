@@ -1,0 +1,13 @@
+{
+  "branch": "wr/task-06-route-model-store",
+  "expected_head": "b84a954121a777bc69e9a8a4d605c9c0967ff4c4",
+  "head": "b84a954121a777bc69e9a8a4d605c9c0967ff4c4",
+  "mode": "existing_pr",
+  "phase": "preflight",
+  "repository": "D:\\HERMES-TEMP\\webhook-revolution\\task-06-route-model-store",
+  "schema_version": 1,
+  "status": "pass",
+  "task": 6,
+  "task_title": "Canonical route model and profile-aware atomic store",
+  "timestamp": "2026-08-14T22:42:09Z"
+}

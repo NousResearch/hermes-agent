@@ -1591,6 +1591,9 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    # Public lifecycle callers may request an exact per-child effort without
+    # changing global delegation config. None preserves existing inheritance.
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1819,7 +1822,8 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: explicit public-lifecycle override >
+    # delegation config > parent inherit.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
@@ -1827,19 +1831,24 @@ def _build_child_agent(
         # False (``reasoning_effort: false``) to "" and inherit the parent
         # instead of disabling thinking for children.
         delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
+        selected_effort = (
+            override_reasoning_effort
+            if override_reasoning_effort is not None
+            else delegation_effort
+        )
+        if selected_effort or selected_effort is False:
             from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
+            parsed = parse_reasoning_effort(selected_effort)
             if parsed is not None:
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
+                    "Unknown child reasoning effort '%s', inheriting parent level",
+                    selected_effort,
                 )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        logger.debug("Could not load child reasoning effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level

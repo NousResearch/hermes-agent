@@ -87,16 +87,28 @@ materializer = (
 
 handle_start = materializer.index("handle_old = ")
 names_start = materializer.index("names_old = ", handle_start)
-handle_replacement = '''start, end, region = method_region(text, "handle_tool_call")
-handle_gate = '        if not self._provider_call_allowed(provider, f"tool:{tool_name}"):\\n            return tool_error(\\n                f"Memory provider \'{provider.name}\' is quarantined after an "\\n                "uncancellable prefetch timeout"\\n            )\\n'
-if handle_gate not in region:
-    anchor = '        provider = self._tool_to_provider.get(tool_name)\\n        if provider is None:\\n            return tool_error(f"No memory provider handles tool \'{tool_name}\'")\\n'
-    if region.count(anchor) != 1:
-        raise SystemExit("handle_tool_call anchor drifted")
-    region = region.replace(anchor, anchor + handle_gate, 1)
-    text = text[:start] + region + text[end:]
-
-'''
+handle_gate_text = (
+    '        if not self._provider_call_allowed(provider, f"tool:{tool_name}"):\n'
+    '            return tool_error(\n'
+    '                f"Memory provider \'{provider.name}\' is quarantined after an "\n'
+    '                "uncancellable prefetch timeout"\n'
+    '            )\n'
+)
+handle_anchor_text = (
+    '        provider = self._tool_to_provider.get(tool_name)\n'
+    '        if provider is None:\n'
+    '            return tool_error(f"No memory provider handles tool \'{tool_name}\'")\n'
+)
+handle_replacement = (
+    'start, end, region = method_region(text, "handle_tool_call")\n'
+    + f"handle_gate = {handle_gate_text!r}\n"
+    + "if handle_gate not in region:\n"
+    + f"    anchor = {handle_anchor_text!r}\n"
+    + '    if region.count(anchor) != 1:\n'
+    + '        raise SystemExit("handle_tool_call anchor drifted")\n'
+    + '    region = region.replace(anchor, anchor + handle_gate, 1)\n'
+    + '    text = text[:start] + region + text[end:]\n\n'
+)
 materializer = (
     materializer[:handle_start]
     + handle_replacement

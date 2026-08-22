@@ -70,6 +70,7 @@ test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remot
   assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
   assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
   assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
+  assert.equal(resolveRemoteSshDashboardProfile('default', 'mac-mini'), '')
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {

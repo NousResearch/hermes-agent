@@ -1643,9 +1643,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if args.mine and not assignee:
         assignee = _profile_author()
     with kb.connect_closing() as conn:
-        # Cheap "mini-dispatch": recompute ready so list output reflects
-        # dependencies that may have cleared since the last dispatcher tick.
-        kb.recompute_ready(conn)
+        # Listing is intentionally non-mutating at task/event level. Dependency
+        # promotion belongs to the dispatcher or explicit mutation commands.
         tasks = kb.list_tasks(
             conn,
             assignee=assignee,

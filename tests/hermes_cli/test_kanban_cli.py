@@ -116,6 +116,52 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+def test_kanban_list_json_is_read_only_for_explicit_block(kanban_home):
+    """`list` must not silently promote a card held for a human gate.
+
+    A card may be created directly in ``blocked`` state before any worker
+    exists.  Listing is an observation, not a mini-dispatch, so it must leave
+    that explicit hold untouched and create no ``promoted`` event.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="operator-held canary",
+            initial_status="blocked",
+        )
+
+    payload = json.loads(kc.run_slash("list --json"))
+    row = next(item for item in payload if item["id"] == task_id)
+    assert row["status"] == "blocked"
+
+    with kb.connect() as conn:
+        persisted = kb.get_task(conn, task_id)
+        assert persisted is not None
+        assert persisted.status == "blocked"
+        assert [event.kind for event in kb.list_events(conn, task_id)] == [
+            "created", "blocked"
+        ]
+
+
+def test_kanban_list_does_not_promote_eligible_dependency(kanban_home):
+    """Only an explicit readiness recompute may promote a todo child."""
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent")
+        child_id = kb.create_task(conn, title="child", parents=[parent_id])
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (parent_id,))
+        conn.commit()
+
+    payload = json.loads(kc.run_slash("list --json"))
+    row = next(item for item in payload if item["id"] == child_id)
+    assert row["status"] == "todo"
+
+    with kb.connect() as conn:
+        assert kb.recompute_ready(conn) == 1
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------

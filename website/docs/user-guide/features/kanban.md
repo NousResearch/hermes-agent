@@ -783,7 +783,17 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
         [--log-retention-days N]
 ```
 
+`list` (CLI, `/kanban list`, and `kanban_list`) is observational at the task/event
+level: it never advances dependency readiness or appends promotion events. A task
+that becomes eligible remains `todo` until a dispatcher tick, a lifecycle mutation
+such as completion, or an explicit `promote` action advances it. Likewise, a task
+created explicitly as `blocked` is a human gate and remains blocked until
+`unblock`. This does **not** make the CLI a physically read-only SQLite client:
+opening a board may still initialise schema state or apply connection pragmas.
+Use a dedicated SQLite read-only wrapper when that stricter guarantee is required.
+
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

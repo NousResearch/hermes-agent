@@ -617,9 +617,9 @@ def _handle_list(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            # Match CLI list: dependencies that cleared since the last
-            # dispatcher tick should be visible to orchestrators immediately.
-            promoted = kb.recompute_ready(conn)
+            # List is observational: readiness promotion belongs to dispatch or
+            # an explicit operator mutation, never to a discovery request.
+            promoted = 0
             # Fetch one extra row so model-facing output can report that
             # a bounded listing was truncated without dumping the board.
             rows = kb.list_tasks(

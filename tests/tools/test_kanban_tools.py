@@ -111,6 +111,38 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
+def test_list_does_not_promote_explicit_block(monkeypatch, worker_env):
+    """Agent-facing list is a query and must preserve a human gate."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="operator-held list canary",
+            initial_status="blocked",
+        )
+    finally:
+        conn.close()
+
+    payload = json.loads(kt._handle_list({"status": "blocked", "limit": 10}))
+    assert payload["promoted"] == 0
+    assert [task["id"] for task in payload["tasks"]] == [task_id]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+        assert [event.kind for event in kb.list_events(conn, task_id)] == [
+            "created", "blocked"
+        ]
+    finally:
+        conn.close()
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

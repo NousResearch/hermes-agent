@@ -3554,6 +3554,16 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    # A caller that parks a new task in blocked is declaring a
+                    # human gate. Record it so recompute_ready never mistakes
+                    # the status for a transient dependency/circuit-breaker hold.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked", "source": "create_task"},
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

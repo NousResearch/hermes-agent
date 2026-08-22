@@ -114,3 +114,27 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     result = gen_module.build_catalog_md_bundled([])
     assert "respects local deletions and user edits" in result
     assert "hermes skills reset <name> --restore" in result
+
+
+def test_relative_link_rewrite_preserves_markdown_examples(gen_module):
+    """Generated docs must not change links shown as inline or fenced examples."""
+    body = (
+        "Read [the guide](references/guide.md).\n\n"
+        "Use `![alt](url)` for an image.\n\n"
+        "````markdown\n"
+        "See [architecture.md](architecture.md).\n"
+        "````"
+    )
+    meta = {
+        "source_kind": "optional",
+        "rel_path": "software-development/code-wiki",
+    }
+
+    result = gen_module.rewrite_relative_links(body, meta)
+
+    assert (
+        "[the guide](https://github.com/NousResearch/hermes-agent/blob/main/"
+        "optional-skills/software-development/code-wiki/references/guide.md)" in result
+    )
+    assert "`![alt](url)`" in result
+    assert "See [architecture.md](architecture.md)." in result

@@ -262,7 +262,7 @@ test('resolvePosixScriptHandoff returns the bash recipe when the script exists',
 
   assert.ok(handoff)
   assert.equal(handoff.command, '/bin/bash')
-  assert.deepEqual(handoff.args, [expected])
+  assert.deepEqual(handoff.args, [expected, '--no-ui'])
 })
 
 test('resolvePosixScriptHandoff is null when the checkout predates the script', () => {

@@ -99,7 +99,10 @@ export function resolvePosixScriptHandoff(
 
   return {
     command: '/bin/bash',
-    args: [scriptPath],
+    // --no-ui: skip the shim progress window (opens a throwaway Chrome
+    // window during updates; some users find the popup intrusive, and a
+    // stale window can linger after the update finishes).
+    args: [scriptPath, '--no-ui'],
     scriptPath
   }
 }

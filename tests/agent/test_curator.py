@@ -520,6 +520,34 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 
+def test_curator_review_prompt_requires_safe_edit_protocol():
+    """The curator prompt must prevent the observed stale/ambiguous patch loop."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+
+    lower = CURATOR_REVIEW_PROMPT.lower()
+    assert "safe edit protocol" in lower
+    assert "active profile" in lower
+    assert "immediately before every action=patch" in lower
+    assert "current skill.md" in lower
+    assert "multiple matches" in lower
+    assert "no match" in lower
+    assert "stale loaded content" in lower
+    assert "do not retry with a broader string" in lower
+
+
+def test_curator_review_prompt_blocks_bad_skill_file_writes_and_yaml_errors():
+    """The prompt must address top observed write failures directly."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+
+    lower = CURATOR_REVIEW_PROMPT.lower()
+    assert "validate the complete skill.md frontmatter" in lower
+    assert "quote colons" in lower
+    assert "never use action=write_file" in lower
+    assert "top-level" in lower and "skill.md" in lower
+    assert "bundled, hub-installed, external-dir" in lower
+    assert "unless the human explicitly approved" in lower
+
+
 
 
 

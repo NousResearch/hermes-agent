@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -15,6 +15,13 @@ import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+export function parseListFieldDraft(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -179,21 +186,7 @@ export function ConfigField({
   }
 
   if (schema.type === 'list') {
-    return row(
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e =>
-          onChange(
-            e.target.value
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-          )
-        }
-        placeholder={c.commaSeparated}
-        value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
-      />
-    )
+    return row(<ListField onChange={onChange} placeholder={c.commaSeparated} value={value} />)
   }
 
   if (typeof value === 'object' && value !== null) {
@@ -234,5 +227,52 @@ export function ConfigField({
       />
     ),
     isLong
+  )
+}
+
+function ListField({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: unknown
+  onChange: (value: unknown) => void
+  placeholder: string
+}) {
+  const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value ?? '')
+  const [draft, setDraft] = useState(normalizedValue)
+  const focusedRef = useRef(false)
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setDraft(normalizedValue)
+    }
+  }, [normalizedValue])
+
+  const commitDraft = () => {
+    const parsed = parseListFieldDraft(draft)
+    setDraft(parsed.join(', '))
+    onChange(parsed)
+  }
+
+  return (
+    <Input
+      className={CONTROL_TEXT}
+      onBlur={() => {
+        focusedRef.current = false
+        commitDraft()
+      }}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur()
+        }
+      }}
+      placeholder={placeholder}
+      value={draft}
+    />
   )
 }

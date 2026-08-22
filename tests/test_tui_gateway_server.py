@@ -4660,6 +4660,52 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     assert not thread.is_alive()
 
 
+def test_ws_orphan_reap_reschedules_while_mid_turn_then_reaps(monkeypatch):
+    """A detached session that is still running must keep the reap timer (#85578)."""
+    callbacks = []
+    torn_down = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason="tui_close": torn_down.append(
+            (session, end_reason)
+        ),
+    )
+    live = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+    )
+    server._sessions["midturn-sid"] = live
+
+    try:
+        server._schedule_ws_orphan_reap("midturn-sid")
+        callbacks.pop(0)()
+
+        assert "midturn-sid" in server._sessions
+        assert len(callbacks) == 1
+        assert torn_down == []
+
+        live["running"] = False
+        callbacks.pop(0)()
+
+        assert "midturn-sid" not in server._sessions
+        assert len(torn_down) == 1
+        assert torn_down[0][1] == "ws_orphan_reap"
+    finally:
+        server._sessions.pop("midturn-sid", None)
+
+
 def test_ws_orphan_reap_waits_for_active_delegation_then_reaps(monkeypatch):
     from tools import async_delegation
 

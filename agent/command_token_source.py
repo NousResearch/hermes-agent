@@ -107,7 +107,10 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
         try:
             payload = json.loads(stdout)
         except json.JSONDecodeError:
-            payload = None
+            raise CommandTokenError(
+                f"key_cmd for provider {label!r} output starts with '{{' "
+                f"but is not valid JSON"
+            )
         if isinstance(payload, dict):
             token = str(payload.get("access_token") or "").strip()
             if not token:
@@ -188,3 +191,4 @@ def build_command_token_provider(
     if not command:
         return None
     return CommandTokenSource(command, provider_label)
+

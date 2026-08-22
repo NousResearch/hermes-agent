@@ -1670,6 +1670,59 @@ class _CuaDriverSession:
             # may hold while awaiting this coro's future). See #55048 Bug 1.
             self._started = False
 
+    @staticmethod
+    async def _tools_list_with_vendor_fields(session: Any) -> Any:
+        """tools/list with cua-driver's vendor fields intact (#89527).
+
+        The MCP 2.x SDK's protocol models default to ``extra='ignore'``
+        (``MCPModel.model_config`` has no ``extra='allow'``), so fields the
+        spec doesn't declare — cua-driver's per-tool ``capabilities[]`` and
+        the top-level ``capability_version`` — are dropped during validation
+        and ``model_extra`` stays ``None``: the existing fallback can never
+        fire. Re-issue the request with mirror types that keep unknown
+        fields, so discovery sees the vendor data. SDKs that already keep
+        extras (1.x sets ``extra='allow'``), or drivers without the fields,
+        behave exactly as before — the mirrors are strict supersets.
+        """
+        try:
+            from mcp import types as _mcp_types
+            from pydantic import ConfigDict
+            from pydantic.alias_generators import to_camel
+
+            if _mcp_types.Tool.model_config.get("extra") == "allow":
+                # SDK already preserves vendor fields — no mirror needed.
+                return await session.list_tools()
+
+            class _LooseTool(_mcp_types.Tool):
+                model_config = ConfigDict(
+                    alias_generator=to_camel, populate_by_name=True, extra="allow"
+                )
+
+            class _LooseListToolsResult(_mcp_types.ListToolsResult):
+                model_config = ConfigDict(
+                    alias_generator=to_camel, populate_by_name=True, extra="allow"
+                )
+                tools: list[_LooseTool] = []
+
+            return await session.send_request(
+                _mcp_types.ListToolsRequest(params=None), _LooseListToolsResult
+            )
+        except Exception as exc:
+            # Any mismatch in SDK request shapes, pagination needs, or the
+            # request itself falls back to the SDK's own listing — the
+            # original best-effort behavior (empty capability sets). A
+            # future SDK generation making a mirrored field required
+            # without a default would land here too, silently reverting
+            # this fix — log so that no-op regression stays diagnosable
+            # in the field (review follow-up on #89531).
+            logger.debug(
+                "tools/list vendor-field mirror failed (%s: %s); falling "
+                "back to the SDK listing — capability sets will be empty "
+                "if the driver relies on vendor fields",
+                type(exc).__name__, exc,
+            )
+            return await session.list_tools()
+
     async def _populate_capabilities(self, session: Any) -> None:
         """Surface 4: cache per-tool capability sets + capability_version
         from tools/list. Soft prerequisite — discovery failure leaves
@@ -1678,7 +1731,7 @@ class _CuaDriverSession:
         self._tool_schemas = {}
         self._capability_version = ""
         try:
-            tools_list = await session.list_tools()
+            tools_list = await self._tools_list_with_vendor_fields(session)
             for tool in getattr(tools_list, "tools", []) or []:
                 tool_name = getattr(tool, "name", None)
                 if not isinstance(tool_name, str):

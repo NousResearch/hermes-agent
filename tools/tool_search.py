@@ -1012,7 +1012,14 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         required = params.get("required")
         if not isinstance(required, list) or not required:
             return None
-        missing = [r for r in required if isinstance(r, str) and r not in args]
+        # MCP handlers inject authenticated request-scoped arguments only at
+        # dispatch time. Do not reject a deferred call before that injection.
+        from tools.mcp_tool import trusted_mcp_argument_names_for_tool
+        trusted = trusted_mcp_argument_names_for_tool(name)
+        missing = [
+            r for r in required
+            if isinstance(r, str) and r not in args and r not in trusted
+        ]
         if not missing:
             return None
         return tool_error(

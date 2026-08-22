@@ -4228,6 +4228,48 @@ _connect_server_claim: contextvars.ContextVar[
     Optional[Callable[[MCPServerTask], None]]
 ] = contextvars.ContextVar("mcp_connect_server_claim", default=None)
 
+# Trusted, request-scoped arguments supplied by an authenticated API caller.
+# They live only for one agent turn and are filtered against each MCP tool's
+# declared schema before dispatch.
+_trusted_mcp_context: contextvars.ContextVar[Dict[str, Dict[str, Any]]] = (
+    contextvars.ContextVar("trusted_mcp_context", default={})
+)
+
+
+def bind_trusted_mcp_context(context: Optional[Dict[str, Dict[str, Any]]]):
+    clean = {
+        str(server): dict(values)
+        for server, values in (context or {}).items()
+        if isinstance(server, str) and isinstance(values, dict)
+    }
+    return _trusted_mcp_context.set(clean)
+
+
+def reset_trusted_mcp_context(token) -> None:
+    _trusted_mcp_context.reset(token)
+
+
+def _inject_trusted_mcp_arguments(
+    server_name: str, args: dict, allowed_arguments: Optional[set[str]],
+) -> dict:
+    trusted = _trusted_mcp_context.get().get(server_name) or {}
+    if not trusted or not allowed_arguments:
+        return args
+    merged = dict(args)
+    for key, value in trusted.items():
+        if key in allowed_arguments:
+            merged[key] = value
+    return merged
+
+
+def trusted_mcp_argument_names_for_tool(tool_name: str) -> set[str]:
+    """Return request-scoped keys that the MCP handler will inject."""
+    with _lock:
+        server_name = _mcp_tool_server_names.get(tool_name)
+    if not server_name:
+        return set()
+    return set((_trusted_mcp_context.get().get(server_name) or {}).keys())
+
 # Connection-retry cooldown (per-server isolation against restart storms).
 #
 # A single stdio MCP server that fails to spawn (bad PATH, ``exec: not
@@ -5743,7 +5785,12 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _make_tool_handler(
+    server_name: str,
+    tool_name: str,
+    tool_timeout: float,
+    allowed_arguments: Optional[set[str]] = None,
+):
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -5758,6 +5805,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         gate_error = _trust_gate_check(server_name, tool_name)
         if gate_error is not None:
             return gate_error
+
+        call_args = _inject_trusted_mcp_arguments(
+            server_name, args, allowed_arguments
+        )
 
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
@@ -5827,7 +5878,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await server.session.call_tool(
+                        tool_name, arguments=call_args
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
@@ -6818,7 +6871,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 "origin": f"tool {mcp_tool.name!r}",
                 "schema": schema,
                 "handler": _make_tool_handler(
-                    name, mcp_tool.name, server.tool_timeout
+                    name,
+                    mcp_tool.name,
+                    server.tool_timeout,
+                    set(((schema.get("parameters") or {}).get("properties") or {}).keys()),
                 ),
                 "check_fn": check_fn,
             }
@@ -7100,7 +7156,12 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             name=registry_name,
             toolset=toolset_name,
             schema=schema,
-            handler=_make_tool_handler(name, raw_name, tool_timeout),
+            handler=_make_tool_handler(
+                name,
+                raw_name,
+                tool_timeout,
+                set(((schema.get("parameters") or {}).get("properties") or {}).keys()),
+            ),
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],

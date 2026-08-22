@@ -319,6 +319,28 @@ class TestCacheLoadDescriptionScan:
 
         mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate")
 
+    def test_cached_tool_handler_receives_schema_argument_names(self):
+        from tools.registry import registry
+
+        entry = _fake_cache_entry()
+        entry["tools"][0]["inputSchema"]["properties"] = {
+            "act_as_token": {"type": "string"},
+            "query": {"type": "string"},
+        }
+        config = {"command": "npx", "args": [], "lazy": True}
+
+        with patch.object(mcp, "_make_tool_handler", return_value=lambda _args: "ok") as make_handler, \
+             patch.object(registry, "register"), \
+             patch.object(
+                 registry,
+                 "get_toolset_for_tool",
+                 side_effect=[None, "mcp-playwright"],
+             ), \
+             patch.object(mcp, "_track_mcp_tool_server"):
+            mcp._register_from_cache_sync("playwright", config, entry)
+
+        assert make_handler.call_args.args[3] == {"act_as_token", "query"}
+
 
 class TestResolveServerLazy:
     def test_default_off(self):

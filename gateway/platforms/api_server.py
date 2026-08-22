@@ -913,6 +913,58 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+_MCP_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_MCP_CONTEXT_MAX_BYTES = 16 * 1024
+
+
+def _session_chat_mcp_context(
+    body: Dict[str, Any],
+) -> tuple[Dict[str, Dict[str, Any]], Optional[Any]]:
+    """Validate trusted per-turn MCP arguments without persisting them."""
+    raw = body.get("mcp_context")
+    if raw is None:
+        return {}, None
+    if not isinstance(raw, dict) or len(raw) > 16:
+        return {}, web.json_response(
+            _openai_error("mcp_context must be an object", code="invalid_mcp_context"), status=400,
+        )
+    try:
+        encoded = json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = b""
+    if not encoded or len(encoded) > _MCP_CONTEXT_MAX_BYTES:
+        return {}, web.json_response(
+            _openai_error("mcp_context is invalid or too large", code="invalid_mcp_context"), status=400,
+        )
+    clean: Dict[str, Dict[str, Any]] = {}
+    for server_name, values in raw.items():
+        if not isinstance(server_name, str) or not _MCP_CONTEXT_NAME_RE.fullmatch(server_name):
+            return {}, web.json_response(
+                _openai_error("mcp_context contains an invalid server name", code="invalid_mcp_context"), status=400,
+            )
+        if not isinstance(values, dict) or len(values) > 32:
+            return {}, web.json_response(
+                _openai_error("mcp_context server values must be objects", code="invalid_mcp_context"), status=400,
+            )
+        clean_values: Dict[str, Any] = {}
+        for key, value in values.items():
+            if not isinstance(key, str) or not _MCP_CONTEXT_NAME_RE.fullmatch(key):
+                return {}, web.json_response(
+                    _openai_error("mcp_context contains an invalid argument name", code="invalid_mcp_context"), status=400,
+                )
+            if not isinstance(value, (str, int, float, bool)) and value is not None:
+                return {}, web.json_response(
+                    _openai_error("mcp_context values must be scalar", code="invalid_mcp_context"), status=400,
+                )
+            if isinstance(value, str) and len(value) > 8192:
+                return {}, web.json_response(
+                    _openai_error("mcp_context string value is too large", code="invalid_mcp_context"), status=400,
+                )
+            clean_values[key] = value
+        clean[server_name] = clean_values
+    return clean, None
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -4540,6 +4592,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        mcp_context, context_error = _session_chat_mcp_context(body)
+        if context_error is not None:
+            return context_error
         # Runtime selection. A backend-acknowledged Browser model lock
         # (require_model_lock in the body, or a previously confirmed lock
         # persisted on the session row) is an execution contract and wins.
@@ -4596,6 +4651,7 @@ class APIServerAdapter(BasePlatformAdapter):
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
+            mcp_context=mcp_context,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
             route=route,
@@ -4657,6 +4713,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        mcp_context, context_error = _session_chat_mcp_context(body)
+        if context_error is not None:
+            return context_error
         # Runtime selection — mirrors _handle_session_chat (lock wins,
         # otherwise session-persisted model then per-request values).
         runtime_request = self._effective_session_runtime_request(
@@ -4766,6 +4825,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     user_message=user_message,
                     conversation_history=history,
                     ephemeral_system_prompt=system_prompt,
+                    mcp_context=mcp_context,
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
@@ -7125,6 +7185,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: str,
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
+        mcp_context: Optional[Dict[str, Dict[str, Any]]] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
@@ -7185,6 +7246,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from tools.mcp_tool import (
+                bind_trusted_mcp_context,
+                reset_trusted_mcp_context,
+            )
 
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
@@ -7196,6 +7261,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         request_browser_control_transport_family
                     ),
                 )
+                trusted_mcp_token = bind_trusted_mcp_context(mcp_context)
                 agent = None
                 try:
                     agent = self._create_agent(
@@ -7367,6 +7433,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         # shutdown.  pop() is a no-op when _create_agent
                         # succeeded but the turn never reached registration.
                         self._shutdown_interruptible_agents.pop(id(agent), None)
+                    reset_trusted_mcp_context(trusted_mcp_token)
                     clear_session_vars(tokens)
 
         self._activate_admitted_request()

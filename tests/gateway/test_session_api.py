@@ -133,12 +133,16 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         def run_conversation(self, user_message, conversation_history, task_id):
             from gateway.session_context import get_session_env
             from tools.environments.local import _make_run_env
+            from tools.mcp_tool import _inject_trusted_mcp_arguments
 
             observed["task_id"] = task_id
             observed["context_session_id"] = get_session_env("HERMES_SESSION_ID")
             observed["context_platform"] = get_session_env("HERMES_SESSION_PLATFORM")
             observed["context_session_key"] = get_session_env("HERMES_SESSION_KEY")
             observed["child_session_id"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            observed["mcp_args"] = _inject_trusted_mcp_arguments(
+                "carlo_webapi", {"act_as_token": "model"}, {"act_as_token", "turn_id"}
+            )
             return {"final_response": "ok"}
 
     def fake_create_agent(**kwargs):
@@ -151,6 +155,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         conversation_history=[],
         session_id="request-session",
         gateway_session_key="request-key",
+        mcp_context={"carlo_webapi": {"act_as_token": "trusted", "turn_id": "a" * 32}},
     )
 
     assert result["session_id"] == "request-session"
@@ -164,7 +169,13 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_platform": "api_server",
         "context_session_key": "request-key",
         "child_session_id": "request-session",
+        "mcp_args": {"act_as_token": "trusted", "turn_id": "a" * 32},
     }
+    from tools.mcp_tool import _inject_trusted_mcp_arguments
+    original = {"act_as_token": "model"}
+    assert _inject_trusted_mcp_arguments(
+        "carlo_webapi", original, {"act_as_token"}
+    ) is original
 
 
 @pytest.mark.asyncio
@@ -461,6 +472,71 @@ async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(
 
 def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
+
+
+@pytest.mark.asyncio
+async def test_session_chat_forwards_validated_mcp_context(session_db):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("mcp-context-session", "api_server")
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    context = {"carlo_webapi": {"act_as_token": "jwt", "turn_id": "a" * 32}}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "mcp_context": context},
+            )
+            assert response.status == 200
+
+    assert mock_run.call_args.kwargs["mcp_context"] == context
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_forwards_validated_mcp_context(session_db):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("mcp-context-stream", "api_server")
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    context = {"carlo_webapi": {"confirmed_action_token": "", "turn_id": "b" * 32}}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi", "mcp_context": context},
+            )
+            assert response.status == 200
+            await response.text()
+
+    assert mock_run.call_args.kwargs["mcp_context"] == context
+
+
+@pytest.mark.asyncio
+async def test_session_chat_rejects_invalid_or_oversized_mcp_context(session_db):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("mcp-context-invalid", "api_server")
+    mock_run = AsyncMock()
+    app = _create_session_app(adapter)
+
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            invalid = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "mcp_context": {"bad server": {"x": "y"}}},
+            )
+            oversized = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "mcp_context": {"server": {"token": "x" * 20000}}},
+            )
+
+    assert invalid.status == 400
+    assert oversized.status == 400
+    mock_run.assert_not_called()
 
 
 def _patch_api_server_runtime(monkeypatch):

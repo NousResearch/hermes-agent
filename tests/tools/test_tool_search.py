@@ -664,6 +664,29 @@ class TestDeferredCallSchemaProbe:
         # Unknown tool → no schema → dispatch (downstream scope gate handles it).
         assert validate_deferred_call_args("mcp_no_such_tool_xyz", {}) is None
 
+    def test_validator_accepts_trusted_mcp_args_but_reports_other_missing(self):
+        from tools.mcp_tool import (
+            _forget_mcp_tool_server,
+            _track_mcp_tool_server,
+            bind_trusted_mcp_context,
+            reset_trusted_mcp_context,
+        )
+        from tools.tool_search import validate_deferred_call_args
+
+        name = "mcp_probe_trusted_op"
+        server = "probe_trusted"
+        self._register(name, "mcp-probe-trusted", required=("act_as_token", "query"))
+        _track_mcp_tool_server(name, server)
+        token = bind_trusted_mcp_context({server: {"act_as_token": "trusted"}})
+        try:
+            assert validate_deferred_call_args(name, {"query": "LOGIT"}) is None
+            err = json.loads(validate_deferred_call_args(name, {}) or "{}")
+            assert "query" in err["error"]
+            assert "act_as_token" not in err["error"]
+        finally:
+            reset_trusted_mcp_context(token)
+            _forget_mcp_tool_server(name)
+
 
     def test_valid_tool_call_still_dispatches(self):
         import model_tools

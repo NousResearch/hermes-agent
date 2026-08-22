@@ -9,7 +9,9 @@ Usage:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail draft --to user@example.com --subject "Hi" --body "Hello"
+  python google_api.py gmail draft --reply-to MESSAGE_ID --body "Thanks"
+  python google_api.py gmail reply MESSAGE_ID --body "Thanks" --confirm-send
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -316,6 +318,7 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    _require_send_confirmation("send", getattr(args, "confirm_send", False))
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
         message["To"] = args.to
@@ -359,6 +362,7 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    _require_send_confirmation("reply", getattr(args, "confirm_send", False))
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -419,6 +423,118 @@ def gmail_reply(args):
     result = service.users().messages().send(userId="me", body=body).execute()
     print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
 
+
+
+def _require_send_confirmation(action: str, confirmed: bool = False) -> None:
+    """Refuse an outbound send that the user has not explicitly approved.
+
+    Prose cannot stop this -- a missing affordance can. The refusal names the
+    alternative, because an agent that is merely blocked retries while one that
+    is redirected complies.
+    """
+    if confirmed:
+        return
+
+    print(
+        f"REFUSED: `gmail {action}` delivers mail immediately and no approval "
+        f"was given.\n"
+        f"Create a draft instead:  gmail draft --to ... --subject ... --body ...\n"
+        f"(to reply in-thread:     gmail draft --reply-to MESSAGE_ID --body ...)\n"
+        f"Only if the user has reviewed that draft and explicitly asked for it to "
+        f"be sent, re-run with --confirm-send.",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+
+
+def _build_draft_mime(args, headers=None):
+    """Build the MIME payload for a draft, threading it when replying."""
+    message = MIMEText(args.body, "html" if getattr(args, "html", False) else "plain")
+
+    if headers:
+        subject = headers.get("subject", "")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        message["To"] = getattr(args, "to", "") or headers.get("from", "")
+        message["Subject"] = getattr(args, "subject", "") or subject
+        if headers.get("message-id"):
+            message["In-Reply-To"] = headers["message-id"]
+            message["References"] = headers["message-id"]
+    else:
+        message["To"] = args.to
+        message["Subject"] = args.subject
+
+    if getattr(args, "cc", ""):
+        message["Cc"] = args.cc
+    if getattr(args, "from_header", ""):
+        message["From"] = args.from_header
+
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+
+def _print_draft(result: dict) -> None:
+    msg = result.get("message", {}) or {}
+    print(json.dumps({
+        "status": "drafted",
+        "draftId": result.get("id", ""),
+        "id": msg.get("id", ""),
+        "threadId": msg.get("threadId", ""),
+        "note": "Draft only - nothing was delivered. It is in Gmail > Drafts for the user to review.",
+    }, indent=2))
+
+
+def gmail_draft(args):
+    """Create a Gmail draft. Never delivers mail."""
+    reply_to = getattr(args, "reply_to", "")
+    thread_id = getattr(args, "thread_id", "")
+
+    if _gws_binary():
+        headers = None
+        if reply_to:
+            original = _run_gws(
+                ["gmail", "users", "messages", "get"],
+                params={
+                    "userId": "me",
+                    "id": reply_to,
+                    "format": "metadata",
+                    "metadataHeaders": ["From", "Subject", "Message-ID"],
+                },
+            )
+            headers = _headers_dict(original)
+            thread_id = thread_id or original.get("threadId", "")
+
+        raw = _build_draft_mime(args, headers)
+        message = {"raw": raw}
+        if thread_id:
+            message["threadId"] = thread_id
+
+        result = _run_gws(
+            ["gmail", "users", "drafts", "create"],
+            params={"userId": "me"},
+            body={"message": message},
+        )
+        _print_draft(result)
+        return
+
+    service = build_service("gmail", "v1")
+    headers = None
+    if reply_to:
+        original = service.users().messages().get(
+            userId="me", id=reply_to, format="metadata",
+            metadataHeaders=["From", "Subject", "Message-ID"],
+        ).execute()
+        headers = _headers_dict(original)
+        thread_id = thread_id or original.get("threadId", "")
+
+    raw = _build_draft_mime(args, headers)
+    message = {"raw": raw}
+    if thread_id:
+        message["threadId"] = thread_id
+
+    result = service.users().drafts().create(
+        userId="me", body={"message": message}
+    ).execute()
+    _print_draft(result)
 
 
 def gmail_labels(args):
@@ -1076,13 +1192,29 @@ def main():
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.add_argument("--html", action="store_true", help="Send body as HTML")
     p.add_argument("--thread-id", default="", help="Thread ID for threading")
+    p.add_argument("--confirm-send", action="store_true",
+                   help="Actually deliver. Omit to be refused; use `gmail draft` instead.")
     p.set_defaults(func=gmail_send)
 
     p = gmail_sub.add_parser("reply")
     p.add_argument("message_id", help="Message ID to reply to")
     p.add_argument("--body", required=True)
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--confirm-send", action="store_true",
+                   help="Actually deliver. Omit to be refused; use `gmail draft` instead.")
     p.set_defaults(func=gmail_reply)
+
+    p = gmail_sub.add_parser("draft", help="Create a draft (safe default; never delivers)")
+    p.add_argument("--to", default="")
+    p.add_argument("--subject", default="")
+    p.add_argument("--body", required=True)
+    p.add_argument("--cc", default="")
+    p.add_argument("--from", dest="from_header", default="")
+    p.add_argument("--html", action="store_true", help="Treat body as HTML")
+    p.add_argument("--thread-id", default="", help="Thread ID for threading")
+    p.add_argument("--reply-to", default="",
+                   help="MESSAGE_ID to reply to; fills To/Subject and threads it")
+    p.set_defaults(func=gmail_draft)
 
     p = gmail_sub.add_parser("labels")
     p.set_defaults(func=gmail_labels)

@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.2.0
+version: 1.3.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -184,13 +184,19 @@ $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 # Read full message (returns JSON with body text)
 $GAPI gmail get MESSAGE_ID
 
-# Send
+# Draft (DEFAULT for anything outbound - creates a draft, never delivers)
+$GAPI gmail draft --to user@example.com --subject "Hello" --body "Message text"
+$GAPI gmail draft --to user@example.com --subject "Report" --body "<h1>Q4</h1>" --html
+$GAPI gmail draft --reply-to MESSAGE_ID --body "Thanks, that works for me."
+
+# Send - REFUSED unless --confirm-send is passed. Only after the user reviewed
+# a draft and explicitly said to send it.
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 
 # Reply (automatically threads and sets In-Reply-To)
-$GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
+$GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me." --confirm-send
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
 
 # Labels
@@ -293,7 +299,10 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
-- **Gmail send/reply**: `{status: "sent", id, threadId}`
+- **Gmail draft**: `{status: "drafted", draftId, id, threadId, note}`
+- **Gmail draft**: `{status: "drafted", draftId, id, threadId, note}`
+- **Gmail draft**: `{status: "drafted", draftId, id, threadId, note}`
+- **Gmail send/reply**: `{status: "sent", id, threadId}` (needs `--confirm-send`) (needs `--confirm-send`) (only reachable with `--confirm-send`)
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
@@ -311,11 +320,15 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
-2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+1. **Outbound mail goes through `gmail draft`, never `gmail send`.** `$GAPI gmail draft` creates a Gmail draft and delivers nothing; use `--reply-to MESSAGE_ID` to draft an in-thread reply. Show the draft content and tell the user it is waiting in Gmail > Drafts.
+
+   `gmail send` and `gmail reply` exit 3 unless `--confirm-send` is passed. Pass it only when the user has reviewed a specific draft and explicitly asked for that one to be sent. "Handle my inbox", "reply to Bob", and "deal with this" are NOT approval to deliver.
+2. **Never create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+3. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
+4. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
+5. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
+6. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+
 
 ## Troubleshooting
 

@@ -483,8 +483,22 @@ hermes config set memory.provider holographic
 | Key | Default | Description |
 |-----|---------|-------------|
 | `db_path` | `$HERMES_HOME/memory_store.db` | SQLite database path |
+| `db_path_template` | *(empty)* | Optional scoped path template using sanitized `{profile}`, `{platform}`, `{chat}`, and `{user}` values; takes precedence over `db_path` |
+| `memory_mode` | `hybrid` | `hybrid` enables automatic prefetch; `tools` keeps explicit tools but disables prefetch |
 | `auto_extract` | `false` | Auto-extract facts at session end |
 | `default_trust` | `0.5` | Default trust score (0.0–1.0) |
+
+Example for tools-only, per-chat storage:
+
+```yaml
+plugins:
+  hermes-memory-store:
+    db_path_template: $HERMES_HOME/holographic/{profile}/{platform}/{chat}.db
+    memory_mode: tools
+    auto_extract: false
+```
+
+When `db_path_template` is unset, `db_path` retains its existing behavior.
 
 **Unique capabilities:**
 - `probe` — entity-specific algebraic recall (all facts about a person/thing)

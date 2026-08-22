@@ -1,0 +1,16 @@
+name: localization-worker
+version: 0.1.0
+description: "Durable, profile-scoped localization workflow for UTF-8 .txt and .md files."
+author: NousResearch
+provides_tools:
+  - localization_create_job
+  - localization_inspect_job
+  - localization_extract_segments
+  - localization_create_chunks
+  - localization_claim_chunk
+  - localization_submit_chunk
+  - localization_validate_chunk
+  - localization_assemble_output
+  - localization_verify_output
+  - localization_get_job_status
+  - localization_abort_job

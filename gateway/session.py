@@ -1912,10 +1912,17 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Prevent a gateway from reviving another profile's session row.
 
+        Multiplex fix (AdroLab patch 3): the previous short-circuit returned
+        True for ANY cross-profile revival whenever multiplex_profiles was on,
+        which let the self-heal path bind one profile's routing key to another
+        profile's live session object (observed as agent B answering with
+        agent A's frozen persona and history in a shared channel). Under
+        multiplex the recovered row is allowed only when its profile namespace
+        matches the REQUESTED key's namespace; unparseable keys keep the
+        permissive legacy behavior.
+        """
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -1923,6 +1930,12 @@ class SessionStore:
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
             return True
+
+        if getattr(self.config, "multiplex_profiles", False):
+            requested_profile = self._profile_from_session_key(requested_session_key)
+            if requested_profile is None:
+                return True
+            return recovered_profile == requested_profile
 
         return recovered_profile == self._active_profile_name()
 

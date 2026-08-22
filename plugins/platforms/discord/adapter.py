@@ -1566,6 +1566,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return False, False
 
         role_authorized = False
+        msg_guild = getattr(message, "guild", None)
+        _guild_id = (
+            str(msg_guild.id)
+            if msg_guild is not None and getattr(msg_guild, "id", None) is not None
+            else None
+        )
         if getattr(message.author, "bot", False):
             allow_bots = self._get_allow_bots()
             if allow_bots == "none":
@@ -1578,7 +1584,6 @@ class DiscordAdapter(BasePlatformAdapter):
             ):
                 return False, False
         else:
-            msg_guild = getattr(message, "guild", None)
             is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
             msg_channel_ids = None
             if not is_dm:
@@ -1614,7 +1619,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 parent_id = None
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                     parent_id = str(message.channel.parent_id)
-                free_channels = self._discord_free_response_channels()
+                free_channels = self._discord_free_response_channels(_guild_id)
                 channel_keys = self._discord_channel_keys(message, parent_id)
                 if "*" not in free_channels and not (channel_keys & free_channels):
                     return False, False
@@ -2502,7 +2507,16 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
             allowed = self._get_allowed_channels()
-            return allowed | self._discord_free_response_channels()
+            free = self._discord_free_response_channels()
+            # Guild-scoped allow/free lists must be scanned too, otherwise a
+            # guild with per-guild channel policy would be invisible to the
+            # recovery sweep after a reconnect.
+            for cfg in self._discord_guild_configs():
+                if "allowed_channels" in cfg:
+                    allowed |= self._gate_csv_set(cfg["allowed_channels"])
+                if "free_response_channels" in cfg:
+                    free |= self._gate_csv_set(cfg["free_response_channels"])
+            return allowed | free
         return {item.strip() for item in raw.split(",") if item.strip()}
 
     def _missed_message_backfill_window_seconds(self) -> float:
@@ -2676,17 +2690,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
+        msg_guild = getattr(message, "guild", None)
+        _guild_id = (
+            str(msg_guild.id)
+            if msg_guild is not None and getattr(msg_guild, "id", None) is not None
+            else None
+        )
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
-            free_channels = self._discord_free_response_channels()
+            free_channels = self._discord_free_response_channels(_guild_id)
             in_bot_thread = (
                 isinstance(message.channel, discord.Thread)
                 and str(message.channel.id) in self._threads
                 and not self._discord_thread_require_mention()
             )
             if (
-                self._discord_require_mention()
+                self._discord_require_mention(_guild_id)
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
                 and not in_bot_thread
@@ -4972,11 +4992,17 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _discord_channel_ids_allowed(self, channel_ids: set[str]) -> bool:
-        """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
+    def _discord_channel_ids_allowed(
+        self, channel_ids: set[str], guild_id: str | None = None,
+    ) -> bool:
+        """True when *channel_ids* intersect the effective allowed-channel list.
+
+        *guild_id* scopes the lookup to ``discord.guilds:<guild_id>:allowed_channels``
+        when configured; otherwise the global gate applies unchanged.
+        """
         if not channel_ids:
             return False
-        allowed = self._get_allowed_channels()
+        allowed = self._get_allowed_channels(guild_id)
         if not allowed:
             return False
         if "*" in allowed:
@@ -5054,7 +5080,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if (
                 not is_dm
                 and channel_ids is not None
-                and self._discord_channel_ids_allowed(channel_ids)
+                and self._discord_channel_ids_allowed(
+                    channel_ids,
+                    guild_id=(
+                        str(guild.id)
+                        if guild is not None and getattr(guild, "id", None) is not None
+                        else None
+                    ),
+                )
             ):
                 return True
             return False
@@ -5121,6 +5154,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         if self._get_allowed_channels():
             return
+        # A per-guild allowlist counts as configured for the warning.
+        if any(
+            self._gate_csv_set(cfg.get("allowed_channels"))
+            for cfg in self._discord_guild_configs()
+        ):
+            return
         if self._discord_allow_all_users():
             return
         if self._gateway_allow_all_users():
@@ -5173,6 +5212,13 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        interaction_guild = getattr(interaction, "guild", None)
+        _guild_id = (
+            str(interaction_guild.id)
+            if interaction_guild is not None
+            and getattr(interaction_guild, "id", None) is not None
+            else None
+        )
 
         channel_ids: set = set()
         channel_keys: set = set()
@@ -5202,7 +5248,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else None,
             )
 
-            allowed = self._get_allowed_channels()
+            allowed = self._get_allowed_channels(_guild_id)
             if allowed:
                 if "*" not in allowed:
                     if not channel_ids:
@@ -5218,7 +5264,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
             # entry on the thread or its parent rejects the interaction.
-            ignored = self._get_ignored_channels()
+            ignored = self._get_ignored_channels(_guild_id)
             if ignored and channel_ids:
                 if "*" in ignored or (channel_keys & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
@@ -5238,8 +5284,8 @@ class DiscordAdapter(BasePlatformAdapter):
         user_id = str(user.id)
         # Pass guild + is_dm so role check is scoped to the originating
         # guild and cross-guild DM bypass (#12136) can't land via the
-        # slash surface either.
-        interaction_guild = getattr(interaction, "guild", None)
+        # slash surface either. ``interaction_guild`` was resolved above
+        # for per-guild config lookups.
         if not self._is_allowed_user(
             user_id,
             author=user,
@@ -6538,9 +6584,48 @@ class DiscordAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
-    def _discord_require_mention(self) -> bool:
-        """Return whether Discord channel messages require a bot mention."""
-        configured = self.config.extra.get("require_mention")
+    # ── per-guild configuration (issue #23051) ─────────────────────────
+    # ``discord.guilds:<guild_id>:`` blocks (string-normalized by
+    # ``_apply_yaml_config``) override the global Discord settings per
+    # server. Every accessor below accepts an optional ``guild_id``; when
+    # the guild has no override block the global resolution is unchanged,
+    # so single-guild deployments see zero behavior difference.
+
+    def _discord_guild_config(self, guild_id: str | None) -> dict:
+        """Return the per-guild override dict for *guild_id*, or ``{}``.
+
+        ``None`` (DMs, unknown guild, or no ``guilds`` config) yields an
+        empty dict so callers fall through to global settings unchanged.
+        """
+        if guild_id is None:
+            return {}
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if not isinstance(extra, dict):
+            return {}
+        guilds = extra.get("guilds")
+        if not isinstance(guilds, dict):
+            return {}
+        entry = guilds.get(str(guild_id))
+        return entry if isinstance(entry, dict) else {}
+
+    def _discord_guild_configs(self) -> list:
+        """All per-guild override dicts (for scans that span guilds)."""
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if not isinstance(extra, dict):
+            return []
+        guilds = extra.get("guilds")
+        if not isinstance(guilds, dict):
+            return []
+        return [cfg for cfg in guilds.values() if isinstance(cfg, dict)]
+
+    def _discord_require_mention(self, guild_id: str | None = None) -> bool:
+        """Return whether Discord channel messages require a bot mention.
+
+        Per-guild override: ``discord.guilds:<guild_id>:require_mention``.
+        """
+        configured = self._discord_guild_config(guild_id).get("require_mention")
+        if configured is None:
+            configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
@@ -6649,16 +6734,25 @@ class DiscordAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _get_allowed_channels(self) -> set:
-        """This adapter's DISCORD_ALLOWED_CHANNELS gate (per-profile)."""
+    def _get_allowed_channels(self, guild_id: str | None = None) -> set:
+        """This adapter's DISCORD_ALLOWED_CHANNELS gate (per-profile, per-guild)."""
+        guild_cfg = self._discord_guild_config(guild_id)
+        if "allowed_channels" in guild_cfg:
+            return self._gate_csv_set(guild_cfg["allowed_channels"])
         return self._gate_csv_set(self._gate_raw("allowed_channels", "DISCORD_ALLOWED_CHANNELS"))
 
-    def _get_ignored_channels(self) -> set:
-        """This adapter's DISCORD_IGNORED_CHANNELS gate (per-profile)."""
+    def _get_ignored_channels(self, guild_id: str | None = None) -> set:
+        """This adapter's DISCORD_IGNORED_CHANNELS gate (per-profile, per-guild)."""
+        guild_cfg = self._discord_guild_config(guild_id)
+        if "ignored_channels" in guild_cfg:
+            return self._gate_csv_set(guild_cfg["ignored_channels"])
         return self._gate_csv_set(self._gate_raw("ignored_channels", "DISCORD_IGNORED_CHANNELS"))
 
-    def _get_no_thread_channels(self) -> set:
-        """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
+    def _get_no_thread_channels(self, guild_id: str | None = None) -> set:
+        """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile, per-guild)."""
+        guild_cfg = self._discord_guild_config(guild_id)
+        if "no_thread_channels" in guild_cfg:
+            return self._gate_csv_set(guild_cfg["no_thread_channels"])
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
     def _get_allowed_users(self) -> set:
@@ -6695,16 +6789,21 @@ class DiscordAdapter(BasePlatformAdapter):
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
         return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
 
-    def _discord_free_response_channels(self) -> set:
+    def _discord_free_response_channels(self, guild_id: str | None = None) -> set:
         """Return Discord channel IDs/names where no bot mention is required.
 
         A single ``"*"`` entry (either from a list or a comma-separated
         string) is preserved in the returned set so callers can short-circuit
         on wildcard membership, consistent with ``allowed_channels``.
+        Per-guild override: ``discord.guilds:<guild_id>:free_response_channels``.
         """
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
+        guild_cfg = self._discord_guild_config(guild_id)
+        if "free_response_channels" in guild_cfg:
+            raw = guild_cfg["free_response_channels"]
+        else:
+            raw = self.config.extra.get("free_response_channels")
+            if raw is None:
+                raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -6717,6 +6816,20 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_auto_thread(self, guild_id: str | None = None) -> bool:
+        """Return whether auto-threading is enabled for *guild_id*.
+
+        Per-guild override: ``discord.guilds:<guild_id>:auto_thread``.
+        Falls back to ``DISCORD_AUTO_THREAD`` (default ``true``), matching
+        the historical behavior.
+        """
+        raw = self._discord_guild_config(guild_id).get("auto_thread")
+        if raw is None:
+            raw = os.getenv("DISCORD_AUTO_THREAD", "true")
+        if isinstance(raw, str):
+            return raw.lower() in {"true", "1", "yes"}
+        return bool(raw)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
@@ -8106,27 +8219,33 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
+            _msg_guild = getattr(message, "guild", None)
+            _guild_id = (
+                str(_msg_guild.id)
+                if _msg_guild is not None and getattr(_msg_guild, "id", None) is not None
+                else None
+            )
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels = self._get_allowed_channels()
+            allowed_channels = self._get_allowed_channels(_guild_id)
             if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return False
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels = self._get_ignored_channels()
+            ignored_channels = self._get_ignored_channels(_guild_id)
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
 
-            free_channels = self._discord_free_response_channels()
+            free_channels = self._discord_free_response_channels(_guild_id)
 
-            require_mention = self._discord_require_mention()
+            require_mention = self._discord_require_mention(_guild_id)
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
@@ -8158,9 +8277,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels = self._get_no_thread_channels()
+            no_thread_channels = self._get_no_thread_channels(_guild_id)
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            auto_thread = self._discord_auto_thread(_guild_id)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -10431,6 +10550,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["no_thread_channels"] = str(ntc)
         if not _skip_env_bridge and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
             os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # guilds: per-guild override blocks (guild_id → settings dict) for
+    # require_mention, allowed_channels, ignored_channels,
+    # free_response_channels, no_thread_channels, auto_thread. Guild IDs are
+    # string-normalized here — YAML parses bare snowflake numbers as int and
+    # Discord IDs can exceed 64-bit signed range. Seeded into
+    # PlatformConfig.extra only: per-guild policy is per-profile (multiplex
+    # isolation), so it deliberately never touches process-global env.
+    guilds_cfg = discord_cfg.get("guilds")
+    if isinstance(guilds_cfg, dict):
+        seeded_extra["guilds"] = {
+            str(gid): cfg for gid, cfg in guilds_cfg.items() if isinstance(cfg, dict)
+        }
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.

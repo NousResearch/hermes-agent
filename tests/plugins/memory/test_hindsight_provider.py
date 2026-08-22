@@ -26,6 +26,7 @@ from plugins.memory.hindsight import (
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
+    _materialize_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -342,6 +343,98 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
+
+    def test_embedded_profile_env_includes_database_url_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embed_database_url": "postgresql://user:pass@db.internal:5432/hindsight",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "postgresql://user:pass@db.internal:5432/hindsight"
+
+    def test_embedded_profile_env_includes_database_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_EMBED_API_DATABASE_URL", "postgresql://user:pass@db.internal:5432/hindsight")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "postgresql://user:pass@db.internal:5432/hindsight"
+
+    def test_embedded_profile_env_config_database_url_wins_over_env(self, monkeypatch):
+        """Regression (review of #68479): the two isolated tests above each
+        exercise only one source at a time, so neither actually verifies the
+        documented precedence -- a regression that swapped the `or` chain's
+        order (making the env var win instead) would still pass both. Set
+        BOTH sources to DIFFERENT values and assert the config value
+        (embed_database_url) is what actually reaches the generated env,
+        not the env var."""
+        monkeypatch.setenv(
+            "HINDSIGHT_EMBED_API_DATABASE_URL",
+            "postgresql://envuser:envpass@env-db.internal:5432/hindsight",
+        )
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embed_database_url": "postgresql://cfguser:cfgpass@config-db.internal:5432/hindsight",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == (
+            "postgresql://cfguser:cfgpass@config-db.internal:5432/hindsight"
+        ), (
+            "The README documents embed_database_url as taking precedence "
+            "over the env var when both are set -- the config value must "
+            "win, not the env var"
+        )
+
+    def test_embedded_profile_env_omits_database_url_when_unset(self, monkeypatch):
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert "HINDSIGHT_EMBED_API_DATABASE_URL" not in env
+
+    def test_materialized_profile_env_file_contains_configured_database_url(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression (review of #68479): the unit-level tests above only
+        check _build_embedded_profile_env()'s returned dict. This exercises
+        the actual materialization path (_materialize_embedded_profile_env(),
+        which both the setup flow and daemon-restart call) end to end --
+        the URL must reach the real written ~/.hindsight/profiles/*.env file,
+        not just an intermediate in-memory dict."""
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+
+        config = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embed_database_url": "postgresql://user:pass@db.internal:5432/hindsight",
+        }
+
+        written_path = _materialize_embedded_profile_env(config)
+
+        assert written_path.is_file()
+        content = written_path.read_text()
+        assert (
+            "HINDSIGHT_EMBED_API_DATABASE_URL="
+            "postgresql://user:pass@db.internal:5432/hindsight" in content
+        ), f"configured database URL missing from materialized profile env file: {content!r}"
+
+    def test_config_schema_exposes_embed_database_url(self, provider):
+        schema = provider.get_config_schema()
+        entry = next((e for e in schema if e["key"] == "embed_database_url"), None)
+        assert entry is not None, "embed_database_url must be discoverable in get_config_schema()"
+        assert entry.get("env_var") == "HINDSIGHT_EMBED_API_DATABASE_URL"
+        assert entry.get("when") == {"mode": "local_embedded"}
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

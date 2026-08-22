@@ -75,7 +75,10 @@ describe('useElapsedSeconds', () => {
     expect(screen.getByTestId('elapsed').textContent).toBe('0')
   })
 
-  it('pauses UI ticks without focus and catches up immediately on return', () => {
+  it('keeps ticking while unfocused, since the window is still on screen', () => {
+    // Regression: gating on focus froze the elapsed clock the moment the user
+    // clicked another window, so a turn that was still running looked hung.
+    // Only a hidden document may pause it -- asserted below.
     render(<Probe active timerKey="tool:background" />)
     vi.mocked(document.hasFocus).mockReturnValue(false)
     window.dispatchEvent(new Event('blur'))
@@ -83,10 +86,23 @@ describe('useElapsedSeconds', () => {
     act(() => {
       vi.advanceTimersByTime(5_000)
     })
+    expect(screen.getByTestId('elapsed').textContent).toBe('5')
+  })
+
+  it('pauses UI ticks while hidden and catches up immediately on return', () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    render(<Probe active timerKey="tool:background" />)
+
+    visibility.mockReturnValue('hidden')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
     expect(screen.getByTestId('elapsed').textContent).toBe('0')
 
-    vi.mocked(document.hasFocus).mockReturnValue(true)
-    act(() => window.dispatchEvent(new Event('focus')))
+    visibility.mockReturnValue('visible')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
     expect(screen.getByTestId('elapsed').textContent).toBe('5')
   })
 })

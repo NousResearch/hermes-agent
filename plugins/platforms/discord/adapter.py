@@ -7454,6 +7454,73 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return " ".join(f"<@{uid}>" for uid in user_ids)
 
+    async def _approval_mention_content_scoped(self, channel) -> Optional[str]:
+        """Return approval mentions honouring ``DISCORD_APPROVAL_MENTIONS_SCOPE``.
+
+        ``all`` (default) mentions every numeric allowlist entry — the original
+        behaviour. ``participants`` narrows the ping to allowlisted users who
+        have taken part in the target thread, so approvers working in other
+        threads are not pulled into every prompt. When no allowlisted
+        participant can be identified (or the target is not a thread) it falls
+        back to mentioning all approvers so a prompt is never left silent.
+        """
+        content = self._approval_mention_content()
+        if not content:
+            return None
+        scope = os.getenv("DISCORD_APPROVAL_MENTIONS_SCOPE", "all").strip().lower()
+        if scope != "participants":
+            return content
+        participant_ids = await self._thread_participant_approver_ids(channel)
+        if not participant_ids:
+            return content
+        return " ".join(f"<@{uid}>" for uid in sorted(participant_ids))
+
+    async def _thread_participant_approver_ids(self, channel) -> set:
+        """Collect numeric allowlist IDs that have participated in ``channel``.
+
+        Participation means having authored a message in the thread, including
+        the parent-channel message the thread was spawned from. Thread
+        *membership* is deliberately not used: without the privileged members
+        intent the gateway only syncs the bot's own membership, and Discord
+        auto-joins anyone mentioned in a thread — so one all-approver ping
+        would permanently widen the scope again. Returns an empty set for
+        non-threads or when lookups fail (callers fall back to all approvers).
+        """
+        approver_ids = {str(uid) for uid in self._allowed_user_ids if str(uid).isdigit()}
+        if not approver_ids:
+            return set()
+        if not (DISCORD_AVAILABLE and isinstance(channel, discord.Thread)):
+            return set()
+        found: set = set()
+        try:
+            async for msg in channel.history(limit=100):
+                author = getattr(msg, "author", None)
+                if author is None or getattr(author, "bot", False):
+                    continue
+                uid = str(getattr(author, "id", ""))
+                if uid in approver_ids:
+                    found.add(uid)
+                    if found == approver_ids:
+                        return found
+        except Exception as e:
+            logger.debug("Approval mention scope: thread history scan failed: %s", e)
+        # A just-created auto-thread may hold no human messages yet — the
+        # requester's message lives in the parent channel as the thread's
+        # starter. Public threads share their id with that origin message.
+        if found != approver_ids:
+            starter = getattr(channel, "starter_message", None)
+            if starter is None and getattr(channel, "parent", None) is not None:
+                try:
+                    starter = await channel.parent.fetch_message(channel.id)
+                except Exception:
+                    starter = None
+            author = getattr(starter, "author", None)
+            if author is not None and not getattr(author, "bot", False):
+                uid = str(getattr(author, "id", ""))
+                if uid in approver_ids:
+                    found.add(uid)
+        return found
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -7498,7 +7565,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             if smart_denied:
                 prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
-            mention_content = self._approval_mention_content()
+            mention_content = await self._approval_mention_content_scoped(channel)
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
             prompt_tail = f"\n```\n**Reason:** {reason_display}"
@@ -10433,6 +10500,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     )
     if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
         os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
+    approval_scope_cfg = (
+        discord_cfg["approval_mentions_scope"] if "approval_mentions_scope" in discord_cfg
+        else platform_extra_cfg.get("approval_mentions_scope")
+    )
+    if approval_scope_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS_SCOPE"):
+        os.environ["DISCORD_APPROVAL_MENTIONS_SCOPE"] = str(approval_scope_cfg).strip().lower()
     frc = discord_cfg.get("free_response_channels")
     if frc is not None:
         if isinstance(frc, list):

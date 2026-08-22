@@ -2251,6 +2251,12 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # Who gets mentioned when approval_mentions is on. "all" pings every
+        # numeric allowlist entry; "participants" only pings allowlisted users
+        # who have taken part in the thread the approval fires in, falling
+        # back to "all" when none can be identified. Env override:
+        # DISCORD_APPROVAL_MENTIONS_SCOPE.
+        "approval_mentions_scope": "all",
         # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
         # keep the bot in VC until an explicit `/voice leave` / disconnect.
         "voice_channel_inactivity_timeout_seconds": 300,

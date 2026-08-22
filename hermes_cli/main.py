@@ -12663,7 +12663,7 @@ def main():
     # =========================================================================
     # migrate command
     # =========================================================================
-    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from hermes_cli.migrate import cmd_migrate, cmd_migrate_grokbot, cmd_migrate_xai
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -12696,6 +12696,86 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_grokbot = migrate_subparsers.add_parser(
+        "grokbot",
+        help="Export Grok Bot agents/conversations and import them as Hermes Bots",
+        description=(
+            "Migrate Grok Bot data into Hermes Bot Mode. 'export' relaunches "
+            "the Grok Bot desktop app under a local capture proxy, reads the "
+            "bot roster, conversations, and bot details straight from the "
+            "app's own UI, and writes grokbot-export.json (no credentials are "
+            "ever stored in the export file). 'import' maps each exported bot "
+            "to a Hermes profile: instructions become SOUL.md, memories "
+            "become profile memory, conversations become sessions with the "
+            "canonical chat pinned. 'doctor' checks prerequisites."
+        ),
+    )
+    migrate_grokbot_sub = migrate_grokbot.add_subparsers(
+        dest="grokbot_action", required=True
+    )
+
+    grokbot_export = migrate_grokbot_sub.add_parser(
+        "export",
+        help="Capture Grok Bot data from the running app into grokbot-export.json",
+    )
+    grokbot_export.add_argument(
+        "--out",
+        default="grokbot-export.json",
+        help="Output path (default: ./grokbot-export.json)",
+    )
+    grokbot_export.add_argument(
+        "--capture-dir",
+        default="~/.hermes/grokbot-capture",
+        help="Directory for raw capture logs (default: ~/.hermes/grokbot-capture)",
+    )
+    grokbot_export.add_argument(
+        "--keep-capture",
+        action="store_true",
+        help="Keep the capture directory (it contains account tokens, mode 0600)",
+    )
+    grokbot_export.add_argument(
+        "--keep-running",
+        action="store_true",
+        help="Relaunch the app uninstrumented after export instead of leaving it closed",
+    )
+    grokbot_export.add_argument(
+        "--max-messages",
+        type=int,
+        default=2000,
+        help="Per-conversation message cap (default: 2000)",
+    )
+    grokbot_export.set_defaults(func=cmd_migrate_grokbot)
+
+    grokbot_import = migrate_grokbot_sub.add_parser(
+        "import",
+        help="Import a grokbot-export.json as Hermes Bot Mode profiles",
+    )
+    grokbot_import.add_argument("export_file", help="Path to grokbot-export.json")
+    grokbot_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the import plan without writing anything",
+    )
+    grokbot_import.add_argument(
+        "--force",
+        action="store_true",
+        help="Import into profiles that already exist",
+    )
+    grokbot_import.add_argument(
+        "--bot",
+        action="append",
+        metavar="NAME",
+        help="Import only this bot (by name or id); repeatable",
+    )
+    grokbot_import.set_defaults(func=cmd_migrate_grokbot)
+
+    grokbot_doctor = migrate_grokbot_sub.add_parser(
+        "doctor",
+        help="Check prerequisites for Grok Bot export",
+    )
+    grokbot_doctor.set_defaults(func=cmd_migrate_grokbot)
+
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================

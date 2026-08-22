@@ -18,8 +18,47 @@ def cmd_migrate(args: Any) -> int:
     sub = getattr(args, "migrate_type", None)
     if sub == "xai":
         return cmd_migrate_xai(args)
+    if sub == "grokbot":
+        return cmd_migrate_grokbot(args)
 
     print("usage: hermes migrate xai [--apply] [--no-backup]", file=sys.stderr)
+    print("       hermes migrate grokbot export|import|doctor", file=sys.stderr)
+    return 2
+
+
+def cmd_migrate_grokbot(args: Any) -> int:
+    """Dispatcher for ``hermes migrate grokbot <action>``."""
+    action = getattr(args, "grokbot_action", None)
+    if action == "export":
+        from hermes_cli.grokbot_export import run_export
+
+        return run_export(
+            out_path=Path(args.out),
+            capture_dir=Path(args.capture_dir),
+            keep_capture=bool(getattr(args, "keep_capture", False)),
+            keep_running=bool(getattr(args, "keep_running", False)),
+            max_messages_per_conversation=int(
+                getattr(args, "max_messages", 2000)
+            ),
+        )
+    if action == "import":
+        from hermes_cli.grokbot_import import run_import
+
+        return run_import(
+            Path(args.export_file),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force", False)),
+            target_bots=list(getattr(args, "bot", None) or []),
+        )
+    if action == "doctor":
+        from hermes_cli.grokbot_export import run_doctor
+
+        return run_doctor()
+
+    print(
+        "usage: hermes migrate grokbot export|import|doctor",
+        file=sys.stderr,
+    )
     return 2
 
 

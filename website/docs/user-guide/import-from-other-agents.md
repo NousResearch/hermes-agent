@@ -52,3 +52,59 @@ Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`
 - **Conflicts are skipped by default.** An MCP server or skill that already exists in Hermes is reported as a conflict; pass `--overwrite` to replace it.
 - **Malformed files don't abort the run.** A broken `settings.json` or `config.toml` becomes a per-item error in the report while everything else still imports.
 - Coming from OpenClaw instead? Use [`hermes claw migrate`](../guides/migrate-from-openclaw.md).
+
+## Grok Bot
+
+`hermes migrate grokbot` moves your Grok Bot agents and their conversations into
+Hermes [Bot Mode](bot-mode.md). It works in two steps:
+
+```bash
+hermes migrate grokbot export            # capture Grok Bot data into grokbot-export.json
+hermes migrate grokbot import grokbot-export.json       # import as Hermes Bots
+hermes migrate grokbot import grokbot-export.json --dry-run
+hermes migrate grokbot doctor           # check prerequisites
+```
+
+### How export works
+
+The exporter is layered so it degrades instead of breaking:
+
+- **App witness (primary).** The Grok Bot desktop app is relaunched under
+  Hermes' control: its backend base URLs are pointed at a local capture proxy
+  (environment overrides the app itself supports) and Chromium starts with a
+  CDP debug port. The exporter then reads the bot roster, every conversation's
+  transcript (roles and timestamps from the rendered DOM), and each bot's
+  details straight from the app's own UI.
+- **Backend replay (secondary).** The captured OAuth refresh token mints
+  access tokens so sandbox metadata the UI never loads can be pulled. If the
+  account's backend flags block a call, that layer is skipped with a warning;
+  the app-witness output is unaffected.
+
+The app is macOS-only, so export runs on macOS. The capture directory holds
+account tokens with mode 0600 and is deleted after export unless
+`--keep-capture` is passed.
+
+### What gets imported
+
+| Grok Bot | Hermes |
+|---|---|
+| Bot (name, title, description, instructions) | A Bot Mode profile: name → profile id, instructions → `SOUL.md`, title/description → profile metadata |
+| Bot memories | Entries in the profile's `memories/MEMORY.md` |
+| Conversations | Sessions in the profile's `state.db`, with the canonical chat pinned |
+| Connected tools / plugins | Recorded in the export; credentials are never copied |
+
+### What is never imported
+
+**Credentials.** Export files carry no secrets by design; the importer refuses
+files that break that shape. Reconnect third-party tools from the imported Bot
+with `hermes setup`.
+
+### Behavior notes
+
+- **Idempotent.** Sessions use stable IDs and re-imports merge into the
+  profile created by the first import (an import marker enables this);
+  already-present sessions are skipped.
+- **Atomic per Bot.** If one Bot fails mid-import, its half-created profile is
+  removed and the other Bots still import.
+- **Conflicts are explicit.** Importing into a profile that already exists
+  (without the marker) requires `--force`.

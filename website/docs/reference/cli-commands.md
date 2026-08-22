@@ -55,7 +55,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
 | `hermes peer` | Register peer Hermes gateways on other machines and DM their agents' canonical Bot Chats (`hermes peer dm <peer>[/<agent>] "…"`). The transport behind cross-machine bot-to-bot messaging. |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
-| `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
+| `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). Also hosts `migrate grokbot` — export Grok Bot agents/conversations and import them as Bot Mode profiles (see [Import from Other Agents](../user-guide/import-from-other-agents.md)). |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
@@ -508,6 +508,7 @@ Diagnose and (optionally) rewrite the active `config.yaml` to replace references
 | Subcommand | Description |
 |------------|-------------|
 | `xai` | Scan `config.yaml` for references to xAI models scheduled for retirement on May 15, 2026 and (with `--apply`) rewrite them in-place to the official replacements per the xAI migration guide. Defaults to dry-run. |
+| `grokbot` | Export Grok Bot agents and conversations (`grokbot export`), import them as Bot Mode profiles (`grokbot import`), or check prerequisites (`grokbot doctor`). See [Import from Other Agents](../user-guide/import-from-other-agents.md). |
 
 Common flags for migration subcommands:
 

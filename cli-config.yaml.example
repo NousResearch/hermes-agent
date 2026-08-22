@@ -673,6 +673,14 @@ compression:
   # prune. Default 4096.
   proactive_prune_min_reclaim_tokens: 4096
 
+  # Window-fraction trigger for the same prune: fires when the prompt exceeds
+  # this fraction of the effective input budget (context_length − max_tokens),
+  # so one setting works on any window size without guessing an absolute token
+  # count (0.4 triggers at ~400K on a 1M model, ~48K on a 128K model).
+  # Complementary to `proactive_prune_tokens` above — when both are set, the
+  # LOWER trigger wins. 0 = off (default). Clamped to (0, 1].
+  proactive_prune_ratio: 0
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

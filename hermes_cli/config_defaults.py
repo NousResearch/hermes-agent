@@ -796,6 +796,14 @@ DEFAULT_CONFIG = {
                                       # for a full trigger-sized token runway to
                                       # regrow before rearming. Keeps prompt-cache
                                       # breaks episodic. 0 = no minimum-savings gate.
+        "proactive_prune_ratio": 0,   # window-fraction trigger for the same prune:
+                                      # fires when the prompt exceeds this fraction of
+                                      # the effective input budget (context_length −
+                                      # max_tokens). Window-size-portable alternative
+                                      # to the absolute `proactive_prune_tokens` above
+                                      # (e.g. 0.4 triggers at ~40% of any window).
+                                      # 0 = off; when both triggers are set, the
+                                      # lower wins. Clamped to (0, 1].
         "micro_compact": False,       # opt-in: after each completed turn, fold the
                                       # oldest un-absorbed exchange into a rolling
                                       # summary, amortizing compression cost instead

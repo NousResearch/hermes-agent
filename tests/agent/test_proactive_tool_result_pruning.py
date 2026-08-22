@@ -227,6 +227,7 @@ def test_unset_config_zero_behavior_change():
     Phase-1 caller keeps its 200-char floor."""
     c = _compressor()  # nothing configured
     assert c.proactive_prune_tokens == 0
+    assert c.proactive_prune_ratio is None
     msgs = _build(8, big_indices={0, 1, 2})
     import copy
     snapshot = copy.deepcopy(msgs)
@@ -239,3 +240,82 @@ def test_unset_config_zero_behavior_change():
     import inspect
     sig = inspect.signature(c._prune_old_tool_results)
     assert sig.parameters["min_prune_chars"].default == 200
+
+
+# ---------------------------------------------------------------------------
+# proactive_prune_ratio — window-fraction trigger: fire on a context RATIO
+# instead of a fixed token count, so one setting works on any window size.
+# ---------------------------------------------------------------------------
+
+
+def test_ratio_trigger_resolves_against_live_window():
+    """Ratio-only trigger = ratio * effective input budget, resolved lazily
+    from the live context_length (not pinned at construction)."""
+    c = _compressor(proactive_prune_ratio=0.4)
+    expect = int((c.context_length - (c.max_tokens or 0)) * 0.4)
+    assert c._proactive_prune_trigger_tokens() == expect
+    assert expect > 0
+
+
+def test_ratio_and_tokens_triggers_lower_wins():
+    c = _compressor(proactive_prune_tokens=48_000, proactive_prune_ratio=0.4)
+    assert c._proactive_prune_trigger_tokens() == 48_000  # absolute < 0.4*1M
+
+
+def test_ratio_clamping_and_rejection():
+    assert _compressor(proactive_prune_ratio=2.5).proactive_prune_ratio == 1.0
+    assert _compressor(proactive_prune_ratio=-0.5).proactive_prune_ratio is None
+    assert _compressor(proactive_prune_ratio=0).proactive_prune_ratio is None
+    assert _compressor(proactive_prune_ratio="garbage").proactive_prune_ratio is None
+    assert _compressor(proactive_prune_ratio=None).proactive_prune_ratio is None
+    # Disabled ratio alone never triggers a prune.
+    assert _compressor(proactive_prune_ratio=0)._proactive_prune_trigger_tokens() == 0
+
+
+def test_ratio_trigger_fires_prune_below_compression_threshold():
+    """The whole point of the ratio dial: at a tiny ratio the prune fires far
+    below the 50% full-compression trigger, with no absolute token guesswork."""
+    c = _compressor(
+        proactive_prune_ratio=0.0001,  # ~100 tokens on a 1M window
+        proactive_prune_min_result_chars=8_000,
+        proactive_prune_min_reclaim_tokens=0,
+    )
+    assert c.should_compress(prompt_tokens=120_000) is False
+    msgs = _build(8, big_indices={0, 1, 2})
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert pruned >= 3
+    for cid in ("call_0", "call_1", "call_2"):
+        assert len(_tool_by_id(result, cid)["content"]) < 9000
+
+
+def test_ratio_below_trigger_is_noop():
+    c = _compressor(proactive_prune_ratio=0.4)  # ~400K on a 1M window
+    msgs = _build(8, big_indices={0, 1, 2})
+    result, pruned = c.prune_tool_results_only(msgs, current_tokens=100_000)
+    assert pruned == 0
+    assert result is msgs  # no-op caller contract
+
+
+def test_ratio_runway_uses_resolved_trigger():
+    """A ratio-triggered prune must rearm against a trigger-sized runway too,
+    not just the reclaimed amount — otherwise a tiny ratio would allow a
+    cache-breaking prune on every growth spurt."""
+    c = _compressor(
+        proactive_prune_ratio=0.0001,  # tiny trigger -> runway floor = reclaim
+        proactive_prune_min_result_chars=8_000,
+    )
+    msgs = _build(8, big_indices={0, 1, 2, 6, 7})
+    first, n1 = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert n1 >= 3
+    assert c._proactive_prune_rearm_tokens > sum(
+        map(_estimate_msg_budget_tokens, first)
+    )
+
+
+def test_ratio_survives_model_switch():
+    """The ratio is multiplied against the LIVE effective budget, so a
+    /model switch or fallback activation re-anchors the trigger to the new
+    window without re-reading config."""
+    c = _compressor(proactive_prune_ratio=0.4)
+    c.update_model(model="other", context_length=200_000)
+    assert c._proactive_prune_trigger_tokens() == int(200_000 * 0.4)

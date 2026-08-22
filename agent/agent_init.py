@@ -2208,6 +2208,25 @@ def init_agent(
             _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
         ),
     )
+    # Window-fraction trigger for the proactive prune (0/unset = disabled —
+    # behavior-neutral). Same hardened parse semantics as the other knobs:
+    # booleans rejected (YAML `true` would otherwise coerce to ratio 1.0 =
+    # prune at the FULL window, i.e. only at the very end of the budget —
+    # silently near-disabling the feature in the most confusing way
+    # possible), non-numeric values fall back to disabled. Valid range is
+    # (0, 1]; values above 1 clamp to 1.0, values <= 0 disable. The
+    # compressor multiplies the live effective input budget
+    # (context_length − max_tokens) by this fraction at prune time, so the
+    # trigger tracks model switches and fallbacks automatically.
+    _raw_prune_ratio = _compression_cfg.get("proactive_prune_ratio")
+    compression_proactive_prune_ratio: float | None = None
+    if not isinstance(_raw_prune_ratio, bool) and _raw_prune_ratio is not None:
+        try:
+            _ratio_val = float(_raw_prune_ratio)
+        except (TypeError, ValueError):
+            _ratio_val = 0.0
+        if _ratio_val > 0:
+            compression_proactive_prune_ratio = min(_ratio_val, 1.0)
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -2754,6 +2773,7 @@ def init_agent(
             proactive_prune_tokens=compression_proactive_prune_tokens,
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
+            proactive_prune_ratio=compression_proactive_prune_ratio,
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
         )

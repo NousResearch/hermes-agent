@@ -2994,6 +2994,7 @@ class ContextCompressor(ContextEngine):
         proactive_prune_tokens: int = 0,
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
+        proactive_prune_ratio: float | None = None,
         min_tail_user_messages: int = 1,
         tail_mode: str = "legacy",
     ):
@@ -3054,6 +3055,24 @@ class ContextCompressor(ContextEngine):
         self.proactive_prune_min_reclaim_tokens = max(
             0, int(proactive_prune_min_reclaim_tokens or 0)
         )
+        # Window-fraction trigger for the proactive prune. None/<=0 = disabled;
+        # when set, the prune triggers at ``proactive_prune_ratio * effective
+        # input budget`` (context_length − max_tokens) — a window-size-portable
+        # alternative to the absolute ``proactive_prune_tokens`` count. When
+        # both triggers are configured the LOWER one wins (whichever fires
+        # first). Resolved lazily in ``_proactive_prune_trigger_tokens`` so it
+        # tracks the live context window across model switches / fallbacks the
+        # same way the compression threshold does. Clamped to (0, 1].
+        if proactive_prune_ratio is None:
+            self.proactive_prune_ratio: float | None = None
+        else:
+            try:
+                _ratio = float(proactive_prune_ratio)
+            except (TypeError, ValueError):
+                _ratio = 0.0
+            self.proactive_prune_ratio = (
+                min(max(_ratio, 0.0), 1.0) if _ratio > 0 else None
+            )
         # A committed prune is a prompt-cache boundary. Do not permit the next
         # one until the prompt has regrown the tokens just reclaimed.
         self._proactive_prune_rearm_tokens: int = 0
@@ -3856,18 +3875,49 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def _proactive_prune_trigger_tokens(self) -> int:
+        """Resolve the effective proactive-prune trigger in tokens.
+
+        Two independent triggers; the LOWER one wins (whichever fires first):
+
+        * ``proactive_prune_tokens`` — an absolute token count (0 = off).
+        * ``proactive_prune_ratio`` — a fraction of the effective INPUT
+          budget (``context_length − max_tokens``), resolved lazily so it
+          tracks the live context window across model switches / fallbacks
+          the same way the compression threshold does.
+
+        When both are set, the minimum applies — an operator may want the
+        ratio for window-proportional behavior but still cap it with an
+        absolute number (or vice versa: an absolute floor that the ratio can
+        lower on big windows). Returns 0 when neither trigger is configured
+        (prune disabled).
+        """
+        candidates: List[int] = []
+        if self.proactive_prune_tokens > 0:
+            candidates.append(self.proactive_prune_tokens)
+        if self.proactive_prune_ratio is not None and self.proactive_prune_ratio > 0:
+            try:
+                budget = self.context_length - (self.max_tokens or 0)
+            except Exception:
+                budget = 0
+            if budget > 0:
+                candidates.append(int(budget * self.proactive_prune_ratio))
+        return min(candidates) if candidates else 0
+
     def prune_tool_results_only(
         self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Deterministic, no-LLM tool-result prune for the cost-oriented path.
 
         Runs the Phase-1 prune (``_prune_old_tool_results``) WITHOUT the
-        compression summary phase, gated on ``proactive_prune_tokens`` rather
-        than the (much higher) full-compression threshold. On large-window
-        models ``should_compress()`` (≈50% of the window) rarely fires, so old
-        tool outputs otherwise ride in history and are re-sent verbatim on every
-        subsequent turn; this reclaims them early with no quality-risky LLM
-        summarization.
+        compression summary phase, gated on the proactive-prune trigger
+        (``proactive_prune_tokens`` absolute count and/or the window-fraction
+        ``proactive_prune_ratio`` — see ``_proactive_prune_trigger_tokens``)
+        rather than the (much higher) full-compression threshold. On
+        large-window models ``should_compress()`` (≈50% of the window) rarely
+        fires, so old tool outputs otherwise ride in history and are re-sent
+        verbatim on every subsequent turn; this reclaims them early with no
+        quality-risky LLM summarization.
 
         Protects the recent tail by message COUNT (``protect_last_n``), never by
         ``tail_token_budget`` — the latter is derived from the 50% compression
@@ -3897,9 +3947,10 @@ class ContextCompressor(ContextEngine):
         Returns ``(messages, 0)`` — the input object — when disabled, below
         the trigger, or when the reclaim gate rejects the commit.
         """
-        if self.proactive_prune_tokens <= 0:
+        trigger = self._proactive_prune_trigger_tokens()
+        if trigger <= 0:
             return messages, 0
-        if current_tokens is not None and current_tokens < self.proactive_prune_tokens:
+        if current_tokens is not None and current_tokens < trigger:
             return messages, 0
         # Nothing to reclaim until there are messages outside the protected tail.
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
@@ -3939,10 +3990,13 @@ class ContextCompressor(ContextEngine):
         # ``after`` includes the tool batch appended since the provider's last
         # usage reading, so both the low-water mark and future gate use the
         # same message-token estimate. Require a full trigger-sized growth
-        # interval before another cache-breaking rewrite.
+        # interval before another cache-breaking rewrite. ``trigger`` is the
+        # resolved effective trigger (absolute and/or ratio-based — see
+        # ``_proactive_prune_trigger_tokens``), so a ratio-only configuration
+        # gets a window-proportional runway too.
         runway = max(
             reclaimed,
-            self.proactive_prune_tokens,
+            trigger,
             self.proactive_prune_min_reclaim_tokens,
         )
         next_rearm_tokens = after + runway

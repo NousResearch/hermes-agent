@@ -1151,6 +1151,16 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
+
+        # Manual-invocation gate (offer-time only), same field and semantics as
+        # Claude Code: the skill stays registered and `/name` still works, but
+        # its description never enters the system prompt, so the model cannot
+        # auto-match it. Command wrappers mirrored from the hub carry this flag
+        # precisely because they must cost zero context. Explicit loads bypass
+        # it, exactly like the environment gate above.
+        if frontmatter.get("disable-model-invocation") is True:
+            return False, frontmatter, ""
+
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)

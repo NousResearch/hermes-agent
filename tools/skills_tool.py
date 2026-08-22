@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # TTL bounds staleness from in-place SKILL.md edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+_SKILLS_CACHE_KEY_DISABLED = "with_disabled"
+_SKILLS_CACHE_KEY_FILTERED = "filtered"
+_SKILLS_CACHE_KEY_MODEL = "filtered_model_facing"
 
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
@@ -184,11 +187,20 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, hide_manual_only: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI).
+    ``hide_manual_only=True`` drops ``disable-model-invocation`` skills — MODEL-facing callers
+    only: the flag's False branch also feeds user-facing surfaces (startup banner,
+    ``GET /v1/skills``) where a manual-only skill must stay visible; ``/name`` is how the user
+    invokes it."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
-    cache_key = "with_disabled" if skip_disabled else "filtered"
+    if skip_disabled:
+        cache_key = _SKILLS_CACHE_KEY_DISABLED
+    elif hide_manual_only:
+        cache_key = _SKILLS_CACHE_KEY_MODEL
+    else:
+        cache_key = _SKILLS_CACHE_KEY_FILTERED
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
     signature = _skills_scan_signature(dirs_to_scan, disabled)
@@ -211,6 +223,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:
+                    continue
+                # Manual-only skills stay out of MODEL-facing listings only
+                # (see the offer-time gates in agent/prompt_builder.py for the
+                # system-prompt half).
+                if hide_manual_only and frontmatter.get("disable-model-invocation") is True:
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
@@ -238,7 +255,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
+        # MODEL-facing listing: manual-only skills stay user-visible (`/name`),
+        # just out of the model's menu.
+        all_skills = _find_all_skills(hide_manual_only=True)
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
@@ -425,7 +444,7 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
         e["name"] for e in required_env_vars if not e.get("optional")
         and (e["name"] in still_missing or not _is_env_var_persisted(e["name"], env_snapshot))]
     setup_needed = bool(remaining)
-    # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
+    # Only vars actually set pass through to sandboxes (execute_code, terminal).
     if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
         try:
             from tools.env_passthrough import register_env_passthrough
@@ -495,7 +514,8 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
-        available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        # MODEL-facing hint: manual-only skills stay out of the model's menu.
+        available = [s["name"] for s in _sort_skills(_find_all_skills(hide_manual_only=True))[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
@@ -637,6 +657,38 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
+def _manual_only_refusal(name: str, payload: dict) -> str | None:
+    """Return a refusal when the skill *payload* is manual-invocation-only.
+
+    Mirrors Claude Code's `disable-model-invocation`: the skill exists and the
+    user can invoke it with /name, but the model may not load it on its own.
+    Takes the payload skill_view already produced — re-loading here would double
+    every model skill_view call and double-count the view telemetry the curator
+    reads (tools/skill_usage.py). Returns None for anything it cannot positively
+    identify as flagged; skill_view owns the real error messages.
+    """
+    src = payload.get("_source_path")
+    if not src:
+        return None
+    try:
+        frontmatter, _ = _parse_frontmatter(
+            Path(src).read_text(encoding="utf-8-sig", errors="replace")[:4000]
+        )
+    except OSError:
+        return None
+    if frontmatter.get("disable-model-invocation") is not True:
+        return None
+    return json.dumps(
+        {
+            "success": False,
+            "error": f"'{payload.get('name') or name}' is a manual-invocation-only skill.",
+            "hint": f"Ask the user to run /{payload.get('name') or name}; "
+                    "do not load it yourself.",
+        },
+        ensure_ascii=False,
+    )
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
@@ -649,6 +701,16 @@ def _skill_view_with_bump(args, **kw):
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
+            # ── Manual-invocation gate ───────────────────────────────
+            # This is the MODEL's entry point to skill_view; the slash-command
+            # and --skills paths reach _load_skill_payload directly and are
+            # unaffected. A manual-only skill is absent from the index, but its
+            # name can still reach the context by other means (an instruction
+            # file naming the command, for one), so refuse the load rather than
+            # rely on the model not guessing it.
+            refusal = _manual_only_refusal(name, parsed)
+            if refusal is not None:
+                return refusal
             _record_skill_view(task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view

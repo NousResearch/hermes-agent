@@ -81,4 +81,8 @@ jobs:
           python3 .github/workflows/patch-88796-carrier-idempotence.py
           python3 -m py_compile /tmp/materialize-88796-base.sh
           bash -n /tmp/execute-88796-base.sh
-          bash /tmp/execute-88796-base.sh
+          if ! bash /tmp/execute-88796-base.sh; then
+            echo '--- generated memory_manager.py syntax context ---'
+            nl -ba agent/memory_manager.py | sed -n '400,470p'
+            exit 1
+          fi

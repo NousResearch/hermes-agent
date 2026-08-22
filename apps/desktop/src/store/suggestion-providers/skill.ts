@@ -219,7 +219,10 @@ registerDraftProvider('skill', async ({ sessionId, text }) => {
     return []
   }
 
-  const haystack = text.toLowerCase()
+  // Strip any other /<token> the user has authored (whitespace-bounded, so
+  // URLs like /api/v1 mid-prose are not destroyed — a / preceded by another
+  // / is left alone because there is no whitespace boundary).
+  const haystack = text.replace(/\s\/[\w-]+/g, ' ').toLowerCase()
   const cwd = $currentCwd.get()
   const skills = await loadIndex()
   const matched = skills.filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))

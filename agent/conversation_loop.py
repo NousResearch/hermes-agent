@@ -2893,6 +2893,22 @@ def run_conversation(
                         api_messages,
                         tools_for_api=tools_for_api,
                     )
+                # Opt-in log-reconstruction desync check (dev invariant).
+                # Default off — single bool guard, zero cost when disabled.
+                # Projects known wire transforms onto live history, then
+                # soft-reports silent loss; raise only if
+                # log_reconstruction_check_raise. Does not mutate
+                # messages/api_messages/system prompt.
+                if getattr(agent, "log_reconstruction_check", False):
+                    from agent.log_reconstruction import maybe_check_before_request
+
+                    maybe_check_before_request(
+                        agent,
+                        messages=messages,
+                        api_messages=api_messages,
+                        api_kwargs=api_kwargs,
+                        current_turn_user_idx=current_turn_user_idx,
+                    )
                 # Outbound-request surrogate chokepoint (#50959): the messages
                 # were scrubbed above, but the rest of the request body —
                 # tool/function descriptions (session_search's ±-heavy text is

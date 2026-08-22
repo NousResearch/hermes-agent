@@ -1052,6 +1052,15 @@ agent:
 
   # Enable verbose logging
   verbose: false
+
+  # Opt-in dev invariant: before each LLM request, compare the outgoing
+  # history against the live session transcript after known wire transforms.
+  # Soft-warns on silent loss / content drift. Default false — zero cost
+  # when disabled. Does not mutate context.
+  # log_reconstruction_check: false
+  # Second flag: hard-raise LogReconstructionDesyncError (default false so
+  # enabling the check cannot take down a live session).
+  # log_reconstruction_check_raise: false
   
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.

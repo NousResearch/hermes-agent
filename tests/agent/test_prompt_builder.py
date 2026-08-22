@@ -365,6 +365,47 @@ class TestBuildSkillsSystemPrompt:
         assert "cached-skill" not in second
 
 
+    def test_rebuilds_prompt_when_new_skill_installed_while_gateway_runs(
+        self, monkeypatch, tmp_path
+    ):
+        """A skill installed after the first prompt build (e.g. by a separate
+        `hermes skills install` CLI process) must appear on the next build —
+        the LRU cache must not serve a stale index. Regression test for
+        #92313: the skills-dir manifest fingerprint is part of the cache key.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        existing = skills_dir / "existing-skill"
+        existing.mkdir()
+        (existing / "SKILL.md").write_text(
+            "---\nname: existing-skill\ndescription: Existing\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "existing-skill" in first
+        assert "new-skill" not in first
+
+        # Simulate an install from another process: add a SKILL.md, then bump
+        # its mtime so the manifest fingerprint changes even on coarse-grained
+        # filesystems (the manifest is mtime_ns + size based).
+        new_dir = skills_dir / "new-skill"
+        new_dir.mkdir()
+        (new_dir / "SKILL.md").write_text(
+            "---\nname: new-skill\ndescription: Freshly installed\n---\n"
+        )
+        import os
+        import time
+
+        os.utime(new_dir / "SKILL.md", (time.time() + 5, time.time() + 5))
+
+        second = build_skills_system_prompt()
+        assert "new-skill" in second, (
+            "newly installed skill must appear even though the LRU was warm"
+        )
+        assert "existing-skill" in second
+
+
 
 
 

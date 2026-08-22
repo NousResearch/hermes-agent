@@ -1902,8 +1902,22 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    # Fingerprint the skills directory so a skill install/uninstall/edit made
+    # by a *different* process (e.g. `hermes skills install` while the gateway
+    # keeps running) invalidates this process's cached index. Without this,
+    # the LRU serves a stale skill list for the lifetime of the gateway and
+    # newly installed skills never reach the model's system prompt. The
+    # manifest is the same mtime/size fingerprint the disk snapshot uses for
+    # validation — cheap to compute and catches any content change.
+    _skills_fingerprint = tuple(
+        sorted(
+            f"{rel}:{mtime_ns}:{size}"
+            for rel, (mtime_ns, size) in _build_skills_manifest(skills_dir).items()
+        )
+    )
     cache_key = (
         str(skills_dir),
+        _skills_fingerprint,
         tuple(str(d) for d in external_dirs),
         tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),

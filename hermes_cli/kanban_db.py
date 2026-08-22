@@ -1323,6 +1323,7 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+    actor: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1443,6 +1444,7 @@ CREATE TABLE IF NOT EXISTS task_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
     run_id     INTEGER,
+    actor      TEXT,
     kind       TEXT NOT NULL,
     payload    TEXT,
     created_at INTEGER NOT NULL
@@ -2694,11 +2696,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
 
-    # task_events gained a run_id column; back-fill it as NULL for
-    # historical events (they predate runs and can't be attributed).
+    # task_events gained run_id and actor columns; both remain NULL for
+    # historical events because their attempt and initiator are unknown.
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
+    if "actor" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "actor", "actor TEXT")
 
     # Same ordering rule as the additive ``tasks`` indexes above: create the
     # index after the additive column migration so legacy ``task_events``
@@ -2854,7 +2858,7 @@ _REBUILD_SPECS = {
     "task_events": (
         "CREATE TABLE task_events ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
+        " task_id TEXT NOT NULL, run_id INTEGER, actor TEXT, kind TEXT NOT NULL,"
         " payload TEXT, created_at INTEGER NOT NULL)",
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
@@ -3162,6 +3166,7 @@ def create_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     created_by: Optional[str] = None,
+    actor: Optional[str] = None,
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
@@ -3553,6 +3558,7 @@ def create_task(
                         "model_override": model_override,
                         "provider_override": provider_override,
                     },
+                    actor=actor,
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
@@ -3699,7 +3705,13 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+def assign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    actor: Optional[str] = None,
+) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
     Refuses to reassign a task that's currently running (claim_lock set).
@@ -3728,7 +3740,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
+        _append_event(
+            conn, task_id, "assigned", {"assignee": profile}, actor=actor
+        )
     # Task-mutation observer (RFC #58548), fired AFTER the assignment txn
     # has committed so subscribers always observe durable board state.
     notify_task_updated(conn, task_id, ("assignee",))
@@ -3740,6 +3754,8 @@ def set_model_override(
     task_id: str,
     model: Optional[str],
     provider: Optional[str] = None,
+    *,
+    actor: Optional[str] = None,
 ) -> bool:
     """Set (or clear) the per-task model/provider override.
 
@@ -3776,6 +3792,7 @@ def set_model_override(
         _append_event(
             conn, task_id, "model_override_set",
             {"model": model, "provider": provider},
+            actor=actor,
         )
     # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
     notify_task_updated(conn, task_id, ("model_override", "provider_override"))
@@ -3786,6 +3803,8 @@ def set_reasoning_effort(
     conn: sqlite3.Connection,
     task_id: str,
     effort: Optional[str],
+    *,
+    actor: Optional[str] = None,
 ) -> bool:
     """Set (or clear) the per-task reasoning effort.
 
@@ -3815,7 +3834,11 @@ def set_reasoning_effort(
             (effort, task_id),
         )
         _append_event(
-            conn, task_id, "reasoning_effort_set", {"reasoning_effort": effort}
+            conn,
+            task_id,
+            "reasoning_effort_set",
+            {"reasoning_effort": effort},
+            actor=actor,
         )
     # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
     notify_task_updated(conn, task_id, ("reasoning_effort",))
@@ -3826,7 +3849,13 @@ def set_reasoning_effort(
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    actor: Optional[str] = None,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
@@ -3853,6 +3882,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
+            actor=actor,
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
 
@@ -3880,7 +3910,13 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    actor: Optional[str] = None,
+) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
@@ -3890,6 +3926,7 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
             _append_event(
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
+                actor=actor,
             )
         removed = cur.rowcount > 0
     if removed:
@@ -3980,7 +4017,12 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
 # ---------------------------------------------------------------------------
 
 def add_comment(
-    conn: sqlite3.Connection, task_id: str, author: str, body: str
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+    *,
+    actor: Optional[str] = None,
 ) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
@@ -3999,7 +4041,13 @@ def add_comment(
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        _append_event(
+            conn,
+            task_id,
+            "commented",
+            {"author": author, "len": len(body)},
+            actor=actor,
+        )
         return int(cur.lastrowid or 0)
 
 
@@ -4292,6 +4340,7 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
                 payload=payload,
                 created_at=r["created_at"],
                 run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+                actor=(r["actor"] if "actor" in r.keys() else None),
             )
         )
     return out
@@ -4304,20 +4353,23 @@ def _append_event(
     payload: Optional[dict] = None,
     *,
     run_id: Optional[int] = None,
+    actor: Optional[str] = None,
 ) -> None:
     """Record an event row.  Called from within an already-open txn.
 
     ``run_id`` is optional: pass the current run id so UIs can group
-    events by attempt. For events that aren't scoped to a single run
-    (task created/edited/archived, dependency promotion) leave it None
-    and the row carries NULL.
+    events by attempt. ``actor`` is also optional caller-supplied attribution
+    for the mutation initiator. Omitted values remain SQL NULL so legacy
+    callers retain their existing behavior.
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
+    actor = (actor or "").strip() or None
     conn.execute(
-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (task_id, run_id, kind, pl, now),
+        "INSERT INTO task_events "
+        "(task_id, run_id, actor, kind, payload, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (task_id, run_id, actor, kind, pl, now),
     )
 
 
@@ -5117,6 +5169,7 @@ def reclaim_task(
     *,
     reason: Optional[str] = None,
     signal_fn=None,
+    actor: Optional[str] = None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and restore its source phase.
 
@@ -5173,6 +5226,7 @@ def reclaim_task(
             conn, task_id, "reclaimed",
             payload,
             run_id=run_id,
+            actor=actor,
         )
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
@@ -5189,6 +5243,7 @@ def reassign_task(
     *,
     reclaim_first: bool = False,
     reason: Optional[str] = None,
+    actor: Optional[str] = None,
 ) -> bool:
     """Reassign a task, optionally reclaiming a stuck running worker first.
 
@@ -5203,10 +5258,12 @@ def reassign_task(
     """
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
-        reclaim_task(conn, task_id, reason=reason or "reassign")
+        reclaim_task(
+            conn, task_id, reason=reason or "reassign", actor=actor
+        )
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, actor=actor)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -5359,6 +5416,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    actor: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5420,6 +5478,7 @@ def complete_task(
                             else None
                         ),
                     },
+                    actor=actor,
                 )
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
@@ -5548,6 +5607,7 @@ def complete_task(
             conn, task_id, "completed",
             completed_payload,
             run_id=run_id,
+            actor=actor,
         )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
@@ -5569,6 +5629,7 @@ def complete_task(
                         "source": "completion_summary",
                     },
                     run_id=run_id,
+                    actor=actor,
                 )
     # Successful completion — wipe the consecutive-failures counter.
     # Failure history stays on the event log for audit; the counter
@@ -6250,6 +6311,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    actor: Optional[str] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -6341,6 +6403,7 @@ def block_task(
                     "source_status": source_status,
                 },
                 run_id=run_id,
+                actor=actor,
             )
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -6401,6 +6464,7 @@ def block_task(
                     "source_status": source_status,
                 },
                 run_id=run_id,
+                actor=actor,
             )
         else:
             if expected_run_id is None:
@@ -6458,6 +6522,7 @@ def block_task(
                     "source_status": source_status,
                 },
                 run_id=run_id,
+                actor=actor,
             )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -6497,6 +6562,7 @@ def request_review(
     expected_run_id: Optional[int] = None,
     force: bool = False,
     with_reason: bool = False,
+    actor: Optional[str] = None,
 ):
     """Transition implementation work into the first-class review phase.
 
@@ -6645,6 +6711,7 @@ def request_review(
                 "reviewer": reviewer,
             },
             run_id=run_id,
+            actor=actor,
         )
     return _ret(True)
 
@@ -6655,6 +6722,7 @@ def request_changes(
     *,
     reason: str,
     expected_run_id: Optional[int] = None,
+    actor: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """Finish an active review run and route the task back for rework.
 
@@ -6764,6 +6832,7 @@ def request_changes(
                 "status": new_status,
             },
             run_id=run_id,
+            actor=actor,
         )
     return True, implementer
 
@@ -6833,6 +6902,7 @@ def promote_task(
             task_id,
             "promoted_manual",
             {"actor": actor, "reason": reason, "forced": force},
+            actor=actor,
         )
 
     return True, None
@@ -6887,7 +6957,12 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "todo" if undone_parents else "ready"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` to its safe resumable phase.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -6944,11 +7019,17 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 if new_status != "ready" or resume_status != "ready"
                 else None
             ),
+            actor=actor,
         )
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def reopen_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+) -> bool:
     """Transition ``review`` -> ready (or todo) so the implementer re-runs.
 
     The "changes requested" counterpart of :func:`request_review`: sends the
@@ -7012,6 +7093,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             task_id,
             "review_reopened",
             payload if payload != {"status": "ready"} else None,
+            actor=actor,
         )
         return True
 
@@ -7021,6 +7103,7 @@ def invalidate_descendants_for_parent_reopen(
     task_id: str,
     *,
     author: str,
+    actor: Optional[str] = None,
 ) -> dict[str, Any]:
     """Retract every dispatchable/completed descendant of a reopened ancestor.
 
@@ -7137,6 +7220,7 @@ def invalidate_descendants_for_parent_reopen(
                     "resume_status": resume_status,
                 },
                 run_id=run_id,
+                actor=actor,
             )
             # Legacy 'status' event kept so existing live-feed consumers
             # still see the move without learning the new event kind.
@@ -7152,6 +7236,7 @@ def invalidate_descendants_for_parent_reopen(
                     "resume_status": resume_status,
                 },
                 run_id=run_id,
+                actor=actor,
             )
             # Inline comment insert (not add_comment: no txn-opening helper
             # calls inside a txn per file convention).
@@ -7510,7 +7595,12 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7528,7 +7618,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _append_event(
+            conn, task_id, "archived", None, run_id=run_id, actor=actor
+        )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -7918,6 +8010,7 @@ def schedule_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    actor: Optional[str] = None,
 ) -> bool:
     """Park a task in ``scheduled`` so it is waiting on time, not human input.
 
@@ -7953,7 +8046,14 @@ def schedule_task(
                 outcome="scheduled",
                 summary=reason,
             )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn,
+            task_id,
+            "scheduled",
+            {"reason": reason},
+            run_id=run_id,
+            actor=actor,
+        )
         return True
 
 
@@ -8375,6 +8475,7 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    actor: Optional[str] = None,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -8416,6 +8517,7 @@ def heartbeat_worker(
             conn, task_id, "heartbeat",
             {"note": note} if note else None,
             run_id=run_id,
+            actor=actor,
         )
     return True
 
@@ -11758,6 +11860,7 @@ def unseen_events_for_sub(
             id=r["id"], task_id=r["task_id"], kind=r["kind"],
             payload=payload, created_at=r["created_at"],
             run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+            actor=(r["actor"] if "actor" in r.keys() else None),
         ))
         max_id = max(max_id, int(r["id"]))
     return max_id, out

@@ -225,6 +225,91 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+def test_patch_task_actor_persists_and_is_returned_in_events(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "attributed transition"},
+    ).json()["task"]
+    actor = "human:dashboard-session-42"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "blocked",
+            "block_reason": "waiting for approval",
+            "actor": actor,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        blocked_event = [
+            event
+            for event in kb.list_events(conn, task["id"])
+            if event.kind == "blocked"
+        ][-1]
+        assert blocked_event.actor == actor
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+    assert detail.status_code == 200, detail.text
+    blocked_event_json = [
+        event
+        for event in detail.json()["events"]
+        if event["kind"] == "blocked"
+    ][-1]
+    assert blocked_event_json["actor"] == actor
+
+
+def test_patch_task_without_actor_returns_null_event_actor(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "backward-compatible transition"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "blocked", "block_reason": "waiting"},
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+    assert detail.status_code == 200, detail.text
+    blocked_event = [
+        event
+        for event in detail.json()["events"]
+        if event["kind"] == "blocked"
+    ][-1]
+    assert "actor" in blocked_event
+    assert blocked_event["actor"] is None
+
+
+def test_create_and_comment_actors_are_returned_in_events(client):
+    create_actor = "human:dashboard-creator"
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "attributed task", "actor": create_actor},
+    )
+    assert response.status_code == 200, response.text
+    task = response.json()["task"]
+
+    comment_actor = "human:dashboard-commenter"
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/comments",
+        json={"body": "Approved to proceed", "actor": comment_actor},
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}")
+    assert detail.status_code == 200, detail.text
+    events = detail.json()["events"]
+    created_event = [event for event in events if event["kind"] == "created"][-1]
+    commented_event = [
+        event for event in events if event["kind"] == "commented"
+    ][-1]
+    assert created_event["actor"] == create_actor
+    assert commented_event["actor"] == comment_actor
+
+
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     secret = "ghp_" + "D" * 40
     task = client.post(
@@ -1228,5 +1313,4 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
 

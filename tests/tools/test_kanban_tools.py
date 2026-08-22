@@ -132,6 +132,25 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_attributes_event_to_worker_profile(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({"summary": "attributed completion"})
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        completed = [
+            event
+            for event in kb.list_events(conn, worker_env)
+            if event.kind == "completed"
+        ]
+        assert completed[-1].actor == "agent:test-worker"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

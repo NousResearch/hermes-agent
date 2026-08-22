@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db as kb
+
 
 def _load_plugin_module():
     repo_root = Path(__file__).resolve().parents[2]
@@ -53,6 +55,29 @@ class _IdleDisconnectingWebSocket:
         pass
 
 
+class _PollingWebSocket:
+    """Waits for one event batch, then reports a client disconnect."""
+
+    def __init__(self):
+        self.accepted = False
+        self.sent: list[dict] = []
+        self.query_params = {"since": "0"}
+
+    async def accept(self):
+        self.accepted = True
+
+    async def receive(self):
+        if self.sent:
+            return {"type": "websocket.disconnect"}
+        await asyncio.Event().wait()
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+    async def close(self, code=None):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_stream_events_exits_on_idle_disconnect(monkeypatch, tmp_path):
     mod = _load_plugin_module()
@@ -68,3 +93,36 @@ async def test_stream_events_exits_on_idle_disconnect(monkeypatch, tmp_path):
     assert ws.accepted
     assert ws.receive_calls == 1
     assert ws.sent == []  # returned before any poll, no zombie loop
+
+
+@pytest.mark.asyncio
+async def test_stream_events_includes_actor(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    actor = "agent:researcher"
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="stream attributed event",
+            actor=actor,
+        )
+
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    monkeypatch.setattr(mod, "_EVENT_POLL_SECONDS", 0.01)
+    ws = _PollingWebSocket()
+
+    await asyncio.wait_for(mod.stream_events(ws), timeout=5)
+
+    assert ws.accepted
+    assert len(ws.sent) == 1
+    event = next(
+        event
+        for event in ws.sent[0]["events"]
+        if event["task_id"] == task_id and event["kind"] == "created"
+    )
+    assert event["actor"] == actor

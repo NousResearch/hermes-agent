@@ -86,6 +86,14 @@
     return body || raw;
   }
 
+  // Attribute task mutations at the UI call site so generic REST callers
+  // that omit actor retain the API's nullable, backward-compatible default.
+  function dashboardMutationBody(body) {
+    return JSON.stringify(Object.assign({}, body || {}, {
+      actor: "human:dashboard",
+    }));
+  }
+
   // Board column display order; any backend status not listed here renders after these.
   const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
@@ -848,7 +856,7 @@
         SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(Object.assign({ ids: ids }, finalPatch)),
+          body: dashboardMutationBody(Object.assign({ ids: ids }, finalPatch)),
         }).then(function (res) {
           const failed = (res.results || []).filter(function (r) { return !r.ok; });
           if (failed.length > 0) {
@@ -887,7 +895,7 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(finalPatch),
+        body: dashboardMutationBody(finalPatch),
       }).catch(function (err) {
         setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
@@ -984,7 +992,7 @@
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: dashboardMutationBody(body),
       }).then(function (res) {
         // Surface dispatcher-presence warnings (e.g. "no gateway is
         // running") via the existing error banner channel. Not fatal —
@@ -1100,7 +1108,7 @@
         SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: dashboardMutationBody(body),
         })
           .then(function (res) {
             const failed = (res.results || []).filter(function (r) { return !r.ok; });
@@ -1583,7 +1591,7 @@
         SDK.fetchJSON(url, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "ready" }),
+          body: dashboardMutationBody({ status: "ready" }),
         }).then(function () {
           setMsg({ ok: true, text: tx(t, "unblockedMessage",
             "Unblocked {id}. Task is ready for the next tick.", { id: task.id }) });
@@ -1599,7 +1607,7 @@
         SDK.fetchJSON(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: `recovery action for ${diag.kind}` }),
+          body: dashboardMutationBody({ reason: `recovery action for ${diag.kind}` }),
         }).then(function () {
           setMsg({ ok: true, text: tx(t, "reclaimedMessage",
             "Reclaimed {id}. Task is back to ready.", { id: task.id }) });
@@ -1624,7 +1632,7 @@
         SDK.fetchJSON(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: dashboardMutationBody(body),
         }).then(function () {
           setMsg({
             ok: true,
@@ -3447,7 +3455,7 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body }),
+        body: dashboardMutationBody({ body }),
       }).then(function () {
         setNewComment("");
         load();
@@ -3539,7 +3547,7 @@
         return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(finalPatch),
+          body: dashboardMutationBody(finalPatch),
         }).then(function () { load(); props.onRefresh(); })
           .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
       }
@@ -3610,12 +3618,16 @@
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parent_id: parentId, child_id: props.taskId }),
+        body: dashboardMutationBody({ parent_id: parentId, child_id: props.taskId }),
       }).then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });
     };
     const removeLink = function (parentId) {
-      const qs = new URLSearchParams({ parent_id: parentId, child_id: props.taskId });
+      const qs = new URLSearchParams({
+        parent_id: parentId,
+        child_id: props.taskId,
+        actor: "human:dashboard",
+      });
       return SDK.fetchJSON(withBoard(`${API}/links?${qs}`, boardSlug), { method: "DELETE" })
         .then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });
@@ -3624,12 +3636,16 @@
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parent_id: props.taskId, child_id: childId }),
+        body: dashboardMutationBody({ parent_id: props.taskId, child_id: childId }),
       }).then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });
     };
     const removeChild = function (childId) {
-      const qs = new URLSearchParams({ parent_id: props.taskId, child_id: childId });
+      const qs = new URLSearchParams({
+        parent_id: props.taskId,
+        child_id: childId,
+        actor: "human:dashboard",
+      });
       return SDK.fetchJSON(withBoard(`${API}/links?${qs}`, boardSlug), { method: "DELETE" })
         .then(function () { load(); props.onRefresh(); })
         .catch(function (e) { setErr(String(e.message || e)); });

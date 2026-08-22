@@ -674,6 +674,10 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
 
+Task mutation request bodies accept an optional, nullable `actor` string. This includes task creation, task PATCHes (status transitions and edits), bulk mutations, and comments. When present, the value is persisted on the event row directly emitted for that mutation and is returned in both the `events` array from `GET /tasks/:id` and the `/events` WebSocket stream. Existing callers can omit it; their events store `actor` as `NULL` and otherwise behave exactly as before. Automatic dispatcher and maintenance events that do not supply attribution also remain `NULL`. Namespaced values such as `human:<id>`, `agent:<id>`, and `system:<source>` are recommended so consumers can distinguish actor classes without a second field. The built-in dashboard uses `human:dashboard`.
+
+`actor` is caller-supplied attribution metadata, not authentication or authorization. Do not treat it as cryptographic proof that the named principal initiated the mutation.
+
 Every handler is a thin wrapper — the plugin is ~700 lines of Python (router + WebSocket tail + bulk batcher + config reader) and adds no new business logic. A tiny `_conn()` helper auto-initializes `kanban.db` on every read and write, so a fresh install works whether the user opened the dashboard first, hit the REST API directly, or ran `hermes kanban init`.
 
 ### Dashboard config
@@ -1117,7 +1121,7 @@ Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_
 
 ## Event reference
 
-Every transition appends a row to `task_events`. Each row carries an optional `run_id` so UIs can group events by attempt. Kinds group into three clusters so filtering is easy (`hermes kanban watch --kinds completed,gave_up,timed_out`):
+Every transition appends a row to `task_events`. Each row carries an optional `run_id` so UIs can group events by attempt and an optional `actor` string for caller-supplied attribution. Both fields are exposed by task-detail responses and the live WebSocket stream. Kinds group into three clusters so filtering is easy (`hermes kanban watch --kinds completed,gave_up,timed_out`):
 
 **Lifecycle** (what changed about the task as a logical unit):
 

@@ -88,8 +88,17 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
         assert lei["last_event_id"]["type"].upper() == "INTEGER"
         assert "delivery_metadata" in lei
 
+        event_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_events)")
+        }
+        assert "actor" in event_columns
+
         # Data preserved across the rebuild.
-        assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
+        event_rows = conn.execute(
+            "SELECT actor FROM task_events ORDER BY id"
+        ).fetchall()
+        assert len(event_rows) == 2
+        assert [row["actor"] for row in event_rows] == [None, None]
         assert conn.execute("SELECT body FROM task_comments").fetchone()["body"] == "hi"
         assert len(conn.execute("SELECT * FROM task_runs").fetchall()) == 1
         # Non-numeric legacy cursor ("e-1") casts to 0.

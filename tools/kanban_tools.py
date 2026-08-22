@@ -139,6 +139,11 @@ def _check_kanban_orchestrator_mode() -> bool:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _agent_actor() -> str:
+    """Return the trusted task-event actor for this agent process."""
+    return f"agent:{os.environ.get('HERMES_PROFILE') or 'worker'}"
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
     if arg:
@@ -343,7 +348,13 @@ def heartbeat_current_worker_from_env() -> bool:
             except (TypeError, ValueError):
                 run_id = None
             try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                kb.heartbeat_worker(
+                    conn,
+                    tid,
+                    note=None,
+                    expected_run_id=run_id,
+                    actor=_agent_actor(),
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
@@ -771,6 +782,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    actor=_agent_actor(),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -870,6 +882,7 @@ def _handle_block(args: dict, **kw) -> str:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id(tid),
+                actor=_agent_actor(),
             )
             if not ok:
                 return tool_error(
@@ -951,6 +964,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                 reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid),
                 with_reason=True,
+                actor=_agent_actor(),
             )
             if not ok:
                 detail = fail_reason or "unknown id or not in running/ready"
@@ -999,6 +1013,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id(tid),
+                actor=_agent_actor(),
             )
             if not ok:
                 return tool_error(
@@ -1060,6 +1075,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 tid,
                 note=note,
                 expected_run_id=_worker_run_id(tid),
+                actor=_agent_actor(),
             )
             if not ok:
                 return tool_error(
@@ -1104,7 +1120,13 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            cid = kb.add_comment(conn, tid, author=author, body=str(body))
+            cid = kb.add_comment(
+                conn,
+                tid,
+                author=author,
+                body=str(body),
+                actor=_agent_actor(),
+            )
             return _ok(task_id=tid, comment_id=cid)
         finally:
             conn.close()
@@ -1461,6 +1483,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                actor=_agent_actor(),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1627,7 +1650,7 @@ def _handle_unblock(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(conn, str(tid), actor=_agent_actor())
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             task = kb.get_task(conn, str(tid))
@@ -1654,7 +1677,12 @@ def _handle_link(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                actor=_agent_actor(),
+            )
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
             conn.close()

@@ -184,6 +184,7 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
         "payload": event.payload,
         "created_at": event.created_at,
         "run_id": event.run_id,
+        "actor": event.actor,
     }
 
 
@@ -597,6 +598,7 @@ def get_task(
 
 class CreateTaskBody(BaseModel):
     title: str
+    actor: Optional[str] = None
     body: Optional[str] = None
     assignee: Optional[str] = None
     tenant: Optional[str] = None
@@ -647,6 +649,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             reasoning_effort=payload.reasoning_effort,
             project_id=payload.project_id,
             board=board,
+            actor=payload.actor,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -826,6 +829,7 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # ---------------------------------------------------------------------------
 
 class UpdateTaskBody(BaseModel):
+    actor: Optional[str] = None
     status: Optional[str] = None
     assignee: Optional[str] = None
     priority: Optional[int] = None
@@ -853,7 +857,13 @@ class UpdateTaskBody(BaseModel):
     clear_reasoning_effort: bool = False
 
 
-def _reopen_if_review(conn, task_id: str, current) -> Optional[bool]:
+def _reopen_if_review(
+    conn,
+    task_id: str,
+    current,
+    *,
+    actor: Optional[str] = None,
+) -> Optional[bool]:
     """Route a task leaving the ``review`` lane through ``reopen_review_task``
     (proper transition: stale-run recovery, parent re-gate, ``review_reopened``
     event) instead of a raw status write. Returns the transition result, or
@@ -862,7 +872,7 @@ def _reopen_if_review(conn, task_id: str, current) -> Optional[bool]:
     the review-reopen routing can't drift between them.
     """
     if current is not None and getattr(current, "status", None) == "review":
-        return kanban_db.reopen_review_task(conn, task_id)
+        return kanban_db.reopen_review_task(conn, task_id, actor=actor)
     return None
 
 
@@ -885,7 +895,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if payload.assignee is not None and not review_assignee_deferred:
             try:
                 ok = kanban_db.assign_task(
-                    conn, task_id, payload.assignee or None,
+                    conn,
+                    task_id,
+                    payload.assignee or None,
+                    actor=payload.actor,
                 )
             except RuntimeError as e:
                 raise HTTPException(status_code=409, detail=str(e))
@@ -902,11 +915,22 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     result=payload.result,
                     summary=payload.summary,
                     metadata=payload.metadata,
+                    actor=payload.actor,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                ok = kanban_db.block_task(
+                    conn,
+                    task_id,
+                    reason=payload.block_reason,
+                    actor=payload.actor,
+                )
             elif s == "scheduled":
-                ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
+                ok = kanban_db.schedule_task(
+                    conn,
+                    task_id,
+                    reason=payload.block_reason,
+                    actor=payload.actor,
+                )
             elif s == "review":
                 # Manual "request review" from the board. Routes through
                 # request_review so it is NOT a
@@ -919,22 +943,46 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     # Dashboard PATCH is an explicit human action — allowed
                     # to override a live worker claim (M1 guard).
                     force=True,
+                    actor=payload.actor,
                 )
                 if ok and review_assignee_deferred and not payload.assignee:
-                    ok = kanban_db.assign_task(conn, task_id, None)
+                    ok = kanban_db.assign_task(
+                        conn,
+                        task_id,
+                        None,
+                        actor=payload.actor,
+                    )
             elif s == "ready":
                 # Re-open a blocked/scheduled/review task, or just an explicit
                 # status set. "Changes requested" (review -> ready) goes through
                 # reopen_review_task via _reopen_if_review.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    ok = kanban_db.unblock_task(
+                        conn,
+                        task_id,
+                        actor=payload.actor,
+                    )
                 else:
-                    reopened = _reopen_if_review(conn, task_id, current)
+                    reopened = _reopen_if_review(
+                        conn,
+                        task_id,
+                        current,
+                        actor=payload.actor,
+                    )
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
+                    ok = (
+                        reopened
+                        if reopened is not None
+                        else _set_status_direct(
+                            conn,
+                            task_id,
+                            "ready",
+                            actor=payload.actor,
+                        )
+                    )
             elif s == "archived":
-                ok = kanban_db.archive_task(conn, task_id)
+                ok = kanban_db.archive_task(conn, task_id, actor=payload.actor)
             elif s == "running":
                 raise HTTPException(
                     status_code=400,
@@ -944,8 +992,22 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Only a review task moving to 'todo' needs the reopen
                 # transition; fetch lazily so triage/scheduled skip the query.
                 current = kanban_db.get_task(conn, task_id) if s == "todo" else None
-                reopened = _reopen_if_review(conn, task_id, current)
-                ok = reopened if reopened is not None else _set_status_direct(conn, task_id, s)
+                reopened = _reopen_if_review(
+                    conn,
+                    task_id,
+                    current,
+                    actor=payload.actor,
+                )
+                ok = (
+                    reopened
+                    if reopened is not None
+                    else _set_status_direct(
+                        conn,
+                        task_id,
+                        s,
+                        actor=payload.actor,
+                    )
+                )
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
@@ -981,6 +1043,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 ok = kanban_db.set_model_override(
                     conn, task_id, new_model,
                     provider=payload.provider_override,
+                    actor=payload.actor,
                 )
             except (ValueError, RuntimeError) as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -994,7 +1057,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 else payload.reasoning_effort
             )
             try:
-                ok = kanban_db.set_reasoning_effort(conn, task_id, new_effort)
+                ok = kanban_db.set_reasoning_effort(
+                    conn,
+                    task_id,
+                    new_effort,
+                    actor=payload.actor,
+                )
             except (ValueError, RuntimeError) as e:
                 raise HTTPException(status_code=400, detail=str(e))
             if not ok:
@@ -1007,11 +1075,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "UPDATE tasks SET priority = ? WHERE id = ?",
                     (int(payload.priority), task_id),
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
+                kanban_db._append_event(
+                    conn,
+                    task_id,
+                    "reprioritized",
+                    {"priority": int(payload.priority)},
+                    actor=payload.actor,
                 )
             # Mutation-boundary observer (RFC #58548): this direct-SQL write
             # bypasses every kanban_db mutator, so report it here — after
@@ -1036,10 +1105,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 conn.execute(
                     f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
+                kanban_db._append_event(
+                    conn,
+                    task_id,
+                    "edited",
+                    actor=payload.actor,
                 )
             # Mutation-boundary observer (RFC #58548), post-commit. Field
             # names only — values never leave the DB via this payload.
@@ -1099,6 +1169,8 @@ def _invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection,
     parent_id: str,
     terminations: list[tuple[Optional[int], Optional[str]]],
+    *,
+    actor: Optional[str] = None,
 ) -> None:
     """Delegate to the domain-layer implementation in :mod:`kanban_db`.
 
@@ -1112,13 +1184,20 @@ def _invalidate_descendants_for_parent_reopen(
     must be durable BEFORE the kill).
     """
     result = kanban_db.invalidate_descendants_for_parent_reopen(
-        conn, parent_id, author="dashboard",
+        conn,
+        parent_id,
+        author="dashboard",
+        actor=actor,
     )
     terminations.extend(result["terminations"])
 
 
 def _set_status_direct(
-    conn: sqlite3.Connection, task_id: str, new_status: str,
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_status: str,
+    *,
+    actor: Optional[str] = None,
 ) -> bool:
     """Direct status write for drag-drop moves that aren't covered by the
     structured complete/block/unblock/archive verbs (e.g. todo<->ready,
@@ -1198,26 +1277,23 @@ def _set_status_direct(
                 summary=f"status changed to {effective_status} (dashboard/direct)",
             )
             terminations.append((prev["worker_pid"], prev["claim_lock"]))
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-            "VALUES (?, ?, 'status', ?, ?)",
-            (
-                task_id,
-                run_id,
-                json.dumps(
-                    {
-                        "status": effective_status,
-                        "requested_status": new_status,
-                    }
-                ),
-                int(time.time()),
-            ),
+        kanban_db._append_event(
+            conn,
+            task_id,
+            "status",
+            {
+                "status": effective_status,
+                "requested_status": new_status,
+            },
+            run_id=run_id,
+            actor=actor,
         )
         if reopening_satisfied_parent:
             _invalidate_descendants_for_parent_reopen(
                 conn,
                 task_id,
                 terminations,
+                actor=actor,
             )
     for pid, claim_lock in terminations:
         kanban_db._terminate_reclaimed_worker(pid, claim_lock)
@@ -1234,6 +1310,7 @@ def _set_status_direct(
 class CommentBody(BaseModel):
     body: str
     author: Optional[str] = "dashboard"
+    actor: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/comments")
@@ -1247,6 +1324,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         kanban_db.add_comment(
             conn, task_id, author=payload.author or "dashboard", body=payload.body,
+            actor=payload.actor,
         )
         return {"ok": True}
     finally:
@@ -1260,6 +1338,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 class LinkBody(BaseModel):
     parent_id: str
     child_id: str
+    actor: Optional[str] = None
 
 
 @router.post("/links")
@@ -1267,7 +1346,12 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        kanban_db.link_tasks(
+            conn,
+            payload.parent_id,
+            payload.child_id,
+            actor=payload.actor,
+        )
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1279,12 +1363,18 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
 def delete_link(
     parent_id: str = Query(...),
     child_id: str = Query(...),
+    actor: Optional[str] = Query(None),
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.unlink_tasks(conn, parent_id, child_id)
+        ok = kanban_db.unlink_tasks(
+            conn,
+            parent_id,
+            child_id,
+            actor=actor,
+        )
         return {"ok": bool(ok)}
     finally:
         conn.close()
@@ -1296,6 +1386,7 @@ def delete_link(
 
 class BulkTaskBody(BaseModel):
     ids: list[str]
+    actor: Optional[str] = None
     status: Optional[str] = None
     assignee: Optional[str] = None  # "" or None = unassign
     priority: Optional[int] = None
@@ -1336,7 +1427,11 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     results.append(entry)
                     continue
                 if payload.archive:
-                    if not kanban_db.archive_task(conn, tid):
+                    if not kanban_db.archive_task(
+                        conn,
+                        tid,
+                        actor=payload.actor,
+                    ):
                         entry.update(ok=False, error="archive refused")
                 if payload.status is not None and not payload.archive:
                     s = payload.status
@@ -1346,9 +1441,14 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             result=payload.result,
                             summary=payload.summary,
                             metadata=payload.metadata,
+                            actor=payload.actor,
                         )
                     elif s == "blocked":
-                        ok = kanban_db.block_task(conn, tid)
+                        ok = kanban_db.block_task(
+                            conn,
+                            tid,
+                            actor=payload.actor,
+                        )
                     elif s == "review":
                         # Non-block review handoff (mirror of PATCH /tasks/{id}).
                         ok = kanban_db.request_review(
@@ -1357,14 +1457,33 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             reviewer=(payload.assignee or None),
                             # Bulk dashboard action: explicit human override.
                             force=True,
+                            actor=payload.actor,
                         )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
                         if cur and cur.status in ("blocked", "scheduled"):
-                            ok = kanban_db.unblock_task(conn, tid)
+                            ok = kanban_db.unblock_task(
+                                conn,
+                                tid,
+                                actor=payload.actor,
+                            )
                         else:
-                            reopened = _reopen_if_review(conn, tid, cur)
-                            ok = reopened if reopened is not None else _set_status_direct(conn, tid, "ready")
+                            reopened = _reopen_if_review(
+                                conn,
+                                tid,
+                                cur,
+                                actor=payload.actor,
+                            )
+                            ok = (
+                                reopened
+                                if reopened is not None
+                                else _set_status_direct(
+                                    conn,
+                                    tid,
+                                    "ready",
+                                    actor=payload.actor,
+                                )
+                            )
                     elif s == "running":
                         entry.update(
                             ok=False,
@@ -1376,12 +1495,30 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         results.append(entry)
                         continue
                     elif s == "scheduled":
-                        ok = kanban_db.schedule_task(conn, tid)
+                        ok = kanban_db.schedule_task(
+                            conn,
+                            tid,
+                            actor=payload.actor,
+                        )
                     elif s in {"todo", "triage"}:
                         # Fetch lazily: only review->todo needs reopen.
                         cur = kanban_db.get_task(conn, tid) if s == "todo" else None
-                        reopened = _reopen_if_review(conn, tid, cur)
-                        ok = reopened if reopened is not None else _set_status_direct(conn, tid, s)
+                        reopened = _reopen_if_review(
+                            conn,
+                            tid,
+                            cur,
+                            actor=payload.actor,
+                        )
+                        ok = (
+                            reopened
+                            if reopened is not None
+                            else _set_status_direct(
+                                conn,
+                                tid,
+                                s,
+                                actor=payload.actor,
+                            )
+                        )
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
                         results.append(entry)
@@ -1394,10 +1531,14 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.reassign_task(
                                 conn, tid, payload.assignee or None,
                                 reclaim_first=True,
+                                actor=payload.actor,
                             )
                         else:
                             ok = kanban_db.assign_task(
-                                conn, tid, payload.assignee or None,
+                                conn,
+                                tid,
+                                payload.assignee or None,
+                                actor=payload.actor,
                             )
                         if not ok:
                             entry.update(ok=False, error="assign refused")
@@ -1409,11 +1550,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             "UPDATE tasks SET priority = ? WHERE id = ?",
                             (int(payload.priority), tid),
                         )
-                        conn.execute(
-                            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                            "VALUES (?, 'reprioritized', ?, ?)",
-                            (tid, json.dumps({"priority": int(payload.priority)}),
-                             int(time.time())),
+                        kanban_db._append_event(
+                            conn,
+                            tid,
+                            "reprioritized",
+                            {"priority": int(payload.priority)},
+                            actor=payload.actor,
                         )
                     # Mutation-boundary observer (RFC #58548): the bulk
                     # editor writes with direct SQL too — report each task's
@@ -1430,6 +1572,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.set_model_override(
                             conn, tid, new_model,
                             provider=payload.provider_override,
+                            actor=payload.actor,
                         )
                         if not ok:
                             entry.update(ok=False, error="model override refused")
@@ -1441,7 +1584,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         else payload.reasoning_effort
                     )
                     try:
-                        ok = kanban_db.set_reasoning_effort(conn, tid, new_effort)
+                        ok = kanban_db.set_reasoning_effort(
+                            conn,
+                            tid,
+                            new_effort,
+                            actor=payload.actor,
+                        )
                         if not ok:
                             entry.update(ok=False, error="reasoning override refused")
                     except (ValueError, RuntimeError) as e:
@@ -1701,6 +1849,7 @@ def inspect_run_endpoint(
 
 class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
+    actor: Optional[str] = None
 
 
 @router.post("/runs/{run_id}/terminate")
@@ -1737,7 +1886,12 @@ def terminate_run_endpoint(
                 status_code=409,
                 detail=f"run {run_id} already ended",
             )
-        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        ok = kanban_db.reclaim_task(
+            conn,
+            r.task_id,
+            reason=payload.reason,
+            actor=payload.actor,
+        )
         if not ok:
             raise HTTPException(
                 status_code=409,
@@ -1757,6 +1911,7 @@ def terminate_run_endpoint(
 
 class ReclaimBody(BaseModel):
     reason: Optional[str] = None
+    actor: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/reclaim")
@@ -1775,7 +1930,12 @@ def reclaim_task_endpoint(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.reclaim_task(conn, task_id, reason=payload.reason)
+        ok = kanban_db.reclaim_task(
+            conn,
+            task_id,
+            reason=payload.reason,
+            actor=payload.actor,
+        )
         if not ok:
             raise HTTPException(
                 status_code=409,
@@ -1845,6 +2005,7 @@ class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
     reason: Optional[str] = None
+    actor: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/reassign")
@@ -1868,6 +2029,7 @@ def reassign_task_endpoint(
             payload.profile or None,
             reclaim_first=bool(payload.reclaim_first),
             reason=payload.reason,
+            actor=payload.actor,
         )
         if not ok:
             raise HTTPException(
@@ -2921,7 +3083,7 @@ async def stream_events(ws: WebSocket):
             conn = kanban_db.connect(board=ws_board)
             try:
                 rows = conn.execute(
-                    "SELECT id, task_id, run_id, kind, payload, created_at "
+                    "SELECT id, task_id, run_id, kind, payload, created_at, actor "
                     "FROM task_events WHERE id > ? ORDER BY id ASC LIMIT 200",
                     (cursor_val,),
                 ).fetchall()
@@ -2939,6 +3101,7 @@ async def stream_events(ws: WebSocket):
                         "kind": r["kind"],
                         "payload": payload,
                         "created_at": r["created_at"],
+                        "actor": r["actor"],
                     })
                     new_cursor = r["id"]
                 return new_cursor, out

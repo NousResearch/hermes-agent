@@ -120,9 +120,9 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             claim_expires INTEGER
         )
     """)
-    # Pre-#17805 ``task_events`` shape: missing run_id. Required because
+    # Pre-#17805 ``task_events`` shape: missing run_id and actor. Required because
     # ``_migrate_add_optional_columns`` unconditionally runs PRAGMA on
-    # ``task_events`` for run_id back-fill.
+    # ``task_events`` for additive-column back-fill.
     conn.execute("""
         CREATE TABLE task_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +136,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
         "INSERT INTO tasks (id, title, status, created_at) "
         "VALUES ('legacy', 'old board task', 'ready', 1)"
     )
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+        "VALUES ('legacy', 'created', NULL, 1)"
+    )
     conn.commit()
     conn.close()
 
@@ -147,6 +151,9 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             row["name"]
             for row in migrated.execute("PRAGMA table_info(task_events)")
         }
+        historical_actor = migrated.execute(
+            "SELECT actor FROM task_events WHERE task_id = 'legacy'"
+        ).fetchone()["actor"]
         indexes = {
             row["name"]
             for row in migrated.execute(
@@ -159,11 +166,58 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
     assert "run_id" in event_columns
+    assert "actor" in event_columns
+    assert historical_actor is None
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
+
+
+def test_append_event_persists_actor_and_reads_it_back(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Attributed transition")
+        kb._append_event(
+            conn,
+            task_id,
+            "status_changed",
+            {"status": "done"},
+            actor="human:alice",
+        )
+
+    with kb.connect() as conn:
+        event = next(
+            event
+            for event in kb.list_events(conn, task_id)
+            if event.kind == "status_changed"
+        )
+        persisted_actor = conn.execute(
+            "SELECT actor FROM task_events WHERE id = ?", (event.id,)
+        ).fetchone()["actor"]
+
+    assert event.actor == "human:alice"
+    assert persisted_actor == "human:alice"
+
+
+def test_append_event_without_actor_reads_back_none(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Unattributed transition")
+        kb._append_event(
+            conn,
+            task_id,
+            "status_changed",
+            {"status": "done"},
+        )
+
+    with kb.connect() as conn:
+        event = next(
+            event
+            for event in kb.list_events(conn, task_id)
+            if event.kind == "status_changed"
+        )
+
+    assert event.actor is None
 
 
 # ---------------------------------------------------------------------------

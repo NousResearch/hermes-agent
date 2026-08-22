@@ -49,6 +49,64 @@ DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
 DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+
+
+def _env_number(name: str, default: float, *, minimum: float, integer: bool = False):
+    """Read a positive numeric override from the environment, or return default.
+
+    A malformed or out-of-range value is ignored rather than raising: this runs on
+    the gateway boot path, and refusing to start because of a typo in an optional
+    tuning variable would trade a slow watchdog for no gateway at all.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using the default %s", name, raw, default
+        )
+        return default
+    if value < minimum:
+        logger.warning(
+            "%s=%s is below the %s floor; using the default %s",
+            name, value, minimum, default,
+        )
+        return default
+    return int(value) if integer else value
+
+
+def loop_watchdog_settings() -> tuple[float, float, int]:
+    """(interval, timeout, strikes) for the loop-liveness watchdog.
+
+    Overridable per deployment because the right budget is a property of the
+    HOST's filesystem, not of Hermes. The probe stats a few files and fsyncs a
+    heartbeat; on a WSL2 VHDX under io pressure that was measured taking p99 31s
+    and max 112s, which is longer than the whole default budget (10s x 3), so the
+    watchdog killed a loop that was merely waiting on the disk. A deployment on
+    such a host needs a bigger leash; one on an NVMe box wants the tight default,
+    because the other half of the trade is how fast a genuinely wedged loop dies.
+
+    Defaults are unchanged, so nothing moves unless an operator opts in.
+    """
+    interval = _env_number(
+        "HERMES_LOOP_WATCHDOG_INTERVAL_S",
+        DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+        minimum=1.0,
+    )
+    timeout = _env_number(
+        "HERMES_LOOP_WATCHDOG_TIMEOUT_S",
+        DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+        minimum=1.0,
+    )
+    strikes = _env_number(
+        "HERMES_LOOP_WATCHDOG_MAX_STRIKES",
+        DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+        minimum=1,
+        integer=True,
+    )
+    return interval, timeout, int(strikes)
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -110,9 +168,9 @@ def _arm_loop_floor_timer(
 def start_loop_liveness_watchdog(
     loop: asyncio.AbstractEventLoop,
     *,
-    probe_interval: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
-    probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
-    max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    probe_interval: Optional[float] = None,
+    probe_timeout: Optional[float] = None,
+    max_strikes: Optional[int] = None,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes.
@@ -122,9 +180,14 @@ def start_loop_liveness_watchdog(
     ``GatewayRunner._start_loop_liveness_guards`` — this module stays
     config-agnostic so bare-loop tests can drive it directly).
     """
-    interval = probe_interval
-    timeout = probe_timeout
-    strikes_limit = max_strikes
+    # An explicit argument always wins: the tests drive this function directly
+    # with bare loops and must not inherit an operator's environment. Only the
+    # unset case consults it, which keeps this module config-agnostic as the
+    # docstring above requires — an env read, never a config.yaml read.
+    env_interval, env_timeout, env_strikes = loop_watchdog_settings()
+    interval = env_interval if probe_interval is None else probe_interval
+    timeout = env_timeout if probe_timeout is None else probe_timeout
+    strikes_limit = env_strikes if max_strikes is None else max_strikes
     stop_event = threading.Event()
 
     def _wait_for_probe(probe_event: threading.Event) -> Optional[bool]:

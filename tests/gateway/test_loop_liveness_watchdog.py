@@ -198,3 +198,70 @@ def test_gateway_runner_liveness_guards_start_and_stop():
     floor_timer.cancel.assert_called_once_with()
     assert runner._loop_liveness_watchdog is None
     assert runner._loop_floor_timer_handle is None
+def test_loop_watchdog_budget_is_tunable_per_host(monkeypatch):
+    """The right budget is a property of the HOST, so it has to be settable.
+
+    The probe stats a few files and fsyncs a heartbeat. On a WSL2 VHDX under io
+    pressure that was measured at p99 31s and max 112s — longer than the entire
+    default budget of 10s x 3 strikes — so the watchdog killed loops that were
+    only waiting on the disk. On an NVMe box the tight default is the right
+    answer, because the other half of the trade is how fast a wedged loop dies.
+    Nothing about that is knowable from inside Hermes.
+    """
+    from gateway import shutdown_watchdog as sw
+
+    for name in (
+        "HERMES_LOOP_WATCHDOG_INTERVAL_S",
+        "HERMES_LOOP_WATCHDOG_TIMEOUT_S",
+        "HERMES_LOOP_WATCHDOG_MAX_STRIKES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert sw.loop_watchdog_settings() == (
+        sw.DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+        sw.DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+        sw.DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    ), "defaults moved; this change is supposed to leave them alone"
+
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_TIMEOUT_S", "35")
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_MAX_STRIKES", "5")
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_INTERVAL_S", "20")
+    assert sw.loop_watchdog_settings() == (20.0, 35.0, 5)
+
+
+def test_a_malformed_budget_override_does_not_stop_the_gateway(monkeypatch):
+    """This runs on the boot path. Refusing to start over a typo in an optional
+    tuning variable would trade a slow watchdog for no gateway at all, so a bad
+    value falls back to the default instead of raising."""
+    from gateway import shutdown_watchdog as sw
+
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_TIMEOUT_S", "not-a-number")
+    assert sw.loop_watchdog_settings()[1] == sw.DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+
+    # And a value that would disable the guard in practice is refused too: a
+    # sub-second probe timeout makes every probe a strike.
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_TIMEOUT_S", "0.05")
+    assert sw.loop_watchdog_settings()[1] == sw.DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+
+
+def test_an_explicit_argument_still_beats_the_environment(monkeypatch):
+    """The existing tests drive this function directly with bare loops. They must
+    not inherit an operator's environment, or a tuned host would silently change
+    what the suite is asserting."""
+    from gateway import shutdown_watchdog as sw
+
+    monkeypatch.setenv("HERMES_LOOP_WATCHDOG_TIMEOUT_S", "35")
+    captured = {}
+
+    real_thread = threading.Thread
+
+    def capture(*args, **kwargs):
+        captured["started"] = True
+        return real_thread(target=lambda: None, daemon=True)
+
+    with patch.object(threading, "Thread", capture):
+        handle = sw.start_loop_liveness_watchdog(
+            _immediate_loop(), probe_timeout=2.0, probe_interval=1.0, max_strikes=1
+        )
+    assert captured.get("started") is True
+    if handle is not None:
+        handle.stop()

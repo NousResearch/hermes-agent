@@ -4501,8 +4501,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # SQLite build — some surface it as InterfaceError, which lives
         # OUTSIDE DatabaseError and escaped the retry net entirely on
         # attempt 0 — so the check is message-scoped, not class-scoped.
-        def _is_no_more_rows(exc: sqlite3.Error) -> bool:
-            return "no more rows available" in str(exc).lower()
+        def _is_transient_wal_error(exc: sqlite3.Error) -> bool:
+            # Same contended-WAL-append failure surfaces under different
+            # message strings depending on the SQLite build: "no more rows
+            # available" (older builds) and "returned NULL without setting an
+            # exception" (SQLite >= 3.5x, surfaced on a TrackedConnection).
+            # Both are engine-level transient errors where the identical write
+            # succeeds standalone, so both are retryable like locked/busy.
+            msg = str(exc).lower()
+            return (
+                "no more rows available" in msg
+                or "returned null without setting an exception" in msg
+            )
 
         while True:
             try:
@@ -4559,12 +4569,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"
                     ) from exc
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_transient_wal_error(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_transient_wal_error(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 # Runtime connection-corruption self-heal: a connection whose
                 # backing file was replaced/truncated by a sibling process
@@ -4598,7 +4608,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # subclass) or another sqlite3.Error class outside the two
                 # handlers above. Message-scoped: anything else propagates
                 # untouched.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_transient_wal_error(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 raise
 

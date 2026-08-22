@@ -90,3 +90,44 @@ class TestNoMoreRowsRetry:
 
         with pytest.raises(sqlite3.InterfaceError, match="no more rows"):
             db._execute_write(always)
+
+    def test_returned_null_without_exception_is_retried_to_success(self, db):
+        """SQLite >= 3.5x spells the same transient WAL-append failure as
+        'returned NULL without setting an exception' (surfaced on the
+        TrackedConnection). It must ride the same retry loop as the older
+        'no more rows available' spelling and succeed once contention clears."""
+        calls = {"n": 0}
+
+        def flaky(conn):
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise sqlite3.InterfaceError(
+                    "<TrackedConnection object at 0x7f9dd24350> "
+                    "returned NULL without setting an exception"
+                )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES ('nullret', 'ok') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            return "done"
+
+        assert db._execute_write(flaky) == "done"
+        assert calls["n"] == 4
+        assert db.get_meta("nullret") == "ok"
+
+    def test_returned_null_via_database_error_is_retried(self, db):
+        """Some builds raise the same 'returned NULL...' message through the
+        generic DatabaseError class — it must ride the retry loop, not be
+        misrouted into the FTS-corruption rebuild path."""
+        calls = {"n": 0}
+
+        def flaky(conn):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise sqlite3.DatabaseError(
+                    "returned NULL without setting an exception"
+                )
+            return "ok"
+
+        assert db._execute_write(flaky) == "ok"
+        assert calls["n"] == 3

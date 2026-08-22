@@ -154,6 +154,25 @@ class TestCloseSemantics:
         assert [f["content"] for f in facts] == ["first lifetime"]
 
 
+class TestUnicodeEntityExtraction:
+    def test_cyrillic_multiword_name_is_extracted_and_linked(self, db_path):
+        with MemoryStore(db_path) as store:
+            fact_id = store.add_fact(
+                "Иван Петров предпочитает поэтапные изменения инфраструктуры"
+            )
+            entities = store._conn.execute(
+                """
+                SELECT e.name
+                FROM entities e
+                JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                WHERE fe.fact_id = ?
+                """,
+                (fact_id,),
+            ).fetchall()
+
+        assert [row["name"] for row in entities] == ["Иван Петров"]
+
+
 class TestConcurrency:
     def test_concurrent_multi_instance_writers(self, db_path):
         """Many instances writing from many threads must never hit

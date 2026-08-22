@@ -127,19 +127,56 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Compositional entity query using HRR algebra.
+        """Return facts linked to an entity, with HRR algebra as fallback.
 
-        Unbinds entity from memory bank to extract associated content.
-        This is NOT keyword search — it uses algebraic structure to find facts
-        where the entity plays a structural role.
+        Exact entity and alias matches use the relational links created during
+        fact ingestion. Unknown entities fall back to algebraic retrieval by
+        unbinding the entity from fact or category-bank vectors.
 
         Falls back to FTS5 search if numpy unavailable.
         """
-        if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
-            return self.search(entity, category=category, limit=limit)
-
         conn = self.store._conn
+
+        # SQLite's built-in NOCASE collation is ASCII-only. Resolve names and
+        # aliases in Python so Cyrillic and other Unicode scripts get proper
+        # case-insensitive exact matching instead of noisy HRR ranking.
+        entity_key = entity.strip().casefold()
+        entity_ids = []
+        for row in conn.execute("SELECT entity_id, name, aliases FROM entities"):
+            names = [row["name"], *(row["aliases"] or "").split(",")]
+            if any(name.strip().casefold() == entity_key for name in names if name.strip()):
+                entity_ids.append(row["entity_id"])
+
+        if entity_ids:
+            placeholders = ",".join("?" * len(entity_ids))
+            category_clause = ""
+            params: list = list(entity_ids)
+            if category is not None:
+                category_clause = "AND f.category = ?"
+                params.append(category)
+            params.append(limit)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT f.fact_id, f.content, f.category, f.tags,
+                       f.trust_score, f.retrieval_count, f.helpful_count,
+                       f.created_at, f.updated_at
+                FROM facts f
+                JOIN fact_entities fe ON fe.fact_id = f.fact_id
+                WHERE fe.entity_id IN ({placeholders})
+                  {category_clause}
+                ORDER BY f.trust_score DESC, f.updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            results = [dict(row) for row in rows]
+            for fact in results:
+                fact["score"] = fact["trust_score"]
+            return results
+
+        if not hrr._HAS_NUMPY:
+            # Fallback to keyword search on an unknown entity name.
+            return self.search(entity, category=category, limit=limit)
 
         # Encode entity as role-bound vector
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)

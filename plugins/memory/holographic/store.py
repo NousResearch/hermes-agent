@@ -82,8 +82,10 @@ _UNHELPFUL_DELTA = -0.10
 _TRUST_MIN       =  0.0
 _TRUST_MAX       =  1.0
 
-# Entity extraction patterns
-_RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+# Entity extraction patterns. Python's built-in ``re`` has no Unicode
+# category escapes such as ``\p{Lu}``, so title-casing is checked with
+# ``str.isupper`` below after tokenising Unicode letter words here.
+_RE_WORD         = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)*", re.UNICODE)
 _RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
 _RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
 _RE_AKA          = re.compile(
@@ -465,8 +467,29 @@ class MemoryStore:
                 seen.add(stripped.lower())
                 candidates.append(stripped)
 
-        for m in _RE_CAPITALIZED.finditer(text):
-            _add(m.group(1))
+        capitalized_run: list[re.Match[str]] = []
+
+        def _flush_capitalized_run() -> None:
+            if len(capitalized_run) >= 2:
+                start = capitalized_run[0].start()
+                end = capitalized_run[-1].end()
+                _add(text[start:end])
+            capitalized_run.clear()
+
+        for match in _RE_WORD.finditer(text):
+            word = match.group(0)
+            first_letter = next((char for char in word if char.isalpha()), "")
+            separated_by_space = (
+                not capitalized_run
+                or text[capitalized_run[-1].end():match.start()].isspace()
+            )
+            if first_letter.isupper() and separated_by_space:
+                capitalized_run.append(match)
+            else:
+                _flush_capitalized_run()
+                if first_letter.isupper():
+                    capitalized_run.append(match)
+        _flush_capitalized_run()
 
         for m in _RE_DOUBLE_QUOTE.finditer(text):
             _add(m.group(1))

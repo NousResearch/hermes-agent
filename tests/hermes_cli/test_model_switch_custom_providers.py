@@ -401,6 +401,65 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
 
 
 
+def test_lmstudio_picker_discovers_default_noauth_server(monkeypatch):
+    """A responsive default LM Studio server is selectable without env vars."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        providers_mod,
+        "HERMES_OVERLAYS",
+        {"lmstudio": providers_mod.HERMES_OVERLAYS["lmstudio"]},
+    )
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: [])
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured.update(api_key=api_key, base_url=base_url, timeout=timeout)
+        return ["qwen/qwen3-coder-30b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", _fake_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        for_picker=True,
+    )
+
+    assert captured == {
+        "api_key": "",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "timeout": 1.5,
+    }
+    lmstudio = next(p for p in providers if p["slug"] == "lmstudio")
+    assert lmstudio["models"] == ["qwen/qwen3-coder-30b"]
+    assert lmstudio["is_locally_discovered"] is True
+
+
+def test_lmstudio_non_picker_skips_probe_when_not_configured(monkeypatch):
+    """Non-picker callers must not probe an unconfigured local server."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured.update(api_key=api_key, base_url=base_url, timeout=timeout)
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert "base_url" not in captured
+
+
 def test_is_routing_aggregator_excludes_flat_namespace_resellers():
     """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch
     relies on it to search their flat bare-name catalog), but they are NOT
@@ -1629,7 +1688,6 @@ def test_excluded_providers_hides_builtin_row(monkeypatch):
         "excluded_providers=['openrouter'] must hide the openrouter row"
     )
 
-
 def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):
     """Dict-shaped ``models:`` from ``_save_custom_provider`` is metadata.
 
@@ -2081,7 +2139,7 @@ def test_auto_saved_catalog_round_trips_without_pinning(tmp_path, monkeypatch):
 
     _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
 
-    saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"][0]
     assert saved["models_discovered"] is True
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert not any(m.startswith("__") for m in saved["models"]), (
@@ -2163,7 +2221,7 @@ def test_legacy_sentinel_catalog_still_resolves_and_migrates(tmp_path, monkeypat
 
     _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
 
-    saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"][0]
     assert saved["models_discovered"] is True
     assert list(saved["models"]) == _LOCAL_CATALOG
     assert "__discovered_model_catalog__" not in saved["models"]

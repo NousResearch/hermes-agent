@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from hermes_cli.inventory import (
     ConfigContext,
+    build_model_options_payload,
     build_models_payload,
     load_picker_context,
 )
@@ -84,6 +85,17 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     }
 
 
+
+
+def test_model_options_payload_requests_interactive_provider_discovery():
+    ctx = _empty_ctx()
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_model_options_payload(ctx)
+
+    assert mock_list.call_args.kwargs["for_picker"] is True
 
 
 def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
@@ -207,6 +219,31 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         "custom:lab",
     ]
 
+
+
+def test_explicit_only_keeps_reachable_local_discovery():
+    """A live no-auth local server is callable without an env-var signal."""
+    rows = [
+        {
+            "slug": "lmstudio",
+            "name": "LM Studio",
+            "models": ["qwen/qwen3-coder-30b"],
+            "total_models": 1,
+            "is_current": False,
+            "is_user_defined": False,
+            "is_locally_discovered": True,
+            "source": "local-discovery",
+        }
+    ]
+    ctx = _empty_ctx(provider="openrouter")
+
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert any(row["slug"] == "lmstudio" for row in payload["providers"])
 
 
 # ─── picker_hints ──────────────────────────────────────────────────────
@@ -541,7 +578,4 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
-
-
 

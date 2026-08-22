@@ -2618,6 +2618,10 @@ def list_authenticated_providers(
     opens: probe only the currently-selected custom endpoint so its model list
     matches the active provider without blocking on every saved/offline custom
     endpoint.
+
+    ``for_picker`` permits a short probe of LM Studio's default loopback
+    endpoint. A successful no-auth response is enough to make the local
+    provider selectable; non-picker callers retain the no-probe behaviour.
     """
     import os
     from agent.models_dev import (
@@ -2749,7 +2753,10 @@ def list_authenticated_providers(
     # On auth rejection or unreachable server, fall back to the caller-supplied
     # current model so the picker still shows something when offline / mis-keyed.
     if "lmstudio" not in curated and (
-        os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
+        for_picker
+        or os.environ.get("LM_API_KEY")
+        or os.environ.get("LM_BASE_URL")
+        or current_provider.strip().lower() == "lmstudio"
     ):
         from hermes_cli.models import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
@@ -2946,15 +2953,34 @@ def list_authenticated_providers(
         if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
             continue
 
-        # Check if credentials exist
-        has_creds = False
-        if getattr(overlay, "keyless", False):
+        # A responding default LM Studio server is an intentional local
+        # no-auth configuration. Only interactive pickers make this probe;
+        # background/provider-resolution callers still require an explicit
+        # configuration signal before touching localhost.
+        is_keyless_lmstudio = (
+            for_picker
+            and hermes_slug == "lmstudio"
+            and bool(curated.get("lmstudio"))
+        )
+
+        # Existing LM Studio environment/config selection is already explicit;
+        # flag only the zero-configuration default-endpoint case so Desktop's
+        # configured-provider filter can retain that newly discovered row.
+        is_locally_discovered = is_keyless_lmstudio and not (
+            os.environ.get("LM_API_KEY")
+            or os.environ.get("LM_BASE_URL")
+            or current_provider.strip().lower() == "lmstudio"
+        )
+
+        # Check if credentials exist.
+        has_creds = is_keyless_lmstudio
+        if not has_creds and getattr(overlay, "keyless", False):
             # Keyless providers (opencode-free) are served anonymously —
             # there is no credential to check, so everyone is authenticated.
             has_creds = True
-        elif overlay.auth_type == "aws_sdk":
+        elif not has_creds and overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
-        elif overlay.auth_type == "vertex":
+        elif not has_creds and overlay.auth_type == "vertex":
             # Vertex authenticates via OAuth2 (service-account JSON / ADC),
             # not an API key — mirror the aws_sdk gate above, otherwise the
             # provider is silently hidden from the /model picker even when
@@ -2964,7 +2990,7 @@ def list_authenticated_providers(
                 has_creds = has_vertex_credentials()
             except Exception as exc:
                 logger.debug("Vertex credential check failed: %s", exc)
-        elif overlay.extra_env_vars:
+        elif not has_creds and overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
@@ -3103,15 +3129,18 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        results.append({
+        row = {
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
             "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,
             "total_models": total,
-            "source": "hermes",
-        })
+            "source": "local-discovery" if is_locally_discovered else "hermes",
+        }
+        if is_locally_discovered:
+            row["is_locally_discovered"] = True
+        results.append(row)
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
         _record_builtin_endpoint(hermes_slug)

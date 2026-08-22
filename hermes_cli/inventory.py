@@ -311,6 +311,7 @@ def build_model_options_payload(
         refresh=refresh,
         probe_custom_providers=refresh,
         probe_current_custom_provider=not refresh,
+        for_picker=True,
     )
 
 
@@ -667,6 +668,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
     ``list_authenticated_providers`` intentionally discovers ambient / auto-
     seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
     pickers want the narrower subset the user explicitly configured for Hermes.
+    A responsive default LM Studio server is the exception: it is discovered
+    only during an interactive picker request and is directly callable without
+    a credential.
     """
     from hermes_cli.auth import is_provider_explicitly_configured
 
@@ -677,6 +681,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if not slug:
             continue
         if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if row.get("is_locally_discovered"):
             kept.append(row)
             continue
         if current_slug and slug == current_slug:

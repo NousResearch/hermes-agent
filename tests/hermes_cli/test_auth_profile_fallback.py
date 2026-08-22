@@ -288,3 +288,275 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     assert persisted["access_token"] == "sk-new"
     assert persisted.get("last_status") != "exhausted"
     assert persisted.get("last_error_code") is None
+
+
+# ---------------------------------------------------------------------------
+# read_credential_pool — read-time kimi base_url normalization (#5908)
+# ---------------------------------------------------------------------------
+
+KIMI_STALE_DEFAULT_URL = "https://api.moonshot.ai/v1"
+KIMI_CODE_URL = "https://api.kimi.com/coding"
+KIMI_LEGACY_V1_URL = "https://api.kimi.com/coding/v1"
+
+
+def _kimi_entry(**overrides) -> dict:
+    entry = {
+        "id": "kimi-1",
+        "label": "old Kimi key",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        "access_token": "sk-kimi-test-key",
+        "base_url": KIMI_STALE_DEFAULT_URL,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_stale_moonshot_default_url_is_repaired_on_load(profile_env):
+    """#5908: entries persisted before prefix resolution keep the Moonshot
+    default; loading a kimi entry must re-resolve from the key prefix."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_legacy_coding_v1_url_is_repaired_on_load(profile_env):
+    """The old documented workaround ('/coding/v1') double-appends /v1 in the
+    Anthropic SDK; loading must repair it to the canonical /coding URL."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url=KIMI_LEGACY_V1_URL)],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_legacy_coding_v1_url_preserved_for_non_kimi_key(profile_env):
+    """A non-kimi key stored with /coding/v1 is treated as an explicit custom
+    endpoint (possible OpenAI-compat use) and must not be rewritten."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(
+            access_token="sk-legacy-moonshot-key",
+            base_url=KIMI_LEGACY_V1_URL,
+        )],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_LEGACY_V1_URL
+
+
+def test_stale_default_with_trailing_slash_is_repaired(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url="https://api.moonshot.ai/v1/")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_empty_env_override_treated_as_unset(profile_env, monkeypatch):
+    monkeypatch.setenv("KIMI_BASE_URL", "")
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_missing_base_url_is_filled_on_load(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url=None)],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_empty_base_url_string_is_filled_on_load(profile_env):
+    """An empty-string base_url is treated like a missing one and filled."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url="")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_whitespace_only_base_url_is_filled_on_load(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url="   ")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_custom_nondefault_url_is_preserved_on_load(profile_env):
+    """A stored proxy/custom endpoint is the user's explicit choice — the
+    load-time repair must never clobber it (the #18694 rejection reason)."""
+    custom = "https://kimi-proxy.example.com/v1"
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url=custom)],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == custom
+
+
+def test_env_override_wins_over_stale_url_on_load(profile_env, monkeypatch):
+    monkeypatch.setenv("KIMI_BASE_URL", "https://env-override.example/v1")
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == "https://env-override.example/v1"
+
+
+def test_env_override_wins_over_custom_url_on_load(profile_env, monkeypatch):
+    monkeypatch.setenv("KIMI_BASE_URL", "https://env-override.example/v1")
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(base_url="https://kimi-proxy.example.com/v1")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == "https://env-override.example/v1"
+
+
+def test_legacy_moonshot_key_keeps_moonshot_default_on_load(profile_env):
+    """Keys without the sk-kimi- prefix belong on the Moonshot default; the
+    repair must not move them to api.kimi.com."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(access_token="sk-legacy-moonshot-key")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_STALE_DEFAULT_URL
+
+
+def test_runtime_api_key_field_drives_normalization(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(access_token="", runtime_api_key="sk-kimi-runtime-key")],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_fully_empty_credential_entry_left_untouched(profile_env):
+    """An entry with no credential at all has nothing to infer a URL from;
+    the load-time repair must not even fill a missing base_url for it."""
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry(
+            access_token="",
+            runtime_api_key=None,
+            api_key=None,
+            base_url=None,
+        )],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0].get("base_url") is None
+
+
+def test_non_kimi_provider_entries_untouched(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "zai": [{
+            "id": "zai-1",
+            "auth_type": "api_key",
+            "access_token": "sk-zai-key",
+            "base_url": "https://api.z.ai/api/paas/v4",
+        }],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("zai")
+    assert entries[0]["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+def test_global_fallback_entries_normalized_on_load(profile_env):
+    """The read-only global fallback slice must be repaired the same way."""
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openrouter": [{
+            "id": "prof-1",
+            "auth_type": "api_key",
+            "access_token": "sk-profile",
+        }],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("kimi-coding")
+    assert entries[0]["base_url"] == KIMI_CODE_URL
+
+
+def test_whole_pool_read_normalizes_kimi_entries(profile_env):
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+        "openrouter": [{
+            "id": "prof-1",
+            "auth_type": "api_key",
+            "access_token": "sk-profile",
+        }],
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    pool = read_credential_pool()
+    assert pool["kimi-coding"][0]["base_url"] == KIMI_CODE_URL
+    assert pool["openrouter"][0]["id"] == "prof-1"
+
+
+def test_pool_to_runtime_uses_normalized_url(profile_env, monkeypatch):
+    """Regression: the runtime entry constructed from the persisted pool must
+    carry the repaired URL (read_credential_pool → PooledCredential)."""
+    # Hermetic: no ambient kimi env vars that load_pool's seeding could pick up.
+    for var in ("KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "kimi-coding": [_kimi_entry()],
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("kimi-coding")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.base_url == KIMI_CODE_URL

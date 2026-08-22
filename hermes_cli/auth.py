@@ -78,7 +78,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from hermes_cli.config import (
@@ -1608,6 +1608,84 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
+def _normalize_loaded_kimi_entry(provider_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-resolve a persisted kimi pool entry's ``base_url`` when missing/stale.
+
+    Creation-time seeding and credential registration already resolve Kimi
+    base URLs from the key prefix, so entries written by current code are
+    correct. Entries persisted by older versions — or written during a setup
+    race before the key was loaded — can carry the registry default
+    (``https://api.moonshot.ai/v1``), which ``sk-kimi-`` keys reject with
+    HTTP 401. The legacy documented workaround (``/coding/v1``) is also stale:
+    the Anthropic SDK appends ``/v1/messages`` to the ``/coding`` endpoint, so
+    the suffixed value double-appends and 404s.
+
+    Read-only repair, applied on load only (never written back):
+
+    * Because ``KIMI_BASE_URL`` always wins (matching ``_resolve_kimi_base_url``
+      semantics), a read result is a function of the current environment: the
+      same persisted entry can report different URLs across processes when the
+      env differs. Nothing is written back, so a session-scoped env override is
+      never baked into ``auth.json``.
+    * ``base_url`` missing, or equal to the provider's registry default, or
+      equal to the legacy ``KIMI_CODE_BASE_URL + "/v1"`` variant → re-resolve
+      from the key prefix (``KIMI_BASE_URL`` env always wins).
+    * Any other non-default stored URL (custom proxy/endpoint) is the user's
+      explicit choice → preserved, unless ``KIMI_BASE_URL`` is set, which
+      overrides it (matching ``_resolve_kimi_base_url`` semantics).
+    """
+    if provider_id not in {"kimi-coding", "kimi-coding-cn"}:
+        return entry
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig:
+        return entry
+
+    env_url = ""
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+    stored = str(entry.get("base_url") or "").strip().rstrip("/")
+    api_key = str(
+        entry.get("access_token")
+        or entry.get("runtime_api_key")
+        or entry.get("api_key")
+        or ""
+    ).strip()
+    if not api_key:
+        # No credential to infer an endpoint from — leave the entry untouched.
+        return entry
+    if stored and not env_url:
+        stale = {(pconfig.inference_base_url or "").rstrip("/")}
+        if api_key.startswith("sk-kimi-"):
+            # The legacy documented workaround (/coding/v1) double-appends /v1
+            # in the Anthropic SDK; only Kimi Code keys are guaranteed to use
+            # the Anthropic protocol. A non-kimi key stored with /coding/v1 is
+            # treated as an explicit custom endpoint and preserved.
+            stale.add((KIMI_CODE_BASE_URL + "/v1").rstrip("/"))
+        if stored not in stale:
+            # Non-default stored URL: explicit user choice (custom proxy/endpoint).
+            return entry
+
+    resolved = _resolve_kimi_base_url(
+        api_key, pconfig.inference_base_url, env_url
+    ).rstrip("/")
+    if resolved == stored:
+        return entry
+    normalized = dict(entry)
+    normalized["base_url"] = resolved
+    return normalized
+
+
+def _normalize_pool_entries(provider_id: str, entries: Any) -> Any:
+    """Read-time normalization for persisted credential pool entries."""
+    if not isinstance(entries, list):
+        return entries
+    return [
+        _normalize_loaded_kimi_entry(provider_id, e) if isinstance(e, dict) else e
+        for e in entries
+    ]
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
@@ -1645,14 +1723,25 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             if isinstance(existing, list) and existing:
                 continue
             merged[gp_key] = list(gp_entries)
-        return merged
+        # Normalize after the profile/global merge so each provider's final
+        # slice (profile entries or the read-only global fallback) is repaired
+        # exactly once, without mutating the underlying loaded store dicts.
+        return {
+            pid: _normalize_pool_entries(pid, entries)
+            for pid, entries in merged.items()
+        }
 
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
+        return _normalize_pool_entries(provider_id, provider_entries)
     # Profile has no entries for this provider — fall back to global.
     global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    return cast(
+        Any,
+        _normalize_pool_entries(provider_id, global_entries)
+        if isinstance(global_entries, list)
+        else [],
+    )
 
 
 _POOL_STATUS_FIELDS = (

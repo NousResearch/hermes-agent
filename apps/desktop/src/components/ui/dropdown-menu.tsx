@@ -249,12 +249,19 @@ function DropdownMenuSubContent({
   collisionPadding = 8,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  // Same container rule as DropdownMenuContent: inside a dialog, portal into
+  // the dialog's node so the submenu shares its stacking context — a
+  // body-level submenu paints BEHIND the dialog + parent menu, dimmed and
+  // unclickable (#80798). Outside a dialog this is null/undefined and Radix
+  // falls back to document.body, preserving the overflow-clip escape.
+  const container = usePopoverPortalContainer()
+
   return (
     // Portal the submenu out of the parent Content so it escapes that Content's
     // `overflow` clip. Without this, a submenu opening from a scrollable menu
     // gets visually cut off at the parent's edges. Radix Popper still anchors
     // it to the SubTrigger and handles collision/flip, so portaling is safe.
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={container}>
       <DropdownMenuPrimitive.SubContent
         // `dt-portal-scrollbar` reproduces the themed scrollbar for portaled
         // overlays (rendered under document.body). Use a fixed `max-h-80`

@@ -6,9 +6,11 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
+  persistString,
   persistStringArray,
   persistStringRecord,
   storedBoolean,
+  storedString,
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
@@ -128,6 +130,41 @@ export function setProfileColor(name: string, color: null | string): void {
   }
 
   $profileColors.set(next)
+}
+
+// ── Home profile ───────────────────────────────────────────────────────────
+// Which profile is "home" for the rail's home pill and the switch-to-default
+// hotkey. A Desktop-local navigation preference (renderer-owned presentation);
+// the backend stays authoritative for `is_default`, and the Electron launch
+// profile / HERMES_HOME are unmoved. null = nothing designated → behave
+// exactly like the built-in default.
+const HOME_PROFILE_STORAGE_KEY = 'hermes.desktop.homeProfile'
+
+export const $homeProfile = atom<null | string>(storedString(HOME_PROFILE_STORAGE_KEY))
+
+$homeProfile.subscribe(value => persistString(HOME_PROFILE_STORAGE_KEY, value))
+
+// Designate (or, with null, clear) the profile the home affordances navigate to.
+export function setHomeProfile(name: null | string): void {
+  const key = name == null ? null : normalizeProfileKey(name)
+
+  if ($homeProfile.get() !== key) {
+    $homeProfile.set(key)
+  }
+}
+
+// The user's raw designation, but only while it names a live profile — a stale
+// name (profile deleted elsewhere) must behave exactly like no designation.
+export function designatedHomeProfile(home: null | string, profiles: ProfileInfo[]): ProfileInfo | null {
+  return home ? (profiles.find(profile => normalizeProfileKey(profile.name) === home) ?? null) : null
+}
+
+// One resolver owns the home-target policy: the designated profile while it
+// exists, else the backend-designated default, else null. A preference left
+// pointing at a DELETED profile therefore resolves to the built-in default
+// instead of dead-ending the home pill (#89887).
+export function resolveHomeProfile(home: null | string, profiles: ProfileInfo[]): ProfileInfo | null {
+  return designatedHomeProfile(home, profiles) ?? profiles.find(profile => profile.is_default) ?? null
 }
 
 interface ActiveProfileResponse {
@@ -547,11 +584,13 @@ function orderedProfileKeys(): string[] {
   return hasDefault ? ['default', ...named] : named
 }
 
-// Switch to the default (root ~/.hermes) profile — bound to ⌘1.
+// Switch to the home profile — bound to ⌘D. Routes to the user-designated
+// default when set (falling back when it was deleted), else the canonical root
+// profile. Always a navigation, never a Show-all toggle (#89887).
 export function switchToDefaultProfile(): void {
-  const def = $profiles.get().find(profile => profile.is_default)
+  const home = resolveHomeProfile($homeProfile.get(), $profiles.get())
 
-  selectProfile(def ? def.name : 'default')
+  selectProfile(home ? home.name : 'default')
 }
 
 // Switch to the Nth named (non-default) profile in rail order (1-based).

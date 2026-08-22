@@ -21,6 +21,7 @@ vi.mock('@/i18n', () => ({
       common: { cancel: 'Cancel' },
       profiles: {
         allProfiles: 'All profiles',
+        clearDefaultProfile: 'Clear default',
         connectGateway: 'Manage gateways…',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
@@ -29,6 +30,7 @@ vi.mock('@/i18n', () => ({
         newProfile: 'New profile',
         saveSoul: 'Save',
         saving: 'Saving…',
+        setDefaultProfile: 'Set as default',
         showAllProfiles: 'Show all profiles',
         soulSaved: 'SOUL.md saved',
         switchToProfile: (name: string) => `Switch to ${name}`,
@@ -40,17 +42,27 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('default'),
+  $homeProfile: atom(null),
   $profileColors: atom({}),
   $profileCreateRequest: atom(0),
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
   $profileScope: atom('default'),
   ALL_PROFILES: '*',
+  // Same contract as store/profile's resolver, inlined so these tests exercise
+  // the rail's wiring against it (the store tests own the resolver itself).
+  designatedHomeProfile: (home: null | string, profiles: Array<{ is_default?: boolean; name: string }>) =>
+    home ? (profiles.find(profile => profile.name === home) ?? null) : null,
   normalizeProfileKey: (name: string) => name,
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
+  resolveHomeProfile: (home: null | string, profiles: Array<{ is_default?: boolean; name: string }>) =>
+    (home ? profiles.find(profile => profile.name === home) : undefined) ??
+    profiles.find(profile => profile.is_default) ??
+    null,
   selectProfile: vi.fn(),
+  setHomeProfile: vi.fn(),
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
   setShowAllProfiles: vi.fn(),
@@ -80,13 +92,29 @@ vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: ()
 
 const { $hasMultipleConnections } = await import('@/store/connections')
 const hasMultipleConnections = $hasMultipleConnections as ReturnType<typeof atom<boolean>>
-const { $profiles } = await import('@/store/profile')
+
+const {
+  $activeGatewayProfile,
+  $homeProfile,
+  $profiles,
+  selectProfile,
+  setHomeProfile,
+  setShowAllProfiles
+} = await import('@/store/profile')
+
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
+const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
+const homeProfile = $homeProfile as ReturnType<typeof atom<null | string>>
 
 afterEach(() => {
   cleanup()
   hasMultipleConnections.set(false)
   profiles.set([{ is_default: true, name: 'default' }])
+  activeGatewayProfile.set('default')
+  homeProfile.set(null)
+  vi.mocked(selectProfile).mockClear()
+  vi.mocked(setHomeProfile).mockClear()
+  vi.mocked(setShowAllProfiles).mockClear()
 })
 
 describe('ProfileRail multi-gateway entry point', () => {
@@ -147,5 +175,91 @@ describe('ProfileRail multi-gateway entry point', () => {
 
     expect(screen.getByRole('group', { name: 'Profiles' }).className).toContain('min-w-0')
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+  })
+})
+
+describe('designated home pill (#89887)', () => {
+  const twoProfiles = () =>
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'work' }
+    ])
+
+  it('navigates to the designated home instead of toggling Show all', () => {
+    twoProfiles()
+    homeProfile.set('work')
+    render(<ProfileRail />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to work' }))
+
+    expect(selectProfile).toHaveBeenCalledWith('work')
+    expect(setShowAllProfiles).not.toHaveBeenCalled()
+  })
+
+  it('never falls back to the Show-all toggle even when already on home', () => {
+    twoProfiles()
+    homeProfile.set('work')
+    activeGatewayProfile.set('work')
+    render(<ProfileRail />)
+
+    // Today's bug shape: sitting on the pill's target flipped it into a
+    // Show-all toggle. Designated-home mode is always a go-home navigation.
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to work' }))
+
+    expect(selectProfile).toHaveBeenCalledWith('work')
+    expect(setShowAllProfiles).not.toHaveBeenCalled()
+  })
+
+  it('an unset preference keeps the classic default↔all toggle', () => {
+    twoProfiles()
+    render(<ProfileRail />)
+
+    // No designation → today's behavior verbatim: on default, the same
+    // control offers Show all.
+    fireEvent.click(screen.getByRole('button', { name: 'Show all profiles' }))
+
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect(selectProfile).not.toHaveBeenCalled()
+  })
+
+  it('a stale designation behaves exactly like an unset one', () => {
+    twoProfiles()
+    homeProfile.set('ghost') // deleted elsewhere; the rail must not dead-end
+    render(<ProfileRail />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all profiles' }))
+
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect(selectProfile).not.toHaveBeenCalled()
+  })
+
+  it('right-click designates a square as home, then offers clearing it', () => {
+    twoProfiles()
+    render(<ProfileRail />)
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'work' }))
+    fireEvent.click(screen.getByText('Set as default'))
+
+    expect(setHomeProfile).toHaveBeenCalledWith('work')
+
+    cleanup()
+    homeProfile.set('work')
+    render(<ProfileRail />)
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'work' }))
+    fireEvent.click(screen.getByText('Clear default'))
+
+    expect(setHomeProfile).toHaveBeenLastCalledWith(null)
+  })
+
+  it('the designated home pill itself clears via its context menu', () => {
+    twoProfiles()
+    homeProfile.set('work')
+    render(<ProfileRail />)
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Switch to work' }))
+    fireEvent.click(screen.getByText('Clear default'))
+
+    expect(setHomeProfile).toHaveBeenCalledWith(null)
   })
 })

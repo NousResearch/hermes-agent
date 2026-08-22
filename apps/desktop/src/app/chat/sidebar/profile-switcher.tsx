@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -55,16 +55,20 @@ import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $homeProfile,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  designatedHomeProfile,
   normalizeProfileKey,
   profileLabel,
   refreshActiveProfile,
+  resolveHomeProfile,
   selectProfile,
+  setHomeProfile,
   setProfileColor,
   setProfileOrder,
   setShowAllProfiles,
@@ -168,6 +172,15 @@ export function ProfileRail() {
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
+  // The user-designated home target (#89887). One resolver owns the policy: the
+  // chosen profile while it exists, else the built-in default.
+  const homePref = useStore($homeProfile)
+  const home = resolveHomeProfile(homePref, profiles)
+  // A designation only counts while its profile is live — a stale name
+  // (deleted elsewhere) behaves exactly like an unset preference, restoring
+  // the classic default↔all toggle instead of a dead-end go-home control.
+  const designatedHome = designatedHomeProfile(homePref, profiles)
+
   const named = sortByProfileOrder(
     profiles.filter(profile => !profile.is_default),
     order
@@ -240,11 +253,31 @@ export function ProfileRail() {
 
   return (
     <div aria-label={p.title} className="flex min-w-0 items-center gap-0.5" data-slot="profile-rail" role="group">
-      {/* One button toggles default ↔ all: home face when scoped to a profile,
-          layers face when showing everything. Pinned left like Manage is right.
-          Hidden until a second profile exists. */}
+      {/* Pinned left like Manage is right. Hidden until a second profile
+          exists. With a designated home (#89887) it is a pure go-home control:
+          clicking always selects that profile — never a Show-all toggle — and
+          right-click offers the way back to the built-in default. Without one,
+          one button keeps toggling default ↔ all (home face when scoped to a
+          profile, layers face when showing everything). */}
       {multiProfile &&
-        (defaultProfile ? (
+        (designatedHome ? (
+          <ProfilePill
+            active={!isAll && activeKey === normalizeProfileKey(designatedHome.name)}
+            glyph="home"
+            label={p.switchToProfile(profileLabel(designatedHome))}
+            menu={
+              <ContextMenuItem
+                onSelect={() => {
+                  setHomeProfile(null)
+                }}
+              >
+                <Codicon name="close" size="0.875rem" />
+                <span>{p.clearDefaultProfile}</span>
+              </ContextMenuItem>
+            }
+            onSelect={() => selectProfile(designatedHome.name)}
+          />
+        ) : defaultProfile ? (
           // On default → toggle to all. Anywhere else (all view or a named
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
@@ -257,13 +290,13 @@ export function ProfileRail() {
           <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
         ))}
 
-      {/* Single-profile: the active default's home icon next to the create +. */}
-      {!multiProfile && defaultProfile && (
+      {/* Single-profile: the resolved home's icon next to the create +. */}
+      {!multiProfile && home && (
         <ProfilePill
           active
           glyph="home"
-          label={profileLabel(defaultProfile)}
-          onSelect={() => selectProfile(defaultProfile.name)}
+          label={profileLabel(home)}
+          onSelect={() => selectProfile(home.name)}
         />
       )}
 
@@ -303,13 +336,19 @@ export function ProfileRail() {
                     <ProfileSquare
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                       color={resolveProfileColor(profile.name, colors)}
+                      isHome={
+                        designatedHome != null &&
+                        normalizeProfileKey(profile.name) === normalizeProfileKey(designatedHome.name)
+                      }
                       key={profile.name}
                       label={profileLabel(profile)}
+                      onClearHome={() => setHomeProfile(null)}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
+                      onSetHome={() => setHomeProfile(profile.name)}
                     />
                   ))}
                 </div>
@@ -587,38 +626,64 @@ interface ProfilePillProps {
   glyph: string
   label: string
   onSelect: () => void
+  // Optional right-click rows (the designated-home pill's clear-default action,
+  // #89887). When absent the pill stays a plain button with no context menu.
+  menu?: ReactNode
 }
 
-function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
+function ProfilePill({ active, glyph, label, menu, onSelect }: ProfilePillProps) {
+  const button = (
+    <Button
+      aria-label={label}
+      aria-pressed={active}
+      className={cn(
+        'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+        active && 'bg-(--ui-control-active-background) text-foreground'
+      )}
+      onClick={onSelect}
+      size="icon-xs"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name={glyph} size="0.875rem" />
+    </Button>
+  )
+
+  if (!menu) {
+    return <Tip label={label}>{button}</Tip>
+  }
+
   return (
-    <Tip label={label}>
-      <Button
-        aria-label={label}
-        aria-pressed={active}
-        className={cn(
-          'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-          active && 'bg-(--ui-control-active-background) text-foreground'
-        )}
-        onClick={onSelect}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name={glyph} size="0.875rem" />
-      </Button>
-    </Tip>
+    // Same composition trick as ProfileSquare: one element carries the hover
+    // tip AND the right-click menu via nested asChild Slots (Tip outermost —
+    // every Slot hop must land on a ref-forwarding primitive).
+    <ContextMenu>
+      <Tip label={label}>
+        <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+      </Tip>
+      {/* Same bottom padding as the square menus — the rail sits at the very
+          bottom of the sidebar above the statusbar chrome. */}
+      <ContextMenuContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}>
+        {menu}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
 interface ProfileSquareProps {
   active: boolean
   color: null | string
+  // Whether this square is the user-designated home profile (#89887): the menu
+  // row then offers clearing it instead of setting it.
+  isHome: boolean
   label: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
   onDelete: () => void
+  onSetHome: () => void
+  onClearHome: () => void
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -635,12 +700,15 @@ const LONG_PRESS_MS = 450
 function ProfileSquare({
   active,
   color,
+  isHome,
   label,
   onDelete,
   onEditSoul,
   onRecolor,
   onRename,
-  onSelect
+  onSelect,
+  onSetHome,
+  onClearHome
 }: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
@@ -767,6 +835,10 @@ function ProfileSquare({
           // Suppress the refocus and the picker survives.
           onCloseAutoFocus={event => event.preventDefault()}
         >
+          <ContextMenuItem onSelect={isHome ? onClearHome : onSetHome}>
+            <Codicon name={isHome ? 'close' : 'home'} size="0.875rem" />
+            <span>{isHome ? p.clearDefaultProfile : p.setDefaultProfile}</span>
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
             <span>{p.color}</span>

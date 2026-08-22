@@ -22,11 +22,16 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const {
   $activeGatewayProfile,
+  $homeProfile,
   $profiles,
+  designatedHomeProfile,
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  resolveHomeProfile,
+  setHomeProfile,
+  switchToDefaultProfile
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -59,6 +64,7 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
+  $homeProfile.set(null)
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
@@ -237,5 +243,103 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+describe('home profile preference (#89887)', () => {
+  const HOME_KEY = 'hermes.desktop.homeProfile'
+
+  // A self-contained localStorage so persistence can be observed while the
+  // file-wide window stub (which carries none) is in force.
+  const stubStorageWindow = () => {
+    const store = new Map<string, string>()
+
+    const localStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key)
+    }
+
+    vi.stubGlobal('window', {
+      // store/session's module init wires a storage listener on fresh import.
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      hermesDesktop: { getConnection },
+      localStorage
+    })
+
+    return store
+  }
+
+  it('resolves the designated home while that profile exists', () => {
+    const profiles = [profile('default', true), profile('work'), profile('bot')]
+
+    expect(resolveHomeProfile('work', profiles)?.name).toBe('work')
+    // Unset → the backend-designated default.
+    expect(resolveHomeProfile(null, profiles)?.name).toBe('default')
+    // Neither a designation nor an is_default profile → no target.
+    expect(resolveHomeProfile(null, [profile('solo')])).toBeNull()
+  })
+
+  it('a deleted profile falls back to the built-in default exactly like unset', () => {
+    // "work" was deleted elsewhere (Manage Profiles, CLI, another window).
+    // The home pill must not dead-end on the stale name.
+    const profiles = [profile('default', true), profile('coder')]
+
+    expect(resolveHomeProfile('work', profiles)).toEqual(profile('default', true))
+    expect(resolveHomeProfile('work', profiles)).toEqual(resolveHomeProfile(null, profiles))
+  })
+
+  it('the raw designation only counts while its profile is live', () => {
+    const profiles = [profile('default', true), profile('work')]
+
+    expect(designatedHomeProfile('work', profiles)?.name).toBe('work')
+    // Stale name → no live designation (the rail restores its classic toggle).
+    expect(designatedHomeProfile('ghost', profiles)).toBeNull()
+    expect(designatedHomeProfile(null, profiles)).toBeNull()
+  })
+
+  it('persists the designation and survives a relaunch', async () => {
+    const store = stubStorageWindow()
+
+    setHomeProfile('bot')
+
+    expect(store.get(HOME_KEY)).toBe('bot')
+
+    // Relaunch: a fresh module registry seeds the atom from the same storage.
+    vi.resetModules()
+    const reloaded = await import('./profile')
+
+    expect(reloaded.$homeProfile.get()).toBe('bot')
+  })
+
+  it('clearing the designation removes the stored key', () => {
+    const store = stubStorageWindow()
+
+    setHomeProfile('work')
+    setHomeProfile(null)
+
+    expect($homeProfile.get()).toBeNull()
+    expect(store.has(HOME_KEY)).toBe(false)
+  })
+
+  it('⌘D navigates to the designated home instead of the canonical default', () => {
+    $profiles.set([profile('default', true), profile('work')])
+    $activeGatewayProfile.set('default')
+    setHomeProfile('work')
+
+    switchToDefaultProfile()
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('work')
+  })
+
+  it('⌘D falls back to the canonical default when the designation is stale', () => {
+    $profiles.set([profile('default', true)])
+    $activeGatewayProfile.set('coder')
+    setHomeProfile('ghost')
+
+    switchToDefaultProfile()
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('default')
   })
 })

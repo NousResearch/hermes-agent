@@ -3056,6 +3056,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        # Mirror the messaging-platform agent build (GatewayRunner
+        # _run_background_task_inner): agent.disabled_toolsets is a
+        # per-profile denial policy, and skipping it here silently
+        # re-enables toolsets the routed profile explicitly disabled —
+        # e.g. delegation removed as an operational/safety measure
+        # (#91415). Applies to every api_server deployment, not just
+        # multiplexed ones.
+        from agent.skill_utils import parse_config_string_list
+
+        agent_cfg = user_config.get("agent") or {}
+        _raw_disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        disabled_toolsets = parse_config_string_list(_raw_disabled_toolsets) or None
+        if _raw_disabled_toolsets and not disabled_toolsets:
+            # A denial policy whose configured value fails to parse degrades
+            # to "deny nothing" (fail-open) — surface the misconfiguration in
+            # the gateway log rather than letting it be discovered from an
+            # unexpectedly available toolset.
+            logger.warning(
+                "agent.disabled_toolsets value %r parsed to no toolsets; "
+                "disabling nothing for this api_server agent",
+                _raw_disabled_toolsets,
+            )
 
         max_iterations = _current_max_iterations()
 
@@ -3090,6 +3112,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
+            "disabled_toolsets": disabled_toolsets,
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,

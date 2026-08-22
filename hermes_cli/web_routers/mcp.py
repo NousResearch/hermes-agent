@@ -358,6 +358,17 @@ async def mcp_oauth_callback(
         None,
     )
     if flow is None:
+        if state is not None and any(
+            candidate.expected_state is not None
+            and not secrets.compare_digest(candidate.expected_state, state)
+            for candidate in candidates
+        ):
+            return HTMLResponse(
+                "<h1>OAuth URL superseded</h1>"
+                "<p>This consent URL was replaced by a newer one. "
+                "Return to Hermes and use the current authorization URL.</p>",
+                status_code=404,
+            )
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:
         flow.deliver_callback(code=code, state=state, error=error)

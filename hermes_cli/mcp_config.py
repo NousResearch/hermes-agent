@@ -306,6 +306,21 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(raw_timeout))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    else:
+        try:
+            connect_timeout = max(1.0, float(connect_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
+
+    # Propagate the effective connect_timeout into the server config that
+    # _connect_server / MCPServerTask.run sees. Without this, _run_http falls
+    # back to its own 60 s default for the handshake even when the caller
+    # (dashboard OAuth, 'hermes mcp login') explicitly passes a 315 s floor.
+    # The mismatch caused session.initialize() to time out mid-consent and
+    # restart the OAuth flow under the user, silently superseding the state
+    # the browser had already been sent to (#80521).
+    config = dict(config)
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []

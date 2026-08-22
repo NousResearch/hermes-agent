@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import secrets
 import threading
 import time
@@ -16,6 +17,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
 from urllib.parse import parse_qs, urlparse
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -46,6 +50,20 @@ class DashboardOAuthFlow:
         with self._lock:
             if self.status in {"approved", "error"}:
                 raise RuntimeError("OAuth flow already ended")
+            if self.expected_state is not None and self.status == "authorization_required":
+                # A second authorization URL means the OAuth handshake was
+                # restarted while the user still held the previous one
+                # (typically a connect_timeout shorter than the consent
+                # round-trip, #80521). The old state is now invalid at the
+                # provider, so we keep the new one, but we log loudly so the
+                # race is observable in support/audit logs.
+                logger.warning(
+                    "MCP OAuth flow for '%s' is replacing expected_state "
+                    "mid-consent (flow_id=%s); the browser URL from the "
+                    "previous grant is no longer valid",
+                    self.server_name,
+                    self.flow_id,
+                )
             self.expected_state = state
             self.authorization_url = url
             self.status = "authorization_required"

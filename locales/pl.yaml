@@ -1,0 +1,770 @@
+#Katalog komunikatów statycznych Hermes — polski
+#Pełne tłumaczenie katalogu angielskiego; placeholdery i identyfikatory techniczne pozostają bez zmian.
+
+approval:
+  # CLI approval prompt -- shown when a dangerous command needs user review.
+  dangerous_header: "⚠️ NIEBEZPIECZNA KOMENDA: {description}"
+  choose_long: "      [o] raz  |  [s]esja  |  [a] zawsze  |  [d] odmów"
+  choose_short: "      [o] raz  |  [s]esja  |  [d] odmów"
+  prompt_long: "Wybór [o/s/a/D]:"
+  prompt_short: "Wybór [o/s/D]:"
+  choose_smart_deny: "      [o] raz  |  [d] odmów"
+  prompt_smart_deny: "Wybór [o/D]:"
+  smart_deny_once_inputs: "o,once,raz,jednorazowo"
+  smart_deny_deny_inputs: "d,deny,odmów,odmow"
+  timeout: "⏱ Limit czasu - odmowa polecenia"
+  allowed_once: "✓ Dozwolone jednorazowo"
+  allowed_session: "✓ Dozwolone w tej sesji"
+  allowed_always: "✓ Dodano do stałej listy dozwolonych"
+  denied: "✗ Odrzucono"
+  cancelled: "✗ Anulowano"
+  blocklist_message: "To polecenie znajduje się na bezwarunkowej liście
+    zablokowanych i nie może zostać zatwierdzone."
+
+gateway:
+  # Messenger replies to slash commands and implicit state changes.
+  approval_expired: "⚠️ Zatwierdzenie wygasło (agent już nie czeka). Poproś
+    agenta, aby spróbował ponownie."
+  draining: "⏳ Oczekiwanie na zakończenie pracy {count} aktywnych agentów przed ponownym uruchomieniem..."
+  goal_cleared: "✓ Cel wyczyszczony."
+  no_active_goal: "Brak aktywnego celu."
+  config_read_failed: "⚠️ Nie można odczytać pliku config.yaml: {error}"
+  config_save_failed: "⚠️ Nie można zapisać konfiguracji: {error}"
+
+  # /model command output -- shown after a model switch or when listing models.
+  # Provider names, model IDs, capability strings, and cost figures are NOT
+  # translated -- they're identifiers/values, not prose.  Only the labels
+  # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
+  model:
+    error_prefix: "Błąd: {error}"
+    switched: "Model zmieniony na `{model}`"
+    provider_label: "Dostawca: {provider}"
+    context_label: "Kontekst: tokeny {tokens}"
+    max_output_label: "Maksymalna długość odpowiedzi: {tokens} tokenów"
+    cost_label: "Koszt: {cost}"
+    capabilities_label: "Możliwości: {capabilities}"
+    prompt_caching_enabled: "Buforowanie promptu: włączone"
+    warning_prefix: "Ostrzeżenie: {warning}"
+    saved_global: "Zapisano w config.yaml (`--global`)"
+    session_only_hint: "_(tylko sesja — dodaj `--global`, aby przetrwać)_"
+    current_label: "Obecne: `{model}` na {provider}"
+    current_tag: "(bieżący)"
+    more_models_suffix: "(+{count} więcej)"
+    usage_switch_model: "`/model <name>` — zmień model"
+    usage_switch_provider: "`/model <name> --provider <slug>` — zmień dostawcę"
+    usage_persist: "`/model <name> --global` — zapisz na stałe"
+
+  agents:
+    header: "🤖 **Aktywni agenci i zadania**"
+    active_agents: "**Aktywni agenci:** {count}"
+    this_chat: "· ten czat"
+    more: "... i {count} więcej"
+    running_processes: "**Uruchomione procesy w tle:** {count}"
+    async_jobs: "**Zadania asynchroniczne bramy:** {count}"
+    background_delegations: "**Delegacje w tle:** {count}"
+    none: "Brak aktywnych agentów i uruchomionych zadań."
+    state_starting: "uruchamianie"
+    state_running: "działa"
+
+  approve:
+    no_pending: "Brak oczekującego polecenia do zatwierdzenia."
+    once_singular: "✅ Polecenie zatwierdzone. Agent wznawia pracę..."
+    once_plural: "✅ Polecenia zatwierdzone (polecenia {count}). Agent wznawia pracę..."
+    session_singular: "✅ Polecenie zatwierdzone (reguła obowiązuje w tej sesji).
+      Agent wznawia pracę..."
+    session_plural: "✅ Polecenia zatwierdzone (reguła obowiązuje w tej sesji)
+      (polecenia {count}). Agent wznawia pracę..."
+    always_singular: "✅ Polecenie zatwierdzone (reguła zapisana na stałe). Agent
+      wznawia pracę..."
+    always_plural: "✅ Polecenia zatwierdzone (reguła zapisana na stałe)
+      (polecenia {count}). Agent wznawia pracę..."
+
+  background:
+    usage: "Użycie: /background <podpowiedź>
+
+      Przykład: /background Podsumuj najważniejsze artykuły HN dzisiaj
+
+
+      Uruchamia monit w osobnej sesji. Możesz rozmawiać dalej — po zakończeniu
+      pojawi się tutaj wynik."
+    started: "🔄 Rozpoczęto zadanie w tle: „{preview}”
+
+      Identyfikator zadania: {task_id}
+
+      Możesz rozmawiać dalej – po zakończeniu pojawią się wyniki."
+
+  branch:
+    db_unavailable: "Baza danych sesji nie jest dostępna."
+    no_conversation: "Brak rozmowy z gałąźem — najpierw wyślij wiadomość."
+    create_failed: "Nie udało się utworzyć gałąźu: {error}"
+    switch_failed: "Gałąź został utworzony, ale nie udało się go przełączyć."
+    branched_one: "⑂ Rozgałęziony do **{title}** (skopiowano wiadomość {count})
+
+      Oryginał: `{parent}`
+
+      Gałąź: `{new}`
+
+      Użyj `/resume`, aby wrócić do oryginału."
+    branched_many: "⑂ Rozgałęziony do **{title}** (skopiowano wiadomości {count})
+
+      Oryginał: `{parent}`
+
+      Gałąź: `{new}`
+
+      Użyj `/resume`, aby wrócić do oryginału."
+
+  commands:
+    usage: "Zastosowanie: `/commands [page]`"
+    skill_header: "⚡ **Polecenia umiejętności**:"
+    default_desc: "Komenda umiejętności"
+    none: "Brak dostępnych poleceń."
+    header: "📚 **Polecenia** (łącznie {total}, strona {page}/{total_pages})"
+    nav_prev: "`/commands {page}` ← poprzednie"
+    nav_next: "dalej → `/commands {page}`"
+    out_of_range: "_(Żądana strona {requested} była poza zasięgiem, wyświetlana jest
+      strona {page}.)_"
+
+  compress:
+    not_enough: "Za mało rozmów do skompresowania (potrzebne są co najmniej 4 wiadomości)."
+    no_provider: "Nie skonfigurowano żadnego dostawcy — nie można kompresować."
+    nothing_to_do: "Nie ma jeszcze nic do kompresji (transkrypcja nadal jest w
+      całości chronionym kontekstem)."
+    aggressive_unsupported: "--agresywny nie jest obsługiwany; użyj „/compress here
+      [N]”, aby zachować tylko ostatnie wymiany, lub /undo, aby zrezygnować z
+      tur."
+    focus_line: "Fokus: „{topic}”"
+    summary_failed: "⚠️ Nie udało się wygenerować podsumowania ({error}). Wiadomości
+      historyczne {count} zostały usunięte i zastąpione symbolem zastępczym;
+      wcześniejszego kontekstu nie można już odzyskać. Rozważ sprawdzenie
+      konfiguracji modelu pomocniczej kompresji."
+    aborted: "⚠️ Kompresja przerwana ({error}). Żadne wiadomości nie zostały
+      porzucone — rozmowa pozostaje niezmieniona. Uruchom komendę /compress, aby
+      ponowić próbę, /reset, aby rozpocząć czystą sesję, lub sprawdź
+      konfigurację modelu pomocniczego.compression."
+    aux_failed: "ℹ️ Skonfigurowany model kompresji `{model}` nie powiódł się
+      ({error}). Odzyskano przy użyciu głównego modelu — kontekst jest
+      nienaruszony — ale możesz sprawdzić `auxiliary.compression.model` w
+      config.yaml."
+    failed: "Kompresja nie powiodła się: {error}"
+
+  debug:
+    upload_failed: "✗ Nie udało się przesłać raportu debugowania: {error}"
+    header: "**Przesłano raport debugowania:**"
+    auto_delete: "⏱ Wklejenia zostaną automatycznie usunięte po 6 godzinach."
+    full_logs_hint: "Aby przesłać pełny dziennik, użyj `hermes debug share` z interfejsu CLI."
+    share_hint: "Udostępnij te linki zespołowi Hermes, aby uzyskać wsparcie."
+
+  deny:
+    stale: "❌ Polecenie odrzucone (zatwierdzenie było nieaktualne)."
+    no_pending: "Brak oczekującego polecenia do odrzucenia."
+    denied_singular: "❌ Polecenie odrzucone."
+    denied_plural: "❌ Polecenia odrzucone (polecenia {count})."
+    denied_reason_singular: "❌ Polecenie odrzucone. Powód przekazany agentowi: „{reason}”"
+    denied_reason_plural: "❌ Polecenia odrzucone (polecenia {count}). Powód
+      przekazany agentowi: „{reason}”"
+
+  fast:
+    not_supported: "⚡ Opcja /fast jest dostępna tylko w przypadku modeli OpenAI
+      obsługujących przetwarzanie priorytetowe."
+    status: "⚡ Przetwarzanie priorytetowe
+
+
+      Bieżący tryb: `{mode}`
+
+
+      _Zastosowanie:_ `/fast <normal|fast|status>`"
+    unknown_arg: "⚠️ Nieznany argument: `{arg}`
+
+
+      **Prawidłowe opcje:** normalny, szybki, status"
+    saved: "⚡ ✓ Przetwarzanie priorytetowe: **{label}** (zapisane w konfiguracji)
+
+      _(obowiązuje od następnej wiadomości)_"
+    session_only: "⚡ ✓ Przetwarzanie priorytetowe: **{label}** (tylko ta sesja)"
+    label_fast: "SZYBKO"
+    label_normal: "NORMALNY"
+    status_fast: "szybko"
+    status_normal: "normalne"
+    picker_title: "⚡ **Przetwarzanie priorytetowe**
+
+
+      Bieżący tryb: `{mode}`
+
+
+      Wybierz opcję:"
+    choice_fast: "szybko — Przetwarzanie priorytetowe włączone"
+    choice_normal: "normalny — standardowe przetwarzanie"
+
+  footer:
+    status: "📎 Stopka środowiska wykonawczego: **{state}**
+
+      Pola: `{fields}`
+
+      Platforma: `{platform}`"
+    usage: "Zastosowanie: `/footer [on|off|status]`"
+    saved: "📎 Stopka środowiska wykonawczego: **{state}**{example}
+
+      _(zapisane globalnie — obowiązuje od następnej wiadomości)_"
+    example_line: "Przykład: `{preview}`"
+    state_on: "WŁ"
+    state_off: "WYŁ"
+
+  goal:
+    unavailable: "Cele niedostępne w tej sesji."
+    no_goal_set: "Brak wyznaczonego celu."
+    paused: "⏸ Cel wstrzymany: {goal}"
+    no_resume: "Brak celu do wznowienia."
+    resumed: "▶ Cel wznowiony: {goal}
+
+      Wyślij dowolną wiadomość, aby kontynuować, lub poczekaj — następny krok
+      zrobię w następnej turze."
+    invalid: "Nieprawidłowy cel: {error}"
+    set: "⊙ Wyznaczony cel (budżet {budget}): {goal}
+
+      Będę pracował aż do osiągnięcia celu, wstrzymania/wyczyszczenia go lub
+      wyczerpania budżetu.
+
+      Sterowanie: /status celu · /pauza celu · /wznowienie celu · /goal
+      wyczyszczenie"
+
+  help:
+    header: "📖 ** Polecenia Hermesa **"
+    skill_header: "⚡ **Polecenia umiejętności** ({count} aktywne):"
+    more_use_commands: "... i {count} więcej. Aby wyświetlić pełną listę
+      stronicowaną, użyj `/commands`."
+
+  insights:
+    invalid_days: "Nieprawidłowa wartość --days: {value}"
+    error: "Błąd podczas generowania statystyk: {error}"
+
+  kanban:
+    error_prefix: "⚠ błąd Kanban: {error}"
+    subscribed_suffix: "(subskrybowano — otrzymasz powiadomienie, gdy {task_id}
+      ukończy lub zablokuje)"
+    truncated_suffix: "… (obcięty; użyj `hermes kanban …` w terminalu, aby uzyskać pełny wynik)"
+    no_output: "(brak wyjścia)"
+    wake:
+      completed: "ukończone"
+      gave_up: "poddałem się (wyczerpane ponowne próby)"
+      crashed: "rozbił się (pracownik wyszedł); dyspozytor spróbuje ponownie"
+      timed_out: "przekroczono limit czasu; dyspozytor spróbuje ponownie"
+      blocked: "zablokowany; potrzebuje uwagi"
+      status_default: "stan uległ zmianie"
+      status_joiner: ", "
+      message: "[kanban] Zadanie {task_id} {status}.
+
+        Tytuł: {title}
+
+        Osoba przypisana: @{assignee}
+
+        Płytka: {board}
+
+
+        Sprawdź wynik lub zdecyduj o kolejnym kroku."
+
+  personality:
+    none_configured: "W `{path}/config.yaml` nie skonfigurowano żadnych osobowości"
+    header: "🎭 **Dostępne osobowości**"
+    none_option: "• `none` — (bez nakładki osobowości)"
+    item: "• `{name}` — {preview}"
+    usage: "Zastosowanie: `/personality <name>`"
+    save_failed: "⚠️ Nie udało się zapisać zmiany osobowości: {error}"
+    cleared: "🎭Oczyszczona osobowość — przy użyciu podstawowego zachowania agenta.
+
+      _(obowiązuje od następnej wiadomości)_"
+    set_to: "🎭 Osobowość ustawiona na **{name}**
+
+      _(obowiązuje od następnej wiadomości)_"
+    unknown: "Nieznana osobowość: `{name}`
+
+
+      Dostępne: {available}"
+
+  profile:
+    header: "👤 **Profil:** `{profile}`"
+    home: "📂 **Strona główna:** `{home}`"
+
+  reasoning:
+    level_default: "średni (domyślny)"
+    level_disabled: "brak (wyłączony)"
+    scope_session: "zastąpienie sesji"
+    scope_global: "konfiguracja globalna"
+    status: "🧠 **Ustawienia rozumowania**
+
+
+      **Wysiłek:** `{level}`
+
+      **Zakres:** {scope}
+
+      **Wyświetlacz:** {display}
+
+
+      _Zastosowanie:_ `/reasoning
+      <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide>
+      [--global]`"
+    display_on: "na ✓"
+    display_off: "wyłączone"
+    display_set_on: "🧠 ✓ Wyświetlacz rozumowania: **WŁĄCZONY**
+
+      Myślenie modelowe zostanie pokazane przed każdą odpowiedzią na
+      **{platform}**."
+    display_set_off: "🧠 ✓ Wyświetlanie rozumowania: **WYŁĄCZONE** dla **{platform}**"
+    reset_global_unsupported: "⚠️ `/reasoning reset --global` nie jest obsługiwany.
+      Użyj `/reasoning <level> --global`, aby zmienić globalne ustawienie
+      domyślne."
+    reset_done: "🧠 ✓ Wyczyszczono zastąpienie rozumowania sesji; powrót do
+      konfiguracji globalnej."
+    unknown_arg: "⚠️ Nieznany argument: `{arg}`
+
+
+      **Dopuszczalne poziomy:** brak, minimalny, niski, średni, wysoki, xwysoki,
+      maks., ultra
+
+      **Wyświetlanie:** pokaż, ukryj
+
+      **Utrzymaj:** dodaj `--global`, aby zapisać po tej sesji"
+    picker_title: "🧠 **Ustawienia rozumowania**
+
+
+      **Wysiłek:** `{level}`
+
+      **Zakres:** {scope}
+
+      **Wyświetlacz:** {display}
+
+
+      Wybierz opcję:"
+    choice_none: "brak — wyłącz rozumowanie"
+    choice_reset: "reset — wyczyść zastąpienie sesji"
+    choice_show: "uzasadnij swoje odpowiedzi"
+    choice_hide: "ukrywaj uzasadnienie przed odpowiedziami"
+    set_global: "🧠 ✓ Wysiłek rozumowania ustawiony na `{effort}` (zapisany w
+      konfiguracji)
+
+      _(obowiązuje od następnej wiadomości)_"
+    set_global_save_failed: "🧠 ✓ Rozumowanie ustawione na `{effort}` (tylko sesja —
+      zapisanie konfiguracji nie powiodło się)
+
+      _(obowiązuje od następnej wiadomości)_"
+    set_session: "🧠 ✓ Wysiłek rozumowania ustawiony na `{effort}` (tylko sesja —
+      dodaj `--global`, aby przetrwać)
+
+      _(obowiązuje od następnej wiadomości)_"
+
+  reload_mcp:
+    cancelled: "🟡 /reload-mcp anulowane. Narzędzia MCP bez zmian."
+    always_followup: "ℹ️ Przyszłe połączenia `/reload-mcp` będą realizowane bez
+      potwierdzenia. Włącz ponownie poprzez `approvals.mcp_reload_confirm: true`
+      w config.yaml."
+    confirm_prompt: "⚠️ **Potwierdź /przeładuj-mcp**
+
+
+      Ponowne załadowanie serwerów MCP odbudowuje zestaw narzędzi dla tej sesji
+      i **unieważnia pamięć podręczną monitu dostawcy** — następna wiadomość
+      spowoduje ponowne wysłanie pełnych tokenów wejściowych.  W modelach o
+      długim kontekście lub wymagających wysokiego rozumowania może to być
+      kosztowne.
+
+
+      Wybierz:
+
+      • **Zatwierdź raz** — załaduj ponownie teraz
+
+      • **Zawsze zatwierdzaj** — załaduj ponownie teraz i trwale wycisz ten
+      monit
+
+      • **Anuluj** — pozostaw narzędzia MCP bez zmian
+
+
+      _Tekst zastępczy: odpowiedz `/approve`, `/always` lub `/cancel`._"
+    header: "🔄 **Serwery MCP zostały ponownie załadowane**"
+    reconnected: "♻️ Połączono ponownie: {names}"
+    added: "➕ Dodano: {names}"
+    removed: "➖ Usunięto: {names}"
+    none_connected: "Brak podłączonych serwerów MCP."
+    tools_available: "🔧 Narzędzia {tools} dostępne na serwerze(ach) {servers}"
+    failed: "❌ Ponowne załadowanie MCP nie powiodło się: {error}"
+
+  reload_skills:
+    header: "🔄 **Umiejętności ponownie załadowane**"
+    no_new: "Nie wykryto żadnych nowych umiejętności."
+    total: "📚 Dostępne umiejętności {count}"
+    added_header: "➕ **Dodane umiejętności:**"
+    removed_header: "➖ **Usunięte umiejętności:**"
+    item_with_desc: "- {name}: {desc}"
+    item_no_desc: "- {name}"
+    failed: "❌ Nie udało się przeładować umiejętności: {error}"
+
+  reset:
+    header_default: "✨Reset sesji! Zaczynam od nowa."
+    header_new: "✨ Nowa sesja rozpoczęta!"
+    header_titled: "✨ Rozpoczęto nową sesję: {title}"
+    title_rejected: "⚠️ Tytuł odrzucony: {error}"
+    title_error_untitled: "⚠️ {error} — sesja rozpoczęła się bez tytułu."
+    title_empty_untitled: "⚠️ Tytuł jest pusty po oczyszczeniu — sesja rozpoczęła się bez tytułu."
+    tip: "✦ Wskazówka: {tip}"
+
+  restart:
+    in_progress: "⏳ Trwa ponowne uruchamianie bramy..."
+    restarting: "♻ Ponowne uruchamianie bramy. Jeśli nie otrzymasz powiadomienia w
+      ciągu 60 sekund, uruchom ponownie konsolę za pomocą `hermes gateway
+      restart`."
+
+  resume:
+    db_unavailable: "Baza danych sesji nie jest dostępna."
+    parse_error: "⚠️ Nie można przeanalizować argumentów `/resume`: {error}.
+
+      Używaj cudzysłowów wokół tytułów ze spacjami, na przykład: `/resume
+      \"Project A Plan\"`."
+    matrix_no_named_sessions: "Nie znaleziono nazwanych sesji dla tego pokoju
+      Matrix.
+
+      Użyj `/title My Session`, aby nazwać bieżącą sesję pokoju, `/resume
+      --all`, aby wyświetlić listę wszystkich sesji Matrix, lub `/resume
+      --cross-room <session name>`, aby jawnie przekroczyć granice pokoju."
+    matrix_blocked_no_origin: "⚠️ Matryca/wznowienie zablokowana: ta nazwana sesja
+      nie ma zapisanego początku pokoju, więc Hermes domyślnie nie wznowi jej w
+      bieżącym pokoju. Użyj `/resume --cross-room {name}`, jeśli celowo chcesz
+      przekroczyć granice pokoju."
+    matrix_blocked_other_room: "⚠️ Matrix/resume zablokowane: ta sesja należy do
+      innego pokoju Matrix ({room}). Użyj `/resume --cross-room {name}`, jeśli
+      celowo chcesz go tutaj wznowić."
+    matrix_cross_room_success: "⚠️ CV w pokoju krzyżowym: wznowione **{title}** w
+      pokoju Matrix **{room}**.
+
+      Przyszłe wiadomości w tym pokoju będą używać tego transkrypcji do momentu
+      `/reset` lub innego `/resume`.{msg_part}"
+    blocked_not_owner: "⚠️ /resume zablokowane: „**{name}**” należy do innego
+      użytkownika lub czatu. Sesje możesz wznawiać tylko z poziomu tego czatu."
+    no_named_sessions: "Nie znaleziono nazwanych sesji.
+
+      Użyj `/title My Session`, aby nazwać swoją bieżącą sesję, a następnie
+      `/resume My Session`, aby wrócić do niej później."
+    list_header: "📋 **Sesje nazwane**"
+    list_item: "• **{title}**{preview_part}"
+    list_item_numbered: "{index}. **{title}**{preview_part}"
+    list_preview_suffix: "— _{preview}_"
+    list_footer: "Zastosowanie: `/resume <session name>`"
+    list_footer_numbered: "Użycie: `/resume <session name>` lub `/resume <number>`
+      (np. `/resume 1` w przypadku najnowszej wersji)"
+    list_failed: "Nie można wyświetlić sesji: {error}"
+    out_of_range: "Indeks CV {index} jest poza zakresem.
+
+      Użyj `/resume` bez argumentów, aby zobaczyć dostępne sesje."
+    not_found: "Nie znaleziono sesji pasującej do „**{name}**”.
+
+      Użyj `/resume` bez argumentów, aby zobaczyć dostępne sesje."
+    already_on: "📌Już na sesji **{name}**."
+    switch_failed: "Nie udało się przełączyć sesji."
+    resumed_one: "↻ Wznowiono sesję **{title}** (komunikat {count}). Rozmowa przywrócona."
+    resumed_many: "↻ Wznowiono sesję **{title}** (wiadomości {count}). Rozmowa przywrócona."
+    resumed_no_count: "↻ Sesja wznowiona **{title}**. Rozmowa przywrócona."
+
+  retry:
+    no_previous: "Brak poprzedniej wiadomości, którą można ponowić."
+
+  rollback:
+    not_enabled: "Punkty kontrolne nie są włączone.
+
+      Włącz w config.yaml:
+
+      ```
+
+      punkty kontrolne:
+
+      \  włączone: prawda
+
+      ```"
+    none_found: "Nie znaleziono punktów kontrolnych dla {cwd}"
+    invalid_number: "Nieprawidłowy numer punktu kontrolnego. Użyj 1-{max}."
+    restored: "✅ Przywrócono do punktu kontrolnego {hash}: {reason}
+
+      Migawka sprzed wycofania została zapisana automatycznie."
+    restore_failed: "❌ {error}"
+
+  diff:
+    not_enabled: "Punkty kontrolne nie są włączone, więc nie ma linii bazowej sesji.
+
+      Włącz w config.yaml:
+
+      ```
+
+      punkty kontrolne:
+
+      \  włączone: prawda
+
+      ```
+
+      Zwykły /diff nadal działa — używa bezpośrednio gita."
+    no_changes: "Żadnych zmian."
+    failed: "Nie udało się utworzyć diffu: {error}"
+
+  set_home:
+    save_failed: "Nie udało się zapisać kanału domowego: {error}"
+    success: "✅ Kanał domowy ustawiony na **{name}** (ID: {chat_id}).
+
+      Tutaj będą dostarczane zadania Cron i wiadomości międzyplatformowe."
+
+  context:
+    header: "🧠 **Okno kontekstowe**"
+    model: "Model: `{model}`"
+    window: "Okno: tokeny {total}"
+    in_use: "W użyciu: {used} / {total} ({pct}%)"
+    bar: "{bar}"
+    headroom: "Rezerwa do limitu: tokeny {headroom}"
+    threshold: "Automatyczna kompresja w: {threshold} ({threshold_pct}%) — {to_go}
+      na wynos"
+    over_threshold: "⚠️ **Przekroczenie progu automatycznej kompresji ({threshold},
+      {threshold_pct}%)**"
+    compressions: "Kompresja w tej sesji: {count}"
+    last_savings: "Ostatnia uwolniona kompresja: {savings}% kontekstu"
+    totals_header: "Sumy sesji (skumulowane z wywołań API {calls})"
+    totals_line: "Wejście {input} · Wyjście {output} · Rozumowanie {reasoning}"
+    total_billed: "Łączna opłata: {total}"
+    throughput_note: "_Przepustowość, a nie rozmiar kontekstu — każde wywołanie
+      powoduje ponowne wysłanie powyższego okna._"
+    estimated: "Szacowany kontekst: tokeny ~{count} w wiadomościach {messages}"
+    detail_after_first: "_(Pełne statystyki dotyczące kompresji i przepustowości
+      dostępne są po pierwszej odpowiedzi agenta)_"
+    no_data: "Nie są jeszcze dostępne żadne dane kontekstowe. Wyślij wiadomość, aby
+      rozpocząć sesję."
+
+  status:
+    header: "📊 **Stan bramy Hermes**"
+    matrix_scope_header: "**Zakres matrycy:**"
+    matrix_scope_room: "pokój: {room}"
+    matrix_scope_room_id: "id_pokoju: {room_id}"
+    matrix_scope_thread: "id_wątku: {thread_id}"
+    matrix_scope_mode: "session_scope: {scope}"
+    matrix_scope_key: "klucz sesji: {session_key}"
+    session_id: "**Identyfikator sesji:** `{session_id}`"
+    title: "**Tytuł:** {title}"
+    created: "**Utworzono:** {timestamp}"
+    last_activity: "**Ostatnia aktywność:** {timestamp}"
+    model: "**Model:** `{model}`"
+    model_provider: "**Model:** `{model}` ({provider})"
+    context: "**Kontekst:** {used} / {total} ({pct}%)"
+    context_used: "**Kontekst:** ~{used} tokeny"
+    tokens: "**Opłaty za tokeny dożywotnie:** {tokens} _(nie bieżący rozmiar
+      kontekstu; użyj `/context`)_"
+    agent_running: "**Agent uruchomiony:** {state}"
+    state_yes: "Tak ⚡"
+    state_no: "Nie"
+    queued: "**Kolejka w kolejce:** {count}"
+    platforms: "**Połączone platformy:** {platforms}"
+
+  stop:
+    stopped_pending: "⚡ Zatrzymany. Agent jeszcze się nie uruchomił — możesz
+      kontynuować tę sesję."
+    stopped: "⚡ Zatrzymany. Możesz kontynuować tę sesję."
+    no_active: "Brak aktywnego zadania do zatrzymania."
+
+  title:
+    db_unavailable: "Baza danych sesji nie jest dostępna."
+    warn_prefix: "⚠️{error}"
+    empty_after_clean: "⚠️ Tytuł jest pusty po oczyszczeniu. Proszę używać znaków drukowalnych."
+    set_to: "✏️ Ustawiono tytuł sesji: **{title}**"
+    not_found: "Nie znaleziono sesji w bazie danych."
+    current_with_title: "📌 Sesja: `{session_id}`
+
+      Tytuł: **{title}**"
+    current_no_title: "📌 Sesja: `{session_id}`
+
+      Nie ustawiono tytułu. Zastosowanie: `/title My Session Name`"
+
+  topic:
+    not_telegram_dm: "Polecenie /topic jest dostępne tylko w prywatnych czatach Telegramu."
+    no_session_db: "Baza danych sesji nie jest dostępna."
+    unauthorized: "Nie masz uprawnień do używania /topic na tym bocie."
+    restore_needs_topic: "Aby przywrócić sesję, najpierw utwórz lub otwórz temat
+      Telegramu, a następnie wyślij /topic <session-id> w tym temacie. Aby
+      utworzyć nowy temat, otwórz Wszystkie wiadomości i wyślij tam dowolną
+      wiadomość."
+    topics_disabled: "Tematy telegramów nie są jeszcze włączone dla tego bota.
+
+
+      Jak je włączyć:
+
+      1. Otwórz @BotFather.
+
+      2. Wybierz swojego bota.
+
+      3. Otwórz Ustawienia bota → Ustawienia wątków.
+
+      4. Włącz tryb wątków i upewnij się, że użytkownicy mogą tworzyć nowe
+      wątki.
+
+
+      Następnie ponownie wyślij /temat."
+    topics_user_disallowed: "Tematy telegramów są włączone, ale użytkownicy nie mogą
+      tworzyć tematów.
+
+
+      Otwórz @BotFather → wybierz swojego bota → Ustawienia bota → Ustawienia
+      wątków, a następnie wyłącz opcję „Nie zezwalaj użytkownikom na tworzenie
+      nowych wątków”.
+
+
+      Następnie ponownie wyślij /temat."
+    enable_failed: "Nie udało się włączyć trybu tematu Telegramu: {error}"
+    bound_status: "Ten temat jest powiązany z:
+
+      Sesja: {label}
+
+      Identyfikator: {session_id}
+
+
+      Użyj /new, aby zastąpić ten temat nową sesją.
+
+      W przypadku pracy równoległej otwórz Wszystkie wiadomości i wyślij tam
+      wiadomość, aby utworzyć kolejny temat."
+    thread_ready: "Tematy wielosesyjne w Telegramie są włączone.
+
+
+      Temat ten będzie wykorzystany jako niezależna sesja Hermesa. Użyj /new,
+      aby zastąpić bieżącą sesję tego tematu. W przypadku pracy równoległej
+      otwórz Wszystkie wiadomości i wyślij tam wiadomość, aby utworzyć kolejny
+      temat."
+    untitled_session: "Sesja bez tytułu"
+
+  undo:
+    nothing: "Nic do cofnięcia."
+    removed: "↩️ Cofnięto zwroty {turns} (wiadomości {count}).
+
+      Kopia zapasowa w: „{preview}”
+
+      Skopiuj/edytuj powyższy tekst i wyślij go w tym miejscu, aby ponownie
+      wyświetlić monit."
+    invalid_count: "Nieprawidłowy licznik „{arg}” — użyj /undo lub /undo N."
+
+  update:
+    platform_not_messaging: "✗ Opcja /update jest dostępna wyłącznie na platformach
+      komunikacyjnych. Uruchom `hermes update` z terminala."
+    not_git_repo: "✗ To nie jest repozytorium git — nie można zaktualizować."
+    hermes_cmd_not_found: "✗ Nie można zlokalizować polecenia `hermes`. Hermes
+      działa, ale polecenie aktualizacji nie mogło znaleźć pliku wykonywalnego w
+      PATH ani za pośrednictwem bieżącego interpretera Pythona. Spróbuj ręcznie
+      uruchomić `hermes update` w terminalu."
+    start_failed: "✗ Nie udało się rozpocząć aktualizacji: {error}"
+    starting: "⚕ Rozpoczynam aktualizację Hermesa… Będę tutaj transmitował postępy."
+
+  usage:
+    rate_limits: "⏱️ **Limity stawek:** {state}"
+    header_session: "📊 **Wykorzystanie tokena sesji**"
+    label_model: "Model: `{model}`"
+    label_input_tokens: "Tokeny wejściowe: {count}"
+    label_cache_read: "Tokeny odczytu pamięci podręcznej: {count}"
+    label_cache_write: "Tokeny zapisu w pamięci podręcznej: {count}"
+    label_output_tokens: "Tokeny wyjściowe: {count}"
+    label_total: "Razem: {count}"
+    label_api_calls: "Wywołania API: {count}"
+    label_cost: "Koszt: {prefix}${amount}"
+    label_cost_included: "Koszt: wliczony w cenę"
+    label_context: "Kontekst: {used} / {total} ({pct}%)"
+    label_compressions: "Uciski: {count}"
+    breakdown_header: "🧩 **Podział kontekstu** _(szacunkowo)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Monit systemowy"
+    breakdown_cat_tool_definitions: "Definicje narzędzi"
+    breakdown_cat_rules: "Zasady"
+    breakdown_cat_skills: "Umiejętności"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Definicje subagentów"
+    breakdown_cat_memory: "Pamięć"
+    breakdown_cat_conversation: "Rozmowa"
+    header_session_info: "📊 **Informacje o sesji**"
+    label_messages: "Wiadomości: {count}"
+    label_estimated_context: "Szacowany kontekst: tokeny ~{count}"
+    detailed_after_first: "_(Szczegółowe informacje dotyczące użycia dostępne po
+      pierwszej odpowiedzi agenta)_"
+    no_data: "Brak dostępnych danych o użytkowaniu dla tej sesji."
+    unknown_subcommand: "Nieznana komenda /użycie: `{args}`. Wypróbuj `/usage` lub
+      `/usage reset [--force]`."
+    reset_wrong_provider: "Bankowe resetowanie użycia jest dostępne tylko u dostawcy
+      openai-codex. Najpierw przełącz się z `/model`."
+
+  credits:
+    not_logged_in: "Niezalogowany do portalu Nous. Zaloguj się, aby zobaczyć saldo
+      kredytu i doładować."
+
+  verbose:
+    not_enabled: "Komenda `/verbose` nie jest włączona dla platform przesyłania
+      wiadomości.
+
+
+      Włącz to w `config.yaml`:
+
+      ```yaml
+
+      wyświetlacz:
+
+      \  polecenie_postępu narzędzia: true
+
+      ```"
+    mode_off: "⚙️ Postęp narzędzia: **WYŁĄCZONY** — nie jest wyświetlana żadna
+      aktywność narzędzia."
+    mode_new: "⚙️ Postęp narzędzia: **NOWOŚĆ** — wyświetlany przy zmianie narzędzia
+      (długość podglądu: `display.tool_preview_length`, domyślnie 40)."
+    mode_all: "⚙️ Postęp narzędzia: **ALL** — pokazane jest każde wywołanie
+      narzędzia (długość podglądu: `display.tool_preview_length`, domyślnie
+      40)."
+    mode_verbose: "⚙️ Postęp narzędzia: **VERBOSE** — każde wywołanie narzędzia z
+      pełnymi argumentami."
+    mode_log: "⚙️ Postęp narzędzia: **LOG** — cisza na czacie; wywołania narzędzi
+      zapisane w ~/.hermes/logs/tool_calls.log."
+    saved_suffix: "_(zapisane dla **{platform}** — obowiązuje od następnej wiadomości)_"
+    save_failed: "_(nie można zapisać w konfiguracji: {error})_"
+
+  voice:
+    enabled_voice_only: "Włączono tryb głosowy.
+
+      Odpowiem głosowo, gdy wyślesz wiadomość głosową.
+
+      Użyj /voice tts, aby uzyskać odpowiedzi głosowe na wszystkie wiadomości."
+    disabled_text: "Tryb głosowy wyłączony. Odpowiedzi wyłącznie tekstowe."
+    tts_enabled: "Włączono funkcję automatycznego TTS.
+
+      Wszystkie odpowiedzi będą zawierać wiadomość głosową."
+    status_mode: "Tryb głosowy: {label}"
+    status_channel: "Kanał głosowy: #{channel}"
+    status_participants: "Uczestnicy: {count}"
+    status_member: "- {name}{status}"
+    speaking: "(mówi)"
+    enabled_short: "Włączono tryb głosowy."
+    disabled_short: "Tryb głosowy wyłączony."
+    label_off: "Wyłączone (tylko tekst)"
+    label_voice_only: "Wł. (odpowiadanie głosowe na wiadomości głosowe)"
+    label_all: "TTS (odpowiedź głosowa na wszystkie wiadomości)"
+    help: "{toggle}
+
+
+      **Jak działa /głos**
+
+      • `/voice on` — odpowiedź głosowa w przypadku wysłania wiadomości głosowej
+
+      • `/voice tts` — odpowiedź głosowa na *każdą* wiadomość
+
+      • `/voice off` — powrót do odpowiedzi tekstowych
+
+      • `/voice status` — pokaż bieżący tryb
+
+      • `/voice` (bez argumentu) — szybkie przełączanie pomiędzy włączeniem i
+      wyłączeniem{channels}"
+    help_channels: "**Kanały głosowe na żywo (Discord)**
+
+      • Najpierw dołącz do kanału głosowego, a następnie `/voice channel` —
+      dołączę, będę słuchać i odpowiadać
+
+      • `/voice leave` — rozłącz się z kanałem głosowym"
+
+  yolo:
+    disabled: "⚠️ Tryb YOLO **WYŁĄCZONY** w tej sesji — niebezpieczne polecenia będą
+      wymagały zatwierdzenia."
+    enabled: "⚡ Tryb YOLO **WŁĄCZONY** dla tej sesji — wszystkie polecenia są
+      zatwierdzane automatycznie. Używaj ostrożnie."
+
+  shared:
+    session_db_unavailable: "Baza danych sesji nie jest dostępna."
+    session_db_unavailable_prefix: "Baza danych sesji nie jest dostępna"
+    session_not_found: "Nie znaleziono sesji w bazie danych."
+    warn_passthrough: "⚠️{error}"

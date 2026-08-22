@@ -34,6 +34,10 @@ describe('desktop i18n runtime translator', () => {
 
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
+
+    setRuntimeI18nLocale('pl')
+    expect(translateNow('common.save')).toBe('Zapisz')
+    expect(translateNow('boot.ready')).toBe('Hermes Desktop jest gotowy')
   })
 
   it('translates settings copy for newly supported locales', () => {

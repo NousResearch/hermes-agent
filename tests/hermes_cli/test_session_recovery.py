@@ -594,6 +594,200 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     }
 
 
+def _surviving_output_bundle(output: Path) -> list[str]:
+    """Every path ``_validate_paths`` would refuse a retry on."""
+
+    return [
+        str(session_recovery._sidecar_path(output, suffix))
+        for suffix in session_recovery._SIDECAR_SUFFIXES
+        if os.path.lexists(session_recovery._sidecar_path(output, suffix))
+    ]
+
+
+def test_failed_recovery_leaves_no_output_to_block_a_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mid-run failure must not lock the user out of retrying.
+
+    ``_validate_paths`` refuses to start when the output *or any of its
+    journal sidecars* already exists, so a half-written output turns the one
+    command a damaged database has left into a permanent refusal naming a
+    file the user never created.
+    """
+
+    source = tmp_path / "state.db"
+    _make_source(source)
+    output = tmp_path / "recovered.db"
+
+    def _disk_error(destination: sqlite3.Connection) -> dict[str, object]:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(session_recovery, "_finalize_derived_metadata", _disk_error)
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        recover_session_database(source, output, work_dir=tmp_path)
+
+    assert _surviving_output_bundle(output) == []
+
+    # The retry is the point: it must get past the overwrite guard entirely.
+    monkeypatch.undo()
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+    assert report["installed"] is False
+
+
+def test_keyboard_interrupt_during_recovery_leaves_no_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C is the reported case, so the cleanup must catch ``BaseException``.
+
+    An ``except Exception`` cleanup passes the disk-error test above and still
+    leaves the stub behind for the interrupt that people actually hit.
+    """
+
+    source = tmp_path / "state.db"
+    _make_source(source)
+    output = tmp_path / "interrupted.db"
+
+    def _interrupt(destination: sqlite3.Connection) -> dict[str, object]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session_recovery, "_finalize_derived_metadata", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        recover_session_database(source, output, work_dir=tmp_path)
+
+    assert _surviving_output_bundle(output) == []
+
+
+def test_failed_output_initialization_leaves_no_journal_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The output can fail *while* it is being created, sidecars and all.
+
+    ``SessionDB`` creates the database before it finishes initializing it, so a
+    constructor that raises part way leaves a live WAL behind and never hands
+    back a handle anything can close. ``_validate_paths`` refuses on every
+    entry of ``_SIDECAR_SUFFIXES``, so removing the database on its own still
+    leaves ``recovered.db-wal`` blocking the retry.
+    """
+
+    source = tmp_path / "state.db"
+    _make_source(source)
+    output = tmp_path / "half-initialized.db"
+
+    real_session_db = session_recovery.SessionDB
+    leaked: list[SessionDB] = []
+
+    def _fail_after_creating(*args: object, **kwargs: object) -> SessionDB:
+        # Deliberately left open: an unflushed WAL is what makes this the
+        # sidecar case rather than a plain leftover database file.
+        leaked.append(real_session_db(*args, **kwargs))
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(session_recovery, "SessionDB", _fail_after_creating)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            recover_session_database(source, output, work_dir=tmp_path)
+
+        assert leaked, "the stub never reached the real constructor"
+        assert _surviving_output_bundle(output) == []
+    finally:
+        for database in leaked:
+            database.close()
+
+
+def test_verification_failure_keeps_the_output_for_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boundary: cleanup belongs on the raise path only.
+
+    ``_verify_recovered_database`` collects errors and returns, and the CLI
+    tells the user to review a report for an output that failed verification,
+    so that output must survive.
+    """
+
+    source = tmp_path / "state.db"
+    _make_source(source)
+    output = tmp_path / "unverified.db"
+
+    def _failed_verification(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "errors": ["forced verification failure"],
+            "warnings": [],
+            "table_counts": {},
+            "integrity_check": ["ok"],
+            "foreign_key_check": [],
+            "complete": False,
+            "healthy": False,
+            "loss_detected": False,
+        }
+
+    monkeypatch.setattr(
+        session_recovery,
+        "_verify_recovered_database",
+        _failed_verification,
+    )
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert report["complete"] is False
+    assert report["verified"] is False
+    assert output.exists()
+
+
+def test_failed_report_write_leaves_no_report_to_block_a_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same lockout, one artifact along.
+
+    ``write_recovery_report`` opens with ``"x"`` and ``hermes sessions
+    recover`` refuses the whole command when the report path already exists,
+    so a ``json.dump`` that dies part way blocks the next run before recovery
+    even starts.
+    """
+
+    destination = tmp_path / "recovered.db.recovery.json"
+
+    def _no_space(*args: object, **kwargs: object) -> None:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(session_recovery.json, "dump", _no_space)
+    with pytest.raises(OSError, match="No space left on device"):
+        session_recovery.write_recovery_report(destination, {"operation": "recover"})
+
+    assert not os.path.lexists(destination)
+
+    monkeypatch.undo()
+    written = session_recovery.write_recovery_report(
+        destination,
+        {"operation": "recover"},
+    )
+    assert json.loads(written.read_text(encoding="utf-8")) == {
+        "operation": "recover"
+    }
+
+
+def test_report_write_never_removes_a_file_it_did_not_create(
+    tmp_path: Path,
+) -> None:
+    """The refusal itself must stay non-destructive.
+
+    ``open("x")`` raising ``FileExistsError`` means the report was written by
+    an earlier run, so the failure path must leave it exactly as it was.
+    """
+
+    destination = tmp_path / "recovered.db.recovery.json"
+    destination.write_text("earlier report", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        session_recovery.write_recovery_report(destination, {"operation": "recover"})
+
+    assert destination.read_text(encoding="utf-8") == "earlier report"
+
+
 def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
     tmp_path: Path,
 ) -> None:
@@ -646,6 +840,196 @@ def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
         )
     finally:
         conn.close()
+
+
+class _AutoRollbackConnection:
+    """A destination whose transaction SQLite has already ended by itself.
+
+    SQLite rolls the active transaction back on its own for SQLITE_FULL,
+    SQLITE_IOERR, SQLITE_BUSY and SQLITE_NOMEM. The explicit ``ROLLBACK`` a
+    cleanup handler then issues raises ``cannot rollback - no transaction is
+    active``, which is exactly the sequence that used to replace the real
+    failure. This stands in for it at every write site.
+    """
+
+    def __init__(self, connection: sqlite3.Connection, make_failure):
+        self._connection = connection
+        self._make_failure = make_failure
+        self.rollback_attempts = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def execute(self, sql: str, *parameters):
+        statement = sql.strip().upper()
+        if statement.startswith("ROLLBACK"):
+            self.rollback_attempts += 1
+            # Undo any transaction still open underneath so the connection
+            # stays usable, then fail the way SQLite does once it has already
+            # unwound the transaction itself. The simulated failure is raised
+            # unconditionally so the stub never depends on the real
+            # connection's transaction state.
+            try:
+                self._connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise sqlite3.OperationalError(
+                "cannot rollback - no transaction is active"
+            )
+        if statement.startswith("COMMIT"):
+            raise self._make_failure()
+        return self._connection.execute(sql, *parameters)
+
+    def executemany(self, sql: str, parameters):
+        return self._connection.executemany(sql, parameters)
+
+
+def _recovery_pair(tmp_path: Path) -> tuple[sqlite3.Connection, sqlite3.Connection]:
+    """A populated source plus a fresh current-schema destination."""
+
+    source_path = tmp_path / "rollback-source.db"
+    _make_source(source_path)
+    destination_path = tmp_path / "rollback-destination.db"
+    destination_db = SessionDB(db_path=destination_path)
+    try:
+        destination_db.apply_telegram_topic_migration()
+    finally:
+        destination_db.close()
+    return (
+        sqlite3.connect(str(source_path), isolation_level=None),
+        sqlite3.connect(str(destination_path), isolation_level=None),
+    )
+
+
+# Every site in session_recovery.py that wraps a write in
+# ``except BaseException: ROLLBACK; raise``.
+_ROLLBACK_SITES = {
+    "_cleanup_partial_orphans": lambda source, destination: (
+        session_recovery._cleanup_partial_orphans(destination)
+    ),
+    "_copy_state_meta": lambda source, destination: (
+        session_recovery._copy_state_meta(
+            source,
+            destination,
+            chunk_size=1_000,
+            progress_cb=None,
+            source_rows=None,
+        )
+    ),
+    "_copy_table": lambda source, destination: session_recovery._copy_table(
+        source,
+        destination,
+        "messages",
+        chunk_size=1_000,
+        progress_cb=None,
+        source_rows=21,
+    ),
+    "_copy_table_salvage": lambda source, destination: (
+        session_recovery._copy_table_salvage(
+            source,
+            destination,
+            "messages",
+            chunk_size=1_000,
+            progress_cb=None,
+            source_rows=21,
+        )
+    ),
+    "_finalize_derived_metadata": lambda source, destination: (
+        session_recovery._finalize_derived_metadata(destination)
+    ),
+}
+
+
+@pytest.mark.parametrize("site", sorted(_ROLLBACK_SITES))
+def test_cleanup_rollback_never_replaces_the_real_write_failure(
+    site: str,
+    tmp_path: Path,
+) -> None:
+    source, destination = _recovery_pair(tmp_path)
+    guarded = _AutoRollbackConnection(
+        destination,
+        lambda: sqlite3.OperationalError("database or disk is full"),
+    )
+    try:
+        try:
+            surfaced = json.dumps(
+                _ROLLBACK_SITES[site](source, guarded), default=str
+            )
+        except sqlite3.Error as exc:
+            # The two cleanup sites propagate instead of reporting a dict.
+            surfaced = str(exc)
+    finally:
+        source.close()
+        destination.close()
+
+    # The salvage site retries narrower rowid ranges, so it rolls back more
+    # than once before it gives up and records the failure.
+    assert guarded.rollback_attempts >= 1
+    assert "database or disk is full" in surfaced
+    assert "cannot rollback" not in surfaced
+
+
+@pytest.mark.parametrize("site", sorted(_ROLLBACK_SITES))
+def test_interrupt_during_a_write_still_aborts_the_recovery(
+    site: str,
+    tmp_path: Path,
+) -> None:
+    """``except BaseException`` must roll back and then re-raise the interrupt.
+
+    A masked rollback turns Ctrl-C into a ``DatabaseError``, which the copy
+    sites treat as an ordinary damaged-source error — so the run continues
+    instead of stopping.
+    """
+
+    source, destination = _recovery_pair(tmp_path)
+    guarded = _AutoRollbackConnection(destination, KeyboardInterrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _ROLLBACK_SITES[site](source, guarded)
+    finally:
+        source.close()
+        destination.close()
+
+    assert guarded.rollback_attempts == 1
+
+
+def test_copy_table_reports_a_full_destination_not_a_rollback_failure(
+    tmp_path: Path,
+) -> None:
+    """End-to-end against real SQLite, with no stubbing of the failure."""
+
+    source_path = tmp_path / "page-spanning-source.db"
+    _make_page_spanning_source(source_path)
+    destination_path = tmp_path / "capped-destination.db"
+    destination_db = SessionDB(db_path=destination_path)
+    destination_db.close()
+
+    source = sqlite3.connect(str(source_path), isolation_level=None)
+    destination = sqlite3.connect(str(destination_path), isolation_level=None)
+    try:
+        source_rows = int(
+            source.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        )
+        # Leave room for the copy to begin and then run out part way through,
+        # which is what a destination filesystem filling up mid-run looks like.
+        pages = int(destination.execute("PRAGMA page_count").fetchone()[0])
+        destination.execute(f"PRAGMA max_page_count = {pages + 20}")
+
+        result = session_recovery._copy_table(
+            source,
+            destination,
+            "messages",
+            chunk_size=1_000,
+            progress_cb=None,
+            source_rows=source_rows,
+        )
+    finally:
+        source.close()
+        destination.close()
+
+    assert result["status"] == "failed"
+    assert "database or disk is full" in result["error"]
+    assert "cannot rollback" not in result["error"]
 
 
 

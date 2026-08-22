@@ -81,6 +81,30 @@ def _sidecar_path(db_path: Path, suffix: str) -> Path:
     return db_path if not suffix else db_path.with_name(db_path.name + suffix)
 
 
+def _unlink_if_present(path: Path) -> None:
+    """Best-effort removal of a file this run created but never completed."""
+
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _discard_recovery_output(output: Path) -> None:
+    """Remove an output bundle a failed run created but never completed.
+
+    ``_validate_paths`` refuses to start when the output *or any of its
+    journal sidecars* already exists, so an output left behind by a run that
+    raised locks the user out of every retry of the one command a damaged
+    database has left. Removing the database on its own would not lift that
+    refusal: the guard covers all of ``_SIDECAR_SUFFIXES``, and an
+    interrupted run can leave a live WAL next to it.
+    """
+
+    for suffix in _SIDECAR_SUFFIXES:
+        _unlink_if_present(_sidecar_path(output, suffix))
+
+
 def _resolved_output_path(path: Path) -> Path:
     """Resolve a not-yet-created output path without requiring it to exist."""
 
@@ -385,6 +409,30 @@ def inspect_session_database(
         temp_dir.cleanup()
 
 
+def _rollback_without_masking(destination: sqlite3.Connection) -> None:
+    """Roll the destination back without shadowing the failure in flight.
+
+    SQLite may already have rolled the transaction back on its own — it does
+    that for SQLITE_FULL, SQLITE_IOERR, SQLITE_BUSY and SQLITE_NOMEM, which
+    are precisely the errors a recovery run into a fresh destination hits.
+    The explicit ``ROLLBACK`` then raises ``cannot rollback - no transaction
+    is active`` from inside the exception handler and *replaces* the original
+    failure, so the caller reports the spurious rollback error and never
+    reaches its own ``raise``.
+
+    ``sqlite3.Error`` rather than ``sqlite3.OperationalError``: this module
+    tears its connections down in a ``finally`` block, so the rollback can
+    also land on an already-closed connection and raise ``ProgrammingError``.
+    Whatever the rollback itself fails with, it matters less than the
+    exception already being propagated. Non-SQLite errors still surface.
+    """
+
+    try:
+        destination.execute("ROLLBACK")
+    except sqlite3.Error:
+        pass
+
+
 def _copy_table(
     source: sqlite3.Connection,
     destination: sqlite3.Connection,
@@ -427,7 +475,7 @@ def _copy_table(
                 destination.executemany(insert_sql, rows)
                 destination.execute("COMMIT")
             except BaseException:
-                destination.execute("ROLLBACK")
+                _rollback_without_masking(destination)
                 raise
             result["copied_rows"] += len(rows)
             if progress_cb is not None:
@@ -732,7 +780,7 @@ def _copy_table_salvage(
                         destination.executemany(insert_sql, included)
                         destination.execute("COMMIT")
                     except BaseException:
-                        destination.execute("ROLLBACK")
+                        _rollback_without_masking(destination)
                         raise
 
                 result["copied_rows"] += len(included)
@@ -846,7 +894,7 @@ def _copy_state_meta(
                 )
                 destination.execute("COMMIT")
             except BaseException:
-                destination.execute("ROLLBACK")
+                _rollback_without_masking(destination)
                 raise
             result["copied_rows"] += len(rows)
             if progress_cb is not None:
@@ -1145,7 +1193,7 @@ def _cleanup_partial_orphans(
             result[report_key] = orphan_count
         destination.execute("COMMIT")
     except BaseException:
-        destination.execute("ROLLBACK")
+        _rollback_without_masking(destination)
         raise
     # Only destructive/relinking actions belong in this total. The
     # reconstruction counters describe data RETAINED, so summing them here
@@ -1378,7 +1426,7 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
         )
         destination.execute("COMMIT")
     except BaseException:
-        destination.execute("ROLLBACK")
+        _rollback_without_masking(destination)
         raise
     result["finalized"] = True
     return result
@@ -1557,6 +1605,7 @@ def recover_session_database(
     disk_space = _disk_space_preflight(source, work_root, output.parent)
 
     temp_dir, snapshot_source, inspection = _snapshot_and_inspect(source, work_root)
+    output_created = False
     try:
         if not inspection.get("recoverable") and not allow_partial:
             reasons = "; ".join(inspection.get("errors") or ["unknown source error"])
@@ -1598,6 +1647,10 @@ def recover_session_database(
                 inspection["tables"][table].get("available") for table in _TOPIC_TABLES
             )
 
+            # SessionDB creates the output before it finishes initializing it,
+            # so a constructor that raises part way still leaves a database —
+            # and a live WAL — behind. Arm the cleanup before the call.
+            output_created = True
             destination_db = SessionDB(db_path=output)
             if has_topic_tables:
                 destination_db.apply_telegram_topic_migration()
@@ -1718,6 +1771,13 @@ def recover_session_database(
             "verified": bool(verification.get("healthy") and source_unchanged),
             "installed": False,
         }
+    except BaseException:
+        # Only on the raise path. ``_verify_recovered_database`` collects
+        # errors and returns, so an output that failed verification is kept
+        # for the inspection the CLI tells the user to perform.
+        if output_created:
+            _discard_recovery_output(output)
+        raise
     finally:
         temp_dir.cleanup()
 
@@ -1726,7 +1786,17 @@ def write_recovery_report(path: Path, report: dict[str, Any]) -> Path:
     """Write a JSON report without overwriting an existing file."""
 
     destination = _resolved_output_path(path)
-    with destination.open("x", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    # Opened before the guard so a FileExistsError — the report an earlier run
+    # already wrote — can never reach the unlink below.
+    handle = destination.open("x", encoding="utf-8")
+    try:
+        with handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except BaseException:
+        # ``hermes sessions recover`` refuses the whole command when this path
+        # exists, so a dump that dies part way blocks the next run before
+        # recovery even starts.
+        _unlink_if_present(destination)
+        raise
     return destination

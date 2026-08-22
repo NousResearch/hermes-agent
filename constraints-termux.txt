@@ -6,6 +6,12 @@
 # These pins keep the tested Android install path stable when upstream packages
 # move faster than Termux-compatible wheels / sdists.
 
+# cryptography>=50 has no pre-built wheel for Android/Termux aarch64 (bionic libc).
+# Building from source requires Rust and exhausts memory on mobile devices.
+# Termux package repository provides cryptography==48.0.1-1 which has a working wheel.
+# Pin to 48.0.1 to avoid source build hang/OOM on Termux. See issue #87663.
+cryptography==48.0.1
+
 ipython<10
 jedi>=0.18.1,<0.20
 parso>=0.8.4,<0.9

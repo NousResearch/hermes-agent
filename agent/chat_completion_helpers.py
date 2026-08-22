@@ -2208,8 +2208,8 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
-        # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
-        # both require reasoning_content on every assistant tool-call
+        # DeepSeek v4, Kimi / Moonshot, and NVIDIA NIM thinking modes
+        # require reasoning_content on every assistant tool-call
         # message. Without it, replaying the persisted message causes
         # HTTP 400 ("The reasoning_content in the thinking mode must
         # be passed back to the API"). Include streamed reasoning

@@ -52,6 +52,20 @@ class TestPolicyFromExtra:
         assert p.user_allowed_commands == frozenset({"status", "model", "help"})
 
 
+    def test_command_coercion_folds_underscores_to_hyphens(self):
+        # Telegram's command menu surfaces a hyphenated command as /my_cmd and
+        # sends that form back, so operators reasonably write the underscored
+        # spelling in their allowlist. Both spellings name the same command.
+        p = policy_from_extra(
+            {
+                "allow_admin_from": ["111"],
+                "user_allowed_commands": ["my_cmd", "/Reload_MCP"],
+            },
+            "dm",
+        )
+        assert p.user_allowed_commands == frozenset({"my-cmd", "reload-mcp"})
+
+
     def test_dm_admin_does_not_imply_group_admin(self):
         # Admin lists are scope-specific. DM admin must not auto-promote in groups.
         extra = {"allow_admin_from": ["111"]}
@@ -69,6 +83,80 @@ class TestPolicyFromExtra:
         gp2 = policy_from_extra(extra2, "group")
         assert gp2.is_admin("111") is False
         assert gp2.is_admin("222") is True
+
+
+# ---------------------------------------------------------------------------
+# can_run — underscore/hyphen equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestCanRunSeparatorFolding:
+    """``_`` and ``-`` are the same character to slash dispatch, so they must
+    be the same character to the allowlist.
+
+    Plugin dispatch normalizes the typed name (``my_cmd``) to the registered
+    one (``my-cmd``) before looking a handler up, and the gate runs on that
+    normalized name. Built-ins go further and register both spellings as
+    aliases of one command (``reload-mcp`` / ``reload_mcp``). An operator
+    cannot be expected to know which spelling the gate will see, so the
+    policy folds both sides of the comparison.
+    """
+
+    @staticmethod
+    def _policy(listed):
+        return policy_from_extra(
+            {"allow_admin_from": ["111"], "user_allowed_commands": listed}, "dm"
+        )
+
+
+    def test_underscored_listing_admits_the_hyphenated_command(self):
+        # The operator wrote the form Telegram's menu shows.
+        p = self._policy(["my_cmd"])
+        assert p.can_run("999", "my-cmd") is True
+
+
+    def test_hyphenated_listing_admits_the_underscored_command(self):
+        # The mirror image — a quick command or plugin registered with an
+        # underscore, gated on the raw typed name.
+        p = self._policy(["my-cmd"])
+        assert p.can_run("999", "my_cmd") is True
+
+
+    def test_both_spellings_keep_working_for_the_exact_form(self):
+        for listed in (["my_cmd"], ["my-cmd"]):
+            p = self._policy(listed)
+            assert p.can_run("999", listed[0]) is True
+
+
+    def test_builtin_alias_pair_is_allowed_under_either_spelling(self):
+        # ``reload-mcp`` and ``reload_mcp`` are aliases of one built-in, but
+        # the gate only ever sees the canonical name.
+        for listed in ("reload_mcp", "reload-mcp"):
+            p = self._policy([listed])
+            assert p.can_run("999", "reload-mcp") is True
+            assert p.can_run("999", "reload_mcp") is True
+
+
+    def test_folding_does_not_admit_unrelated_commands(self):
+        p = self._policy(["my_cmd"])
+        assert p.can_run("999", "mycmd") is False
+        assert p.can_run("999", "my cmd") is False
+        assert p.can_run("999", "other-cmd") is False
+        assert p.can_run("999", "my-cmd-2") is False
+
+
+    def test_non_allowlisted_user_stays_denied_for_either_spelling(self):
+        # Nothing here is a way in: an empty allowlist denies both forms.
+        p = self._policy([])
+        assert p.can_run("999", "my-cmd") is False
+        assert p.can_run("999", "my_cmd") is False
+
+
+    def test_admin_and_disabled_gating_are_unaffected(self):
+        p = self._policy([])
+        assert p.can_run("111", "my_cmd") is True  # admin
+        off = policy_from_extra({}, "dm")
+        assert off.can_run("999", "my_cmd") is True  # gating not configured
 
 
 # ---------------------------------------------------------------------------

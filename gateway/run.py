@@ -17390,6 +17390,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
 
+        # Resolve a plugin command typed in Telegram's underscored spelling to
+        # the hyphenated name it was registered under. The Bot API permits only
+        # [a-z0-9_], so ``_sanitize_telegram_name`` renders a plugin command
+        # registered as ``my-cmd`` in the command menu as ``/my_cmd``, and that
+        # is the spelling the adapter sends back. Plugin dispatch already folds
+        # it, but the access gate and the ``command:<canonical>`` hook below
+        # both key off ``canonical`` — so without this they saw a name that
+        # resolves to nothing, skipped, and let a command run that neither the
+        # policy nor a deny hook had approved. Resolving once, here, keeps every
+        # downstream decision on the name dispatch will actually use.
+        # Built-ins are untouched: ``_resolve_cmd`` has already mapped their
+        # aliases, including the ``reload_mcp``-style separator pairs.
+        if command and _cmd_def is None and "_" in canonical:
+            _plugin_canonical = canonical.replace("_", "-")
+            try:
+                from hermes_cli.plugins import get_plugin_command_handler
+                if get_plugin_command_handler(_plugin_canonical):
+                    canonical = _plugin_canonical
+            except Exception as _plugin_lookup_err:
+                logger.debug(
+                    "Plugin command canonicalization failed (non-fatal): %s",
+                    _plugin_lookup_err,
+                )
+
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
         # vs group). When unset → backward-compat: every allowed user can
@@ -17906,9 +17930,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from hermes_cli.plugins import get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                # hyphens. See hermes_cli/commands.py:_sanitize_telegram_name.
+                plugin_command = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_command)
                 if plugin_handler:
+                    # Defense in depth. The cold gate above now decides on the
+                    # canonicalized name and denies first for both spellings,
+                    # but this sink runs arbitrary plugin code in the gateway
+                    # process and stays reachable by routes that recompute
+                    # ``canonical`` without that resolution — a ``rewrite``
+                    # hook naming an underscored plugin command, for one. Check
+                    # the name we are about to dispatch, mirroring the
+                    # quick-command sink gate above.
+                    _denied = self._check_slash_access(source, plugin_command)
+                    if _denied is not None:
+                        return _denied
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):

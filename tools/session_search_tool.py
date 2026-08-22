@@ -164,9 +164,26 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
     return cur, has_compression
 
 
-def _resolve_lineage(db, session_id: str) -> str:
-    """Convenience: return only the lineage root (ignores compression hop)."""
-    return _resolve_to_parent(db, session_id)[0]
+def _resolve_lineage(db, session_id: str) -> Optional[str]:
+    """Resolve the session-search compression lineage root.
+
+    Production ``SessionDB`` exposes the same positive compression-continuation
+    resolver used by winner selection.  Returns ``None`` when the outcome is
+    unresolved / budget-exhausted — never a fabricated root (#68): a resource
+    limit is not evidence, so a B-limited resolution must not pretend the
+    session is its own root.
+    """
+    if not session_id:
+        return session_id
+    try:
+        return db.resolve_compression_lineage(session_id)
+    except Exception:
+        logging.debug(
+            "compression lineage resolution failed for %s",
+            session_id,
+            exc_info=True,
+        )
+        return None
 
 
 def _session_end_reason(db, session_id: str) -> Optional[str]:
@@ -237,23 +254,6 @@ def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
         )
         return None
     return dict(row) if row is not None else None
-
-
-def _is_compacted_message(db, message_id) -> bool:
-    """Return True if *message_id* is a compaction-archived row.
-
-    Compaction archives are ``active=0, compacted=1`` — the content was
-    summarised away from live context by :meth:`archive_and_compact`.
-    Rewind/undo rows are ``active=0, compacted=0`` and must stay hidden.
-
-    Used by ``_discover`` to distinguish a compaction-archived FTS hit on the
-    current session (pre-compaction content no longer in live context — should
-    stay discoverable) from an active live hit (already in context — skip).
-    Returns False on any error so the caller falls back to the safe default
-    (skip the current session).
-    """
-    state = _get_message_storage_state(db, message_id)
-    return state is not None and state["active"] == 0 and state["compacted"] == 1
 
 
 def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
@@ -581,8 +581,12 @@ def _scroll(
 
     if current_session_id:
         anchor_session_id = owning_session_id or session_id
-        a_root = _resolve_lineage(db, anchor_session_id)
-        c_root = _resolve_lineage(db, current_session_id)
+        # Scroll's guard is about LIVE CONTEXT, not search lineage (#68): a
+        # live delegation/branch parent is still in the active context even
+        # though it is a distinct compression root.  Generic parentage is the
+        # correct model here, not compression-continuation lineage.
+        a_root = _resolve_to_parent(db, anchor_session_id)[0]
+        c_root = _resolve_to_parent(db, current_session_id)[0]
         if a_root and c_root and a_root == c_root:
             is_compacted_anchor = (
                 anchor_state is not None
@@ -629,8 +633,11 @@ def _scroll(
     if not messages:
         owning = owning_session_id
         if owning and owning != session_id:
-            a_root = _resolve_lineage(db, session_id)
-            o_root = _resolve_lineage(db, owning)
+            # Lineage rebind uses generic parentage too: a descendant in the
+            # same generic chain (compaction or delegation child) is the real
+            # owner of the anchor, regardless of compression semantics (#68).
+            a_root = _resolve_to_parent(db, session_id)[0]
+            o_root = _resolve_to_parent(db, owning)[0]
             if a_root and o_root and a_root == o_root:
                 try:
                     rebind_view = db.get_messages_around(owning, around_message_id, window=window)
@@ -789,7 +796,34 @@ def _discover(
     # within each class.
     raw_results = _order_for_recall(raw_results)
 
-    if not raw_results and not title_result:
+    # Compression-lineage winner selection (#68): consumes the ranked raw-hit
+    # set and replaces generic-parent dedup with positive compression-root
+    # semantics — one query-local memo, one coherent read snapshot, one work
+    # budget, fail-closed missing-parent/cycle outcomes, and early-K stop.
+    # Exact-title exclusion shares the same compression-root meaning.  The
+    # winner phase always runs (even when the title already fills the only
+    # slot or no raw hit survives) so a B-exhausted current chain is surfaced
+    # as truncation instead of a silently complete answer.  The surviving
+    # rows keep the raw owning session_id (only that pairs validly with the
+    # FTS5 match id for the anchored window); parent_session_id is exposed
+    # separately when different.
+    title_lineage = title_result.get("_lineage_root") if title_result else None
+    try:
+        winner_response = db.resolve_lineage_winners(
+            candidates=raw_results,
+            result_limit=max(0, limit - (1 if title_result else 0)),
+            excluded_lineage_roots=(title_lineage,) if title_lineage else (),
+            current_session_id=current_session_id or None,
+            out_of_context_end_reasons=_FRESH_RESET_END_REASONS,
+        )
+    except Exception as e:
+        logging.error("Lineage winner selection failed: %s", e, exc_info=True)
+        return tool_error(f"Search failed: {e}", success=False)
+    winner_rows = winner_response.get("winners", [])
+    winner_stats = winner_response.get("stats", {})
+    _truncated = bool(winner_stats.get("lineage_bound_hit"))
+
+    if not winner_rows and not title_result:
         _empty_payload = {
             "success": True,
             "mode": "discover",
@@ -797,67 +831,27 @@ def _discover(
             "detail": detail,
             "results": [],
             "count": 0,
-            "message": "No matching sessions found.",
+            "truncated": _truncated,
         }
+        if _truncated:
+            # The lineage safety work bound stopped the scan before any
+            # winner: this is an incomplete result, never "no matches".
+            _empty_payload["warning"] = (
+                "Session search stopped at the lineage safety work bound; "
+                "results are a safe ranked prefix and may be incomplete."
+            )
+        else:
+            _empty_payload["message"] = "No matching sessions found."
         _annotate_rebuild_status(db, _empty_payload)
         return json.dumps(_empty_payload, ensure_ascii=False)
 
-    # Dedupe by lineage. Keep the raw owning session_id on the surviving
-    # row — only that pairs validly with the FTS5 match id for the anchored
-    # window. parent_session_id is exposed separately when different.
-    seen_sessions = {}
     results = []
-
     if title_result:
-        title_lineage = title_result.pop("_lineage_root", None)
-        if title_lineage:
-            seen_sessions[title_lineage] = {"_title_only": True}
+        title_result.pop("_lineage_root", None)
         results.append(title_result)
 
-    for r in raw_results:
-        if len(seen_sessions) >= limit:
-            break
-        raw_sid = r["session_id"]
-        resolved_sid, _ = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage — UNLESS the hit's transcript has
-        # left live context. Three sub-cases:
-        #
-        # Legacy compression rotation: the FTS hit lives in a session that
-        # itself ended with end_reason='compression'. That session's content
-        # has been replaced by a summary in the continuation child, so it
-        # must stay discoverable.
-        #
-        # /new-reset (and idle/daily/CLI new_session): the predecessor was
-        # ended without carrying any transcript into the child. Same lineage
-        # root, but the prior conversation is NOT in the active context —
-        # hiding it made gateway recall go blind after every /new (#85756).
-        # A live delegation child has end_reason=None, so it stays excluded.
-        #
-        # In-place compaction: the FTS hit lives on the SAME session_id as the
-        # current session, but the matched message row is an archived
-        # (active=0, compacted=1) row. The live-context load filters active=1,
-        # so that content is no longer in context — let it through.
-        is_compacted_hit = _is_compacted_message(db, r.get("id"))
-        is_ended_session = _session_left_live_context(db, raw_sid)
-        if current_lineage_root and resolved_sid == current_lineage_root:
-            if not (is_ended_session or is_compacted_hit):
-                continue
-        if current_session_id and raw_sid == current_session_id:
-            # Same-session hit: only skip if the matched message is still live
-            # (active=1). Archived/compacted rows are pre-compaction content
-            # that's been summarised away — let them through.
-            if not is_compacted_hit:
-                continue
-        if resolved_sid not in seen_sessions:
-            row = dict(r)
-            row["_lineage_root"] = resolved_sid
-            seen_sessions[resolved_sid] = row
-        if len(seen_sessions) >= limit:
-            break
-
-    for lineage_root, match_info in seen_sessions.items():
-        if match_info.get("_title_only"):
-            continue
+    for match_info in winner_rows:
+        lineage_root = match_info.get("lineage_root_id") or match_info.get("session_id")
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
         try:
@@ -927,8 +921,15 @@ def _discover(
         "detail": detail,
         "results": results,
         "count": len(results),
-        "sessions_searched": len(seen_sessions),
+        "truncated": _truncated,
+        "sessions_searched": len(winner_rows) + (1 if title_result else 0),
     }
+    if _truncated:
+        # A partial safe prefix must never be presented as a complete top-K.
+        _final_payload["warning"] = (
+            "Session search stopped at the lineage safety work bound; "
+            "results are a safe ranked prefix and may be incomplete."
+        )
     _annotate_rebuild_status(db, _final_payload)
     return json.dumps(_final_payload, ensure_ascii=False)
 

@@ -26,6 +26,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
+    _RESET_END_REASONS,
     escape_like as _escape_like,
 )
 
@@ -44,6 +45,108 @@ logger = logging.getLogger("hermes_state")
 # stripping it here widened those queries onto unrelated rows.
 _FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=\\\''
 _FTS5_SPECIAL_RE = re.compile(f"[{re.escape(_FTS5_SPECIAL_CHARS)}]")
+
+
+# ---------------------------------------------------------------------------
+# Compression-lineage resolver (fork #68, reconstructed on current upstream).
+#
+# One logical session-search query resolves each ranked owner candidate to
+# its positive compression-continuation root with a query-local
+# memo/path-compression pass.  Generic parentage is NOT lineage: only a
+# child whose parent exists, whose parent ended by ``'compression'``, that is
+# not a ``tool`` session, and whose branch/delegate markers do not explicitly
+# point at that parent forms a compression edge.  Foreign markers pointing
+# elsewhere do not disqualify the edge.
+#
+# Safety is orthogonal to lineage identity: a traversal-local seen-set proves
+# cycles, and a global per-query work budget bounds indexed row fetches.  A
+# budget-exhausted partial path is operational uncertainty, never semantic
+# evidence, so it is not memoized as unresolved.
+_LINEAGE_WORK_BUDGET = 2000
+_UNRESOLVED = object()
+_BUDGET_EXHAUSTED = object()
+
+_LINEAGE_NODE_SQL = """
+SELECT
+    child.id,
+    child.parent_session_id,
+    child.source,
+    child.model_config,
+    parent.id AS parent_exists,
+    parent.end_reason AS parent_end_reason
+FROM sessions child
+LEFT JOIN sessions parent ON parent.id = child.parent_session_id
+WHERE child.id = ?
+"""
+
+
+def _chunked(values: List[Any], size: int) -> List[List[Any]]:
+    """Split *values* into ``size``-bounded chunks (SQLite var-limit safety)."""
+    return [values[i:i + size] for i in range(0, len(values), size)]
+
+
+def _lineage_markers(
+    model_config: Any,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Return ``(config_valid, branched_from, delegate_from)`` for a session.
+
+    Malformed / non-object ``model_config`` is treated as "no proven positive
+    edge" (the conservative direction): the current node becomes its own root
+    rather than traversing an unproven parent.
+    """
+    if model_config in (None, ""):
+        return True, None, None
+    value = model_config
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return False, None, None
+    if not isinstance(value, dict):
+        return False, None, None
+    markers: List[Optional[str]] = []
+    for key in ("_branched_from", "_delegate_from"):
+        marker = value.get(key)
+        if marker is None:
+            markers.append(None)
+        elif isinstance(marker, str) and marker:
+            markers.append(marker)
+        else:
+            return False, None, None
+    return True, markers[0], markers[1]
+
+
+class _LineageResolutionState:
+    """Per-logical-query resolver state for one winner search.
+
+    ``work`` counts exactly one successful uncached lineage-node row fetch;
+    memo hits, absent-row fetches, and local cycle checks consume nothing.
+    ``memo`` maps a lineage node to a resolved root string or ``_UNRESOLVED``.
+    A budget-exhausted partial path is never written to the memo.
+    """
+
+    __slots__ = (
+        "budget",
+        "work",
+        "memo",
+        "memo_hits",
+        "bound_hit",
+        "candidates_inspected",
+    )
+
+    def __init__(self, budget: int = _LINEAGE_WORK_BUDGET) -> None:
+        self.budget = max(1, int(budget))
+        self.work = 0
+        self.memo: Dict[str, Any] = {}
+        self.memo_hits = 0
+        self.bound_hit = False
+        self.candidates_inspected = 0
+
+    def _memoize_unresolved(self, path: List[str], node: str) -> None:
+        """Mark *path* plus *node* as proven unresolved (zero later lookups)."""
+        for visited in path:
+            self.memo.setdefault(visited, _UNRESOLVED)
+        self.memo.setdefault(node, _UNRESOLVED)
 
 
 class SessionSearchMixin:
@@ -2285,6 +2388,380 @@ class SessionSearchMixin:
         with self._read_ctx() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    def _resolve_compression_lineage_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        state: _LineageResolutionState,
+    ) -> Any:
+        """Resolve *session_id* to its compression root on *conn*.
+
+        Returns the resolved root string, ``_UNRESOLVED`` for a proven
+        semantic unresolved outcome (missing row / dangling parent / positive
+        cycle), or ``_BUDGET_EXHAUSTED`` when the global work budget would be
+        exceeded by the next uncached lookup.
+
+        The loop ordering is correctness-significant at the B boundary:
+        memo lookup first, then traversal-local cycle proof, then the budget
+        check (only because another uncached lookup is now required), then the
+        one-node point lookup.
+        """
+        if not session_id:
+            return _UNRESOLVED
+        node = str(session_id)
+        path: List[str] = []
+        seen: set = set()
+
+        while True:
+            cached = state.memo.get(node)
+            if cached is _UNRESOLVED:
+                state.memo_hits += 1
+                for visited in path:
+                    state.memo.setdefault(visited, _UNRESOLVED)
+                return _UNRESOLVED
+            if cached is not None:
+                # Memo hit: path-compress the visited prefix to the known root.
+                state.memo_hits += 1
+                for visited in path:
+                    state.memo.setdefault(visited, cached)
+                return cached
+
+            if node in seen:
+                # Positive cycle proven from the traversal-local seen-set
+                # with no further DB lookup (valid even at work == B).
+                state._memoize_unresolved(path, node)
+                return _UNRESOLVED
+            seen.add(node)
+
+            if state.work >= state.budget:
+                # Another uncached lookup is required and the budget is gone.
+                # This is operational uncertainty, NOT semantic unresolved, so
+                # the partial path is left out of the memo.
+                state.bound_hit = True
+                return _BUDGET_EXHAUSTED
+
+            row = conn.execute(_LINEAGE_NODE_SQL, (node,)).fetchone()
+            if row is None:
+                # The node row itself is missing: zero successful-fetch work
+                # for that absent row; the traversed path is semantically
+                # unresolved.
+                state._memoize_unresolved(path, node)
+                return _UNRESOLVED
+            state.work += 1
+
+            current = str(row["id"])
+            path.append(current)
+            parent_id = row["parent_session_id"]
+            if parent_id is None:
+                root = current
+                break
+            parent_id = str(parent_id)
+
+            if row["parent_exists"] is None:
+                # Dangling parent: malformed lineage, fail closed.
+                state._memoize_unresolved(path, node)
+                return _UNRESOLVED
+
+            config_valid, branched_from, delegate_from = _lineage_markers(
+                row["model_config"]
+            )
+            positive_edge = (
+                config_valid
+                and row["parent_end_reason"] == "compression"
+                and row["source"] != "tool"
+                and branched_from != parent_id
+                and delegate_from != parent_id
+            )
+            if not positive_edge:
+                root = current
+                break
+
+            node = parent_id
+
+        for visited in path:
+            state.memo.setdefault(visited, root)
+        return root
+
+    def resolve_compression_lineage(
+        self,
+        session_id: str,
+        *,
+        work_budget: int = _LINEAGE_WORK_BUDGET,
+    ) -> Optional[str]:
+        """Resolve *session_id* to its positive compression-continuation root.
+
+        Returns the root id, or ``None`` when the outcome is a proven semantic
+        unresolved (missing row / dangling parent / positive cycle) or the work
+        budget is exhausted.  Never falls back to generic parent ancestry; an
+        unresolved session is kept separate instead of broadening exclusion to
+        an unproven ancestor.
+        """
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            started_tx = not conn.in_transaction
+            if started_tx:
+                conn.execute("BEGIN")
+            try:
+                state = _LineageResolutionState(work_budget)
+                outcome = self._resolve_compression_lineage_on_conn(
+                    conn, str(session_id), state
+                )
+            finally:
+                if started_tx and conn.in_transaction:
+                    conn.rollback()
+        if outcome is _UNRESOLVED or outcome is _BUDGET_EXHAUSTED:
+            return None
+        return outcome
+
+    def _current_lineage_ancestors_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        state: _LineageResolutionState,
+    ) -> set:
+        """Collect the current session's generic parent chain ids.
+
+        Current-session exclusion must also hide live-context ancestors that
+        are NOT compression lineage: a delegation/branch child is still
+        visible to its parent agent, so the parent's content stays excluded
+        even though the child is a distinct compression root (#68).  Walks
+        ``parent_session_id`` links on the same connection, counts successful
+        row fetches toward the work budget, and stops on a missing row, a
+        cycle, or budget exhaustion.
+        """
+        ancestors: set = set()
+        seen: set = set()
+        node = str(session_id) if session_id else None
+        while node and node not in seen:
+            seen.add(node)
+            if state.work >= state.budget:
+                state.bound_hit = True
+                break
+            row = conn.execute(_LINEAGE_NODE_SQL, (node,)).fetchone()
+            if row is None:
+                break
+            state.work += 1
+            parent = row["parent_session_id"]
+            if parent is None:
+                break
+            node = str(parent)
+            ancestors.add(node)
+        return ancestors
+
+    def resolve_lineage_winners(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        result_limit: int = 3,
+        excluded_lineage_roots: Tuple[str, ...] = (),
+        current_session_id: Optional[str] = None,
+        work_budget: Optional[int] = None,
+        out_of_context_end_reasons: Optional[Collection[str]] = None,
+    ) -> Dict[str, Any]:
+        """Select ranked session-search winners from pre-ranked candidates.
+
+        Consumes the current-upstream ranked candidate rows produced by
+        ``search_messages()`` (already ordered by relevance/recency and
+        automation-demotion) and replaces the generic-parent ancestry walk
+        with the accepted #68 compression-continuation resolver: one
+        query-local memo/path-compression pass from candidate 1, one coherent
+        read snapshot, one work budget, fail-closed missing-parent/cycle
+        outcomes, and early-K stop.  It never rewrites the match anchor to the
+        root session.
+
+        ``candidates`` is the bounded ranked raw-hit set; each row must carry
+        at least ``id`` (message id) and ``session_id`` (owning session).
+        Winner dedupe, current-session exclusion, and exact-title exclusion
+        share the same compression-root meaning.  ``excluded_lineage_roots``
+        are pre-resolved by the caller with the same compression-lineage
+        implementation (exact-title slot).  ``current_session_id`` is
+        re-resolved inside this snapshot with the same memo/state used for
+        candidate roots.  ``out_of_context_end_reasons`` carries the tool
+        layer's fresh-reset set so a /new-style predecessor of the current
+        session stays discoverable (#85756).
+
+        Returns ``{"winners": [...], "stats": {...}}``.  ``stats`` reports
+        ``lineage_bound_hit`` so callers can surface a B-exhausted partial
+        prefix as an explicit truncation instead of a complete top-K answer.
+        """
+        result_limit = max(0, min(int(result_limit), 100))
+        # Resolved at call time so tests / diagnostics can override the module
+        # budget with a monkeypatch (same pattern as the accepted #68
+        # implementation, which reads the module global per query).
+        if work_budget is None:
+            work_budget = _LINEAGE_WORK_BUDGET
+        else:
+            work_budget = int(work_budget)
+        excluded_roots = {
+            str(root) for root in (excluded_lineage_roots or ()) if root
+        }
+        if out_of_context_end_reasons is None:
+            out_of_context_end_reasons = frozenset(_RESET_END_REASONS) | {
+                "new_session"
+            }
+
+        state = _LineageResolutionState(work_budget)
+        winners: List[Dict[str, Any]] = []
+        seen_roots: set = set()
+
+        with self._read_ctx() as conn:
+            started_tx = not conn.in_transaction
+            if started_tx:
+                conn.execute("BEGIN")
+            try:
+                # Batched archive metadata (owner end_reason + message
+                # compacted) used only by the current-context visibility
+                # check.  These are NOT lineage-node fetches and do not count
+                # toward the work budget.
+                end_reason_by_owner: Dict[str, Any] = {}
+                compacted_by_message: Dict[int, Any] = {}
+                owners = [
+                    str(c["session_id"])
+                    for c in candidates
+                    if c.get("session_id")
+                ]
+                messages = [
+                    c["id"] for c in candidates if c.get("id") is not None
+                ]
+                for chunk in _chunked(owners, 400):
+                    marks = ",".join("?" for _ in chunk)
+                    for row in conn.execute(
+                        f"SELECT id, end_reason FROM sessions "
+                        f"WHERE id IN ({marks})",
+                        chunk,
+                    ).fetchall():
+                        end_reason_by_owner[str(row["id"])] = row["end_reason"]
+                for chunk in _chunked(messages, 400):
+                    marks = ",".join("?" for _ in chunk)
+                    for row in conn.execute(
+                        f"SELECT id, compacted FROM messages "
+                        f"WHERE id IN ({marks})",
+                        chunk,
+                    ).fetchall():
+                        compacted_by_message[row["id"]] = row["compacted"]
+
+                def _is_archived(candidate: Dict[str, Any]) -> bool:
+                    """True when a hit's content left the live context.
+
+                    Matches the tool layer's ``_session_left_live_context``
+                    plus per-message in-place compaction: a compression-ended
+                    or fresh-reset owner, or an archived message row, is no
+                    longer in anyone's active context and stays discoverable.
+                    """
+                    end_reason = end_reason_by_owner.get(
+                        str(candidate.get("session_id") or "")
+                    )
+                    return (
+                        end_reason == "compression"
+                        or end_reason in out_of_context_end_reasons
+                        or int(compacted_by_message.get(candidate.get("id")) or 0) == 1
+                    )
+
+                current_root: Optional[str] = None
+                current_ancestors: set = set()
+                if current_session_id:
+                    # Re-resolve the raw current identity inside this winner
+                    # snapshot with the SAME memo/state so current-session
+                    # exclusion and candidate dedupe share one root meaning.
+                    outcome = self._resolve_compression_lineage_on_conn(
+                        conn, str(current_session_id), state
+                    )
+                    if outcome is _BUDGET_EXHAUSTED:
+                        state.bound_hit = True
+                    elif outcome is _UNRESOLVED:
+                        # Conservative: an unresolved current session excludes
+                        # only its own id rather than broadening exclusion to
+                        # an unproven ancestor.
+                        current_root = str(current_session_id)
+                    else:
+                        current_root = outcome
+                        current_ancestors = (
+                            self._current_lineage_ancestors_on_conn(
+                                conn, str(current_session_id), state
+                            )
+                        )
+
+                # Resolve each owner exactly ONCE (lazily, on first encounter)
+                # while iterating the bounded raw hits in rank order.  Winner
+                # ordering therefore follows the rank of each owner's FIRST
+                # displayable anchor — a live current-lineage hit is skipped
+                # so a later compacted-history hit of the same owner can still
+                # surface, but it must not let that owner jump ahead of a
+                # higher-ranked displayable winner from another session.
+                owner_resolved: set = set()
+                owner_root: Dict[str, Optional[str]] = {}
+                for candidate in candidates:
+                    if len(winners) >= result_limit:
+                        break
+                    owner = str(candidate["session_id"])
+                    if owner not in owner_resolved:
+                        owner_resolved.add(owner)
+                        state.candidates_inspected += 1
+                        outcome = self._resolve_compression_lineage_on_conn(
+                            conn, owner, state
+                        )
+                        if outcome is _BUDGET_EXHAUSTED:
+                            state.bound_hit = True
+                            # Stop the entire ranked scan: the bound candidate
+                            # may have produced a higher-ranked new root than
+                            # every later candidate, so skipping it would
+                            # violate ranking.
+                            break
+                        owner_root[owner] = (
+                            outcome if outcome is not _UNRESOLVED else None
+                        )
+                    root = owner_root[owner]
+                    if root is None:
+                        continue
+                    if root in excluded_roots or root in seen_roots:
+                        continue
+                    in_current_context = (
+                        (current_root is not None and root == current_root)
+                        or owner in current_ancestors
+                    )
+                    if in_current_context and not _is_archived(candidate):
+                        # Live content of the current lineage stays hidden;
+                        # the owner's displayable anchor is a later compacted
+                        # hit, so this hit does not (yet) produce a winner.
+                        continue
+                    # First displayable hit of this owner in rank order.
+                    seen_roots.add(root)
+                    winner = dict(candidate)
+                    winner["lineage_root_id"] = root
+                    winners.append(winner)
+
+                stats = {
+                    "candidate_count": len(candidates),
+                    "candidate_unique_sessions": len(set(owners)),
+                    "lineage_count": len(seen_roots),
+                    "winner_count": len(winners),
+                    "lineage_work": state.work,
+                    "lineage_memo_hits": state.memo_hits,
+                    "lineage_memo_entries": len(state.memo),
+                    "lineage_candidates_inspected": state.candidates_inspected,
+                    "lineage_bound_hit": state.bound_hit,
+                }
+            finally:
+                if started_tx and conn.in_transaction:
+                    conn.rollback()
+
+        logger.info(
+            "SESSION_WINNERS_LINEAGE candidates=%d unique_sessions=%d "
+            "lineage_count=%d winner_count=%d lineage_work=%d "
+            "lineage_memo_hits=%d lineage_candidates_inspected=%d "
+            "lineage_bound_hit=%s",
+            stats["candidate_count"],
+            stats["candidate_unique_sessions"],
+            stats["lineage_count"],
+            stats["winner_count"],
+            stats["lineage_work"],
+            stats["lineage_memo_hits"],
+            stats["lineage_candidates_inspected"],
+            stats["lineage_bound_hit"],
+        )
+        return {"winners": winners, "stats": stats}
 
     def search_sessions_by_id(
         self,

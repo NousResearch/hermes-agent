@@ -18,7 +18,6 @@ from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
-    _is_compacted_message,
     _is_compression_ended,
     _resolve_to_parent,
     _session_link,
@@ -676,24 +675,6 @@ class TestResolveToParent:
         root, has_compression = _resolve_to_parent(db, "s_c")
         assert root == "s_gp"
         assert has_compression is True
-
-
-class TestIsCompactedMessage:
-    """Unit tests for the _is_compacted_message helper."""
-
-    def test_active_message_returns_false(self, db):
-        db.create_session("s1", source="cli")
-        mid = db.append_message("s1", role="user", content="hello")
-        assert _is_compacted_message(db, mid) is False
-
-    def test_compacted_message_returns_true(self, db):
-        db.create_session("s1", source="cli")
-        mid = db.append_message("s1", role="user", content="archived content")
-        db.archive_and_compact("s1", [
-            {"role": "assistant", "content": "compacted summary"},
-        ])
-        # mid is now active=0, compacted=1
-        assert _is_compacted_message(db, mid) is True
 
 
 class TestInPlaceCompactionDiscovery:

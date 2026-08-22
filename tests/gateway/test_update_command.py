@@ -4,7 +4,11 @@ Tests both the _handle_update_command handler (spawns update process) and
 the _send_update_notification startup hook (sends results after restart).
 """
 
+import asyncio
 import json
+import os
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -176,6 +180,324 @@ class TestHandleUpdateCommand:
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
         assert "Starting Hermes update" in result
+
+
+# ---------------------------------------------------------------------------
+# Concurrent /update admission control
+# ---------------------------------------------------------------------------
+
+
+def _fake_checkout(tmp_path):
+    """Build a fake checkout + profile home for the /update pre-flight.
+
+    ``_handle_update_command`` resolves ``project_root`` from
+    ``gateway/slash_commands.py``'s own ``__file__``, so the fake tree mirrors
+    that layout and carries a ``.git`` directory. Returns
+    ``(slash_commands_file, hermes_home)``.
+    """
+    root = tmp_path / "project"
+    (root / "gateway").mkdir(parents=True)
+    (root / ".git").mkdir()
+    slash_commands_file = root / "gateway" / "slash_commands.py"
+    slash_commands_file.touch()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    return str(slash_commands_file), hermes_home
+
+
+class TestUpdateAdmissionControl:
+    """``/update`` must admit exactly one updater per profile.
+
+    ``hermes update`` rewrites the checkout and the virtualenv every session on
+    the host shares, and the ``.update_*`` markers are a single-slot mailbox
+    holding one requester's routing metadata. Two updaters racing the same
+    checkout is a real failure mode: the user double-taps ``/update`` because
+    the update takes minutes with no acknowledgement, or two platforms on one
+    multiplexed gateway both trigger it.
+
+    None of these tests pre-seed a marker file. A test that writes
+    ``.update_pending.json`` itself only proves the handler reads a file the
+    test created — it never exercises the window between observing the slot is
+    free and taking it, which is where the collision actually happens.
+    """
+
+    def test_claim_update_slot_admits_exactly_one_caller(self, tmp_path):
+        """The reservation primitive is exclusive, and creates its own marker."""
+        from gateway.slash_commands import _claim_update_slot
+
+        pending_path = tmp_path / ".update_pending.json"
+        assert not pending_path.exists()
+
+        assert _claim_update_slot(pending_path, 3600.0) is True
+        assert pending_path.exists()
+        assert _claim_update_slot(pending_path, 3600.0) is False
+        assert _claim_update_slot(pending_path, 3600.0) is False
+
+    def test_claim_update_slot_is_exclusive_under_parallel_callers(self, tmp_path):
+        """16 threads released together still yield exactly one winner.
+
+        This is the check-to-create gap in isolation. A
+        ``if path.exists(): return`` guard fails here because every thread can
+        observe the marker missing before any of them creates it.
+        """
+        from gateway.slash_commands import _claim_update_slot
+
+        pending_path = tmp_path / ".update_pending.json"
+        assert not pending_path.exists()
+
+        workers = 16
+        barrier = threading.Barrier(workers)
+        results = []
+        results_lock = threading.Lock()
+
+        def _claim():
+            barrier.wait(timeout=15)
+            won = _claim_update_slot(pending_path, 3600.0)
+            with results_lock:
+                results.append(won)
+
+        threads = [threading.Thread(target=_claim) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert len(results) == workers
+        assert results.count(True) == 1
+
+    def test_claim_update_slot_reclaims_an_abandoned_reservation(self, tmp_path):
+        """A reservation past its TTL is taken over, so /update never wedges.
+
+        An updater killed before it writes its exit code (host reboot, OOM
+        kill) leaves a marker nothing will clean up. Without the TTL the guard
+        would block /update for the lifetime of the profile.
+        """
+        from gateway.slash_commands import _claim_update_slot
+
+        pending_path = tmp_path / ".update_pending.json"
+        assert _claim_update_slot(pending_path, 3600.0) is True
+        assert _claim_update_slot(pending_path, 3600.0) is False
+
+        abandoned = time.time() - 7200
+        os.utime(pending_path, (abandoned, abandoned))
+        assert _claim_update_slot(pending_path, 3600.0) is True
+
+    @pytest.mark.asyncio
+    async def test_second_update_is_rejected_without_preseeding_a_marker(self, tmp_path):
+        """The first /update creates the marker; the second is refused.
+
+        Nothing is written to the profile home before the first call, so the
+        reject path is driven entirely by state the handler itself produced.
+        """
+        runner = _make_runner()
+        slash_commands_file, hermes_home = _fake_checkout(tmp_path)
+        pending_path = hermes_home / ".update_pending.json"
+        assert not pending_path.exists()
+
+        first = _make_event(platform=Platform.TELEGRAM,
+                            chat_id="first-chat", user_id="first-user")
+        second = _make_event(platform=Platform.TELEGRAM,
+                             chat_id="second-chat", user_id="second-user")
+
+        mock_watch = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch.object(runner, "_schedule_update_notification_watch", mock_watch), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            first_reply = await runner._handle_update_command(first)
+            second_reply = await runner._handle_update_command(second)
+
+        # Exactly one updater was launched.
+        assert mock_popen.call_count == 1
+        assert "Starting Hermes update" in first_reply
+        assert "already running" in second_reply.lower()
+
+        # The winner's routing metadata survived intact — the loser did not
+        # overwrite it, so the completion notice still reaches the first chat.
+        data = json.loads(pending_path.read_text())
+        assert data["chat_id"] == "first-chat"
+        assert data["user_id"] == "first-user"
+
+        # Both callers get the notification watcher, so the loser still learns
+        # how the update turned out.
+        assert mock_watch.call_count == 2
+
+    def test_concurrent_update_commands_spawn_exactly_one_updater(self, tmp_path):
+        """Two callers racing into the handler produce one updater, not two.
+
+        Both are released from a barrier inside ``_resolve_hermes_bin`` — the
+        last step before the slot is claimed — so they enter the claim window
+        together, in real threads, against the real filesystem, with no marker
+        pre-seeded.
+        """
+        runner = _make_runner()
+        slash_commands_file, hermes_home = _fake_checkout(tmp_path)
+        pending_path = hermes_home / ".update_pending.json"
+        assert not pending_path.exists()
+
+        callers = 2
+        barrier = threading.Barrier(callers)
+
+        def _resolve_hermes_bin_at_barrier():
+            barrier.wait(timeout=15)
+            return ["/usr/bin/hermes"]
+
+        spawns = []
+        spawn_lock = threading.Lock()
+
+        def _record_spawn(*args, **kwargs):
+            with spawn_lock:
+                spawns.append(args[0])
+            return MagicMock()
+
+        replies = []
+        replies_lock = threading.Lock()
+
+        def _invoke(chat_id):
+            event = _make_event(platform=Platform.TELEGRAM,
+                                chat_id=chat_id, user_id=f"user-{chat_id}")
+            reply = asyncio.run(runner._handle_update_command(event))
+            with replies_lock:
+                replies.append(reply)
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch("gateway.run._resolve_hermes_bin", _resolve_hermes_bin_at_barrier), \
+             patch.object(runner, "_schedule_update_notification_watch", MagicMock()), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", side_effect=_record_spawn):
+            threads = [
+                threading.Thread(target=_invoke, args=(f"chat-{i}",))
+                for i in range(callers)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+            assert not any(thread.is_alive() for thread in threads)
+
+        assert len(spawns) == 1, f"expected one updater, got {len(spawns)}"
+        assert len(replies) == callers
+        assert sum("already running" in reply.lower() for reply in replies) == 1
+
+        # The surviving marker is one caller's complete, parseable metadata —
+        # not a half-written or interleaved document.
+        data = json.loads(pending_path.read_text())
+        assert data["chat_id"] in {"chat-0", "chat-1"}
+        assert data["user_id"] == f"user-{data['chat_id']}"
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_notifier_claims_a_live_update_mid_admission(self, tmp_path):
+        """A marker renamed to `.claimed` mid-admission still blocks the caller.
+
+        ``_send_update_notification`` renames pending -> claimed while an update
+        is in flight. Landing that between the ``claimed`` check and the
+        exclusive create leaves ``pending`` momentarily absent, so the create
+        would succeed and admit a second updater against the live one — and the
+        notifier's later ``claimed.replace(pending)`` would clobber the new
+        reservation.
+
+        The claimed marker here is written from *inside* the admission window
+        to stand in for that concurrent notifier — it is not pre-seeded state
+        the guard is handed up front.
+        """
+        from gateway import slash_commands as slash_commands_module
+
+        runner = _make_runner()
+        slash_commands_file, hermes_home = _fake_checkout(tmp_path)
+        pending_path = hermes_home / ".update_pending.json"
+        claimed_path = hermes_home / ".update_pending.claimed.json"
+        event = _make_event(platform=Platform.TELEGRAM, chat_id="second-chat")
+
+        real_claim = slash_commands_module._claim_update_slot
+
+        def _claim_after_notifier_rename(path, ttl_seconds):
+            # The notifier claims a live update's marker right here, after this
+            # handler already saw claimed_path missing.
+            claimed_path.write_text(
+                json.dumps({
+                    "platform": "telegram",
+                    "chat_id": "live-chat",
+                    "user_id": "live-user",
+                }),
+                encoding="utf-8",
+            )
+            return real_claim(path, ttl_seconds)
+
+        mock_watch = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch.object(slash_commands_module, "_claim_update_slot",
+                          _claim_after_notifier_rename), \
+             patch.object(runner, "_schedule_update_notification_watch", mock_watch), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            reply = await runner._handle_update_command(event)
+
+        mock_popen.assert_not_called()
+        assert "already running" in reply.lower()
+        mock_watch.assert_called_once()
+
+        # The reservation was handed back, and the live update's claimed marker
+        # is untouched so its owner still gets the completion notice.
+        assert not pending_path.exists()
+        assert json.loads(claimed_path.read_text())["chat_id"] == "live-chat"
+
+    def test_release_update_slot_keeps_a_marker_that_holds_metadata(self, tmp_path):
+        """Releasing never deletes someone else's routing metadata.
+
+        If the notifier restores a live update's marker with
+        ``claimed_path.replace(pending_path)`` before the release runs, the
+        marker is no longer this caller's empty reservation and must survive.
+        """
+        from gateway.slash_commands import _claim_update_slot, _release_update_slot
+
+        pending_path = tmp_path / ".update_pending.json"
+
+        assert _claim_update_slot(pending_path, 3600.0) is True
+        _release_update_slot(pending_path)
+        assert not pending_path.exists()
+
+        pending_path.write_text(json.dumps({"chat_id": "live-chat"}), encoding="utf-8")
+        _release_update_slot(pending_path)
+        assert pending_path.exists()
+        assert json.loads(pending_path.read_text())["chat_id"] == "live-chat"
+
+    @pytest.mark.asyncio
+    async def test_failed_spawn_releases_the_update_slot(self, tmp_path):
+        """A spawn that never started must not block the next /update.
+
+        The slot is reserved before the spawn, so the failure path has to give
+        it back — otherwise one transient OSError would wedge /update until the
+        reservation TTL expired.
+        """
+        runner = _make_runner()
+        slash_commands_file, hermes_home = _fake_checkout(tmp_path)
+        pending_path = hermes_home / ".update_pending.json"
+        event = _make_event(platform=Platform.TELEGRAM, chat_id="chat-1")
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch.object(runner, "_schedule_update_notification_watch", MagicMock()), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", side_effect=OSError("cannot fork")):
+            failed_reply = await runner._handle_update_command(event)
+
+        assert "Failed to start update" in failed_reply
+        assert not pending_path.exists()
+        assert not (hermes_home / ".update_pending.tmp").exists()
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch.object(runner, "_schedule_update_notification_watch", MagicMock()), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            retry_reply = await runner._handle_update_command(event)
+
+        assert mock_popen.call_count == 1
+        assert "Starting Hermes update" in retry_reply
 
 
 # ---------------------------------------------------------------------------

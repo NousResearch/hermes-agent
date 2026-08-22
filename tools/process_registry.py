@@ -30,6 +30,7 @@ Usage:
 """
 
 import codecs
+import heapq
 import json
 import logging
 import os
@@ -453,6 +454,22 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        # Queue.get() removes an event before a consumer has decided whether to
+        # claim, drop, or requeue it.  The TUI poller and an active conversation
+        # loop can otherwise race in that temporary-empty window, making a ready
+        # result_delivery=inject event miss its same-turn boundary.  Consumers
+        # that route/claim completion events hold this lock only for the bounded
+        # dequeue -> decision handoff, never while an agent/model turn runs.
+        self.completion_routing_lock = threading.RLock()
+        # Durable events that lose a claim race must not disappear until the
+        # next process restart, but immediate requeue would make fast TUI
+        # pollers spin. One lazy daemon scheduler owns all delayed retries for
+        # this registry. Exact durable identities are deduplicated in the heap.
+        self._deferred_completion_condition = threading.Condition()
+        self._deferred_completion_heap: list[tuple[float, int, tuple, dict]] = []
+        self._deferred_completion_deadlines: dict[tuple, float] = {}
+        self._deferred_completion_sequence = 0
+        self._deferred_completion_thread: Optional[threading.Thread] = None
         # Rehydrate durable delegation completions only at registry startup.
         # Consumers still inject them as fresh turns through this existing rail.
         try:
@@ -1648,6 +1665,161 @@ class ProcessRegistry:
             skip_poll_observed and session_id in self._poll_observed
         )
 
+    @staticmethod
+    def _deferred_completion_key(event: dict) -> tuple:
+        raw_keys = event.get("delivery_event_keys")
+        if isinstance(raw_keys, (list, tuple)):
+            event_keys = tuple(str(key) for key in raw_keys if key)
+        else:
+            event_key = str(event.get("delivery_event_key") or "")
+            event_keys = (event_key,) if event_key else ("aggregate",)
+        return (
+            "async_delegation",
+            str(event.get("delegation_id") or ""),
+            event_keys,
+        )
+
+    def defer_unclaimed_delivery(self, event: dict) -> bool:
+        """Requeue a pending durable event after its competing lease expires.
+
+        ``claim_event_delivery()`` returning ``None`` is not enough to drop the
+        RAM copy: after a quick restart the old process's lease can still be
+        live. Terminal duplicates return ``False`` and disappear; pending rows
+        enter one deduplicated heap and wake under the routing lock.
+        """
+
+        try:
+            from tools.async_delegation import get_event_delivery_retry_delay
+
+            delay = get_event_delivery_retry_delay(event)
+        except Exception:
+            logger.exception("Could not classify unclaimed delegation event")
+            return False
+        if delay is None:
+            return False
+
+        key = self._deferred_completion_key(event)
+        if not key[1]:
+            return False
+        deadline = time.monotonic() + max(0.05, float(delay))
+        with self._deferred_completion_condition:
+            existing = self._deferred_completion_deadlines.get(key)
+            if existing is not None and existing <= deadline:
+                return True
+            self._deferred_completion_sequence += 1
+            self._deferred_completion_deadlines[key] = deadline
+            heapq.heappush(
+                self._deferred_completion_heap,
+                (
+                    deadline,
+                    self._deferred_completion_sequence,
+                    key,
+                    event,
+                ),
+            )
+            thread = self._deferred_completion_thread
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(
+                    target=self._deferred_completion_loop,
+                    name="completion-lease-retry",
+                    daemon=True,
+                )
+                self._deferred_completion_thread = thread
+                thread.start()
+            self._deferred_completion_condition.notify()
+        return True
+
+    def _deferred_completion_loop(self) -> None:
+        while True:
+            with self._deferred_completion_condition:
+                while not self._deferred_completion_heap:
+                    self._deferred_completion_condition.wait()
+                deadline, _sequence, key, event = self._deferred_completion_heap[0]
+                current = self._deferred_completion_deadlines.get(key)
+                if current != deadline:
+                    heapq.heappop(self._deferred_completion_heap)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    self._deferred_completion_condition.wait(timeout=remaining)
+                    continue
+                heapq.heappop(self._deferred_completion_heap)
+                self._deferred_completion_deadlines.pop(key, None)
+
+            try:
+                with self.completion_routing_lock:
+                    self.completion_queue.put(event)
+            except Exception:
+                logger.exception(
+                    "Deferred completion requeue failed; rescheduling %r", key
+                )
+                # The heap entry was already removed. Reclassify the durable
+                # row and schedule it again rather than silently losing the
+                # only in-memory copy on a transient/custom queue failure.
+                self.defer_unclaimed_delivery(event)
+
+    def collect_ready_after_turn_siblings(self, seed: dict) -> dict:
+        """Fold queued ready siblings into one transient after-turn envelope.
+
+        The caller may already hold ``completion_routing_lock``; it is an RLock
+        so this helper is safe at both direct-consumer and shared-drain seams.
+        Only the bounded queue snapshot present at this delivery boundary is
+        inspected. Foreign delegations and later arrivals remain queued.
+        """
+
+        from tools.async_delegation import coalesce_ready_after_turn_events
+
+        def delivery_keys(event: dict) -> "list[str]":
+            raw_keys = event.get("delivery_event_keys")
+            if isinstance(raw_keys, (list, tuple)):
+                return [str(key) for key in raw_keys if key]
+            key = str(event.get("delivery_event_key") or "")
+            return [key] if key else []
+
+        delivery = str(seed.get("result_delivery") or "after_turn").strip().lower()
+        seed_keys = delivery_keys(seed)
+        delegation_id = str(seed.get("delegation_id") or "")
+        if not (
+            seed.get("type") == "async_delegation"
+            and delivery == "after_turn"
+            and bool(seed.get("is_batch"))
+            and bool(seed_keys)
+            and all(key.startswith("task:") for key in seed_keys)
+            and delegation_id
+        ):
+            return seed
+
+        siblings = [seed]
+        requeue: "list[dict]" = []
+        with self.completion_routing_lock:
+            try:
+                scan_count = self.completion_queue.qsize()
+            except Exception:
+                scan_count = 0
+            for _ in range(max(0, scan_count)):
+                try:
+                    candidate = self.completion_queue.get_nowait()
+                except Exception:
+                    break
+                candidate_keys = delivery_keys(candidate)
+                if (
+                    candidate.get("type") == "async_delegation"
+                    and str(
+                        candidate.get("result_delivery") or "after_turn"
+                    ).strip().lower()
+                    == "after_turn"
+                    and bool(candidate.get("is_batch"))
+                    and str(candidate.get("delegation_id") or "") == delegation_id
+                    and bool(candidate_keys)
+                    and all(key.startswith("task:") for key in candidate_keys)
+                ):
+                    siblings.append(candidate)
+                else:
+                    requeue.append(candidate)
+            for candidate in requeue:
+                self.completion_queue.put(candidate)
+        return coalesce_ready_after_turn_events(siblings)[0]
+
     def drain_notifications(
         self,
         session_key: str = "",
@@ -1684,55 +1856,69 @@ class ProcessRegistry:
         filter is provided, ownerless async-delegation events remain
         fail-closed and require positive proof.
         """
-        results: "list[tuple[dict, str]]" = []
+        owned_events: "list[dict]" = []
         requeue: "list[dict]" = []
-        while not self.completion_queue.empty():
-            try:
-                evt = self.completion_queue.get_nowait()
-            except Exception:
-                break
-            # Positive-proof ownership beats bare key equality. Delegation
-            # payloads always require proof; ordinary events require it once
-            # they carry routing metadata. Ownerless ordinary events preserve
-            # legacy single-session delivery.
-            is_async_delegation = evt.get("type") == "async_delegation"
-            evt_session_key = str(evt.get("session_key") or "")
-            evt_origin_sid = str(evt.get("origin_ui_session_id") or "")
-            requires_positive_proof = is_async_delegation or bool(
-                evt_session_key or evt_origin_sid
-            )
-            if owns_event is not None and requires_positive_proof:
+        # One routing boundary owns the queue snapshot. This is the same lock
+        # used by the TUI poller and same-turn inject drain; it closes the
+        # temporary-empty race without spanning formatting or any model turn.
+        with self.completion_routing_lock:
+            while not self.completion_queue.empty():
                 try:
-                    owned = bool(owns_event(evt))
+                    evt = self.completion_queue.get_nowait()
                 except Exception:
-                    owned = False  # fail closed — never leak on a broken check
-                if not owned:
+                    break
+                # Positive-proof ownership beats bare key equality. Delegation
+                # payloads always require proof; ordinary events require it once
+                # they carry routing metadata. Ownerless ordinary events preserve
+                # legacy single-session delivery.
+                is_async_delegation = evt.get("type") == "async_delegation"
+                evt_session_key = str(evt.get("session_key") or "")
+                evt_origin_sid = str(evt.get("origin_ui_session_id") or "")
+                requires_positive_proof = is_async_delegation or bool(
+                    evt_session_key or evt_origin_sid
+                )
+                if owns_event is not None and requires_positive_proof:
+                    try:
+                        owned = bool(owns_event(evt))
+                    except Exception:
+                        owned = False  # fail closed — never leak on a broken check
+                    if not owned:
+                        requeue.append(evt)
+                        continue
+                elif session_key and requires_positive_proof:
+                    if evt_session_key != session_key:
+                        requeue.append(evt)
+                        continue
+                elif is_async_delegation and evt.get("restored"):
+                    # Durable restore can enqueue previous-process payloads into a
+                    # fresh registry. An unfiltered legacy drain cannot prove
+                    # ownership, so leave those events queued for the owner.
                     requeue.append(evt)
                     continue
-            elif session_key and requires_positive_proof:
-                if evt_session_key != session_key:
-                    requeue.append(evt)
+                # Local consumed/observed state may suppress only events this
+                # session owns (or legacy ownerless ordinary events). Routing must
+                # happen first so a foreign session cannot drop the owner's event.
+                _evt_sid = evt.get("session_id", "")
+                if evt.get("type") == "completion" and self._drain_should_skip(
+                    _evt_sid, skip_poll_observed=skip_poll_observed
+                ):
                     continue
-            elif is_async_delegation and evt.get("restored"):
-                # Durable restore can enqueue previous-process payloads into a
-                # fresh registry. An unfiltered legacy drain cannot prove
-                # ownership, so leave those events queued for the owner.
-                requeue.append(evt)
-                continue
-            # Local consumed/observed state may suppress only events this
-            # session owns (or legacy ownerless ordinary events). Routing must
-            # happen first so a foreign session cannot drop the owner's event.
-            _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self._drain_should_skip(
-                _evt_sid, skip_poll_observed=skip_poll_observed
-            ):
-                continue
+                owned_events.append(evt)
+            for evt in requeue:
+                self.completion_queue.put(evt)
 
+        try:
+            from tools.async_delegation import coalesce_ready_after_turn_events
+
+            owned_events = coalesce_ready_after_turn_events(owned_events)
+        except Exception:
+            logger.exception("Could not coalesce ready after-turn delegation events")
+
+        results: "list[tuple[dict, str]]" = []
+        for evt in owned_events:
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
-        for evt in requeue:
-            self.completion_queue.put(evt)
         return results
 
     # Minimum characters of the random suffix required for prefix resolution.
@@ -2745,24 +2931,61 @@ def _format_async_delegation(evt: dict) -> str:
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
-    # ----- Batch (fan-out) completion: consolidated multi-task block -----
-    # A whole delegate_task fan-out dispatched as one background unit finishes
-    # together and carries a per-task `results` list. Render every subagent's
-    # summary in one block so the model gets the consolidated outcome at once.
+    # ----- Batch result: legacy aggregate or child-scoped delivery envelope -----
+    # Durable child rows may arrive singly (inject) or be coalesced at an
+    # after-turn consumer boundary. Both use the same stable per-task renderer.
     batch_results = evt.get("results")
     if evt.get("is_batch") or isinstance(batch_results, list):
         results = batch_results or []
         goals = evt.get("goals") or []
-        n = len(results) if results else len(goals)
+        raw_event_keys = evt.get("delivery_event_keys")
+        grouped_event_keys = (
+            [str(key) for key in raw_event_keys if key]
+            if isinstance(raw_event_keys, (list, tuple))
+            else []
+        )
+        child_event = str(evt.get("delivery_event_key") or "").startswith("task:")
+        child_scoped = child_event or bool(grouped_event_keys)
+        n = int(evt.get("batch_size") or 0) if child_scoped else 0
+        if n <= 0:
+            n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
-        lines = [
-            f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
-            f"A background fan-out of {n} subagent(s) you dispatched earlier "
-            "has finished. All ran in parallel and waited on each other; their "
-            "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
-            "",
-        ]
+        if child_event:
+            child_idx = int(evt.get("task_index") or 0)
+            lines = [
+                f"[ASYNC DELEGATION RESULT READY — {deleg_id} — TASK {child_idx + 1}/{n}]",
+                "A background subagent result is ready. It was requested for "
+                "same-turn reconciliation; use it before continuing the current work.",
+                "",
+            ]
+        elif grouped_event_keys:
+            ready_count = len(results)
+            lines = [
+                f"[ASYNC DELEGATION RESULTS READY — {deleg_id} — {ready_count}/{n}]",
+            ]
+            if ready_count >= n:
+                lines.append(
+                    f"All {ready_count} background subagent results were ready at "
+                    "this delivery boundary and are grouped below."
+                )
+            else:
+                remaining = max(0, n - ready_count)
+                lines.append(
+                    f"{ready_count} background subagent result(s) were ready at "
+                    f"this delivery boundary and are grouped below. {remaining} "
+                    "sibling(s) are still running; their results will arrive in a "
+                    "later grouped delivery without blocking this one."
+                )
+            lines.append("")
+        else:
+            lines = [
+                f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+                f"A background fan-out of {n} subagent(s) you dispatched earlier "
+                "has finished. Its consolidated results are below. You may have "
+                "moved on since dispatching — act on these or re-dispatch if things "
+                "have changed.",
+                "",
+            ]
         if isinstance(dispatched_at, (int, float)):
             ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
             age = f" ({_format_age(completed_at - dispatched_at)} ago)"

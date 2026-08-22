@@ -8365,12 +8365,10 @@ class AIAgent:
             _strip_model_hidden_task_fields,
             delegate_task as _delegate_task,
         )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
+        # Delegations from the top-level model always run in the background —
+        # the model chooses only result delivery. ``after_turn`` keeps the legacy
+        # separate-turn route; ``inject`` uses a newly produced tool-result
+        # carrier when one is safely available. The one exception:
         #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
         #     synchronous: the orchestrator needs its workers' results within
         #     its own turn to compose a summary, and a subagent doesn't own the
@@ -8387,6 +8385,7 @@ class AIAgent:
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),
+            result_delivery=function_args.get("result_delivery"),
             parent_agent=self,
         )
 

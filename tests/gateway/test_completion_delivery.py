@@ -113,6 +113,228 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
+def test_gateway_claim_conflict_defers_pending_durable_event(
+    monkeypatch, isolated_registry,
+):
+    import tools.async_delegation as delegation_mod
+
+    event = _async_event("deleg_gateway_live_lease")
+    deferred = []
+    monkeypatch.setattr(delegation_mod, "claim_event_delivery", lambda *_args: None)
+    monkeypatch.setattr(
+        isolated_registry,
+        "defer_unclaimed_delivery",
+        lambda evt: deferred.append(evt) or True,
+    )
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    result = asyncio.run(runner._deliver_completion_notification("ready", event))
+
+    assert result is None
+    assert deferred == [event]
+
+
+def test_gateway_busy_route_is_atomic_with_tool_boundary_carrier(
+    monkeypatch, isolated_registry,
+):
+    """The watcher cannot hide a dequeued inject before active-turn requeue."""
+    import threading
+
+    import agent.delegation_inject as inject_mod
+    import tools.async_delegation as delegation_mod
+    import tools.process_registry as registry_mod
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    monkeypatch.setattr(registry_mod, "_format_async_delegation", lambda _evt: "ready")
+    monkeypatch.setattr(inject_mod, "ensure_pending_inject_heartbeat", lambda _agent: True)
+    monkeypatch.setattr(
+        delegation_mod,
+        "claim_event_delivery",
+        lambda _event, _owner: "gateway-race-claim",
+    )
+
+    route_paused = threading.Event()
+    release_route = threading.Event()
+    original_coalesce = delegation_mod.coalesce_ready_after_turn_events
+
+    def _pause_after_dequeue(events):
+        route_paused.set()
+        if not release_route.wait(3):
+            raise TimeoutError("test did not release paused gateway route")
+        return original_coalesce(events)
+
+    monkeypatch.setattr(
+        delegation_mod, "coalesce_ready_after_turn_events", _pause_after_dequeue
+    )
+
+    turn_id = "turn-gateway-inject"
+    session_key = "agent:main:telegram:dm:12345:678"
+    active_agent = SimpleNamespace(
+        _active_turn_id=turn_id,
+        _iteration_calls_made=0,
+        max_iterations=1,
+        session_id="",
+    )
+    event = {
+        **_async_event("deleg_gateway_inject_race"),
+        "delivery_event_key": "task:0",
+        "result_delivery": "inject",
+        "parent_turn_id": turn_id,
+        "session_key": session_key,
+    }
+    isolated.put(event)
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._running_agents = {session_key: active_agent}
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    watcher_thread = threading.Thread(
+        target=lambda: asyncio.run(runner._async_delegation_watcher(interval=0))
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "tc", "function": {"name": "terminal"}}],
+        },
+        {"role": "tool", "tool_call_id": "tc", "content": "working"},
+    ]
+    drained = {}
+    drain_done = threading.Event()
+
+    def _drain():
+        drained["count"] = inject_mod.attach_ready_injects_to_tool_results(
+            active_agent, messages, 1, turn_id=turn_id
+        )
+        drain_done.set()
+
+    drain_thread = threading.Thread(target=_drain)
+    try:
+        watcher_thread.start()
+        assert route_paused.wait(3), "gateway watcher did not reach post-dequeue route"
+        drain_thread.start()
+
+        # Dequeue, coalesce, active-parent classification, and requeue must be one
+        # routing critical section. Returning here would degrade inject to late.
+        assert not drain_done.wait(0.5)
+
+        release_route.set()
+        watcher_thread.join(3)
+        drain_thread.join(3)
+
+        assert not watcher_thread.is_alive()
+        assert not drain_thread.is_alive()
+        assert drained == {"count": 1}
+        assert messages[-1]["role"] == "tool"
+        assert "ready" in messages[-1]["content"]
+        assert isolated.empty()
+    finally:
+        release_route.set()
+        runner._running = False
+        watcher_thread.join(3)
+        drain_thread.join(3)
+        while not isolated.empty():
+            isolated.get_nowait()
+
+
+def test_gateway_watcher_coalesces_ready_after_turn_batch_children(
+    monkeypatch, isolated_registry,
+):
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    base = {
+        **_async_event("deleg_after_turn_group"),
+        "result_delivery": "after_turn",
+        "is_batch": True,
+        "batch_size": 3,
+        "goals": ["zero", "one", "two"],
+    }
+    for index in (0, 1):
+        isolated.put(
+            {
+                **base,
+                "delivery_event_key": f"task:{index}",
+                "task_index": index,
+                "results": [
+                    {
+                        "task_index": index,
+                        "status": "completed",
+                        "summary": f"ready-{index}",
+                    }
+                ],
+            }
+        )
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    deliver = AsyncMock(return_value=True)
+    runner._deliver_completion_notification = deliver
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_awaited_once()
+    text, grouped = deliver.await_args_list[0].args
+    assert grouped["delivery_event_keys"] == ["task:0", "task:1"]
+    assert [result["task_index"] for result in grouped["results"]] == [0, 1]
+    assert "RESULTS READY" in text and "2/3" in text
+    assert isolated.empty()
+
+
+def test_gateway_after_turn_waits_for_idle_boundary_then_delivers_ready_group(
+    monkeypatch, isolated_registry,
+):
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    base = {
+        **_async_event("deleg_after_turn_busy"),
+        "result_delivery": "after_turn",
+        "is_batch": True,
+        "batch_size": 3,
+        "goals": ["zero", "one", "two"],
+    }
+    for index in (0, 1):
+        isolated.put(
+            {
+                **base,
+                "delivery_event_key": f"task:{index}",
+                "task_index": index,
+                "results": [
+                    {
+                        "task_index": index,
+                        "status": "completed",
+                        "summary": f"ready-{index}",
+                    }
+                ],
+            }
+        )
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    deliver = AsyncMock(return_value=True)
+    runner._deliver_completion_notification = deliver
+    runner._running_agents = {base["session_key"]: SimpleNamespace()}
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_not_awaited()
+    assert isolated.qsize() == 1
+    queued_group = isolated.get_nowait()
+    assert queued_group["delivery_event_keys"] == ["task:0", "task:1"]
+    isolated.put(queued_group)
+
+    runner._running = True
+    runner._running_agents = {}
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_awaited_once()
+    _text, delivered_group = deliver.await_args_list[0].args
+    assert delivered_group["delivery_event_keys"] == ["task:0", "task:1"]
+    assert isolated.empty()
+
+
 def test_unroutable_async_event_is_not_requeued_forever(
     monkeypatch, isolated_registry,
 ):

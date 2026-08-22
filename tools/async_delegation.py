@@ -6,27 +6,28 @@ Backs ``delegate_task(background=true)``: the parent agent dispatches a
 subagent that runs on a module-level daemon executor and returns a handle
 immediately, so the user and the model can keep working while the child runs.
 
-When the child finishes, a completion event is pushed onto the SHARED
-``process_registry.completion_queue`` with ``type="async_delegation"``. The
-CLI (``cli.py`` process_loop) and gateway (``_run_process_watcher`` /
-``completion_queue`` drain) already poll that queue while the agent is idle
-and forge a fresh user/internal turn from each event. We deliberately reuse
-that rail rather than reaching into a running agent loop:
+When a child finishes, its completion event is written to the durable ledger
+and pushed onto the shared ``process_registry.completion_queue``. The event's
+``result_delivery`` selects one of two consumers without creating a parallel
+execution system:
 
-  - completions surface as a NEW turn when the agent is idle, never spliced
-    between a tool result and an assistant message. That keeps strict
-    message-role alternation legal and the prompt cache intact (hard
-    invariant: never mutate past context).
-  - we inherit the queue's de-dup, crash-recovery checkpoint, and the
-    existing CLI + gateway drain wiring for free — no new drain loops in the
-    two largest files in the repo.
+  - ``after_turn`` (default) keeps the existing CLI/gateway synthetic-turn
+    path. A batch publishes one consolidated result after all children finish.
+  - ``inject`` lets the originating conversation loop claim already-ready
+    events at append-only safe boundaries, after a complete tool-result block
+    and before the next model request. Batch children publish independently as
+    they finish. A result that misses its originating turn remains on the same
+    queue and follows the normal synthetic-turn path.
 
-The completion payload carries a RICH, self-contained task-source block (the
+Both paths use the same durable claim/recovery ledger. Neither waits or polls
+for a running child, past history is never rewritten, and competing consumers
+cannot acknowledge the same event twice.
+
+The completion payload carries a rich, self-contained task-source block (the
 original goal, the context the parent supplied, toolsets, model, dispatch
-time, status, and the full result summary). When the result re-enters the
-conversation the parent may be deep in unrelated context and won't remember
-why the subagent existed; the block lets it either use the result or
-re-dispatch if the world has moved on.
+time, status, and the full result summary). When a result arrives after the
+originating turn, that block lets the parent use it or re-dispatch if the world
+has moved on.
 
 This module owns ONLY the async lifecycle. The actual child build + run is
 delegated back to ``delegate_tool._run_single_child`` via an injected
@@ -88,6 +89,10 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # restore_undelivered_completions). 48h keeps overnight/weekend results
 # deliverable while stopping weeks-old sessions from replaying after upgrades.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+# Durable claims are leases, not ownership transfers. Active same-turn injects
+# renew this timestamp while the provider request/retry lifecycle is alive;
+# after a process crash the absent heartbeat lets another consumer recover it.
+_DELIVERY_CLAIM_LEASE_SECONDS = 300
 _DB_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -178,9 +183,31 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         # completions recovered after a process restart are unroutable on
         # api_server (the in-memory record that carried it is gone).
         ("origin_session_id", "TEXT"),
+        # Delivery mode captured at dispatch: 'inject' delivers at safe
+        # conversation-loop boundaries; 'after_turn' preserves the legacy
+        # synthetic-turn path. Missing/invalid values mean 'after_turn'.
+        ("result_delivery", "TEXT"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Child-level delivery records extend the existing durable claim ledger.
+    # A batch parent remains one execution unit, while each completed child is
+    # independently claimable/recoverable for result_delivery=inject.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS async_delegation_events (
+            delegation_id TEXT NOT NULL,
+            event_key TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            delivered_at REAL,
+            delivery_claim TEXT,
+            delivery_claimed_at REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (delegation_id, event_key)
+        )"""
+    )
 
 
 @contextmanager
@@ -243,33 +270,50 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
     task_payload = {
         key: record.get(key)
         for key in (
-            "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
+            "goal",
+            "goals",
+            "context",
+            "toolsets",
+            "role",
+            "model",
+            "is_batch",
             # Routing origin (scope_id/user_id/user_name): persisted so a
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
-            "scope_id", "user_id", "user_name",
+            "scope_id",
+            "user_id",
+            "user_name",
+            "result_delivery",
+            "parent_turn_id",
         )
         if key in record
     }
+    _result_delivery = str(record.get("result_delivery") or "after_turn").strip().lower()
+    if _result_delivery not in {"inject", "after_turn"}:
+        _result_delivery = "after_turn"
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id, result_delivery)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             record.get("origin_session_id", ""), _result_delivery),
         )
     _prune_durable_records()
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
     with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            "DELETE FROM async_delegation_events WHERE delegation_id=?",
+            (delegation_id,),
+        )
         conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
 
 
@@ -310,18 +354,424 @@ def _prune_durable_records() -> None:
                    )""",
                 (overflow,),
             )
+        conn.execute(
+            """DELETE FROM async_delegation_events
+               WHERE delegation_id NOT IN (
+                   SELECT delegation_id FROM async_delegations
+               )"""
+        )
 
 
-def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _update_completion_row(
+    conn,
+    event: Dict[str, Any],
+    result: Dict[str, Any],
+    *,
+    delivery_state: str = "pending",
+    now: Optional[float] = None,
+) -> None:
+    now = time.time() if now is None else now
+    state = "delivered" if delivery_state == "delivered" else "pending"
+    delivered_at = now if state == "delivered" else None
+    conn.execute(
+        """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
+           event_json=?, result_json=?, delivery_state=?, delivered_at=?
+           WHERE delegation_id=?""",
+        (
+            event.get("status", "completed"),
+            event.get("completed_at", now),
+            now,
+            json.dumps(event),
+            json.dumps(result),
+            state,
+            delivered_at,
+            event["delegation_id"],
+        ),
+    )
+
+
+def _persist_completion(
+    event: Dict[str, Any],
+    result: Dict[str, Any],
+    *,
+    delivery_state: str = "pending",
+) -> None:
+    with _DB_LOCK, _transaction() as conn:
+        _update_completion_row(
+            conn, event, result, delivery_state=delivery_state
+        )
+
+
+def _build_batch_child_event(
+    record: Dict[str, Any],
+    task_index: int,
+    result: Dict[str, Any],
+    *,
+    completed_at: Optional[float] = None,
+) -> Dict[str, Any]:
+    delegation_id = str(record.get("delegation_id") or "")
+    goals = list(record.get("goals") or [])
+    goal = goals[task_index] if 0 <= task_index < len(goals) else record.get("goal", "")
+    completed_at = time.time() if completed_at is None else completed_at
+    child_result = dict(result or {})
+    child_result.setdefault("task_index", task_index)
+    return {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "delivery_event_key": f"task:{task_index}",
+        "batch_id": delegation_id,
+        "task_index": task_index,
+        "batch_size": len(goals),
+        "session_key": record.get("session_key", ""),
+        "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "origin_session_id": record.get("origin_session_id", ""),
+        "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
+        "goal": goal,
+        "goals": goals,
+        "context": record.get("context"),
+        "toolsets": record.get("toolsets"),
+        "role": record.get("role"),
+        "model": record.get("model"),
+        "status": child_result.get("status", "completed"),
+        "summary": child_result.get("summary"),
+        "error": child_result.get("error"),
+        "api_calls": child_result.get("api_calls"),
+        "duration_seconds": child_result.get("duration_seconds"),
+        "is_batch": True,
+        "results": [child_result],
+        "live_transcripts": (
+            [child_result.get("live_transcript")]
+            if child_result.get("live_transcript")
+            else None
+        ),
+        "dispatched_at": record.get("dispatched_at"),
+        "completed_at": completed_at,
+        "result_delivery": str(
+            record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
+    }
+
+
+def _insert_batch_event(conn, event: Dict[str, Any], *, now: float) -> bool:
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO async_delegation_events
+           (delegation_id, event_key, event_json, delivery_state,
+            delivery_attempts, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', 0, ?, ?)""",
+        (
+            event["delegation_id"],
+            event["delivery_event_key"],
+            json.dumps(event),
+            now,
+            now,
+        ),
+    )
+    return cur.rowcount == 1
+
+
+def _persist_batch_child_completion_event(
+    delegation_id: str,
+    task_index: int,
+    result: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    with _records_lock:
+        record = dict(_records.get(delegation_id) or {})
+    if not record or not bool(record.get("is_batch")):
+        return None
+    event = _build_batch_child_event(record, task_index, result)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        conn.execute(
-            """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
-               WHERE delegation_id=?""",
-            (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]),
+        inserted = _insert_batch_event(conn, event, now=now)
+    if not inserted:
+        return None
+    return event
+
+
+def persist_batch_child_completion(
+    delegation_id: str,
+    task_index: int,
+    result: Dict[str, Any],
+) -> bool:
+    """Persist one completed batch child without changing delivery timing.
+
+    The production batch runner calls this before joining slower siblings so a
+    process crash cannot erase an already completed child. The legacy aggregate
+    finalizer remains the only queue publisher in this layer.
+    """
+    return _persist_batch_child_completion_event(
+        delegation_id, task_index, result
+    ) is not None
+
+
+def publish_batch_child_completion(
+    delegation_id: str,
+    task_index: int,
+    result: Dict[str, Any],
+) -> bool:
+    """Durably enqueue one ready child from an asynchronous batch.
+
+    The parent batch remains the execution/stall unit. This function only
+    creates an independently claimable delivery event, keyed by task index.
+    ``result_delivery`` changes which consumer may claim it, not when the child
+    row becomes durable. Repeated publication is idempotent and never resets a
+    delivered claim.
+    """
+    with _records_lock:
+        record = dict(_records.get(delegation_id) or {})
+    if not record or not bool(record.get("is_batch")):
+        return False
+    if str(record.get("result_delivery") or "after_turn").lower() not in {
+        "inject",
+        "after_turn",
+    }:
+        return False
+
+    event = _persist_batch_child_completion_event(
+        delegation_id, task_index, result
+    )
+    if event is None:
+        return False
+    from tools.process_registry import process_registry
+
+    process_registry.completion_queue.put(event)
+    # Process-local handoff marker only. It prevents the aggregate finalizer
+    # from adding a duplicate queue copy when a future layer publishes children
+    # early. A crash intentionally loses this marker; restart recovery then
+    # restores the still-pending durable row from SQLite.
+    event_key = event["delivery_event_key"]
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            queued_keys = record.setdefault("_queued_child_event_keys", [])
+            if event_key not in queued_keys:
+                queued_keys.append(event_key)
+    return True
+
+
+def _event_delivery_keys(event: Dict[str, Any]) -> list[str]:
+    raw_keys = event.get("delivery_event_keys")
+    if isinstance(raw_keys, (list, tuple)):
+        return list(dict.fromkeys(str(key) for key in raw_keys if key))
+    key = str(event.get("delivery_event_key") or "")
+    return [key] if key else []
+
+
+def coalesce_ready_after_turn_events(
+    events: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Combine ready child rows from each after-turn batch at one boundary.
+
+    SQLite and the shared queue retain one durable row per child. This helper
+    creates only a transient delivery envelope so every child remains
+    independently recoverable while one consumer can claim/ack the currently
+    ready set atomically. Envelopes are deliberately re-coalescible: a busy
+    consumer may requeue one while more siblings finish before its next boundary.
+    """
+
+    output: List[Dict[str, Any]] = []
+    groups: Dict[str, Dict[str, Any]] = {}
+    seen_keys: Dict[str, set[str]] = {}
+    for event in events:
+        delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
+        event_keys = _event_delivery_keys(event)
+        delegation_id = str(event.get("delegation_id") or "")
+        coalescible = (
+            event.get("type") == "async_delegation"
+            and delivery == "after_turn"
+            and bool(event.get("is_batch"))
+            and bool(event_keys)
+            and all(key.startswith("task:") for key in event_keys)
+            and bool(delegation_id)
         )
+        if not coalescible:
+            output.append(event)
+            continue
+
+        grouped = groups.get(delegation_id)
+        if grouped is None:
+            grouped = dict(event)
+            grouped.pop("delivery_event_key", None)
+            grouped["delivery_event_keys"] = []
+            grouped["task_indices"] = []
+            grouped["results"] = []
+            grouped["live_transcripts"] = []
+            grouped["coalesced_after_turn"] = True
+            groups[delegation_id] = grouped
+            seen_keys[delegation_id] = set()
+            output.append(grouped)
+
+        new_keys = [
+            key for key in event_keys if key not in seen_keys[delegation_id]
+        ]
+        if not new_keys:
+            continue
+        seen_keys[delegation_id].update(new_keys)
+        grouped["delivery_event_keys"].extend(new_keys)
+        new_key_set = set(new_keys)
+        for result in event.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            task_index = int(result.get("task_index", 0))
+            if f"task:{task_index}" not in new_key_set:
+                continue
+            grouped["task_indices"].append(task_index)
+            grouped["results"].append(result)
+        grouped["live_transcripts"].extend(
+            path for path in (event.get("live_transcripts") or []) if path
+        )
+        grouped["completed_at"] = max(
+            float(grouped.get("completed_at") or 0),
+            float(event.get("completed_at") or 0),
+        )
+
+    for grouped in groups.values():
+        grouped["delivery_event_keys"].sort(
+            key=lambda key: int(key.split(":", 1)[1])
+        )
+        grouped["task_indices"] = sorted(set(grouped["task_indices"]))
+        grouped["results"].sort(key=lambda result: int(result.get("task_index", 0)))
+        grouped["live_transcripts"] = list(
+            dict.fromkeys(grouped["live_transcripts"])
+        ) or None
+    return output
+
+
+def _build_batch_terminal_event(
+    event_record: Dict[str, Any],
+    combined: Dict[str, Any],
+    status: str,
+    *,
+    force: bool = False,
+) -> Optional[Dict[str, Any]]:
+    if not force and (
+        status in {"completed", "success"} or (combined.get("results") or [])
+    ):
+        return None
+    delegation_id = str(event_record.get("delegation_id") or "")
+    now = time.time()
+    event: Dict[str, Any] = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "delivery_event_key": "terminal",
+        "batch_id": delegation_id,
+        "session_key": event_record.get("session_key", ""),
+        "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
+        "origin_session_id": event_record.get("origin_session_id", ""),
+        "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
+        "goal": event_record.get("goal", ""),
+        "goals": event_record.get("goals"),
+        "context": event_record.get("context"),
+        "toolsets": event_record.get("toolsets"),
+        "role": event_record.get("role"),
+        "model": event_record.get("model"),
+        "status": status,
+        "is_batch": True,
+        "results": [],
+        "error": combined.get("error"),
+        "dispatched_at": event_record.get("dispatched_at"),
+        "completed_at": now,
+        "result_delivery": str(
+            event_record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
+    }
+    for key in (
+        "stalled_after_quiet_seconds",
+        "stall_threshold_seconds",
+        "stall_phase",
+        "stall_grace_seconds",
+    ):
+        if key in combined:
+            event[key] = combined[key]
+    return event
+
+
+def _publish_batch_terminal_event(
+    event_record: Dict[str, Any], combined: Dict[str, Any], status: str
+) -> bool:
+    """Deliver a batch-level failure not represented by child events."""
+    event = _build_batch_terminal_event(event_record, combined, status)
+    if event is None:
+        return False
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        inserted = _insert_batch_event(conn, event, now=now)
+    if not inserted:
+        return False
+    from tools.process_registry import process_registry
+
+    process_registry.completion_queue.put(event)
+    return True
+
+
+def _persist_batch_child_finalization(
+    event_record: Dict[str, Any],
+    parent_event: Dict[str, Any],
+    combined: Dict[str, Any],
+    status: str,
+) -> None:
+    """Atomically persist missing child events and the terminal parent row."""
+
+    now = time.time()
+    queue_event_keys: list[str] = []
+    queue_events: list[Dict[str, Any]] = []
+    with _DB_LOCK, _transaction() as conn:
+        for child in combined.get("results") or []:
+            child_event = _build_batch_child_event(
+                event_record,
+                int(child.get("task_index", 0)),
+                child,
+                completed_at=now,
+            )
+            _insert_batch_event(conn, child_event, now=now)
+            queue_event_keys.append(child_event["delivery_event_key"])
+
+        terminal_event = _build_batch_terminal_event(
+            event_record, combined, status
+        )
+        if terminal_event is not None:
+            _insert_batch_event(conn, terminal_event, now=now)
+            queue_event_keys.append(terminal_event["delivery_event_key"])
+
+        # The aggregate row is bookkeeping-only for inject batches. Commit its
+        # terminal state in the same transaction as the idempotent child safety
+        # net so restart recovery can never observe a half-finalized parent.
+        _update_completion_row(
+            conn,
+            parent_event,
+            combined,
+            delivery_state="delivered",
+            now=now,
+        )
+
+        # Child callbacks may have inserted these rows before the aggregate
+        # join. Preserve legacy delivery timing by loading every still-pending
+        # aggregate member only after the parent terminal update commits.
+        already_queued = {
+            str(key) for key in (event_record.get("_queued_child_event_keys") or [])
+        }
+        event_keys = [
+            key
+            for key in dict.fromkeys(queue_event_keys)
+            if key not in already_queued
+        ]
+        if event_keys:
+            placeholders = ",".join("?" for _ in event_keys)
+            rows = conn.execute(
+                "SELECT event_json FROM async_delegation_events "
+                "WHERE delegation_id=? AND delivery_state='pending' "
+                f"AND event_key IN ({placeholders})",
+                (event_record["delegation_id"], *event_keys),
+            ).fetchall()
+            queue_events = [json.loads(row[0]) for row in rows]
+
+    from tools.process_registry import process_registry
+
+    queue_events = coalesce_ready_after_turn_events(queue_events)
+    with process_registry.completion_routing_lock:
+        for queued_event in queue_events:
+            process_registry.completion_queue.put(queued_event)
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -344,12 +794,13 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      result_delivery
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id, result_delivery) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -358,6 +809,96 @@ def recover_abandoned_delegations() -> int:
             if live:
                 continue
             task = json.loads(task_json or "{}")
+            restored_delivery = str(
+                result_delivery or task.get("result_delivery") or "after_turn"
+            ).lower()
+            child_rows = []
+            if bool(task.get("is_batch")):
+                child_rows = conn.execute(
+                    """SELECT event_key, event_json FROM async_delegation_events
+                       WHERE delegation_id=? AND event_key LIKE 'task:%'
+                       ORDER BY event_key""",
+                    (delegation_id,),
+                ).fetchall()
+            if bool(task.get("is_batch")) and (
+                restored_delivery == "inject" or bool(child_rows)
+            ):
+                # Child-scoped batches never recover through a contradictory
+                # aggregate. A crash after one or more child inserts must
+                # preserve the already-delivered/pending task identities.
+                goals = list(task.get("goals") or [])
+                expected_child_keys = [f"task:{index}" for index in range(len(goals))]
+                child_results_by_key: dict[str, Dict[str, Any]] = {}
+                for event_key, child_payload in child_rows:
+                    if event_key not in expected_child_keys:
+                        continue
+                    child_event = json.loads(child_payload or "{}")
+                    results = child_event.get("results") or []
+                    if results and isinstance(results[0], dict):
+                        child_results_by_key[event_key] = results[0]
+
+                child_results = [
+                    child_results_by_key[key]
+                    for key in expected_child_keys
+                    if key in child_results_by_key
+                ]
+                complete_children = bool(expected_child_keys) and all(
+                    key in child_results_by_key for key in expected_child_keys
+                )
+                status = "completed" if complete_children else "unknown"
+                recovery_error = None
+                if not complete_children:
+                    recovery_error = (
+                        "Delegation owner exited after recording "
+                        f"{len(child_results)}/{len(goals)} batch child results; "
+                        "remaining outcomes are unknown."
+                    )
+                combined = {
+                    "results": child_results,
+                    "error": recovery_error,
+                }
+                event_record = {
+                    "delegation_id": delegation_id,
+                    "session_key": session_key,
+                    "origin_ui_session_id": origin_ui,
+                    "origin_session_id": origin_session_id or "",
+                    "parent_session_id": parent_id,
+                    "parent_turn_id": task.get("parent_turn_id", ""),
+                    "goal": task.get("goal", ""),
+                    "goals": goals,
+                    "context": task.get("context"),
+                    "toolsets": task.get("toolsets"),
+                    "role": task.get("role"),
+                    "model": task.get("model"),
+                    "dispatched_at": dispatched_at,
+                    "result_delivery": restored_delivery,
+                }
+                if not complete_children:
+                    terminal_event = _build_batch_terminal_event(
+                        event_record, combined, status, force=True
+                    )
+                    if terminal_event is not None:
+                        _insert_batch_event(conn, terminal_event, now=now)
+
+                parent_event = {
+                    **event_record,
+                    "type": "async_delegation",
+                    "status": status,
+                    "is_batch": True,
+                    "results": child_results,
+                    "error": recovery_error,
+                    "completed_at": now,
+                    "result_delivery": restored_delivery,
+                }
+                _update_completion_row(
+                    conn,
+                    parent_event,
+                    combined,
+                    delivery_state="delivered",
+                    now=now,
+                )
+                recovered += 1
+                continue
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
@@ -365,9 +906,11 @@ def recover_abandoned_delegations() -> int:
                 # after a restart remain routable to api_server sessions.
                 "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
+                "parent_turn_id": task.get("parent_turn_id", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "result_delivery": restored_delivery,
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -411,12 +954,20 @@ def restore_undelivered_completions(target_queue) -> int:
     recover_abandoned_delegations()
     now = time.time()
     restored = 0
+    parent_events: list[Dict[str, Any]] = []
+    child_events: list[Dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT delegation_id, event_json, completed_at, dispatched_at
                FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
                ORDER BY completed_at, delegation_id"""
+        ).fetchall()
+        child_rows = conn.execute(
+            """SELECT delegation_id, event_key, event_json
+               FROM async_delegation_events
+               WHERE delivery_state='pending'
+               ORDER BY created_at, delegation_id, event_key"""
         ).fetchall()
         for delegation_id, payload, completed_at, dispatched_at in rows:
             age_basis = completed_at or dispatched_at
@@ -432,15 +983,31 @@ def restore_undelivered_completions(target_queue) -> int:
                     "Async delegation %s: pending completion is %.1fh old "
                     "(cap %.1fh); terminally dropping the replay (result "
                     "remains queryable).",
-                    delegation_id, (now - age_basis) / 3600.0,
+                    delegation_id,
+                    (now - age_basis) / 3600.0,
                     _MAX_COMPLETION_REPLAY_AGE_S / 3600.0,
                 )
                 continue
             evt = json.loads(payload)
             if isinstance(evt, dict):
                 evt["restored"] = True
-            target_queue.put(evt)
+            parent_events.append(evt)
             restored += 1
+        for delegation_id, event_key, payload in child_rows:
+            evt = json.loads(payload)
+            if isinstance(evt, dict):
+                evt["restored"] = True
+                evt.setdefault("delegation_id", delegation_id)
+                evt.setdefault("delivery_event_key", event_key)
+            child_events.append(evt)
+            restored += 1
+    # Queue only after the SQLite read transaction closes. Default after-turn
+    # batches retain the legacy one-envelope restart shape even though each
+    # child now has an independently durable identity underneath it.
+    for evt in parent_events:
+        target_queue.put(evt)
+    for evt in coalesce_ready_after_turn_events(child_events):
+        target_queue.put(evt)
     return restored
 
 
@@ -471,7 +1038,69 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - 300),
+            (
+                claim_id,
+                now,
+                now,
+                delegation_id,
+                now - _DELIVERY_CLAIM_LEASE_SECONDS,
+            ),
+        )
+        return cur.rowcount == 1
+
+
+class _DeliveryGroupConflict(RuntimeError):
+    """Rollback a multi-child settlement when any row lost ownership."""
+
+
+def _claim_child_event_group(
+    delegation_id: str, event_keys: List[str], claim_id: str
+) -> bool:
+    now = time.time()
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            for event_key in event_keys:
+                cur = conn.execute(
+                    """UPDATE async_delegation_events
+                       SET delivery_claim=?, delivery_claimed_at=?,
+                           delivery_attempts=delivery_attempts+1, updated_at=?
+                       WHERE delegation_id=? AND event_key=?
+                         AND delivery_state='pending'
+                         AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
+                    (
+                        claim_id,
+                        now,
+                        now,
+                        delegation_id,
+                        event_key,
+                        now - _DELIVERY_CLAIM_LEASE_SECONDS,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise _DeliveryGroupConflict(event_key)
+    except _DeliveryGroupConflict:
+        return False
+    return True
+
+
+def _claim_child_event(delegation_id: str, event_key: str, claim_id: str) -> bool:
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegation_events
+               SET delivery_claim=?, delivery_claimed_at=?,
+                   delivery_attempts=delivery_attempts+1, updated_at=?
+               WHERE delegation_id=? AND event_key=?
+                 AND delivery_state='pending'
+                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
+            (
+                claim_id,
+                now,
+                now,
+                delegation_id,
+                event_key,
+                now - _DELIVERY_CLAIM_LEASE_SECONDS,
+            ),
         )
         return cur.rowcount == 1
 
@@ -484,7 +1113,103 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     if not delegation_id:
         return ""
     claim_id = f"{consumer}:{__import__('os').getpid()}:{uuid.uuid4().hex}"
-    return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
+    event_keys = _event_delivery_keys(evt)
+    if "delivery_event_keys" in evt:
+        claimed = bool(event_keys) and _claim_child_event_group(
+            delegation_id, event_keys, claim_id
+        )
+    elif event_keys:
+        claimed = _claim_child_event(delegation_id, event_keys[0], claim_id)
+    else:
+        claimed = claim_completion_delivery(delegation_id, claim_id)
+    return claim_id if claimed else None
+
+
+def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    """Renew the lease held by the exact consumer claim."""
+
+    if not claim_id or evt.get("type") != "async_delegation":
+        return False
+    delegation_id = str(evt.get("delegation_id") or "")
+    if not delegation_id:
+        return False
+    event_keys = _event_delivery_keys(evt)
+    now = time.time()
+    if "delivery_event_keys" in evt:
+        if not event_keys:
+            return False
+        try:
+            with _DB_LOCK, _transaction() as conn:
+                for event_key in event_keys:
+                    cur = conn.execute(
+                        """UPDATE async_delegation_events
+                           SET delivery_claimed_at=?, updated_at=?
+                           WHERE delegation_id=? AND event_key=?
+                             AND delivery_state='pending' AND delivery_claim=?""",
+                        (now, now, delegation_id, event_key, claim_id),
+                    )
+                    if cur.rowcount != 1:
+                        raise _DeliveryGroupConflict(event_key)
+        except _DeliveryGroupConflict:
+            return False
+        return True
+    event_key = event_keys[0] if event_keys else ""
+    with _DB_LOCK, _transaction() as conn:
+        if event_key:
+            cur = conn.execute(
+                """UPDATE async_delegation_events
+                   SET delivery_claimed_at=?, updated_at=?
+                   WHERE delegation_id=? AND event_key=?
+                     AND delivery_state='pending' AND delivery_claim=?""",
+                (now, now, delegation_id, event_key, claim_id),
+            )
+        else:
+            cur = conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_claimed_at=?, updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'
+                     AND delivery_claim=?""",
+                (now, now, delegation_id, claim_id),
+            )
+        return cur.rowcount == 1
+
+
+def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
+    """Return the durable state for one aggregate or child event."""
+
+    if evt.get("type") != "async_delegation":
+        return None
+    delegation_id = str(evt.get("delegation_id") or "")
+    if not delegation_id:
+        return None
+    event_keys = _event_delivery_keys(evt)
+    with _DB_LOCK, _transaction() as conn:
+        if "delivery_event_keys" in evt:
+            if not event_keys:
+                return None
+            placeholders = ",".join("?" for _ in event_keys)
+            rows = conn.execute(
+                f"""SELECT delivery_state FROM async_delegation_events
+                    WHERE delegation_id=? AND event_key IN ({placeholders})""",
+                (delegation_id, *event_keys),
+            ).fetchall()
+            if len(rows) != len(event_keys):
+                return None
+            states = {str(row[0]) for row in rows}
+            return states.pop() if len(states) == 1 else "mixed"
+        event_key = event_keys[0] if event_keys else ""
+        if event_key:
+            row = conn.execute(
+                """SELECT delivery_state FROM async_delegation_events
+                   WHERE delegation_id=? AND event_key=?""",
+                (delegation_id, event_key),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                (delegation_id,),
+            ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -560,14 +1285,271 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def _complete_child_event(
+    delegation_id: str, event_key: str, claim_id: str, state: str = "delivered"
+) -> bool:
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegation_events
+               SET delivery_state=?, delivered_at=?, updated_at=?,
+                   delivery_claim=NULL, delivery_claimed_at=NULL
+               WHERE delegation_id=? AND event_key=?
+                 AND delivery_state='pending' AND delivery_claim=?""",
+            (state, now, now, delegation_id, event_key, claim_id),
+        )
+        return cur.rowcount == 1
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def _release_child_event(delegation_id: str, event_key: str, claim_id: str) -> bool:
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        capped = conn.execute(
+            """UPDATE async_delegation_events
+               SET delivery_state='dropped', delivery_claim=NULL,
+                   delivery_claimed_at=NULL, updated_at=?
+               WHERE delegation_id=? AND event_key=?
+                 AND delivery_state='pending' AND delivery_claim=?
+                 AND delivery_attempts>=?""",
+            (now, delegation_id, event_key, claim_id, _MAX_DELIVERY_ATTEMPTS),
+        )
+        if capped.rowcount == 1:
+            return True
+        cur = conn.execute(
+            """UPDATE async_delegation_events
+               SET delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+               WHERE delegation_id=? AND event_key=?
+                 AND delivery_state='pending' AND delivery_claim=?""",
+            (now, delegation_id, event_key, claim_id),
+        )
+        return cur.rowcount == 1
+
+
+def _complete_child_event_group(
+    delegation_id: str,
+    event_keys: List[str],
+    claim_id: str,
+    state: str = "delivered",
+) -> bool:
+    now = time.time()
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            for event_key in event_keys:
+                cur = conn.execute(
+                    """UPDATE async_delegation_events
+                       SET delivery_state=?, delivered_at=?, updated_at=?,
+                           delivery_claim=NULL, delivery_claimed_at=NULL
+                       WHERE delegation_id=? AND event_key=?
+                         AND delivery_state='pending' AND delivery_claim=?""",
+                    (state, now, now, delegation_id, event_key, claim_id),
+                )
+                if cur.rowcount != 1:
+                    raise _DeliveryGroupConflict(event_key)
+    except _DeliveryGroupConflict:
+        return False
+    return True
+
+
+def _release_child_event_group(
+    delegation_id: str, event_keys: List[str], claim_id: str
+) -> tuple[bool, List[str]]:
+    now = time.time()
+    pending_keys: List[str] = []
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            for event_key in event_keys:
+                capped = conn.execute(
+                    """UPDATE async_delegation_events
+                       SET delivery_state='dropped', delivery_claim=NULL,
+                           delivery_claimed_at=NULL, updated_at=?
+                       WHERE delegation_id=? AND event_key=?
+                         AND delivery_state='pending' AND delivery_claim=?
+                         AND delivery_attempts>=?""",
+                    (
+                        now,
+                        delegation_id,
+                        event_key,
+                        claim_id,
+                        _MAX_DELIVERY_ATTEMPTS,
+                    ),
+                )
+                if capped.rowcount == 1:
+                    continue
+                released = conn.execute(
+                    """UPDATE async_delegation_events
+                       SET delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+                       WHERE delegation_id=? AND event_key=?
+                         AND delivery_state='pending' AND delivery_claim=?""",
+                    (now, delegation_id, event_key, claim_id),
+                )
+                if released.rowcount != 1:
+                    raise _DeliveryGroupConflict(event_key)
+                pending_keys.append(event_key)
+    except _DeliveryGroupConflict:
+        return False, event_keys
+    return True, pending_keys
+
+
+def _retain_group_event_keys(evt: Dict[str, Any], event_keys: List[str]) -> None:
+    """Keep only rows that remain pending after a grouped release."""
+
+    keep = set(event_keys)
+    evt["delivery_event_keys"] = list(event_keys)
+    evt["results"] = [
+        result
+        for result in (evt.get("results") or [])
+        if isinstance(result, dict)
+        and f"task:{int(result.get('task_index', 0))}" in keep
+    ]
+    evt["task_indices"] = sorted(
+        int(result.get("task_index", 0)) for result in evt["results"]
+    )
+
+
+def get_event_delivery_retry_delay(
+    evt: Dict[str, Any], *, now: Optional[float] = None
+) -> Optional[float]:
+    """Return a bounded delay for an unclaimed pending event, else ``None``.
+
+    A failed claim is ambiguous: another live process may own the pending row,
+    or this queue entry may be a duplicate whose durable row is already
+    delivered/dropped. Consumers use this oracle before deferred requeue so a
+    quick restart waits only for the remaining lease without spinning. Grouped
+    envelopes are narrowed to rows that are still pending.
+    """
+
+    if evt.get("type") != "async_delegation":
+        return None
+    delegation_id = str(evt.get("delegation_id") or "")
+    if not delegation_id:
+        return None
+    current = time.time() if now is None else float(now)
+    event_keys = _event_delivery_keys(evt)
+    pending_rows: List[tuple[str, Optional[str], Optional[float]]] = []
+
+    with _DB_LOCK, _transaction() as conn:
+        if "delivery_event_keys" in evt:
+            if not event_keys:
+                return None
+            placeholders = ",".join("?" for _ in event_keys)
+            rows = conn.execute(
+                f"""SELECT event_key, delivery_state, delivery_claim,
+                           delivery_claimed_at
+                    FROM async_delegation_events
+                    WHERE delegation_id=? AND event_key IN ({placeholders})""",
+                (delegation_id, *event_keys),
+            ).fetchall()
+            by_key = {str(row[0]): row for row in rows}
+            if len(by_key) != len(event_keys):
+                return None
+            pending_keys = [
+                key for key in event_keys if str(by_key[key][1]) == "pending"
+            ]
+            if not pending_keys:
+                return None
+            _retain_group_event_keys(evt, pending_keys)
+            pending_rows = [
+                (
+                    key,
+                    str(by_key[key][2]) if by_key[key][2] else None,
+                    float(by_key[key][3]) if by_key[key][3] is not None else None,
+                )
+                for key in pending_keys
+            ]
+        elif event_keys:
+            row = conn.execute(
+                """SELECT delivery_state, delivery_claim, delivery_claimed_at
+                   FROM async_delegation_events
+                   WHERE delegation_id=? AND event_key=?""",
+                (delegation_id, event_keys[0]),
+            ).fetchone()
+            if row is None or str(row[0]) != "pending":
+                return None
+            pending_rows = [
+                (
+                    event_keys[0],
+                    str(row[1]) if row[1] else None,
+                    float(row[2]) if row[2] is not None else None,
+                )
+            ]
+        else:
+            row = conn.execute(
+                """SELECT delivery_state, delivery_claim, delivery_claimed_at
+                   FROM async_delegations WHERE delegation_id=?""",
+                (delegation_id,),
+            ).fetchone()
+            if row is None or str(row[0]) != "pending":
+                return None
+            pending_rows = [
+                (
+                    "aggregate",
+                    str(row[1]) if row[1] else None,
+                    float(row[2]) if row[2] is not None else None,
+                )
+            ]
+
+    # A short guard covers claim races and strict SQL '<' lease comparison.
+    delay = 0.05
+    for _event_key, claim, claimed_at in pending_rows:
+        if not claim:
+            continue
+        if claimed_at is None:
+            delay = max(delay, float(_DELIVERY_CLAIM_LEASE_SECONDS))
+            continue
+        remaining = float(_DELIVERY_CLAIM_LEASE_SECONDS) - (current - claimed_at)
+        delay = max(delay, remaining)
+    return max(0.05, delay) + 0.05
+
+
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return False
+    delegation_id = str(evt.get("delegation_id") or "")
+    event_keys = _event_delivery_keys(evt)
+    if "delivery_event_keys" in evt:
+        completed = bool(event_keys) and _complete_child_event_group(
+            delegation_id, event_keys, claim_id
+        )
+    elif event_keys:
+        completed = _complete_child_event(delegation_id, event_keys[0], claim_id)
+    else:
+        completed = complete_completion_delivery(delegation_id, claim_id)
+    return completed or get_event_delivery_state(evt) == "delivered"
+
+
+def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return False
+    delegation_id = str(evt.get("delegation_id") or "")
+    event_keys = _event_delivery_keys(evt)
+    if "delivery_event_keys" in evt:
+        if not event_keys:
+            return False
+        released, pending_keys = _release_child_event_group(
+            delegation_id, event_keys, claim_id
+        )
+        if released:
+            _retain_group_event_keys(evt, pending_keys)
+        return released
+    if event_keys:
+        return _release_child_event(delegation_id, event_keys[0], claim_id)
+    return release_completion_delivery(delegation_id, claim_id)
+
+
+def drop_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return
+    delegation_id = str(evt.get("delegation_id") or "")
+    event_keys = _event_delivery_keys(evt)
+    if "delivery_event_keys" in evt:
+        if event_keys:
+            _complete_child_event_group(
+                delegation_id, event_keys, claim_id, state="dropped"
+            )
+    elif event_keys:
+        _complete_child_event(delegation_id, event_keys[0], claim_id, state="dropped")
+    else:
+        drop_completion_delivery(delegation_id, claim_id)
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -765,6 +1747,8 @@ def dispatch_async_delegation(
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None,
+    parent_turn_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -831,6 +1815,11 @@ def dispatch_async_delegation(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        # Delivery mode: 'inject' (new tool-result carrier)
+        # or 'after_turn' (legacy completion_queue path). Default 'after_turn'
+        # for backward compatibility with old task_json entries.
+        "result_delivery": str(result_delivery or "after_turn").strip().lower(),
+        "parent_turn_id": str(parent_turn_id or ""),
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -969,6 +1958,7 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -984,6 +1974,10 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        # Delivery mode: 'inject' (new tool-result carrier) or 'after_turn'
+        # (legacy completion_queue path). Consumers use this to choose a live
+        # carrier or the next available separate-turn boundary.
+        "result_delivery": record.get("result_delivery", "after_turn"),
     }
     # Routing origin captured at dispatch (see _capture_routing_origin):
     # additive, lets the gateway reconstruct a full SessionSource (incl.
@@ -1028,6 +2022,8 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None,
+    parent_turn_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1039,11 +2035,11 @@ def dispatch_async_delegation_batch(
     parallelism is bounded separately by ``max_concurrent_children``), so a
     single ``delegate_task`` fan-out never exhausts the async pool by itself.
 
-    When the batch finishes, a SINGLE completion event is pushed onto the
-    shared ``process_registry.completion_queue`` carrying the full per-task
-    ``results`` list, so the consolidated summaries re-enter the conversation
-    as one message once every child is done — the chat is never blocked while
-    they run.
+    Both delivery modes publish each child into an independently durable row as
+    it becomes ready. ``inject`` may claim rows at same-turn safe boundaries;
+    ``after_turn`` coalesces every ready row at the next available turn boundary.
+    Finalization only persists aggregate status for observability/recovery and
+    idempotently fills any child row missed by its completion callback.
 
     Returns ``{"status": "dispatched", "delegation_id": ...}`` on success or
     ``{"status": "rejected", "error": ...}`` when the async pool is at
@@ -1078,6 +2074,9 @@ def dispatch_async_delegation_batch(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        # Delivery mode for the batch; missing values preserve after_turn.
+        "result_delivery": str(result_delivery or "after_turn").strip().lower(),
+        "parent_turn_id": str(parent_turn_id or ""),
     }
     with _records_lock:
         running = sum(
@@ -1148,7 +2147,7 @@ def dispatch_async_delegation_batch(
 def _finalize_batch(
     delegation_id: str, combined: Dict[str, Any], status: str
 ) -> None:
-    """Mark a batch record complete and push ONE combined completion event."""
+    """Mark a batch complete and persist any missing child delivery events."""
     claimed = _begin_finalization(delegation_id)
     if claimed is None:
         return
@@ -1161,17 +2160,7 @@ def _finalize_batch(
 def _push_batch_completion_event(
     event_record: Dict[str, Any], combined: Dict[str, Any], status: str
 ) -> None:
-    """Push a combined async-delegation batch completion event."""
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s finished but process_registry import "
-            "failed; result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
-        return
-
+    """Finalize one child-scoped async-delegation batch."""
     dispatched_at = event_record.get("dispatched_at") or time.time()
     completed_at = event_record.get("completed_at") or time.time()
     evt = {
@@ -1181,6 +2170,7 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -1200,6 +2190,8 @@ def _push_batch_completion_event(
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
+        # Delivery mode for the batch: 'inject' or 'after_turn'.
+        "result_delivery": event_record.get("result_delivery", "after_turn"),
     }
     # Routing origin captured at dispatch (see _capture_routing_origin).
     for _k in ("scope_id", "user_id", "user_name"):
@@ -1215,15 +2207,13 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s: failed to enqueue completion event; "
-            "result lost: %s",
-            event_record.get("delegation_id"), exc,
-        )
+    # Child callbacks publish incrementally in both delivery modes. The
+    # finalizer idempotently inserts any missed child and commits the parent
+    # terminal row in one SQLite transaction; only events without a successful
+    # process-local queue handoff are queued after commit. Consumers decide
+    # whether ready children belong in the current turn (inject) or the next
+    # turn (after_turn).
+    _persist_batch_child_finalization(event_record, evt, combined, status)
 
 
 def _ensure_stale_monitor() -> None:

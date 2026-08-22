@@ -25397,7 +25397,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         evt_type = str(evt.get("type") or "")
         if evt_type == "async_delegation":
             producer_id = str(evt.get("delegation_id") or "")
-            return (evt_type, producer_id, "") if producer_id else None
+            raw_keys = evt.get("delivery_event_keys")
+            if isinstance(raw_keys, (list, tuple)):
+                event_identity: object = tuple(str(key) for key in raw_keys if key)
+            else:
+                event_identity = str(evt.get("delivery_event_key") or "")
+            return (evt_type, producer_id, event_identity) if producer_id else None
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
             started_at = evt.get("started_at")
@@ -25490,12 +25495,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             durable_delegation_id = str(evt.get("delegation_id") or "")
             if durable_delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
+                    from tools.async_delegation import claim_event_delivery
 
-                    durable_claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    ):
+                    durable_claim_id = claim_event_delivery(
+                        evt, f"gateway:{id(self)}"
+                    ) or ""
+                    if not durable_claim_id:
+                        from tools.process_registry import process_registry
+
+                        process_registry.defer_unclaimed_delivery(evt)
                         return None
                 except Exception as exc:
                     logger.warning(
@@ -25521,11 +25529,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if durable_claim_id:
                         try:
-                            from tools.async_delegation import drop_completion_delivery
+                            from tools.async_delegation import drop_event_delivery
 
-                            drop_completion_delivery(
-                                durable_delegation_id, durable_claim_id,
-                            )
+                            drop_event_delivery(evt, durable_claim_id)
                         except Exception:
                             logger.debug(
                                 "Could not drop durable completion claim",
@@ -25535,11 +25541,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if verdict == "retry":
                     if durable_claim_id:
                         try:
-                            from tools.async_delegation import release_completion_delivery
+                            from tools.async_delegation import release_event_delivery
 
-                            release_completion_delivery(
-                                durable_delegation_id, durable_claim_id,
-                            )
+                            release_event_delivery(evt, durable_claim_id)
                         except Exception:
                             logger.debug(
                                 "Could not release durable completion claim",
@@ -25603,11 +25607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # after adapter acceptance; this gateway keeps no parallel ledger.
             if durable_claim_id:
                 try:
-                    from tools.async_delegation import complete_completion_delivery
+                    from tools.async_delegation import complete_event_delivery
 
-                    complete_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    )
+                    complete_event_delivery(evt, durable_claim_id)
                 except Exception as exc:
                     logger.warning(
                         "Could not acknowledge durable async completion %s: %s",
@@ -25620,11 +25622,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._completion_deliveries_inflight.discard(identity)
             if durable_claim_id and not accepted:
                 try:
-                    from tools.async_delegation import release_completion_delivery
+                    from tools.async_delegation import release_event_delivery
 
-                    release_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    )
+                    release_event_delivery(evt, durable_claim_id)
                 except Exception:
                     logger.debug("Could not release durable completion claim", exc_info=True)
 
@@ -25997,28 +25997,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.
                 requeue = []
-                async_events = []
-                while not _pr.completion_queue.empty():
-                    try:
-                        evt = _pr.completion_queue.get_nowait()
-                    except Exception:
-                        break
-                    if evt.get("type") == "async_delegation":
-                        async_events.append(evt)
-                    else:
-                        requeue.append(evt)
-                for evt in requeue:
-                    _pr.completion_queue.put(evt)
-                # A same-tick drain often carries several completions for the
-                # SAME originating session (a fan-out of background subagents
-                # finishing together).  Delivering each one individually floods
-                # the session with N synthetic turns (#70300) — group by full
-                # gateway route + parent session and inject one consolidated
-                # turn per group.  Events for different sessions never coalesce.
+                idle_events = []
+                with _pr.completion_routing_lock:
+                    async_events = []
+                    while not _pr.completion_queue.empty():
+                        try:
+                            evt = _pr.completion_queue.get_nowait()
+                        except Exception:
+                            break
+                        if evt.get("type") == "async_delegation":
+                            async_events.append(evt)
+                        else:
+                            requeue.append(evt)
+                    for evt in requeue:
+                        _pr.completion_queue.put(evt)
+
+                    from tools.async_delegation import (
+                        coalesce_ready_after_turn_events,
+                    )
+
+                    async_events = coalesce_ready_after_turn_events(async_events)
+                    for evt in async_events:
+                        self._enrich_async_delegation_routing(evt)
+                        # Busy-session routing is part of the same queue
+                        # reservation as dequeue/coalescing. Otherwise the active
+                        # conversation loop can observe a temporary-empty queue
+                        # and miss an inject that was already ready at its safe
+                        # boundary.
+                        _rd = str(
+                            evt.get("result_delivery") or "after_turn"
+                        ).strip().lower()
+                        _route_key = str(evt.get("session_key") or "").strip()
+                        _event_turn_id = str(evt.get("parent_turn_id") or "")
+                        _running_parent = getattr(self, "_running_agents", {}).get(
+                            _route_key
+                        )
+                        if _running_parent is _AGENT_PENDING_SENTINEL:
+                            _pr.completion_queue.put(evt)
+                            continue
+                        if _rd == "after_turn" and _running_parent is not None:
+                            _pr.completion_queue.put(evt)
+                            continue
+                        if (
+                            _rd == "inject"
+                            and _running_parent is not None
+                            and _event_turn_id
+                            and str(
+                                getattr(_running_parent, "_active_turn_id", "") or ""
+                            )
+                            == _event_turn_id
+                        ):
+                            _pr.completion_queue.put(evt)
+                            continue
+                        idle_events.append(evt)
+
+                # Grouping, formatting, and adapter/network delivery must never
+                # hold the routing lock. Only events classified idle above leave
+                # the critical section. Same-session siblings share one turn;
+                # different sessions and routes never coalesce.
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 group_order: list[tuple[str, ...]] = []
-                for evt in async_events:
-                    self._enrich_async_delegation_routing(evt)
+                for evt in idle_events:
                     key = self._async_delegation_group_key(evt)
                     if key not in groups:
                         groups[key] = []

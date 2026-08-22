@@ -9883,10 +9883,16 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
             evt.get("suppressed", 0),
         )
     if evt_type == "async_delegation":
-        # Async-delegation completions have no process session_id; without
-        # this the fallthrough keys every one as ("", "async_delegation")
-        # and the second completion's status update is suppressed forever.
-        return (evt.get("delegation_id", ""), evt_type)
+        # Child-scoped batches may deliver several ready rows together and the
+        # remaining rows later. Include the exact durable key set so a later
+        # portion of the same delegation is not visually suppressed.
+        raw_keys = evt.get("delivery_event_keys")
+        if isinstance(raw_keys, (list, tuple)):
+            event_keys = tuple(str(key) for key in raw_keys if key)
+        else:
+            event_key = str(evt.get("delivery_event_key") or "")
+            event_keys = (event_key,) if event_key else ()
+        return (evt.get("delegation_id", ""), evt_type, event_keys)
     return (evt_sid, evt_type)
 
 
@@ -10228,81 +10234,112 @@ def _notification_poller_loop(
                         )
                         with session["history_lock"]:
                             session["running"] = False
-        try:
-            evt = process_registry.completion_queue.get(timeout=0.5)
-        except Exception:
-            continue
+        # Route one completion atomically with the active conversation-loop
+        # drain. Queue.get() removes the event before we know whether this TUI
+        # owns it or must requeue it; without the shared routing lock, the
+        # conversation loop can observe a temporary-empty queue and miss a ready
+        # same-turn inject at its safe boundary.
+        _route_action = "empty"
+        evt = None
+        text = None
+        _claim = None
+        with process_registry.completion_routing_lock:
+            try:
+                evt = process_registry.completion_queue.get_nowait()
+            except Exception:
+                evt = None
 
-        # Multiple desktop sessions share this one process-wide queue. Only
-        # consume events that belong to *this* session — otherwise a background
-        # process started in session A would surface its completion in whichever
-        # session's poller happened to wake first (Ben's "reported in a
-        # different session" bug). Leave foreign events for their owner.
-        if _notification_event_belongs_elsewhere(sid, session, evt):
-            process_registry.completion_queue.put(evt)
+            if evt is not None:
+                # Multiple desktop sessions share this one process-wide queue.
+                # Leave foreign events for their proven owner.
+                if _notification_event_belongs_elsewhere(sid, session, evt):
+                    process_registry.completion_queue.put(evt)
+                    _route_action = "requeued_foreign"
+                else:
+                    # Addressed events require positive ownership proof. Truly
+                    # ownerless ordinary notifications retain legacy global
+                    # delivery.
+                    requires_owner = _notification_event_requires_owner(evt)
+                    if requires_owner and not _session_owns_notification_event(
+                        sid, session, evt
+                    ):
+                        log = (
+                            logger.warning
+                            if evt.get("type") == "async_delegation"
+                            else logger.debug
+                        )
+                        log(
+                            "Dropping unowned %s notification (origin=%r key=%r) "
+                            "instead of delivering to session %s",
+                            evt.get("type", "completion"),
+                            str(evt.get("origin_ui_session_id") or ""),
+                            str(evt.get("session_key") or ""),
+                            sid,
+                        )
+                        _route_action = "dropped"
+                    else:
+                        evt = process_registry.collect_ready_after_turn_siblings(evt)
+                        _evt_sid = evt.get("session_id", "")
+                        if (
+                            evt.get("type") == "completion"
+                            and process_registry.is_completion_consumed(_evt_sid)
+                        ):
+                            _route_action = "dropped"
+                        else:
+                            text = format_process_notification(evt)
+                            if not text:
+                                _route_action = "dropped"
+                            else:
+                                # Only emit the same notification identity once;
+                                # busy-session requeues otherwise surface the same
+                                # status every poll tick.
+                                _dedup_key = _notification_event_dedup_key(evt)
+                                if _dedup_key not in _emitted:
+                                    _emit(
+                                        "status.update",
+                                        sid,
+                                        {"kind": "process", "text": text},
+                                    )
+                                    _emitted.add(_dedup_key)
+
+                                with session["history_lock"]:
+                                    if session.get("running"):
+                                        process_registry.completion_queue.put(evt)
+                                        _route_action = "requeued_busy"
+                                    else:
+                                        from tools.async_delegation import (
+                                            claim_event_delivery,
+                                        )
+
+                                        _claim = claim_event_delivery(evt, "tui-poller")
+                                        if _claim is None:
+                                            # Keep a live-claimed restored row out
+                                            # of the hot poll loop until its lease
+                                            # expires. Terminal duplicates are
+                                            # discarded by the durable classifier.
+                                            process_registry.defer_unclaimed_delivery(evt)
+                                            _route_action = "deferred_claim"
+                                        else:
+                                            session["running"] = True
+                                            _route_action = "dispatch"
+
+        if _route_action == "empty":
+            time.sleep(0.5)
+            continue
+        if _route_action == "requeued_foreign":
             time.sleep(0.1)
             continue
-
-        # What reaches here is not owned by another LIVE session. Addressed
-        # events still require positive proof before injection: exact UI origin,
-        # direct durable key, or compression lineage. If none proves ownership,
-        # the event is orphaned and must not be adopted by this chat. Truly
-        # ownerless ordinary notifications retain legacy global delivery.
-        requires_owner = _notification_event_requires_owner(evt)
-        if requires_owner and not _session_owns_notification_event(sid, session, evt):
-            log = (
-                logger.warning
-                if evt.get("type") == "async_delegation"
-                else logger.debug
-            )
-            log(
-                "Dropping unowned %s notification (origin=%r key=%r) instead "
-                "of delivering to session %s",
-                evt.get("type", "completion"),
-                str(evt.get("origin_ui_session_id") or ""),
-                str(evt.get("session_key") or ""),
-                sid,
-            )
-            continue
-
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-            continue
-
-        text = format_process_notification(evt)
-        if not text:
-            continue
-
-        # Only emit the same notification identity to TUI once — re-queued
-        # completions get re-emitted every 0.5s otherwise when session is busy,
-        # while distinct watch_match events from the same process must remain
-        # visible independently.
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
-        _requeued = False
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                _requeued = True
-            else:
-                session["running"] = True
-        if _requeued:
-            # Back off before re-polling: the re-queued event keeps the queue
-            # non-empty, so without a sleep this loop spins at full speed
-            # (100% CPU, GIL churn) for as long as the session stays busy.
+        if _route_action == "requeued_busy":
+            # The queue stays non-empty while the session is busy. Back off
+            # outside the routing lock so the active loop can claim the event.
             time.sleep(0.25)
             continue
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
+        if _route_action != "dispatch":
             continue
+
+        assert evt is not None and text is not None and _claim is not None
+        rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import complete_event_delivery, release_event_delivery
         try:
             _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
@@ -10327,60 +10364,85 @@ def _notification_poller_loop(
             with session["history_lock"]:
                 session["running"] = False
 
-    # Drain any remaining events after stop signal (process all pending
-    # before exiting so nothing is lost on shutdown). Events owned by other
-    # live sessions are set aside and re-queued so their poller still sees them.
-    # Orphaned events (owner gone) are dropped — same guard as the main loop.
-    deferred: list = []
-    while not process_registry.completion_queue.empty():
-        try:
-            evt = process_registry.completion_queue.get_nowait()
-        except Exception:
-            break
-        if _notification_event_belongs_elsewhere(sid, session, evt):
-            deferred.append(evt)
-            continue
-        # Same positive-proof rule as the live loop. Preserve the existing
-        # shutdown behavior for orphaned delegation payloads by deferring them
-        # for a later resume; ordinary addressed orphans are dropped.
-        requires_owner = _notification_event_requires_owner(evt)
-        if requires_owner and not _session_owns_notification_event(sid, session, evt):
-            if evt.get("type") == "async_delegation":
-                deferred.append(evt)
-            else:
-                logger.debug(
-                    "Dropping unowned %s notification during shutdown drain "
-                    "(origin=%r key=%r)",
-                    evt.get("type", "completion"),
-                    str(evt.get("origin_ui_session_id") or ""),
-                    str(evt.get("session_key") or ""),
-                )
-            continue
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-            continue
-        text = format_process_notification(evt)
-        if not text:
-            continue
-
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
+    # Drain the bounded queue snapshot after stop so pending notifications are
+    # not lost. Route each dequeue atomically with an active conversation-loop
+    # drain: teardown can signal this poller while its agent turn is still
+    # unwinding. Foreign/orphaned delegation events are requeued immediately;
+    # the fixed snapshot bound prevents spinning on them.
+    try:
+        shutdown_scan_count = process_registry.completion_queue.qsize()
+    except Exception:
+        shutdown_scan_count = 0
+    for _ in range(max(0, shutdown_scan_count)):
+        evt = None
+        text = None
+        _claim = None
+        _shutdown_action = "skip"
+        with process_registry.completion_routing_lock:
+            try:
+                evt = process_registry.completion_queue.get_nowait()
+            except Exception:
                 break
-            session["running"] = True
 
-        rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
+            if _notification_event_belongs_elsewhere(sid, session, evt):
+                process_registry.completion_queue.put(evt)
+                continue
+
+            requires_owner = _notification_event_requires_owner(evt)
+            if requires_owner and not _session_owns_notification_event(
+                sid, session, evt
+            ):
+                if evt.get("type") == "async_delegation":
+                    process_registry.completion_queue.put(evt)
+                else:
+                    logger.debug(
+                        "Dropping unowned %s notification during shutdown drain "
+                        "(origin=%r key=%r)",
+                        evt.get("type", "completion"),
+                        str(evt.get("origin_ui_session_id") or ""),
+                        str(evt.get("session_key") or ""),
+                    )
+                continue
+
+            evt = process_registry.collect_ready_after_turn_siblings(evt)
+            _evt_sid = evt.get("session_id", "")
+            if (
+                evt.get("type") == "completion"
+                and process_registry.is_completion_consumed(_evt_sid)
+            ):
+                continue
+            text = format_process_notification(evt)
+            if not text:
+                continue
+
+            _dedup_key = _notification_event_dedup_key(evt)
+            if _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                _emitted.add(_dedup_key)
+
+            with session["history_lock"]:
+                if session.get("running"):
+                    process_registry.completion_queue.put(evt)
+                    _shutdown_action = "busy"
+                else:
+                    from tools.async_delegation import claim_event_delivery
+
+                    _claim = claim_event_delivery(evt, "tui-poller")
+                    if _claim is None:
+                        process_registry.defer_unclaimed_delivery(evt)
+                    else:
+                        session["running"] = True
+                        _shutdown_action = "dispatch"
+
+        if _shutdown_action == "busy":
+            break
+        if _shutdown_action != "dispatch":
             continue
+
+        assert evt is not None and text is not None and _claim is not None
+        rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import complete_event_delivery, release_event_delivery
+
         try:
             _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
@@ -10404,10 +10466,6 @@ def _notification_poller_loop(
             )
             with session["history_lock"]:
                 session["running"] = False
-
-    # Hand any other sessions' events back to the shared queue.
-    for evt in deferred:
-        process_registry.completion_queue.put(evt)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
@@ -11664,17 +11722,21 @@ def _run_prompt_submit(
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),
                 skip_poll_observed=False,
             )
+            from tools.async_delegation import (
+                claim_event_delivery, complete_event_delivery, release_event_delivery,
+            )
             for index, (_evt, synth) in enumerate(drained):
+                _claim = None
                 with session["history_lock"]:
                     if session.get("running"):
                         for pending_evt, _pending_synth in drained[index:]:
                             process_registry.completion_queue.put(pending_evt)
                         break
-                    session["running"] = True
-                from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
-                )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
+                    _claim = claim_event_delivery(_evt, "tui-post-turn")
+                    if _claim is None:
+                        process_registry.defer_unclaimed_delivery(_evt)
+                    else:
+                        session["running"] = True
                 if _claim is None:
                     continue
                 try:

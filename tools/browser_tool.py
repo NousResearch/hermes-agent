@@ -1255,6 +1255,10 @@ def _run_chrome_fallback_command(
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
+    # On Windows, a .cmd shim target routes through cmd.exe, which arg-splits any
+    # URL containing '&' (and other cmd metachars). Bypass to node.exe + the .js
+    # entrypoint so Popen's argv reaches the child verbatim. No-op elsewhere.
+    cmd_prefix = _bypass_windows_cmd_shim(cmd_prefix)
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
@@ -2612,6 +2616,272 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     )
 
 
+def _windows_cmd_shim_node_target(cmd_path: str) -> Optional[List[str]]:
+    """Resolve a recognized Windows ``.cmd`` shim to its direct spawn target.
+
+    npm drops ``.cmd`` batch shims in ``node_modules/.bin`` (and for globally
+    installed CLIs like ``npx``).  Every such shim ends its dispatch line with an
+    unquoted ``%*`` and runs under ``cmd.exe``.  When Hermes spawns the shim via
+    ``subprocess.Popen`` and an argument contains a cmd metacharacter
+    (``& | < > ^ ( ) !``) — e.g. a real search URL like
+    ``https://x.com/search?q=a&src=typed_query&f=live`` — ``cmd.exe`` re-parses
+    the ``&`` as a command separator, tearing the URL into bogus "commands"
+    (``'src' is not recognized as an internal or external command``) and breaking
+    browser navigation.  ``subprocess`` does not (and ``list2cmdline`` cannot)
+    escape these for a ``.cmd`` target.
+
+    The fix is to take ``cmd.exe`` out of the spawn chain: launch the shim's own
+    dispatch target directly, so ``CreateProcessW`` receives the argv verbatim.
+    Returns ``[node_exe, entry_js]`` for the Node shim layouts, or ``[exe]`` for
+    agent-browser's optimized native-binary shim.
+
+    Recognition is conservative over the WHOLE shim body, not just the dispatch
+    line:
+
+    * exactly one dispatch line (the line carrying ``%*``), which must be that
+      ENTIRE line — the program plus its single quoted target plus ``%*``,
+      preceded at most by cmd-shim's exact ``endLocal & goto …`` preamble
+      (Node layouts), or the lone quoted native binary plus ``%*`` (native
+      layout, restricted to agent-browser's known binary path) — and it must
+      be the file's final non-blank line (a trailing ``EXIT /b 7`` would
+      rewrite the child's exit status);
+    * every other non-blank line must be one of the generators' plumbing forms
+      (comments, ``@ECHO OFF``, labels/GOTO, bare ``EXIT /b``, SETLOCAL,
+      internal CALL, IF-EXIST blocks, FOR /F probe, SET assignments) — and the
+      native layout accepts nothing but comments and ``@ECHO OFF`` around its
+      dispatch, matching the minimal file upstream writes;
+    * every variable the shim SETs must be consumed by that plumbing on some
+      other non-comment line (the ``PATHEXT`` self-munge is the one allowed
+      exception).
+
+    A shim that fails any of these — extra interpreter arguments on the
+    dispatch, a command line we don't recognize, or environment setup the batch
+    itself never consumes (i.e. intended for the child) — is refused
+    (``None``): the caller keeps the original ``.cmd`` prefix, which is the
+    status quo, and the shortfall is logged by the caller.
+
+    Known accepted deviation: npm's own ``npx.cmd`` runs its bundled
+    ``npm-prefix.js`` at dispatch time to discover the configured global npm
+    prefix, and prefers an ``npx-cli.js`` found there over the copy adjacent to
+    the shim.  That runtime probe can't be replicated statically, so the
+    adjacent copy is chosen.  The CLI surface consumed here
+    (``npx -y --ignore-scripts <spec>``) is stable across npm versions.
+    """
+    if os.name != "nt":
+        return None
+    if not cmd_path or not cmd_path.lower().endswith(".cmd"):
+        return None
+    try:
+        shim_dir = os.path.dirname(os.path.abspath(cmd_path))
+        with open(cmd_path, "r", encoding="utf-8", errors="replace") as fh:
+            shim_text = fh.read()
+    except OSError:
+        return None
+
+    # Three shim layouts ship in the wild.  The first two reference a JS entry
+    # relative to the shim's own directory (``%dp0%`` / ``%~dp0``):
+    #   * cmd-shim package (agent-browser.cmd, prettier.cmd, …):
+    #       … "%_prog%"  "%dp0%\\..\\pkg\\bin\\foo.js" %*
+    #   * npm's own npx.cmd / npm.cmd (JS path indirected through a SET'd var):
+    #       SET "NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js"
+    #       "%NODE_EXE%" "%NPX_CLI_JS%" %*
+    # The third is agent-browser's own postinstall "optimized" GLOBAL shim
+    # (scripts/postinstall.js fixWindowsShims), which dispatches straight to a
+    # native binary — no Node involved:
+    #       @ECHO off
+    #       "%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*
+    dp0_js = re.compile(r'%~?dp0%?\\([^"\r\n]+?\.[cm]?js)', re.IGNORECASE)
+    # Native layout: restricted to agent-browser's own known binary path — not
+    # any %~dp0-relative .exe — so an unrelated wrapper can't be misclassified.
+    native_exe_line = re.compile(
+        r'^\s*"%~dp0(node_modules\\agent-browser\\bin\\agent-browser-win32-(?:x64|arm64)\.exe)"\s+%\*\s*$',
+        re.IGNORECASE,
+    )
+    # Node-layout dispatch: the WHOLE line must be
+    # ``"%SOME_VAR%" "<one quoted target>" %*``, optionally preceded by
+    # cmd-shim's exact "Terminate Batch Job?"-suppression preamble
+    # (``endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ``) and
+    # nothing else.  Anchoring the full line rejects both extra tokens between
+    # program and script (shebang interpreter arguments) and arbitrary
+    # commands chained BEFORE the dispatch — rewriting either would silently
+    # skip real behavior.
+    node_dispatch_line = re.compile(
+        r"^\s*"
+        r"(?:endLocal\s*&\s*goto\s+#_undefined_#\s+2>NUL\s*\|\|\s*title\s+%COMSPEC%\s*&\s*)?"
+        r'"%[A-Za-z_][A-Za-z0-9_]*%"\s+"[^"\r\n]+"\s+%\*\s*$',
+        re.IGNORECASE,
+    )
+    comment_line = re.compile(r"^\s*(?:::|@?REM\b)", re.IGNORECASE)
+    echo_off_line = re.compile(r"^\s*@?ECHO\s+OFF\s*$", re.IGNORECASE)
+    # Plumbing grammar for every NON-dispatch line of a recognized shim.  Both
+    # generators (cmd-shim and npm's own .cmd wrappers) compose their files
+    # exclusively from these forms; any other command line means the shim does
+    # real work beyond dispatching, and rewriting would skip that work.
+    benign_line = re.compile(
+        r"^\s*(?:"
+        r"::.*|@?REM\b.*"                       # comments
+        r"|@?ECHO\s+OFF"                        # @ECHO off
+        r"|GOTO\s+\S+"                          # GOTO start / GOTO #_undefined_#
+        r"|:[A-Za-z_#][\w#]*"                   # :labels
+        r"|EXIT\s+/b"                           # bare EXIT /b (a coded EXIT /b N would rewrite the child's exit status)
+        r"|@?SETLOCAL.*|@?ENDLOCAL.*"           # scope push/pop
+        r"|@?CALL\s+:[A-Za-z_]\w*"              # CALL :internal_label only
+        r"|@?IF\s+(?:NOT\s+)?EXIST\s+.*\(\s*"   # IF [NOT] EXIST … (
+        r"|\)\s*ELSE\s*\(\s*|\)\s*"             # ) ELSE ( / )
+        r"|@?FOR\s+/F\s+.*\bDO\s+\(?\s*"        # FOR /F … DO (
+        r"|SET\s+.+"                            # SET (vars audited below)
+        r")\s*$",
+        re.IGNORECASE,
+    )
+    set_assign = re.compile(r'^\s*SET\s+"?([A-Za-z_][A-Za-z0-9_]*)=', re.IGNORECASE)
+
+    lines = shim_text.splitlines()
+    dispatch_line: Optional[str] = None
+    dispatch_idx: int = -1
+    last_content_idx: int = -1
+    native_rel: Optional[str] = None
+    set_lines: List[tuple] = []  # (var_name, line_index)
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        last_content_idx = idx
+        if "%*" in line:
+            # Exactly one dispatch line, and it must be a recognized shape —
+            # the whole line, so a command chained before the dispatch can't
+            # ride along (a rewrite would silently skip it).
+            if dispatch_line is not None:
+                return None
+            exe_match = native_exe_line.match(line)
+            if exe_match:
+                native_rel = exe_match.group(1)
+                dispatch_line = line
+                dispatch_idx = idx
+                continue
+            if node_dispatch_line.match(line):
+                dispatch_line = line
+                dispatch_idx = idx
+                continue
+            return None
+        if not benign_line.match(line):
+            return None
+        assign = set_assign.match(line)
+        if assign:
+            set_lines.append((assign.group(1), idx))
+    if dispatch_line is None:
+        return None
+    # The dispatch must be the file's final action: both generators end on it,
+    # and any trailing line (e.g. ``EXIT /b 7``) would change the exit status
+    # or behavior the child's direct spawn can't reproduce.
+    if dispatch_idx != last_content_idx:
+        return None
+
+    # Every SET variable must be consumed by the shim's own plumbing on some
+    # OTHER non-comment line — a variable the batch sets but never reads is
+    # environment setup intended for the child, which a rewrite would silently
+    # drop.  (Also catches self-referential mutations like
+    # `SET PATH=C:\x;%PATH%`.  The one allowed self-reference is cmd-shim's
+    # PATHEXT munge.  Comments don't count as consumption.)
+    for var, idx in set_lines:
+        if var.upper() == "PATHEXT":
+            continue
+        var_ref = re.compile(r"%" + re.escape(var) + r"[%:]", re.IGNORECASE)
+        if not any(
+            var_ref.search(other)
+            for j, other in enumerate(lines)
+            if j != idx and not comment_line.match(other)
+        ):
+            return None
+
+    # Native layout: the upstream postinstall writes a minimal file — nothing
+    # but ``@ECHO off`` (and possibly comments) around the dispatch.  Any
+    # other plumbing means it isn't that file; refuse rather than guess.
+    if native_rel is not None:
+        for j, line in enumerate(lines):
+            if j == dispatch_idx or not line.strip():
+                continue
+            if not (comment_line.match(line) or echo_off_line.match(line)):
+                return None
+        exe_path = os.path.normpath(os.path.join(shim_dir, native_rel))
+        if os.path.isfile(exe_path):
+            return [exe_path]
+        return None
+
+    entry_rel: Optional[str] = None
+    # (a) literal JS path on the dispatch line (cmd-shim format).
+    match = dp0_js.search(dispatch_line)
+    if match:
+        entry_rel = match.group(1)
+    else:
+        # (b) JS path indirected through a %VAR% (npm's own shims). Resolve the
+        #     SET assignment for each variable referenced on the dispatch line.
+        for var in re.findall(r"%([A-Za-z_][A-Za-z0-9_]*)%", dispatch_line):
+            var_match = re.search(
+                r'SET\s+"?' + re.escape(var) + r"=" + r'%~?dp0%?\\([^"\r\n]+?\.[cm]?js)',
+                shim_text,
+                re.IGNORECASE,
+            )
+            if var_match:
+                entry_rel = var_match.group(1)
+                break
+    if not entry_rel:
+        return None
+
+    entry_path = os.path.normpath(os.path.join(shim_dir, entry_rel))
+    if not os.path.isfile(entry_path):
+        return None
+
+    # Prefer a node.exe colocated with the shim (the shim itself probes for one),
+    # then resolve against the SAME merged PATH the browser child is spawned with
+    # (Hermes-managed Node prepended) so the bypass can't silently select a
+    # different node than the shim/child would use. Require "node.exe"
+    # specifically: a bare "node" lookup honours PATHEXT and could resolve
+    # node.js (".JS" is a common PATHEXT entry — the generated shim explicitly
+    # guards against it) or a node.cmd, re-introducing the cmd.exe hop this
+    # bypass exists to remove.
+    colocated_node = os.path.join(shim_dir, "node.exe")
+    if os.path.isfile(colocated_node):
+        node_exe: Optional[str] = colocated_node
+    else:
+        node_exe = shutil.which("node.exe", path=_merge_browser_path(os.environ.get("PATH", "")))
+    if not node_exe:
+        return None
+    return [node_exe, entry_path]
+
+
+# Distinct ``.cmd`` shims we've already warned about being un-bypassable, so the
+# shortfall is logged once per shim rather than once per browser command.
+_warned_unbypassable_shims: set = set()
+
+
+def _bypass_windows_cmd_shim(cmd_prefix: List[str]) -> List[str]:
+    """Rewrite a ``.cmd``-shim command prefix to a direct ``node.exe`` invocation.
+
+    No-op on POSIX and whenever the prefix doesn't start with a parseable
+    Windows ``.cmd`` shim.  See :func:`_windows_cmd_shim_node_target` for why
+    this matters (cmd.exe arg-splitting on ``&`` in URLs).
+
+    The bypass is best-effort: for a ``.cmd`` we cannot take out of the spawn
+    chain (an unrecognized shim layout, a missing entry ``.js``, or no locatable
+    ``node.exe``) the original prefix is returned unchanged — never worse than the
+    status quo, but that spawn can still mis-split cmd-metacharacter arguments, so
+    the shortfall is logged rather than hidden.
+    """
+    if os.name != "nt" or not cmd_prefix:
+        return cmd_prefix
+    first = cmd_prefix[0]
+    node_target = _windows_cmd_shim_node_target(first)
+    if node_target:
+        return node_target + list(cmd_prefix[1:])
+    if first and first.lower().endswith(".cmd") and first not in _warned_unbypassable_shims:
+        _warned_unbypassable_shims.add(first)
+        logger.warning(
+            "browser: could not bypass Windows .cmd shim %r; a cmd metacharacter "
+            "in an argument (e.g. '&' in a URL) may be mis-parsed by cmd.exe",
+            first,
+        )
+    return cmd_prefix
+
+
 def _kill_process_tree(proc: "subprocess.Popen") -> None:
     """Best-effort kill of *proc* and any descendants it spawned.
 
@@ -2735,6 +3005,10 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         AGENT_BROWSER_NPX_SPEC,
         "--version",
     ]
+    # Bypass the npx.cmd shim here too: cmd.exe would eat the '^' in
+    # AGENT_BROWSER_NPX_SPEC (its escape char), silently warming the cache for
+    # the exact version instead of the declared ^range.
+    cmd = _bypass_windows_cmd_shim(cmd)
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **popen_kwargs)
     except Exception:
@@ -2883,6 +3157,10 @@ def _run_browser_command(
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
+    # On Windows, a .cmd shim target routes through cmd.exe, which arg-splits any
+    # URL containing '&' (and other cmd metachars). Bypass to node.exe + the .js
+    # entrypoint so Popen's argv reaches the child verbatim. No-op elsewhere.
+    cmd_prefix = _bypass_windows_cmd_shim(cmd_prefix)
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
@@ -5202,6 +5480,10 @@ def _maybe_autoinstall_chromium() -> bool:
         ]
     else:
         install_cmd = [browser_cmd, "install"]
+    # Same .cmd-shim bypass as the URL-carrying spawn sites: keeps the '^' in
+    # AGENT_BROWSER_NPX_SPEC out of cmd.exe's escape handling (and takes the
+    # shim hop out of the install path entirely). No-op elsewhere.
+    install_cmd = _bypass_windows_cmd_shim(install_cmd)
 
     logger.info(
         "browser: Chromium missing — auto-installing the browser binary "

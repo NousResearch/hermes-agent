@@ -1148,7 +1148,11 @@ test('closing an older selected group does not clear the newer selection', () =>
 })
 
 test('source contract: active group styling suppresses bot styling', () => {
-  assert.match(pluginSource, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
+  // A selected group owns the roster selection outright: `!activeGroup` gates
+  // the ownership helper, so neither a focused chat nor the Bots home can
+  // light a bot row while a group chat is open (#88979).
+  assert.match(pluginSource, /const isActive = botRowOwnsWorkspace\(/)
+  assert.match(pluginSource, /function botRowOwnsWorkspace\([\s\S]{0,260}?if \(activeGroup\) \{\s*return false/)
   assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })
@@ -1264,7 +1268,8 @@ test('disband: a running room leaves an epoch-bumped empty tombstone so in-fligh
 test('source contract: workspace header offers disband behind a ConfirmDialog', () => {
   assert.match(pluginSource, /function disbandGroupChat\(/)
   assert.match(pluginSource, /Disband group chat\?/)
-  assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
+  assert.match(pluginSource, /label: `Disband the \$\{group\} group chat`/)
+  assert.match(pluginSource, /'aria-label': `Disband \$\{group\}`/)
 })
 
 test('default profile speaks as Hermes in room transcripts, not @default', () => {
@@ -1328,9 +1333,11 @@ test('source contract: room messages carry the speaker avatar via the roster app
   assert.match(workspace, /image && !isBackfilledFacePng\(image\)/)
   assert.match(workspace, /jsx\(BotFace, \{\s*shape,\s*color,\s*image: photo \? image : null,\s*size: 24,\s*name: entry\.from\.name/)
 
-  // Header shows the member faces (capped) with a names tooltip.
-  assert.match(workspace, /members\.slice\(0, 6\)\.map\(/)
-  assert.match(workspace, /title: members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+  // The room header keeps one stable room identity; member names live in a
+  // tooltip instead of competing with overlapping avatars.
+  assert.doesNotMatch(workspace, /members\.slice\(0, 6\)\.map\(/)
+  assert.match(workspace, /const memberNames = members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+  assert.match(workspace, /label: memberNames/)
 })
 
 test('stranded harvest: a timed-out turn whose reply landed late posts into the room and clears the marker', async () => {

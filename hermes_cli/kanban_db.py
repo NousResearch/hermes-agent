@@ -5452,7 +5452,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND (status IN ('running', 'ready', 'blocked', 'review') OR (status = 'gave_up' AND EXISTS (SELECT 1 FROM task_comments WHERE task_id = tasks.id AND author = tasks.assignee)))
                 """,
                 (result, now, task_id),
             )
@@ -5469,7 +5469,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND ( (status IN ('running', 'ready', 'blocked', 'review') OR (status = 'gave_up' AND EXISTS (SELECT 1 FROM task_comments WHERE task_id = tasks.id AND author = tasks.assignee))) )
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),

@@ -2671,6 +2671,28 @@ class APIServerAdapter(BasePlatformAdapter):
         persisted = self._runtime_request_from_persisted_session_lock(session, body)
         return persisted or runtime_request
 
+    @staticmethod
+    def _agent_failure_details(
+        result: Any,
+    ) -> Optional[tuple[str, Dict[str, bool]]]:
+        """Return a redacted native-session failure, if the turn failed."""
+        if not isinstance(result, dict):
+            return None
+        completed = bool(result.get("completed", True))
+        partial = bool(result.get("partial"))
+        failed = bool(result.get("failed"))
+        raw_error = result.get("error")
+        if not failed and (completed or not raw_error):
+            return None
+        message = _redact_api_error_text(
+            raw_error or "Agent run did not complete successfully."
+        )
+        return message, {
+            "completed": completed,
+            "partial": partial,
+            "failed": failed,
+        }
+
     @classmethod
     def _sanitize_runtime_metadata(
         cls,
@@ -4606,6 +4628,22 @@ class APIServerAdapter(BasePlatformAdapter):
             **agent_overrides,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
+        failure = self._agent_failure_details(result)
+        if failure is not None:
+            error_message, failure_state = failure
+            error_body = _openai_error(
+                error_message,
+                err_type="server_error",
+                code="agent_failed",
+            )
+            error_body["error"]["hermes"] = failure_state
+            error_headers = {
+                "X-Hermes-Session-Id": effective_session_id or session_id,
+                "X-Hermes-Completed": "false",
+            }
+            if gateway_session_key:
+                error_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(error_body, status=502, headers=error_headers)
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
@@ -4798,6 +4836,23 @@ class APIServerAdapter(BasePlatformAdapter):
                         else ""
                     ),
                 )
+                failure = self._agent_failure_details(result)
+                if failure is not None:
+                    error_message, failure_state = failure
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        session_id=effective_session_id,
+                        error=error_message,
+                        last_event="error",
+                    )
+                    await queue.put(_event_payload("error", {
+                        "message": error_message,
+                        "code": "agent_failed",
+                        "hermes": failure_state,
+                        "runtime": effective_runtime,
+                    }))
+                    return
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -7349,6 +7404,9 @@ class APIServerAdapter(BasePlatformAdapter):
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],
+                            "completed": False,
+                            "failed": True,
+                            "error": str(exc),
                         },
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                     )

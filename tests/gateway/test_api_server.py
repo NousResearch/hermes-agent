@@ -1055,6 +1055,70 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_session_chat_returns_error_for_failed_agent_result(self, adapter):
+        app = _create_app(adapter)
+        failure = {
+            "final_response": "HTTP 400: requested model is invalid",
+            "completed": False,
+            "failed": True,
+            "error": "HTTP 400: requested model is invalid",
+            "messages": [],
+            "api_calls": 1,
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_run_agent", new=AsyncMock(return_value=(failure, {}))),
+            ):
+                resp = await cli.post(
+                    "/api/sessions/s1/chat",
+                    json={"message": "hi"},
+                )
+                assert resp.status == 502
+                data = await resp.json()
+
+        assert data["error"]["message"] == "HTTP 400: requested model is invalid"
+        assert data["error"]["code"] == "agent_failed"
+        assert data["error"]["hermes"] == {
+            "completed": False,
+            "partial": False,
+            "failed": True,
+        }
+        assert "message" not in data
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_emits_error_for_failed_agent_result(self, adapter):
+        app = _create_app(adapter)
+        failure = {
+            "final_response": "HTTP 404: model not found",
+            "completed": False,
+            "failed": True,
+            "error": "HTTP 404: model not found",
+            "messages": [],
+            "api_calls": 1,
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_run_agent", new=AsyncMock(return_value=(failure, {}))),
+            ):
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={"message": "hi"},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "event: error" in body
+        assert '"code": "agent_failed"' in body
+        assert "HTTP 404: model not found" in body
+        assert "event: assistant.completed" not in body
+        assert "event: run.completed" not in body
+
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)

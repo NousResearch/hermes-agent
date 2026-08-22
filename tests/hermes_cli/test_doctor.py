@@ -178,8 +178,9 @@ class TestDoctorToolAvailabilitySummary:
             "tools.web_tools._anthropic_native_endpoint_selected", lambda: False
         )
 
-        detail = doctor_tools._doctor_unrunnable_web_backend_detail("search")
+        status, detail = doctor_tools._doctor_anthropic_web_row("search")
 
+        assert status == "warn"
         assert "switch the model to Anthropic" in detail
 
     def test_anthropic_backend_warns_when_the_credential_is_missing(self, monkeypatch):
@@ -202,8 +203,9 @@ class TestDoctorToolAvailabilitySummary:
             "tools.web_tools._is_backend_available", lambda _backend: False
         )
 
-        detail = doctor_tools._doctor_unrunnable_web_backend_detail("search")
+        status, detail = doctor_tools._doctor_anthropic_web_row("search")
 
+        assert status == "warn"
         assert "no Anthropic credential" in detail
         assert "switch the model" not in detail
 
@@ -221,14 +223,53 @@ class TestDoctorToolAvailabilitySummary:
             "tools.web_tools._is_backend_available", lambda _backend: True
         )
 
-        assert doctor_tools._doctor_unrunnable_web_backend_detail("search") == ""
+        status, detail = doctor_tools._doctor_anthropic_web_row("search")
+
+        assert status == "ok"
+        assert "anthropic" in detail
+
+    def test_runnable_anthropic_row_does_not_name_another_provider(self, monkeypatch):
+        """The registry cannot answer for anthropic, so it must not be asked.
+
+        ``anthropic`` is not a registered provider: the active-provider walk
+        goes straight past it and returns whoever the availability walk or the
+        keyless ring lands on. Before this row answered the healthy case too,
+        a working Anthropic selection printed ``web search (tavily)`` — a
+        provider the request never touches.
+        """
+        monkeypatch.setattr("tools.web_tools._get_search_backend", lambda: "anthropic")
+        monkeypatch.setattr("tools.web_tools._get_extract_backend", lambda: "anthropic")
+        monkeypatch.setattr(
+            "tools.web_tools._anthropic_native_endpoint_selected", lambda: True
+        )
+        monkeypatch.setattr("tools.web_tools._is_backend_available", lambda _b: True)
+
+        class _Ring:
+            name = "tavily"
+
+            def is_available(self):
+                return True
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider", lambda: _Ring()
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider", lambda: _Ring()
+        )
+
+        rows = doctor_tools._doctor_web_capability_rows()
+
+        assert rows
+        assert all(status == "ok" for status, _, _ in rows)
+        assert not any("tavily" in detail for _, _, detail in rows), rows
+        assert all("anthropic" in detail for _, _, detail in rows)
 
     def test_other_backends_are_not_second_guessed(self, monkeypatch):
         """Only the anthropic selection is special-cased here."""
         monkeypatch.setattr("tools.web_tools._get_search_backend", lambda: "tavily")
         monkeypatch.setattr("tools.web_tools._get_extract_backend", lambda: "tavily")
 
-        assert doctor_tools._doctor_unrunnable_web_backend_detail("search") == ""
+        assert doctor_tools._doctor_anthropic_web_row("search") is None
 
 
 class TestDoctorEnvFileEncoding:

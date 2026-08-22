@@ -1876,7 +1876,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'dev'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'mcp'", specifier = "==2.7.0" },
     { name = "jinja2", specifier = "==3.1.6" },
-    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
+    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = ">=1.7.1,<2.0" },
     { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.1" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.0.0" },

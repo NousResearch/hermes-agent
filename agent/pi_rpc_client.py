@@ -31,6 +31,7 @@ import os
 import subprocess
 import threading
 import time
+import warnings
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +46,23 @@ from tools.environments.local import hermes_subprocess_env
 
 PI_RPC_MARKER_BASE_URL = "pi://rpc"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-_DEFAULT_QUESTION_TIMEOUT = float(os.getenv("HERMES_PI_QUESTION_TIMEOUT", "600"))
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var defensively so one bad value can't crash import."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        warnings.warn(
+            f"Ignoring malformed {name}={raw!r}; using default {default}",
+            stacklevel=2,
+        )
+        return default
+    return value if value > 0 else default
+
+
+_DEFAULT_QUESTION_TIMEOUT = _env_float("HERMES_PI_QUESTION_TIMEOUT", 600.0)
 
 # Module-level registry of live questions from all running pi children.
 # Key: unique question id. Value: PendingQuestion.
@@ -226,6 +243,7 @@ class PiRPCClient:
         self.api_key = api_key or "pi-rpc"
         self.base_url = base_url or PI_RPC_MARKER_BASE_URL
         self._pi_bin = _resolve_acp_command(command or acp_command)
+        self._extra_args = [a for a in (args or acp_args or []) if isinstance(a, str)]
         self._cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self._persistent_session = bool(persistent_session)
         self._session_id = (session_id or "").strip() or None
@@ -239,6 +257,8 @@ class PiRPCClient:
         self._pending: dict[int, list] = {}
         self._pending_lock = threading.Lock()
         self._next_id = 0
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
         self._stderr_tail: deque[str] = deque(maxlen=40)
         self._text_parts: list[str] = []
         self._reasoning_parts: list[str] = []
@@ -322,10 +342,11 @@ class PiRPCClient:
             prompt_text, timeout_seconds=effective_timeout
         )
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
+        pt, ct = self._prompt_tokens, self._completion_tokens
         usage = SimpleNamespace(
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            total_tokens=pt + ct,
             prompt_tokens_details=SimpleNamespace(cached_tokens=0),
         )
         assistant_message = SimpleNamespace(
@@ -351,7 +372,13 @@ class PiRPCClient:
             return self._proc
         if self.is_closed:
             raise RuntimeError("pi rpc client is closed")
-        argv = [self._pi_bin, "--mode", "rpc"]
+        argv = [self._pi_bin]
+        # Honor explicit caller-provided args (e.g. from credential
+        # resolution), but always derive the mode/session flags from client
+        # state so they can't contradict persistent_session=True.
+        if self._extra_args:
+            argv += [a for a in self._extra_args if a not in ("--mode", "rpc", "--no-session")]
+        argv += ["--mode", "rpc"]
         if self._persistent_session:
             if self._session_id:
                 argv += ["--session-id", self._session_id]
@@ -514,13 +541,29 @@ class PiRPCClient:
             event = msg.get("assistantMessageEvent") or {}
             kind = event.get("type")
             delta = event.get("delta")
-            if not isinstance(delta, str) or not delta:
-                return
-            if kind == "text_delta":
-                self.text_streamed = True
-                self._text_parts.append(delta)
-            elif kind == "thinking_delta":
-                self._reasoning_parts.append(delta)
+            if isinstance(delta, str) and delta:
+                if kind == "text_delta":
+                    self.text_streamed = True
+                    self._text_parts.append(delta)
+                elif kind == "thinking_delta":
+                    self._reasoning_parts.append(delta)
+            # Best-effort token accounting: pi surfaces usage on some
+            # message_update / settled events under varying key shapes
+            # depending on version. Capture anything we recognize; when pi
+            # reports nothing we stay at zero — which means pi delegations are
+            # INVISIBLE to any parent-side usage/cost guard keyed on these
+            # numbers. Do not build budget enforcement on pi usage.
+            for src in (event, msg):
+                usage_src = src.get("usage") if isinstance(src, dict) else None
+                for cand in (usage_src, src if isinstance(src, dict) else None):
+                    if not isinstance(cand, dict):
+                        continue
+                    pt = cand.get("prompt_tokens") or cand.get("inputTokens") or cand.get("input_tokens")
+                    ct = cand.get("completion_tokens") or cand.get("outputTokens") or cand.get("output_tokens")
+                    if isinstance(pt, (int, float)) or isinstance(ct, (int, float)):
+                        self._prompt_tokens = max(self._prompt_tokens, int(pt or 0))
+                        self._completion_tokens = max(self._completion_tokens, int(ct or 0))
+                        break
             return
 
         if msg_type == "agent_settled":
@@ -728,6 +771,8 @@ class PiRPCClient:
         self._spawn()
         self._text_parts: list[str] = []
         self._reasoning_parts: list[str] = []
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
         self._settled = threading.Event()
         self.text_streamed = False
 

@@ -346,3 +346,86 @@ def test_pi_rpc_provider_resolves_without_acp_env(monkeypatch):
     monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
     r = resolve_runtime_provider(requested="pi-rpc")
     assert r is not None
+
+
+# ------------------------------------------------- review follow-up coverage
+
+
+def test_malformed_question_timeout_env_does_not_crash_import(monkeypatch):
+    import importlib
+
+    import agent.pi_rpc_client as mod
+
+    monkeypatch.setenv("HERMES_PI_QUESTION_TIMEOUT", "not-a-number")
+    with pytest.warns(UserWarning):
+        reloaded = importlib.reload(mod)
+    assert reloaded._DEFAULT_QUESTION_TIMEOUT == 600.0
+    monkeypatch.setenv("HERMES_PI_QUESTION_TIMEOUT", "120")
+    reloaded = importlib.reload(mod)
+    assert reloaded._DEFAULT_QUESTION_TIMEOUT == 120.0
+    monkeypatch.delenv("HERMES_PI_QUESTION_TIMEOUT", raising=False)
+    importlib.reload(mod)
+
+
+def test_explicit_args_are_honored_without_contradicting_session_flags(fake_pi):
+    # Explicit args (e.g. from credential resolution) must be passed through,
+    # but the internal mode/session flags derive from client state.
+    client = make_client(
+        fake_pi,
+        persistent_session=True,
+        session_id="sess-42",
+        args=["--mode", "acp", "--no-session", "--verbose"],
+    )
+    client._spawn()
+    argv = client._proc.args
+    assert "--verbose" in argv
+    assert argv.count("--mode") == 1
+    assert argv[argv.index("--mode") + 1] == "rpc"
+    assert "--no-session" not in argv
+    assert argv[argv.index("--session-id") + 1] == "sess-42"
+    client.close()
+
+
+def test_usage_tokens_captured_from_message_update(fake_pi):
+    # message_update events carrying usage (any of several key shapes pi has
+    # used) must land in the completion's token counts.
+    client = make_client(fake_pi)
+    client._dispatch({
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "usage",
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+        },
+    })
+    assert (client._prompt_tokens, client._completion_tokens) == (11, 7)
+    # camelCase shape on the event itself
+    client._dispatch({
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "usage", "inputTokens": 20, "outputTokens": 9},
+    })
+    assert (client._prompt_tokens, client._completion_tokens) == (20, 9)
+    # usage-free events must not disturb counters
+    client._dispatch({
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "delta": "hi"},
+    })
+    assert (client._prompt_tokens, client._completion_tokens) == (20, 9)
+
+
+def test_read_env_var_tolerates_export_and_quotes(tmp_path, monkeypatch):
+    from agent.copilot_acp_client import _read_env_var
+
+    monkeypatch.delenv("HERMES_X_TEST", raising=False)
+    env_file = tmp_path / "hermes-home" / ".hermes" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "export  HERMES_X_TEST = 'hello world'\n"
+        "OTHER=1\n"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "hermes-home"))
+    assert _read_env_var("HERMES_X_TEST") == "hello world"
+    monkeypatch.setenv("HERMES_X_TEST", "from-process-env")
+    assert _read_env_var("HERMES_X_TEST") == "from-process-env"
+    monkeypatch.delenv("HERMES_X_TEST", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nonexistent-home"))
+    assert _read_env_var("HERMES_X_TEST") is None

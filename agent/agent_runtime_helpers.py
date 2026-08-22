@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -2500,7 +2501,14 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             or os.getenv("HERMES_PI_BIN", "").strip()
             or "pi"
         ).strip()
-        if Path(_pi_cmd).name in ("pi", "pi-acp") or not _pi_cmd:
+        if _pi_cmd and (
+            Path(_pi_cmd).name in ("pi", "pi-acp")
+            or shutil.which(_pi_cmd) is not None
+            or Path(_pi_cmd).exists()
+        ):
+            # Basename fast-path accepts pi / pi-acp; anything else must
+            # actually resolve on disk so versioned installs and wrapper
+            # scripts pointed at via HERMES_PI_BIN still work.
             client_kwargs.pop("base_url", None)
             client_kwargs.pop("acp_command", None)
             client_kwargs.pop("command", None)

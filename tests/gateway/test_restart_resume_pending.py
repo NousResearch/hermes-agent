@@ -654,6 +654,41 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_obeys_adapter_capacity_reservation():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="bounded-restore")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:bounded-restore",
+        session_id="sid-bounded",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+    adapter.reserve_restored_source = MagicMock(return_value=False)
+    adapter.release_restored_source = MagicMock()
+
+    assert runner._schedule_resume_pending_sessions() == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.session_key not in runner._running_agents
+
+    adapter.reserve_restored_source.return_value = True
+    assert runner._schedule_resume_pending_sessions() == 1
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+    adapter.release_restored_source.assert_called_once_with(source)
+    assert pending_entry.session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""

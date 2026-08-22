@@ -134,6 +134,24 @@ class GatewayAuthorizationMixin:
         transport_adapter = self._registered_transport_adapter(source)
         if transport_adapter is not None:
             return transport_adapter
+        # A trusted webhook handoff executes under ``source.profile`` but the
+        # authenticated route belongs to ``source.transport_profile``. The weak
+        # in-process adapter reference disappears across persistence, so resolve
+        # that explicit transport owner and require the adapter to revalidate
+        # the restored source against its current static configuration.
+        transport_profile = getattr(source, "transport_profile", None)
+        if isinstance(transport_profile, str) and transport_profile.strip():
+            adapter = self._authorization_adapter(
+                getattr(source, "platform", None), transport_profile
+            )
+            validator = getattr(adapter, "validate_restored_source", None)
+            if adapter is not None and callable(validator):
+                try:
+                    if validator(source) is True:
+                        return adapter
+                except Exception:
+                    return None
+            return None
         # Relay ingress deliberately keeps the underlying platform on the
         # source so session keys and display policy remain Slack/Discord/etc.
         # Delivery still has to use the one live RelayAdapter that owns the

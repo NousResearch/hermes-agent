@@ -11815,6 +11815,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # otherwise the real run's normal cleanup owns the slot.
             _pre_state = self._peek_session_state(session_key)
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
+                release_restored = getattr(adapter, "release_restored_source", None)
+                if callable(release_restored):
+                    release_restored(event.source)
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
@@ -12263,28 +12266,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            # A trusted webhook handoff occupies the same route-wide capacity
+            # after restart as it did before restart. Adapter-owned admission
+            # keeps ordinary platforms unchanged and fails closed if current
+            # static route authority or capacity no longer permits the run.
+            reserve_restored = getattr(adapter, "reserve_restored_source", None)
+            release_restored = getattr(adapter, "release_restored_source", None)
+            reservation_held = False
+            if callable(reserve_restored):
+                try:
+                    if reserve_restored(source) is not True:
+                        logger.warning(
+                            "Skipping auto-resume for %s: restored source could "
+                            "not reserve current adapter capacity",
+                            entry.session_key,
+                        )
+                        continue
+                    reservation_held = True
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping auto-resume for %s: restored source admission "
+                        "failed: %s",
+                        entry.session_key,
+                        exc,
+                    )
+                    continue
+
             # Claim the session slot *before* spawning the task so that an
             # inbound message arriving between task creation and the task's
             # first await (where _process_message_background sets the real
             # sentinel) sees the slot as occupied and queues behind it
             # instead of spinning up a duplicate AIAgent (#45456).
-            _resume_state = self._session_state(entry.session_key)
-            _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
-            _resume_state.turn.started_ts = time.time()
-            self._persist_active_agents()
+            try:
+                _resume_state = self._session_state(entry.session_key)
+                _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
+                _resume_state.turn.started_ts = time.time()
+                self._persist_active_agents()
 
-            # Empty-text internal event — the _is_resume_pending branch in
-            # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
-            event = MessageEvent(
-                text="",
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            task = asyncio.create_task(
-                self._run_startup_resume_event(adapter, event, entry.session_key)
-            )
+                # Empty-text internal event — the _is_resume_pending branch in
+                # _handle_message_with_agent prepends the proper reason-aware
+                # system note before the turn runs.
+                event = MessageEvent(
+                    text="",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    internal=True,
+                )
+                task = asyncio.create_task(
+                    self._run_startup_resume_event(adapter, event, entry.session_key)
+                )
+            except Exception as exc:
+                if reservation_held and callable(release_restored):
+                    release_restored(source)
+                _pre_state = self._peek_session_state(entry.session_key)
+                if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
+                    self._release_running_agent_state(entry.session_key)
+                logger.warning(
+                    "Skipping auto-resume for %s: failed to schedule restored "
+                    "source: %s",
+                    entry.session_key,
+                    exc,
+                )
+                continue
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             if getattr(self, "_startup_restore_in_progress", False):

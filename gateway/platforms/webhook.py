@@ -41,7 +41,7 @@ import re
 import subprocess
 import sys
 import time
-from collections import deque
+from collections import defaultdict, deque
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -131,6 +131,7 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+_HANDOFF_DELIVERY_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -227,6 +228,11 @@ class WebhookAdapter(BasePlatformAdapter):
         self._rate_counts: Dict[str, Deque[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
 
+        # Trusted handoffs have a separate in-flight bound from request rate.
+        # Entries are released by on_processing_complete at the true run end.
+        self._active_handoffs: Dict[str, set[str]] = defaultdict(set)
+        self._handoff_locks: Dict[str, asyncio.Lock] = {}
+
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
             config.extra.get("max_body_bytes", 1_048_576)
@@ -281,6 +287,21 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"[webhook] Route '{name}' has deliver_only=true but "
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
+                    )
+            handoff_error = self._handoff_config_error(route)
+            if handoff_error:
+                raise ValueError(f"[webhook] Route '{name}' {handoff_error}")
+            if "allowed_target_profiles" in route:
+                if secret == _INSECURE_NO_AUTH:
+                    raise ValueError(
+                        f"[webhook] Route '{name}' trusted profile handoffs "
+                        "require webhook authentication"
+                    )
+                gateway_config = getattr(self.gateway_runner, "config", None)
+                if not getattr(gateway_config, "multiplex_profiles", False):
+                    raise ValueError(
+                        f"[webhook] Route '{name}' trusted profile handoffs "
+                        "require gateway.multiplex_profiles: true"
                     )
 
         # client_max_size makes aiohttp enforce the cap on every read path,
@@ -487,11 +508,344 @@ class WebhookAdapter(BasePlatformAdapter):
         route_config = self._routes.get(parts[1])
         if not isinstance(route_config, dict):
             return None
+        if getattr(source, "transport_profile", None) is not None:
+            if not self.validate_restored_source(source):
+                return None
+            target_profile = source.profile
+            configured = route_config["allowed_target_toolsets"][target_profile]
+            cleaned = [
+                value.strip()
+                for value in configured
+                if isinstance(value, str) and value.strip()
+            ]
+            return cleaned or None
         toolsets = route_config.get("toolsets")
         if not isinstance(toolsets, list) or not toolsets:
             return None
         cleaned = [str(t).strip() for t in toolsets if str(t).strip()]
         return cleaned or None
+
+    def validate_restored_source(self, source) -> bool:
+        """Reauthorize a persisted trusted handoff against current config."""
+        if getattr(source, "platform", None) != Platform.WEBHOOK:
+            return False
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parts = chat_id.split(":", 2)
+        if len(parts) != 3 or parts[0] != "webhook":
+            return False
+        route_name = parts[1]
+        route_config = self._routes.get(route_name)
+        if route_name not in self._static_routes or not isinstance(route_config, dict):
+            return False
+        if self._handoff_config_error(route_config) is not None:
+            return False
+
+        transport_profile = getattr(source, "transport_profile", None)
+        configured_profile = route_config.get("profile", "default")
+        if not isinstance(configured_profile, str):
+            return False
+        configured_profile = configured_profile.strip()
+        if (
+            not configured_profile
+            or not isinstance(transport_profile, str)
+            or transport_profile != configured_profile
+        ):
+            return False
+        secret = route_config.get("secret", self._global_secret)
+        if not secret or secret == _INSECURE_NO_AUTH:
+            return False
+
+        target_profile = getattr(source, "profile", None)
+        allowed = route_config.get("allowed_target_profiles")
+        normalized_allowed = {
+            value.strip() for value in allowed if isinstance(value, str)
+        }
+        if (
+            not isinstance(target_profile, str)
+            or target_profile not in normalized_allowed
+        ):
+            return False
+        if target_profile not in self._served_profile_names():
+            return False
+
+        depth = getattr(source, "trusted_handoff_depth", None)
+        max_depth = route_config.get("max_handoff_depth", 1)
+        if (
+            isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or depth < 1
+            or depth > max_depth
+        ):
+            return False
+
+        persisted_deliver = getattr(source, "transport_deliver", None)
+        persisted_extra = getattr(source, "transport_deliver_extra", None)
+        persisted_policy_hash = getattr(
+            source, "transport_delivery_policy_hash", None
+        )
+        if (
+            not isinstance(persisted_deliver, str)
+            or persisted_deliver != route_config.get("deliver", "log")
+            or not isinstance(persisted_extra, dict)
+            or not isinstance(persisted_policy_hash, str)
+            or persisted_policy_hash != self._delivery_policy_hash(route_config)
+        ):
+            return False
+
+        # ``send`` normally reads this resolved routing from an in-memory
+        # cache populated by POST handling. Payload-rendered values cannot be
+        # reconstructed from route templates after a restart, so hydrate the
+        # cache only after all current static authority bounds pass above.
+        now = time.time()
+        self._delivery_info[chat_id] = {
+            "deliver": persisted_deliver,
+            "deliver_extra": dict(persisted_extra),
+        }
+        self._delivery_info_created[chat_id] = now
+        self._delivery_info_order.append((now, chat_id))
+        self._prune_delivery_info(now)
+        return True
+
+    def reserve_restored_source(self, source) -> bool:
+        """Reserve route capacity before a trusted handoff is auto-resumed."""
+        if getattr(source, "transport_profile", None) is None:
+            return True
+        if not self.validate_restored_source(source):
+            return False
+
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parts = chat_id.split(":", 2)
+        if len(parts) != 3 or parts[0] != "webhook":
+            return False
+        route_name = parts[1]
+        route_config = self._routes.get(route_name)
+        if not isinstance(route_config, dict):
+            return False
+
+        # Startup scheduling and live HTTP admission run on the same event
+        # loop. This no-await check-and-add is therefore atomic with the
+        # lock-protected live path once that path reaches its critical section.
+        active = self._active_handoffs[route_name]
+        if chat_id in active:
+            return True
+        if len(active) >= route_config.get("max_handoff_concurrency", 1):
+            return False
+        active.add(chat_id)
+        return True
+
+    def release_restored_source(self, source) -> None:
+        """Release a startup reservation that did not reach normal cleanup."""
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parts = chat_id.split(":", 2)
+        if len(parts) != 3 or parts[0] != "webhook":
+            return
+        route_name = parts[1]
+        active = self._active_handoffs.get(route_name)
+        if active is None:
+            return
+        active.discard(chat_id)
+        if not active:
+            self._active_handoffs.pop(route_name, None)
+
+    @staticmethod
+    def _delivery_policy_hash(route_config: dict) -> str:
+        """Fingerprint the static egress policy used to resolve a destination."""
+        policy = {
+            "deliver": route_config.get("deliver", "log"),
+            "deliver_extra": route_config.get("deliver_extra", {}),
+        }
+        encoded = json.dumps(
+            policy,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _handoff_config_error(route_config: dict) -> Optional[str]:
+        """Validate the static bounds required by a trusted handoff route."""
+        if "allowed_target_profiles" not in route_config:
+            return None
+        if route_config.get("deliver_only"):
+            return "cannot combine trusted profile handoffs with deliver_only"
+        if not isinstance(route_config.get("prompt", ""), str):
+            return "must define prompt as a string"
+        if not isinstance(route_config.get("deliver", "log"), str):
+            return "must define deliver as a string"
+        if not isinstance(route_config.get("deliver_extra", {}), dict):
+            return "must define deliver_extra as a mapping"
+        try:
+            WebhookAdapter._delivery_policy_hash(route_config)
+        except (TypeError, ValueError):
+            return "contains a non-serializable delivery policy"
+        allowed = route_config.get("allowed_target_profiles")
+        if (
+            not isinstance(allowed, list)
+            or not allowed
+            or any(not isinstance(value, str) or not value.strip() for value in allowed)
+        ):
+            return "must define a non-empty allowed_target_profiles string list"
+        normalized = [value.strip() for value in allowed]
+        if len(set(normalized)) != len(normalized):
+            return "contains duplicate allowed_target_profiles"
+        target_toolsets = route_config.get("allowed_target_toolsets")
+        if not isinstance(target_toolsets, dict):
+            return "must define allowed_target_toolsets for every target profile"
+        from hermes_cli.tools_config import (
+            CONFIGURABLE_TOOLSETS,
+            _get_platform_tools,
+            _get_plugin_toolset_keys,
+        )
+
+        known_toolsets = {
+            key for key, _label, _description in CONFIGURABLE_TOOLSETS
+        } | _get_plugin_toolset_keys()
+
+        for target in normalized:
+            configured = target_toolsets.get(target)
+            if (
+                not isinstance(configured, list)
+                or not configured
+                or any(
+                    not isinstance(value, str) or not value.strip()
+                    for value in configured
+                )
+            ):
+                return f"must define non-empty allowed_target_toolsets for {target!r}"
+            requested = [value.strip() for value in configured]
+            if any(value not in known_toolsets for value in requested):
+                return f"contains unknown or webhook-restricted toolsets for {target!r}"
+            effective = sorted(
+                _get_platform_tools(
+                    {"platform_toolsets": {"webhook": requested}}, "webhook"
+                )
+            )
+            if set(effective) != set(requested):
+                return f"contains unknown or webhook-restricted toolsets for {target!r}"
+        max_depth = route_config.get("max_handoff_depth", 1)
+        if isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < 1:
+            return "must set max_handoff_depth to a positive integer"
+        max_concurrency = route_config.get("max_handoff_concurrency", 1)
+        if (
+            isinstance(max_concurrency, bool)
+            or not isinstance(max_concurrency, int)
+            or max_concurrency < 1
+        ):
+            return "must set max_handoff_concurrency to a positive integer"
+        if route_config.get("deliver_only"):
+            return "cannot combine trusted handoff configuration with deliver_only"
+        return None
+
+    def _served_profile_names(self) -> set[str]:
+        """Return multiplex profiles this gateway is configured to serve."""
+        runner = self.gateway_runner
+        cfg = getattr(runner, "config", None)
+        if not getattr(cfg, "multiplex_profiles", False):
+            return set()
+        from hermes_cli.profiles import profiles_to_serve
+
+        return {
+            name
+            for name, _ in profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None),
+            )
+        }
+
+    def _resolve_trusted_handoff(
+        self,
+        *,
+        route_name: str,
+        route_config: dict,
+        payload: dict,
+        source_profile: str,
+        secret: str,
+    ) -> tuple[Optional[str], Optional[List[str]], Optional[int], Optional[str]]:
+        """Resolve an authenticated, statically bounded profile selector.
+
+        Authority lives only in the reserved ``_hermes`` object from the raw,
+        authenticated request body. Prompt rendering and route scripts never
+        participate in this decision, and callers cannot request toolsets.
+        """
+        dispatch_configured = "allowed_target_profiles" in route_config
+        selector = payload.get("_hermes")
+        ambiguous_keys = {
+            "target_profile",
+            "handoff_depth",
+            "delivery_id",
+            "toolsets",
+        } & set(payload)
+        if dispatch_configured and selector is None and ambiguous_keys:
+            raise ValueError(
+                "Profile handoff selectors must use the reserved _hermes object"
+            )
+        if selector is None:
+            return None, None, None, None
+        if not dispatch_configured:
+            raise ValueError("This webhook route does not allow profile handoffs")
+        if route_name not in self._static_routes:
+            raise ValueError("Trusted profile handoffs require a static config.yaml route")
+        if secret == _INSECURE_NO_AUTH:
+            raise ValueError("Trusted profile handoffs require webhook authentication")
+        if not isinstance(selector, dict):
+            raise ValueError("_hermes must be an object")
+        unexpected = set(selector) - {
+            "target_profile",
+            "handoff_depth",
+            "delivery_id",
+        }
+        if unexpected:
+            raise ValueError("_hermes contains unsupported authority fields")
+
+        target = selector.get("target_profile")
+        depth = selector.get("handoff_depth")
+        delivery_id = selector.get("delivery_id")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("_hermes.target_profile must be a non-empty string")
+        target = target.strip()
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 1:
+            raise ValueError("_hermes.handoff_depth must be a positive integer")
+        if depth > route_config.get("max_handoff_depth", 1):
+            raise ValueError("Requested handoff depth exceeds the route limit")
+        if (
+            not isinstance(delivery_id, str)
+            or _HANDOFF_DELIVERY_ID_RE.fullmatch(delivery_id) is None
+        ):
+            raise ValueError(
+                "_hermes.delivery_id must be a signed 1-128 character identifier"
+            )
+
+        allowed = [value.strip() for value in route_config["allowed_target_profiles"]]
+        if target not in allowed:
+            raise ValueError("Requested target profile is not allowed for this route")
+        if target not in self._served_profile_names():
+            raise ValueError("Requested target profile is not served by this gateway")
+
+        configured = route_config["allowed_target_toolsets"][target]
+        from hermes_cli.tools_config import _get_platform_tools
+
+        toolsets = sorted(
+            _get_platform_tools(
+                {
+                    "platform_toolsets": {
+                        "webhook": [value.strip() for value in configured]
+                    }
+                },
+                "webhook",
+            )
+        )
+        logger.info(
+            "[webhook] trusted handoff route=%s source_profile=%s target_profile=%s "
+            "toolsets=%s depth=%d delivery=%s",
+            route_name,
+            source_profile,
+            target,
+            ",".join(toolsets),
+            depth,
+            route_config.get("deliver", "log"),
+        )
+        return target, toolsets, depth, delivery_id
 
     # ------------------------------------------------------------------
     # HTTP handlers
@@ -526,6 +880,13 @@ class WebhookAdapter(BasePlatformAdapter):
             new_dynamic: Dict[str, dict] = {}
             for k, v in data.items():
                 if k in self._static_routes:
+                    continue
+                if "allowed_target_profiles" in v:
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: trusted profile "
+                        "handoffs are only allowed on static config.yaml routes.",
+                        k,
+                    )
                     continue
                 effective_secret = v.get("secret", self._global_secret)
                 if not effective_secret:
@@ -733,6 +1094,48 @@ class WebhookAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": "Cannot parse body"}, status=400
                 )
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"error": "Webhook payload must be a JSON object"}, status=400
+            )
+
+        source_profile = profile or "default"
+        try:
+            handoff_target, handoff_toolsets, handoff_depth, handoff_delivery_id = (
+                self._resolve_trusted_handoff(
+                    route_name=route_name,
+                    route_config=route_config,
+                    payload=payload,
+                    source_profile=source_profile,
+                    secret=secret,
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "[webhook] Rejected trusted handoff route=%s source_profile=%s: %s",
+                route_name,
+                source_profile,
+                exc,
+            )
+            return web.json_response({"error": str(exc)}, status=403)
+        if handoff_target:
+            # GitLab's route token authenticates a caller but does not bind the
+            # request body. A privileged delivery identity in that body could
+            # therefore be changed without invalidating the token, so this auth
+            # mode is not eligible for trusted handoff.
+            if request.headers.get("X-Gitlab-Token"):
+                return web.json_response(
+                    {
+                        "error": "Trusted profile handoffs require a body-binding signature"
+                    },
+                    status=403,
+                )
+            # Keep the authenticated authority envelope out of untrusted task
+            # text, filter/transform scripts, raw payload persistence, and
+            # prompt templates (including {__raw__}). The resolved immutable
+            # values above are the only handoff state used downstream.
+            payload = dict(payload)
+            payload.pop("_hermes", None)
 
         # Check event type filter
         event_type = (
@@ -770,6 +1173,75 @@ class WebhookAdapter(BasePlatformAdapter):
                 }
             )
 
+        # Reserve privileged execution before route scripts or any other
+        # side-effectful processing. The per-route lock makes duplicate lookup,
+        # capacity enforcement, durable claim, and active-slot insertion one
+        # event-loop critical section. The SQLite claim remains the cross-process
+        # authority for duplicate IDs.
+        handoff_admission_transferred = False
+        if handoff_target:
+            delivery_id = handoff_delivery_id
+            handoff_session_chat_id = (
+                f"webhook:{route_name}:trusted-handoff:{delivery_id}"
+            )
+            lock = self._handoff_locks.setdefault(route_name, asyncio.Lock())
+            try:
+                from gateway.webhook_replay import (
+                    claim_handoff_delivery,
+                    is_handoff_delivery_claimed,
+                )
+
+                async with lock:
+                    already_claimed = await asyncio.to_thread(
+                        is_handoff_delivery_claimed,
+                        route_name=route_name,
+                        source_profile=source_profile,
+                        delivery_id=delivery_id,
+                    )
+                    if already_claimed:
+                        return web.json_response(
+                            {"status": "duplicate", "delivery_id": delivery_id},
+                            status=200,
+                        )
+                    active = self._active_handoffs[route_name]
+                    max_concurrency = route_config.get("max_handoff_concurrency", 1)
+                    if len(active) >= max_concurrency:
+                        return web.json_response(
+                            {"error": "Trusted handoff concurrency limit exceeded"},
+                            status=429,
+                        )
+                    is_new_delivery = await asyncio.to_thread(
+                        claim_handoff_delivery,
+                        route_name=route_name,
+                        source_profile=source_profile,
+                        delivery_id=delivery_id,
+                    )
+                    if not is_new_delivery:
+                        return web.json_response(
+                            {"status": "duplicate", "delivery_id": delivery_id},
+                            status=200,
+                        )
+                    active.add(handoff_session_chat_id)
+                    request_task = asyncio.current_task()
+                    if request_task is not None:
+                        def _release_untransferred_handoff(_completed_task) -> None:
+                            if not handoff_admission_transferred:
+                                active.discard(handoff_session_chat_id)
+
+                        request_task.add_done_callback(
+                            _release_untransferred_handoff
+                        )
+            except Exception:
+                logger.exception(
+                    "[webhook] Failed to claim trusted handoff route=%s delivery=%s",
+                    route_name,
+                    delivery_id,
+                )
+                return web.json_response(
+                    {"error": "Trusted handoff replay protection unavailable"},
+                    status=503,
+                )
+
         if route_config.get("script"):
             # run_route_script shells out (subprocess.run, up to its timeout);
             # run it in a worker thread so it can't block the gateway event loop.
@@ -779,6 +1251,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 payload,
             )
             if not keep:
+                if handoff_target:
+                    self._active_handoffs[route_name].discard(
+                        handoff_session_chat_id
+                    )
                 logger.info(
                     "[webhook] script ignored event=%s route=%s",
                     event_type,
@@ -828,19 +1304,22 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
+        # Ordinary routes keep their existing transport-ID behavior and
+        # in-memory cache. Trusted handoffs were durably claimed above.
+        if not handoff_target:
+            delivery_id = request.headers.get(
+                "X-GitHub-Delivery",
+                request.headers.get(
+                    "svix-id",
+                    request.headers.get(
+                        "X-Request-ID", str(int(time.time() * 1000))
+                    ),
+                ),
+            )
+            handoff_session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
+        if not handoff_target and not self._record_delivery_id(delivery_id, now):
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -909,7 +1388,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = handoff_session_chat_id
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -935,6 +1414,31 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
+        if handoff_target and handoff_toolsets and handoff_depth is not None:
+            source.profile = handoff_target
+            source.transport_profile = source_profile
+            source.trusted_handoff_depth = handoff_depth
+            source.transport_deliver = deliver_config["deliver"]
+            source.transport_deliver_extra = dict(
+                deliver_config.get("deliver_extra") or {}
+            )
+            source.transport_delivery_policy_hash = self._delivery_policy_hash(
+                route_config
+            )
+            delivery_extra = deliver_config.get("deliver_extra") or {}
+            delivery_chat_id = delivery_extra.get("chat_id")
+            source.provenance = {
+                "ingress_platform": "webhook",
+                "ingress_route": route_name,
+                "source_profile": source_profile,
+                "target_profile": handoff_target,
+                "effective_toolsets": list(handoff_toolsets),
+                "delivery_platform": deliver_config["deliver"],
+                "delivery_chat_id": (
+                    str(delivery_chat_id) if delivery_chat_id is not None else None
+                ),
+                "handoff_depth": handoff_depth,
+            }
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
@@ -958,6 +1462,39 @@ class WebhookAdapter(BasePlatformAdapter):
         # fire-and-forget: it spawns ``_process_message_background`` and
         # returns before the run starts, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
+        if handoff_target:
+            handoff_admission_transferred = True
+
+            def _release_if_processing_did_not_start(completed_task) -> None:
+                failed = completed_task.cancelled()
+                if not failed:
+                    try:
+                        failed = completed_task.exception() is not None
+                    except (asyncio.CancelledError, asyncio.InvalidStateError):
+                        failed = True
+                try:
+                    from gateway.session import build_session_key
+
+                    session_key = build_session_key(
+                        event.source,
+                        group_sessions_per_user=self.config.extra.get(
+                            "group_sessions_per_user", True
+                        ),
+                        thread_sessions_per_user=self.config.extra.get(
+                            "thread_sessions_per_user", False
+                        ),
+                        profile=self._session_key_profile(event.source),
+                    )
+                    owner = self._session_tasks.get(session_key)
+                except Exception:
+                    owner = None
+                    failed = True
+                if failed or owner is None:
+                    self._active_handoffs[route_name].discard(
+                        handoff_session_chat_id
+                    )
+
+            task.add_done_callback(_release_if_processing_did_not_start)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
@@ -967,6 +1504,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 "route": route_name,
                 "event": event_type,
                 "delivery_id": delivery_id,
+                **(
+                    {"target_profile": handoff_target}
+                    if handoff_target
+                    else {}
+                ),
             },
             status=202,
         )
@@ -993,7 +1535,14 @@ class WebhookAdapter(BasePlatformAdapter):
         ``end_session()`` is first-reason-wins and no-ops on an already-ended
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
-        await self._end_webhook_session(event, event.source.chat_id)
+        try:
+            await self._end_webhook_session(event, event.source.chat_id)
+        finally:
+            # Capacity is authoritative transport state, not descriptive
+            # provenance. Restored rows from older or partially-written state
+            # may lack provenance but still carry a validated transport owner.
+            if getattr(event.source, "transport_profile", None) is not None:
+                self.release_restored_source(event.source)
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

@@ -60,6 +60,8 @@ from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
 )
+# Import the independent send-time control so every delivery path shares it.
+from cron.delivery_gate import delivery_gate_check, suppress_and_audit
 
 logger = logging.getLogger(__name__)
 
@@ -2946,6 +2948,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         if _policy_dropped > 0
         else []
     )
+
+    # Enforce paging at send time so hand-edited records and scheduler errors
+    # cannot bypass the out-of-band control and flood chat notifications.
+    allowed, reason = delivery_gate_check(job, targets)
+    if not allowed:
+        suppress_and_audit(job, targets, delivery_content)
+        logger.warning("Job '%s': delivery suppressed by gate (%s)", job["id"], reason)
+        return None
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session

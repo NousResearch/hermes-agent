@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _ensure_acp_launcher
+from hermes_cli.main import _ensure_acp_launcher, _ensure_hermes_agent_launcher
 
 
 @pytest.fixture
@@ -60,3 +60,33 @@ def test_unwritable_bin_dir_is_skipped(fake_home):
         assert not (fake_home / "hermes-acp").exists()
     finally:
         fake_home.chmod(0o755)
+
+
+def test_update_self_heals_hermes_agent_launcher(fake_home):
+    """Existing installs should gain the declared `hermes-agent` command."""
+    (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    _ensure_hermes_agent_launcher()
+
+    launcher = fake_home / "hermes-agent"
+    assert launcher.is_file()
+    assert launcher.stat().st_mode & stat.S_IXUSR, "launcher must be executable"
+    text = launcher.read_text(encoding="utf-8")
+    assert "unset PYTHONPATH" in text
+    assert "unset PYTHONHOME" in text
+    assert "run_agent.py" in text
+
+
+def test_hermes_agent_repair_does_not_follow_symlink_into_venv(fake_home, tmp_path):
+    """Never overwrite a symlinked venv/bin/hermes-agent console script."""
+    (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
+    console_script = tmp_path / "venv" / "bin" / "hermes-agent"
+    console_script.parent.mkdir(parents=True)
+    marker = "#!/usr/bin/env python\n# real hermes-agent console script\n"
+    console_script.write_text(marker, encoding="utf-8")
+    (fake_home / "hermes-agent").symlink_to(console_script)
+
+    _ensure_hermes_agent_launcher()
+
+    assert console_script.read_text(encoding="utf-8") == marker
+    assert (fake_home / "hermes-agent").is_symlink()

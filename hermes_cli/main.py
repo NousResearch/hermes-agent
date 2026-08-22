@@ -4874,6 +4874,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_park_stashed_changes",
         "_ensure_acp_launcher",
         "_ensure_fhs_path_guard",
+        "_ensure_hermes_agent_launcher",
         "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
         "_for_each_systemd_gateway_unit",

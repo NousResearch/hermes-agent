@@ -3470,6 +3470,50 @@ def _ensure_acp_launcher() -> None:
             continue
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
+def _ensure_hermes_agent_launcher() -> None:
+    """Self-heal: install a ``hermes-agent`` launcher next to ``hermes``.
+
+    Fresh installs expose the direct agent runner from ``scripts/install.sh``;
+    this repair path gives older installs the same command after
+    ``hermes update``.  The shim runs the checked-in ``run_agent.py`` with the
+    current interpreter, which works for source/venv installs and packaged
+    site-packages layouts without depending on the venv ``bin`` directory being
+    on the user's login-shell PATH.
+
+    No-op on Windows (install.ps1 puts ``venv\\Scripts`` on PATH) and wherever
+    a ``hermes-agent`` entry already exists next to the ``hermes`` command.
+    Unwritable directories are skipped silently.  Idempotent.
+    """
+    if _m().sys.platform == "win32":
+        return
+    run_agent = Path(__file__).resolve().parent.parent / "run_agent.py"
+    if not run_agent.is_file():
+        return
+    python = Path(_m().sys.executable)
+    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
+        hermes_cmd = bin_dir / "hermes"
+        agent_cmd = bin_dir / "hermes-agent"
+        try:
+            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
+                continue
+            # Already present — a console script, earlier shim, or symlink.
+            # is_symlink() catches broken symlinks that exists() would miss;
+            # never follow-and-overwrite an old symlink into the venv.
+            if agent_cmd.exists() or agent_cmd.is_symlink():
+                continue
+            shim = (
+                "#!/usr/bin/env bash\n"
+                "# Hermes Agent — direct agent launcher (written by `hermes update`).\n"
+                "unset PYTHONPATH\n"
+                "unset PYTHONHOME\n"
+                f'exec "{python}" "{run_agent}" "$@"\n'
+            )
+            agent_cmd.write_text(shim, encoding="utf-8")
+            agent_cmd.chmod(agent_cmd.stat().st_mode | 0o755)
+        except OSError:
+            continue
+        print(f"  ✓ Installed hermes-agent launcher → {agent_cmd}")
+
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # Sibling-profile snapshot ids from the current run's pre-update backup
 # ({profile: snapshot_id}) — consumed by the post-update per-profile
@@ -7048,6 +7092,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _ensure_acp_launcher()
         except Exception as e:
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
+
+        # Self-heal the hermes-agent launcher for installs that predate it, so
+        # callers resolving the declared console-script name on PATH work after
+        # an update without reinstalling.  No-op on Windows and when present.
+        try:
+            _ensure_hermes_agent_launcher()
+        except Exception as e:
+            logger.debug("hermes-agent launcher self-heal failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the

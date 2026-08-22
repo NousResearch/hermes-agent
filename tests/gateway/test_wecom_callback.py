@@ -63,8 +63,33 @@ class TestWecomCallbackEventConstruction:
         assert event.source is not None
         assert event.source.user_id == "zhangsan"
         assert event.source.chat_id == "ww1234567890:zhangsan"
+        assert event.source.scope_id == "ww1234567890"
         assert event.message_id == "123456789"
         assert event.text == "\u4f60\u597d"
+
+    def test_same_user_in_different_corporations_has_distinct_scope(self):
+        adapter = WecomCallbackAdapter(_config())
+
+        def event_for(corp_id):
+            return adapter._build_event(
+                _app(corp_id=corp_id),
+                f"""
+                <xml>
+                  <ToUserName>{corp_id}</ToUserName>
+                  <FromUserName>alice</FromUserName>
+                  <CreateTime>1710000000</CreateTime>
+                  <MsgType>text</MsgType>
+                  <Content>hello</Content>
+                  <MsgId>{corp_id}-1</MsgId>
+                </xml>
+                """,
+            )
+
+        corp_a = event_for("corpA")
+        corp_b = event_for("corpB")
+        assert corp_a.source.user_id == corp_b.source.user_id == "alice"
+        assert corp_a.source.scope_id == "corpA"
+        assert corp_b.source.scope_id == "corpB"
 
 
 class TestWecomCallbackRouting:

@@ -202,6 +202,7 @@ async def handle_meeting_invited_event(adapter: Any, data: Any) -> None:
         user_id=sender_profile.get("user_id") or inviter.user_id or inviter.open_id,
         user_name=user_name,
         user_id_alt=sender_profile.get("user_id_alt") or inviter.union_id or None,
+        scope_id=adapter._event_identity_scope(data),
     )
     event = MessageEvent(
         text=build_meeting_invite_prompt(payload),

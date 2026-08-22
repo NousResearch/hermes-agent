@@ -423,6 +423,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=user_id,
             user_name=user_id,
+            scope_id=corp_id,
         )
         return MessageEvent(
             text=content,

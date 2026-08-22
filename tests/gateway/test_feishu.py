@@ -546,6 +546,28 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         adapter._handle_message_with_guards.assert_not_awaited()
 
+    def test_reaction_source_is_scoped_by_app_and_tenant(self):
+        adapter = self._build_reaction_adapter(msg_sender_id="cli_self_app")
+        event = SimpleNamespace(
+            message_id="om_self_msg",
+            user_id=SimpleNamespace(
+                open_id="ou_human", user_id="u_human", union_id=None
+            ),
+            reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+        )
+        data = SimpleNamespace(
+            event=event,
+            header=SimpleNamespace(tenant_key="tenant_a"),
+        )
+
+        asyncio.run(
+            adapter._handle_reaction_event("im.message.reaction.created_v1", data)
+        )
+
+        adapter._handle_message_with_guards.assert_awaited_once()
+        routed = adapter._handle_message_with_guards.call_args.args[0]
+        assert routed.source.scope_id == "cli_self_app:tenant_a"
+
 
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig

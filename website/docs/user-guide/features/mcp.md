@@ -356,6 +356,19 @@ mcp_servers:
 
 An explicit entry in the server's `headers` mapping with the same name (any casing) always wins; the identity header never overrides your own header config. Invalid `identity_header` blocks are warned about and ignored — they never block the server from connecting. On stdio servers the key is ignored with a warning (stdio transports have no headers).
 
+## Gateway session identity on tools/call
+
+Messaging-gateway sessions (Telegram, Discord, ...) can attach the current qualified caller identity to every MCP `tools/call` as `params._meta`, without putting it in the model-visible tool arguments. The value is an object containing `platform`, `scope_id`, and `user_id`, so workspace- or server-local user IDs cannot collide across tenants. `scope_id` is an empty string on platforms whose user namespace is global. Configure the `_meta` key per server; the default is `nousresearch.hermes/user_id`:
+
+```yaml
+mcp_servers:
+  team_api:
+    url: "https://mcp.team.example.com/mcp"
+    session_user_id_meta_key: "nousresearch.hermes/user_id"
+```
+
+Omit the key to keep the default. Keys that use a reserved MCP prefix (`mcp` / `modelcontextprotocol` as a non-final label) are warned about and ignored. When no complete gateway identity is bound (CLI, cron), `_meta` is omitted.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -372,6 +385,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `identity_header` | mapping | Optional per-user identity header for HTTP/SSE servers — `{name, value_from: static\|profile, value}` |
+| `session_user_id_meta_key` | string | `tools/call` `params._meta` key for the qualified gateway caller identity (default `nousresearch.hermes/user_id`) |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake) |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |

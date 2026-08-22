@@ -267,6 +267,28 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
         _cleanup(mcp_tool, "srv")
 
 
+def test_dead_session_without_reconnect_signal_returns_clean_error(monkeypatch, tmp_path):
+    """A server without reconnect machinery must not fall through to call_tool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server = _install_stub_server(mcp_tool, "srv", None)
+    server.session = None
+    server._reconnect_event = None
+    monkeypatch.setattr(
+        mcp_tool, "_wait_for_server_session_ready", lambda *_a, **_kw: False
+    )
+
+    try:
+        result = json.loads(_make_tool_handler("srv", "tool1", 10.0)({}))
+        assert "not connected" in result.get("error", "").lower(), result
+        assert "nonetype" not in result.get("error", "").lower(), result
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     """Once the transport comes back (session repopulated + breaker reset by
     the run loop), the next call must go straight through — proving the wedge

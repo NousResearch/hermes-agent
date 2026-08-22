@@ -62,6 +62,7 @@ def _make_card_action_data(
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
     return SimpleNamespace(
+        header=SimpleNamespace(tenant_key="tenant_a"),
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
@@ -266,6 +267,7 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+        assert event.source.scope_id == "tenant_a"
 
 
 # ===========================================================================

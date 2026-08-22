@@ -1294,6 +1294,9 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#     # Optional: tools/call params._meta key for the qualified gateway principal
+#     # (platform, scope_id, user_id). Default: nousresearch.hermes/user_id
+#     # session_user_id_meta_key: "nousresearch.hermes/user_id"
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

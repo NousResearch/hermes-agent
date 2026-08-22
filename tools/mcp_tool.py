@@ -42,6 +42,10 @@ Example config::
           value_from: "static" # "static" (default) or "profile"
           value: "alice"       # required for static; profile mode uses the
                                # active Hermes profile name
+        session_user_id_meta_key: "nousresearch.hermes/user_id"
+                               # tools/call params._meta key for the qualified
+                               # gateway principal (platform/scope/user). Omit
+                               # to use the default above.
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -1628,6 +1632,83 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
         return headers
     headers[name] = value
     return headers
+
+
+# Default tools/call ``_meta`` key for the gateway session user id.
+# Override per server with ``mcp_servers.<name>.session_user_id_meta_key``.
+# Not a protocol-reserved ``mcp`` / ``modelcontextprotocol`` prefix.
+_MCP_SESSION_USER_ID_META_KEY = "nousresearch.hermes/user_id"
+
+
+def _resolve_session_user_id_meta_key(
+    server_name: str, config: Optional[dict]
+) -> str:
+    """Return the tools/call ``_meta`` key for this server's session user id.
+
+    Missing / blank config uses ``_MCP_SESSION_USER_ID_META_KEY``. Invalid
+    values (non-string, reserved MCP prefix) warn and fall back to the
+    default — they must never skip the identity or break the call.
+    """
+    raw = (config or {}).get("session_user_id_meta_key", _MCP_SESSION_USER_ID_META_KEY)
+    if not isinstance(raw, str) or not raw.strip():
+        if raw is not None:
+            logger.warning(
+                "MCP server '%s': session_user_id_meta_key must be a "
+                "non-empty string (got %r) — using default %s",
+                server_name, raw, _MCP_SESSION_USER_ID_META_KEY,
+            )
+        return _MCP_SESSION_USER_ID_META_KEY
+    key = raw.strip()
+    if _is_reserved_mcp_meta_key(key):
+        logger.warning(
+            "MCP server '%s': session_user_id_meta_key %r uses a reserved "
+            "MCP prefix — using default %s",
+            server_name, key, _MCP_SESSION_USER_ID_META_KEY,
+        )
+        return _MCP_SESSION_USER_ID_META_KEY
+    return key
+
+
+def _mcp_session_identity_meta(
+    server_name: str = "",
+    config: Optional[dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return tools/call ``meta`` for the current gateway principal.
+
+    A bare platform-local user id is not an authorization principal: Slack
+    ids are workspace-scoped, for example. Preserve the complete identity
+    namespace so MCP servers cannot collapse callers from different tenants.
+    Empty / unset platform or user → ``None`` so non-gateway calls remain
+    unchanged (CLI, cron, tests that never bound a session).
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return None
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip()
+    scope_id = (get_session_env("HERMES_SESSION_SCOPE_ID", "") or "").strip()
+    user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+    if not platform or not user_id:
+        return None
+    key = _resolve_session_user_id_meta_key(server_name, config)
+    return {
+        key: {
+            "platform": platform,
+            "scope_id": scope_id,
+            "user_id": user_id,
+        }
+    }
+
+
+def _call_tool_accepts_meta(call_tool) -> bool:
+    """True when ``session.call_tool`` can take a ``meta`` kwarg."""
+    try:
+        params = inspect.signature(call_tool).parameters
+    except (TypeError, ValueError):
+        return True
+    if "meta" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _make_redirect_header_stripper(
@@ -5818,6 +5899,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        # Snapshot on this thread: ``_run_on_mcp_loop`` does not copy
+        # gateway session ContextVars onto the MCP loop.
+        call_meta = _mcp_session_identity_meta(
+            server_name, getattr(server, "_config", None),
+        )
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -5827,7 +5914,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    call_kwargs = {}
+                    if (
+                        call_meta is not None
+                        and _call_tool_accepts_meta(server.session.call_tool)
+                    ):
+                        call_kwargs["meta"] = call_meta
+                    result = await server.session.call_tool(
+                        tool_name, arguments=args, **call_kwargs
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

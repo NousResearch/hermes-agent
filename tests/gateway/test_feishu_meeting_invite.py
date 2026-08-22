@@ -27,6 +27,7 @@ def _make_payload(event_id="evt_1"):
         "header": {
             "event_id": event_id,
             "event_type": "vc.bot.meeting_invited_v1",
+            "tenant_key": "tenant_a",
         },
         "event": {
             "meeting": {
@@ -72,6 +73,7 @@ def _make_payload_with_numeric_inviter_id():
 class _Adapter:
     def __init__(self, duplicate=False):
         self.duplicate = duplicate
+        self._app_id = "cli_app"
         self.events = []
         self.dedup_keys = []
         self.profile_requests = []
@@ -82,6 +84,11 @@ class _Adapter:
 
     def build_source(self, **kwargs):
         return SimpleNamespace(**kwargs)
+
+    def _event_identity_scope(self, data):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        return FeishuAdapter._event_identity_scope(self, data)
 
     async def _resolve_sender_profile(self, sender_id):
         self.profile_requests.append(sender_id)
@@ -158,6 +165,7 @@ class TestMeetingInviteHandler(unittest.TestCase):
         self.assertEqual(event.source.user_name, "Resolved Inviter")
         self.assertEqual(event.source.chat_name, "Resolved Inviter")
         self.assertEqual(event.source.user_id_alt, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
+        self.assertEqual(event.source.scope_id, "cli_app:tenant_a")
         self.assertEqual(len(adapter.profile_requests), 1)
         self.assertEqual(adapter.profile_requests[0].open_id, "ou_390b35dca44816efc9afa812aaff3a69")
         self.assertEqual(adapter.profile_requests[0].user_id, "e65g874e")

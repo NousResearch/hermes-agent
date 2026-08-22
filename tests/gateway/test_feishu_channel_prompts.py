@@ -19,6 +19,7 @@ def _build_adapter(extra=None):
 
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter.config = PlatformConfig(extra=extra or {})
+    adapter._app_id = "cli_app"
     adapter._bot_open_id = "ou_bot"
     adapter._bot_user_id = ""
     adapter._bot_name = "Hermes"
@@ -47,7 +48,11 @@ def _run_inbound(adapter, chat_id="oc_chat"):
     )
     asyncio.run(
         adapter._process_inbound_message(
-            data=message, message=message, sender_id=None, chat_type="group", message_id="m",
+            data=SimpleNamespace(header=SimpleNamespace(tenant_key="tenant_a")),
+            message=message,
+            sender_id=None,
+            chat_type="group",
+            message_id="m",
         )
     )
     return adapter._dispatch_inbound_event.call_args.args[0]
@@ -65,5 +70,18 @@ def test_inbound_event_carries_channel_prompt():
     adapter = _build_adapter({"channel_prompts": {"oc_chat": "Feishu role prompt."}})
     event = _run_inbound(adapter, chat_id="oc_chat")
     assert event.channel_prompt == "Feishu role prompt."
+
+
+def test_inbound_source_is_scoped_by_app_and_tenant():
+    adapter = _build_adapter()
+    _run_inbound(adapter)
+    assert adapter.build_source.call_args.kwargs["scope_id"] == "cli_app:tenant_a"
+
+
+def test_identity_scope_accepts_mapping_event_payload():
+    adapter = _build_adapter()
+    assert adapter._event_identity_scope(
+        {"header": {"tenant_key": "tenant_b"}}
+    ) == "cli_app:tenant_b"
 
 

@@ -28,6 +28,7 @@ from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
 from utils import env_var_enabled, is_truthy_value
+from agent.file_safety import build_write_denied_paths
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +401,31 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
+# Cross-profile-aware deny paths from agent.file_safety (e.g. .hermes/.env,
+# profiles/*/secrets/*, *.pem). Merged into the shell write-gate so the
+# terminal tool honors the same deny list as the file-operations tool.
+# file_safety returns OS-native absolute paths (realpath, so backslashes on
+# Windows). Shell commands may use ~, /, or \ separators, so we register
+# each denied path in all three forms.
+import ntpath
+import posixpath
+
+_home = os.path.expanduser("~")
+_fs_paths = sorted(build_write_denied_paths(_home))
+_fs_variants = set()
+for _p in _fs_paths:
+    _fs_variants.add(_p)
+    # tilde form
+    if _p.startswith(_home):
+        _fs_variants.add("~" + _p[len(_home):])
+    # forward-slash form (Windows paths may be written with / in shells)
+    _fs_variants.add(_p.replace("\\", "/"))
+    if _p.startswith(_home):
+        _fs_variants.add(("~" + _p[len(_home):]).replace("\\", "/"))
+_FILE_SAFETY_DENY_TARGET = (
+    "(?:" + "|".join(re.escape(p) for p in sorted(_fs_variants)) + ")"
+)
+_COMBINED_WRITE_TARGET = rf'(?:{_SENSITIVE_WRITE_TARGET}|{_FILE_SAFETY_DENY_TARGET})'
 _USER_SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SSH_SENSITIVE_PATH}|'
     rf'{_SHELL_RC_FILES}|'
@@ -902,10 +928,16 @@ DANGEROUS_PATTERNS = [
     # `echo <base64> | openssl base64 -d | bash` decodes arbitrary commands.
     (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
-    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
-    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
+    (rf'\btee\b.*["\']?{_COMBINED_WRITE_TARGET}', "overwrite system/project/file_safety-denied path via tee"),
+    (rf'>>?\s*["\']?{_COMBINED_WRITE_TARGET}', "overwrite system/project/file_safety-denied path via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
+    # file_safety cross-profile deny paths (.hermes/.env, secrets/, *.pem, profiles/*/secrets)
+    # wired into the shell guard so `cp ~/.hermes/.env /tmp/` etc. also requires approval.
+    (rf'\btee\b.*["\']?{_FILE_SAFETY_DENY_TARGET}', "overwrite file_safety-denied path via tee"),
+    (rf'>>?\s*["\']?{_FILE_SAFETY_DENY_TARGET}', "overwrite file_safety-denied path via redirection"),
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_FILE_SAFETY_DENY_TARGET}["\']?{_COMMAND_TAIL}', "overwrite file_safety-denied path via cp/mv/install"),
+    (rf'\bsed\b[^|]*\bi?\s["\']?{_FILE_SAFETY_DENY_TARGET}', "edit file_safety-denied path via sed -i"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # find -exec rm / -execdir rm — the -execdir variant (same semantics,
     # runs in the directory of each match) was previously missed. Claude

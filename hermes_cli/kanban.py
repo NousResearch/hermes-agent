@@ -637,6 +637,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Override the live-claim guard: block a running, claimed task "
+            "even without owning its run (clears the worker's claim)."
+        ),
+    )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -2350,6 +2357,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                force=bool(getattr(args, "force", False)),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)

@@ -434,6 +434,49 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+def test_block_task_refuses_to_clear_live_claim_without_ownership(kanban_home):
+    """M1 regression (mirrors request_review's live-claim guard, 1810cfc8dd).
+
+    ``block_task`` on a running+claimed task without ``expected_run_id`` must
+    not silently NULL the live worker's ``claim_lock``/``worker_pid`` and end
+    its in-flight run out from under it. ``force=True`` (explicit human/CLI
+    override) and the worker path (``expected_run_id=<own run>``) both still
+    work.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="live claim block", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+
+        # 1) No run id, no force -> refused; live claim untouched.
+        assert kb.block_task(conn, tid, reason="stolen") is False
+        row = conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["claim_lock"] is not None
+        assert row["current_run_id"] == claimed.current_run_id
+
+        # 2) Worker path: proving ownership via expected_run_id works.
+        assert kb.block_task(
+            conn, tid, reason="worker-owned",
+            expected_run_id=claimed.current_run_id,
+        ) is True
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+    # 3) force=True: explicit human override on a fresh live-claimed task.
+    conn = kb.connect()
+    try:
+        tid2 = kb.create_task(conn, title="forced block", assignee="worker")
+        assert kb.claim_task(conn, tid2) is not None
+        assert kb.block_task(conn, tid2, reason="operator override", force=True) is True
+        assert kb.get_task(conn, tid2).status == "blocked"
+    finally:
+        conn.close()
 
 
 

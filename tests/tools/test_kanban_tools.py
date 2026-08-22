@@ -46,8 +46,8 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
-    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
+    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK and
+    HERMES_KANBAN_RUN_ID set after we've created and claimed the task."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -62,10 +62,17 @@ def worker_env(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    # Real worker spawns get this alongside HERMES_KANBAN_TASK (see
+    # kanban_db.py's dispatcher env-build) — without it, _worker_run_id()
+    # can't prove ownership of the live claim (M1 guard on block_task/
+    # request_review), so kanban_block/request_review calls in this fixture's
+    # tests would be refused as if from an unrelated caller.
+    if claimed is not None and claimed.current_run_id is not None:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
     return tid
 
 

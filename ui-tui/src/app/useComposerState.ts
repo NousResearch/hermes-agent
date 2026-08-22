@@ -33,6 +33,30 @@ import { getUiState } from './uiStore.js'
 const TOKEN_MAX_COUNT = 32
 const TOKEN_MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
+/**
+ * Merge an asynchronously-resolved attachment result into the composer line.
+ *
+ * `next.value` is built from the `captured` line at the time the attach RPC
+ * was issued. The line can change while the RPC is in flight — most notably a
+ * `/image` slash command, which submits the slash text and CLEARS the line
+ * before the token lands. Writing the stale captured value back would
+ * resurrect the submitted `/image <path>` text; every subsequent Enter would
+ * re-run it and re-attach the same image, doubling the `[[ Image N ]]`
+ * markers each time (1 → 3 → 7 → …). When the line changed, keep only the NEW
+ * text (token + caption) and append it to the current line.
+ */
+export const mergeAttachmentResult = (
+  captured: string,
+  current: string,
+  next: ComposerPasteResult
+): string => {
+  if (current === captured) {
+    return next.value
+  }
+
+  return current + next.value.slice(captured.length)
+}
+
 const trimTokens = (tokens: ComposerToken[]): ComposerToken[] => {
   let total = 0
   const out: ComposerToken[] = []
@@ -354,7 +378,14 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       void attach(current, current.length).then(next => {
         if (next) {
-          setInput(next.value)
+          // The attach RPC resolves asynchronously; the line may have been
+          // cleared or edited while it was in flight. A `/image` slash
+          // command submits the slash text and clears the line, then the
+          // token lands — writing the STALE captured value back would
+          // resurrect the submitted `/image <path>` text, and every
+          // subsequent Enter would re-run it and re-attach the same image
+          // (the `[[ Image N ]]` markers double each time: 1 → 3 → 7 → …).
+          setInput(mergeAttachmentResult(current, inputRef.current, next))
         }
       })
     },

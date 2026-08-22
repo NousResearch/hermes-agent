@@ -139,7 +139,7 @@ async def login_page(request: Request) -> HTMLResponse:
         request.query_params.get("next", "")
     )
     return HTMLResponse(
-        render_login_html(next_path=next_path),
+        render_login_html(next_path=next_path, base_path=_prefix(request)),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 

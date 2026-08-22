@@ -1,0 +1,182 @@
+name: Reproduce #90950 WAL sidecar split-brain
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repro-90950-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-sqlite-matrix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == 'andrexibiza/hermes-agent' &&
+       github.event.pull_request.head.ref == 'repro/90950-wal-sidecar')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact reproduction head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Build SQLite 3.53.1 and 3.53.4 from official amalgamations
+        env:
+          HERMES_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sqlite-build artifacts/bin artifacts/db
+          actual_head="$(git rev-parse HEAD)"
+          test "$actual_head" = "$HERMES_EVENT_HEAD"
+          printf 'source_head=%s\nevent_head=%s\nworkflow_sha=%s\n' \
+            "$actual_head" "$HERMES_EVENT_HEAD" "$GITHUB_SHA" \
+            > artifacts/trigger.txt
+          python3 - <<'PY' > /tmp/sqlite-build/expected.json
+          import json
+          print(json.dumps({
+              "3530100": {
+                  "version": "3.53.1",
+                  "sqlite3_c_sha3_256": "414432ae5719f6cdc485f3927e12c7ad107e2b8c6b434e5df2eadb5312bfabb5",
+              },
+              "3530400": {
+                  "version": "3.53.4",
+                  "sqlite3_c_sha3_256": "67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16",
+              },
+          }))
+          PY
+
+          for build in 3530100 3530400; do
+            curl --fail --silent --show-error --location \
+              "https://www.sqlite.org/2026/sqlite-amalgamation-${build}.zip" \
+              --output "/tmp/sqlite-build/sqlite-amalgamation-${build}.zip"
+            unzip -q "/tmp/sqlite-build/sqlite-amalgamation-${build}.zip" -d /tmp/sqlite-build
+            source_dir="/tmp/sqlite-build/sqlite-amalgamation-${build}"
+            BUILD="$build" SOURCE_DIR="$source_dir" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          expected = json.loads(Path('/tmp/sqlite-build/expected.json').read_text())
+          digest = hashlib.sha3_256(
+              (Path(os.environ['SOURCE_DIR']) / 'sqlite3.c').read_bytes()
+          ).hexdigest()
+          wanted = expected[os.environ['BUILD']]['sqlite3_c_sha3_256']
+          if digest != wanted:
+              raise SystemExit(
+                  f"SQLite {os.environ['BUILD']} sqlite3.c digest {digest}, expected {wanted}"
+              )
+          print(f"verified sqlite3.c SHA3-256 {digest}")
+          PY
+
+            cc -std=c11 -O2 -g -Wall -Wextra -Werror \
+              -Wno-error=unused-result \
+              -DSQLITE_ENABLE_FTS5=1 -DSQLITE_THREADSAFE=1 \
+              -c scripts/repro_state_db_wal_sidecar.c \
+              -o "/tmp/sqlite-build/probe-${build}.o"
+            cc -std=c11 -O2 -g -w \
+              -DSQLITE_ENABLE_FTS5=1 -DSQLITE_THREADSAFE=1 \
+              -c "${source_dir}/sqlite3.c" \
+              -o "/tmp/sqlite-build/sqlite3-${build}.o"
+            cc "/tmp/sqlite-build/probe-${build}.o" \
+              "/tmp/sqlite-build/sqlite3-${build}.o" \
+              -lpthread -ldl -lm \
+              -o "artifacts/bin/repro-${build}"
+          done
+
+      - name: Run ordinary paths and destructive positive control
+        run: |
+          set -euo pipefail
+          : > artifacts/results.jsonl
+          for build in 3530100 3530400; do
+            binary="artifacts/bin/repro-${build}"
+            for sample in 1 2 3; do
+              for scenario in open_probe set_wal; do
+                timeout 120 "$binary" "$scenario" \
+                  "artifacts/db/${build}-${scenario}-${sample}.db" 400 \
+                  | tee -a artifacts/results.jsonl
+              done
+              timeout 120 "$binary" fts_rebuild \
+                "artifacts/db/${build}-fts_rebuild-${sample}.db" 75 \
+                | tee -a artifacts/results.jsonl
+              timeout 120 "$binary" drop_recreate_fts \
+                "artifacts/db/${build}-drop_recreate_fts-${sample}.db" 40 \
+                | tee -a artifacts/results.jsonl
+              timeout 120 "$binary" forced_unlink \
+                "artifacts/db/${build}-forced_unlink-${sample}.db" 250 \
+                | tee -a artifacts/results.jsonl
+            done
+          done
+
+      - name: Classify receipts without assigning causality
+        env:
+          HERMES_EVENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/summarize_state_db_wal_sidecar.py \
+            artifacts/results.jsonl \
+            --output artifacts/summary.json \
+            | tee artifacts/summary.txt
+          python3 - <<'PY'
+          import json
+          import os
+          import platform
+          import subprocess
+          from pathlib import Path
+
+          source_head = subprocess.run(
+              ['git', 'rev-parse', 'HEAD'],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.strip()
+          event_head = os.environ['HERMES_EVENT_HEAD']
+          if source_head != event_head:
+              raise SystemExit(
+                  f'checked-out source {source_head} does not match event head {event_head}'
+              )
+          stat = subprocess.run(
+              ['stat', '-f', '-c', '%T', '.'],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.strip()
+          receipt = {
+              'schema': 'hermes.state-db-wal-sidecar-environment.v1',
+              'source_head': source_head,
+              'event_head': event_head,
+              'workflow_sha': os.environ.get('GITHUB_SHA'),
+              'runner_os': platform.platform(),
+              'kernel': platform.release(),
+              'filesystem_type': stat,
+              'sqlite_versions': ['3.53.1', '3.53.4'],
+              'source_authenticity': 'sqlite3.c SHA3-256 matched official release logs',
+          }
+          Path('artifacts/environment.json').write_text(
+              json.dumps(receipt, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+          {
+            echo '## #90950 exact SQLite sidecar matrix'
+            echo
+            echo '```json'
+            cat artifacts/summary.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw databases and machine-readable receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: issue-90950-wal-sidecar-reproduction
+          path: artifacts
+          retention-days: 14
+          if-no-files-found: error

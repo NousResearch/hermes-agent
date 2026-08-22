@@ -258,7 +258,7 @@ jobs:
           SNAP_FILE=$(ls hermes-desktop_*.snap)
           snap info "$SNAP_FILE" || true
           # install locally and confirm the wrapper is executable
-          sudo snap install --dangerous "$SNAP_FILE"
+          sudo snap install --dangerous --devmode "$SNAP_FILE"
           test -x /snap/bin/hermes-desktop && echo "OK: Snap" || exit 1
           sudo snap remove hermes-desktop
 

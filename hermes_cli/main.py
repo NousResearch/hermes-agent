@@ -8983,6 +8983,74 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     return [scripts_dir / f"{name}.exe" for name in sorted(names)]
 
 
+
+def _detect_running_inside_hermes_session(scripts_dir: Path) -> bool:
+    """Detect whether ``hermes update`` is running inside an active Hermes session.
+
+    Concurrent-instance detection excludes ancestor shims so a user-initiated
+    update from a Hermes terminal does not false-positive. When the agent
+    shells out ``hermes update``, a farther-up session shim still holds a
+    file lock (#65585). Detect a matching shim beyond the immediate launcher.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import psutil
+    except Exception:
+        return False
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return False
+    try:
+        ancestors = psutil.Process(os.getpid()).parents()
+    except Exception:
+        return False
+    for i, ancestor in enumerate(ancestors):
+        if i == 0:
+            continue
+        try:
+            anc_exe = ancestor.exe()
+        except Exception:
+            continue
+        if not anc_exe:
+            continue
+        try:
+            anc_norm = str(Path(anc_exe).resolve()).lower()
+        except (OSError, ValueError):
+            anc_norm = str(anc_exe).lower()
+        if anc_norm in shim_paths:
+            return True
+    return False
+
+
+def _format_inside_hermes_session_message(scripts_dir: Path) -> str:
+    """Clear remediation when update runs inside an active Hermes session."""
+    shim = scripts_dir / "hermes.exe"
+    return '\n'.join(
+        [
+            "✗ You are running `hermes update` from inside an active Hermes session.",
+            "",
+            f"  The session's {shim} is running and holds a file lock on the",
+            "  venv executable. Windows blocks REPLACE on a running .exe, so the",
+            "  update cannot complete while this session is active.",
+            "",
+            "  To update Hermes:",
+            "    1. Exit this Hermes session (/quit or close the terminal)",
+            "    2. Open a separate terminal (not inside Hermes)",
+            "    3. Run: hermes update",
+            "",
+            "  If you need to update without exiting the session, you can try:",
+            "    hermes update --force",
+            "  (this attempts the update anyway, but may fail mid-write)",
+        ]
+    )
+
+
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:

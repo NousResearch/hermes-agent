@@ -5577,6 +5577,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if _m()._is_windows() and not getattr(args, "force", False):
         scripts_dir = _m()._venv_scripts_dir()
         if scripts_dir is not None:
+            # Inside an active Hermes session the ancestor hermes.exe holds a
+            # lock on the venv shim (#65585). Concurrent-instance detection
+            # deliberately skips ancestors; this check covers that gap.
+            if _m()._detect_running_inside_hermes_session(scripts_dir):
+                print(_m()._format_inside_hermes_session_message(scripts_dir))
+                sys.exit(2)
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))

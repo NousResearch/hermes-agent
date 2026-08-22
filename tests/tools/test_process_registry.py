@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -132,6 +133,11 @@ def test_kill_all_backward_compat_and_exclude_ids(registry):
     calls.clear()
     assert registry.kill_all("session-a") == 2
     assert sorted(c[0] for c in calls) == ["proc_a", "proc_b"]
+
+
+def _python_command(source: str) -> str:
+    """Build a command for the shell used by ``spawn_local``."""
+    return shlex.join([sys.executable, "-c", source])
 
 
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
@@ -570,6 +576,52 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
+    def test_close_stdin_posix_pty_mode(self, registry, monkeypatch):
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
+
+        result = registry.close_stdin(s.id)
+
+        pty.sendeof.assert_called_once()
+        assert result["status"] == "ok"
+
+    def test_close_stdin_windows_pty_reports_unsupported_without_writing(
+        self, registry, monkeypatch
+    ):
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
+
+        result = registry.close_stdin(s.id)
+
+        assert result == {
+            "status": "error",
+            "code": "EOF_UNSUPPORTED_FOR_PTY_BACKEND",
+            "error": (
+                "The native Windows PTY backend cannot close stdin without "
+                "terminating the child; no EOF was sent."
+            ),
+        }
+        pty.sendeof.assert_not_called()
+        pty.write.assert_not_called()
+
+        # Unsupported means no write-side state changed. The child remains
+        # usable and a later write still reaches pywinpty as text.
+        assert registry.write_stdin(s.id, "after-close\r") == {
+            "status": "ok",
+            "bytes_written": 12,
+        }
+        pty.write.assert_called_once_with("after-close\r")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="native Windows PTYs cannot close stdin non-destructively",
+    )
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -579,7 +631,7 @@ class TestStdinHelpers:
         supported path.
         """
         session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            _python_command("import sys; print(sys.stdin.read().strip())"),
             cwd=str(tmp_path),
             use_pty=True,
         )
@@ -604,6 +656,57 @@ class TestStdinHelpers:
                 time.sleep(0.02)
 
             pytest.fail("process did not exit after stdin was closed")
+        finally:
+            registry.kill_process(session.id)
+
+    @pytest.mark.windows_only
+    def test_close_stdin_windows_real_pty_remains_writable(self, registry, tmp_path):
+        """Unsupported EOF leaves a native Windows PTY child unchanged."""
+        session = registry.spawn_local(
+            _python_command(
+                "import sys\n"
+                "print('READY', flush=True)\n"
+                "while True:\n"
+                "    byte = sys.stdin.buffer.read(1)\n"
+                "    if not byte:\n"
+                "        print('EOF_RECEIVED', flush=True)\n"
+                "        break\n"
+                "    print(f'BYTE={byte!r}', flush=True)"
+            ),
+            cwd=str(tmp_path),
+            use_pty=True,
+        )
+
+        try:
+            assert session._pty is not None
+            assert _wait_until(
+                lambda: "READY" in registry.poll(session.id)["output_preview"]
+            )
+
+            expected = {
+                "status": "error",
+                "code": "EOF_UNSUPPORTED_FOR_PTY_BACKEND",
+                "error": (
+                    "The native Windows PTY backend cannot close stdin without "
+                    "terminating the child; no EOF was sent."
+                ),
+            }
+            assert registry.close_stdin(session.id) == expected
+            assert registry.close_stdin(session.id) == expected
+            assert registry.poll(session.id)["status"] == "running"
+
+            assert registry.write_stdin(session.id, "after-close\r") == {
+                "status": "ok",
+                "bytes_written": 12,
+            }
+            assert _wait_until(
+                lambda: "BYTE=b'e'" in registry.poll(session.id)["output_preview"]
+            )
+
+            poll = registry.poll(session.id)
+            assert poll["status"] == "running"
+            assert "BYTE=b'\\x04'" not in poll["output_preview"]
+            assert "EOF_RECEIVED" not in poll["output_preview"]
         finally:
             registry.kill_process(session.id)
 

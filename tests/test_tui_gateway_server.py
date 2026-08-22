@@ -4215,6 +4215,161 @@ def test_config_model_target_never_reads_env(monkeypatch):
     assert server._config_model_target() == ("", "nous")
 
 
+def _bot_chat_session(**extra):
+    """A minimal Bot Chat session: agent carries the title hint _sync_bot_
+    capabilities reads first (matches the tui_gateway construction path,
+    see agent._session_title_hint in _make_agent's caller)."""
+    session = {
+        "agent": types.SimpleNamespace(model="old/model", _session_title_hint="Bot Chat"),
+        "session_key": "session-key",
+        "profile_home": None,
+    }
+    session.update(extra)
+    return session
+
+
+def test_bot_capability_sync_threads_session_overrides_into_rebuild(monkeypatch):
+    """A capability-triggered Bot Chat rebuild must carry the session's own
+    /model pin (and reasoning/tier picks) through to the new agent — without
+    this, installing a skill or toggling an MCP server silently reverted a
+    bot pinned via `/model X` back to the global config default (the exact
+    promise Bot Mode makes: each bot keeps its own model)."""
+    session = _bot_chat_session(
+        bot_caps_seen="fp-old",
+        model_override={"model": "pinned/model", "provider": "nous"},
+        create_reasoning_override={"effort": "high"},
+        create_service_tier_override="priority",
+    )
+    monkeypatch.setattr(
+        "tools.bot_mode_probe.capability_fingerprint", lambda _home: "fp-new"
+    )
+    calls = []
+
+    def _fake_make_agent(sid, key, **kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(model="pinned/model")
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    server._sync_bot_capabilities("sid", session)
+
+    assert len(calls) == 1
+    assert calls[0]["model_override"] == {"model": "pinned/model", "provider": "nous"}
+    assert calls[0]["reasoning_config_override"] == {"effort": "high"}
+    assert calls[0]["service_tier_override"] == "priority"
+    # The seen-fingerprint bookkeeping still advances so the same drift
+    # doesn't trigger a second rebuild next turn.
+    assert session["bot_caps_seen"] == "fp-new"
+    assert session["agent"].model == "pinned/model"
+
+
+def test_bot_capability_sync_rebuild_without_pin_omits_override_kwargs(monkeypatch):
+    """A bot with no /model pin (config-default model) must not have a
+    model_override key manufactured out of nothing on rebuild."""
+    session = _bot_chat_session(bot_caps_seen="fp-old")
+    monkeypatch.setattr(
+        "tools.bot_mode_probe.capability_fingerprint", lambda _home: "fp-new"
+    )
+    calls = []
+
+    def _fake_make_agent(sid, key, **kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(model="config/default")
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    server._sync_bot_capabilities("sid", session)
+
+    assert len(calls) == 1
+    assert "model_override" not in calls[0]
+    assert "reasoning_config_override" not in calls[0]
+    assert "service_tier_override" not in calls[0]
+
+
+def test_bot_capability_sync_noop_when_fingerprint_unchanged(monkeypatch):
+    session = _bot_chat_session(bot_caps_seen="fp-same")
+    monkeypatch.setattr(
+        "tools.bot_mode_probe.capability_fingerprint", lambda _home: "fp-same"
+    )
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: pytest.fail("must not rebuild")
+    )
+
+    server._sync_bot_capabilities("sid", session)
+
+    assert session["agent"].model == "old/model"
+
+
+def test_prompt_submit_skips_bot_capability_rebuild_during_pending_once_restore(monkeypatch):
+    """A /model --once turn mutates the live agent in place and schedules a
+    post-turn restore (one_turn_model_restore). If a capability-triggered
+    rebuild ran during that turn it would swap in a fresh agent built from
+    config defaults — silently discarding the in-place once-switch, the same
+    #29923 class the neighboring config-sync guard already prevents."""
+    session = _session(
+        agent=types.SimpleNamespace(model="once/model", _session_title_hint="Bot Chat"),
+    )
+    session["one_turn_model_restore"] = {"model": "old/model"}
+    session["bot_caps_seen"] = "fp-old"
+    server._sessions["sid"] = session
+
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def _run_conversation(prompt, conversation_history=None, **_kwargs):
+        return {
+            "final_response": "reply",
+            "messages": [
+                *(conversation_history or []),
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "reply"},
+            ],
+        }
+
+    session["agent"].run_conversation = _run_conversation
+    monkeypatch.setattr(
+        "tools.bot_mode_probe.capability_fingerprint", lambda _home: "fp-new"
+    )
+    rebuild_calls = []
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *a, **k: rebuild_calls.append((a, k)) or types.SimpleNamespace(model="rebuilt"),
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_apply_pending_model_switch", lambda *_a: None)
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+    monkeypatch.setattr(server, "render_message", lambda *_a: "")
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+    monkeypatch.setattr(server, "_restore_agent_model_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda *a, **k: None)
+
+    try:
+        server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+
+        # Guarded: the drift was seen, but the rebuild never ran — no
+        # _make_agent call, bot_caps_seen unchanged, agent object unswapped.
+        assert rebuild_calls == []
+        assert server._sessions["sid"]["bot_caps_seen"] == "fp-old"
+        assert server._sessions["sid"]["agent"].model == "once/model"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
     # Internal callers (config sync, /moa one-shot + restore) pass
     # persist_override=False; even with persist_switch_by_default=True the

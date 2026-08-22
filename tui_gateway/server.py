@@ -5183,11 +5183,26 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     try:
         tokens = _set_session_context(sid, cwd=_session_cwd(session))
         try:
+            # Thread the session's own model/reasoning/tier picks through the
+            # rebuild — same fields the initial session-build kwargs use (see
+            # the resume_overrides branch above _make_agent's first caller).
+            # Without this a capability edit (skill install, MCP toggle) on a
+            # bot with an explicit `/model X` pin silently reverted it to the
+            # global config default: _make_agent falls back to config defaults
+            # for any param it isn't given, and this call passed none of them.
+            rebuild_kw: dict = {}
+            if override := session.get("model_override"):
+                rebuild_kw["model_override"] = override
+            if (reasoning := session.get("create_reasoning_override")) is not None:
+                rebuild_kw["reasoning_config_override"] = reasoning
+            if (tier := session.get("create_service_tier_override")) is not None:
+                rebuild_kw["service_tier_override"] = tier
             new_agent = _make_agent(
                 sid,
                 session["session_key"],
                 session_id=session["session_key"],
                 platform_override=_session_source(session),
+                **rebuild_kw,
             )
         finally:
             _clear_session_context(tokens)
@@ -10850,10 +10865,16 @@ def _run_prompt_submit(
                 # config sync so an explicit pick wins over a config.yaml change.
                 _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
-            # Bot Chat capability sync — adopt Settings→Capabilities edits
-            # (skills/toolsets/MCP/SOUL) into the eternal bot session before
-            # the turn runs. No-op for every other session shape.
-            _sync_bot_capabilities(sid, session)
+                # Bot Chat capability sync — adopt Settings→Capabilities edits
+                # (skills/toolsets/MCP/SOUL) into the eternal bot session before
+                # the turn runs. No-op for every other session shape. Guarded by
+                # the same one_turn_restore check as the two calls above and for
+                # the same reason (#29923): a capability-triggered rebuild here
+                # would replace the agent object the once-switch already mutated
+                # in place, silently dropping that turn's once-model. The next
+                # non-once turn still adopts the capability change — bot_caps_seen
+                # is only updated once this branch actually runs.
+                _sync_bot_capabilities(sid, session)
             agent = session["agent"]
             # Snapshot after turn-start model sync. A deferred switch mutates
             # history and its version; that mutation belongs to this turn.

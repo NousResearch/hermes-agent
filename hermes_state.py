@@ -3713,6 +3713,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
+    @staticmethod
+    def _register_sql_functions(conn: sqlite3.Connection) -> None:
+        """Register custom scalar functions used by SQL queries on ``conn``.
+
+        ``compact_punct`` lowercases its argument and strips every non-word
+        character plus underscore — the exact ``re.sub(r"[\\W_]+", "", …)``
+        alphabet the ``list_sessions_rich`` search needle is normalized with.
+        Registering it on the connection (rather than open-coding a partial
+        REPLACE chain in SQL) keeps the column side and the needle side in the
+        identical alphabet, so the punctuation-insensitive match promised by
+        ``/sessions search`` works for apostrophes/ampersands/slashes/commas —
+        not just ``- _ . space``. Custom functions are per-connection, so this
+        is applied to every connection the search can run on: the read-write
+        connection, the cross-profile ``read_only=True`` connection, and the
+        per-thread read-path connection ``_get_read_conn`` hands to
+        ``_read_ctx``.
+        """
+        def _compact_punct(value):
+            return re.sub(r"[\W_]+", "", (value or "").lower())
+
+        try:
+            conn.create_function(
+                "compact_punct", 1, _compact_punct, deterministic=True
+            )
+        except (TypeError, sqlite3.NotSupportedError):
+            # ``deterministic`` requires Python 3.8+ compiled against
+            # SQLite 3.8.3+. On Python < 3.8 the kwarg itself is unknown
+            # (``TypeError``); on a new-enough Python linked against an
+            # older SQLite, sqlite3 raises ``NotSupportedError`` instead.
+            # Either way, register without it — the function still works in
+            # WHERE/LIKE, just isn't query-optimized.
+            conn.create_function("compact_punct", 1, _compact_punct)
+
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
@@ -3831,6 +3864,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._register_sql_functions(self._conn)
                 # FTS capability flags normally come from writable schema
                 # initialisation. Probe existing virtual tables with SELECTs
                 # only so read-only search keeps its FTS and trigram paths.
@@ -3917,6 +3951,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._register_sql_functions(self._conn)
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
@@ -4081,6 +4116,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             conn.row_factory = sqlite3.Row
             apply_database_pragmas(conn, db_label="state.db")
+            # Custom scalar functions are per-connection, so the read-path
+            # connection needs them too — `list_sessions_rich` runs its
+            # `compact_punct(...)` search clause through `_read_ctx()`.
+            self._register_sql_functions(conn)
             # Load the CJK tokenizer extension on this connection so
             # messages_fts_cjk queries work on the read path. The .so
             # registers the tokenizer in the connection's in-memory
@@ -9441,11 +9480,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # Same chain-membership trick as id_query, but matching either
                 # the title or the id of any session in the chain. The compact
                 # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                # ``compact_punct`` strips the SAME character class as the
+                # needle below (all non-word chars + underscore), so titles
+                # with apostrophes/ampersands/slashes (e.g. ``Bob's Chat``,
+                # ``R&D Notes``) are reachable via the compact path — not just
+                # ``- _ . space`` separators.
                 compact_needle = re.sub(r"[\W_]+", "", search_needle)
-                compact_sql = (
-                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
-                    " '-', ''), '_', ''), '.', ''), ' ', '')"
-                )
                 search_clause = (
                     "EXISTS (SELECT 1 FROM chain cq"
                     " JOIN sessions cs ON cs.id = cq.cur_id"
@@ -9456,7 +9496,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 id_params.extend([_like_pattern(search_needle)] * 2)
                 if compact_needle:
                     search_clause += (
-                        f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                        " OR compact_punct(cs.title) LIKE ? ESCAPE '\\'"
                     )
                     id_params.append(_like_pattern(compact_needle))
                 filter_clauses.append(search_clause + "))")

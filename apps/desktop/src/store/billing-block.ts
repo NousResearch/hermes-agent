@@ -2,13 +2,16 @@ import type { BillingBlock } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { openExternalLink } from '@/lib/external-link'
+import { dismissNotification } from '@/store/notifications'
 
 /**
  * The active inference billing wall, if any. Set from the gateway
  * `message.complete` / `error` event when a turn fails with
  * `FailoverReason.billing` (see `agent/billing_links.py`). One global slot: a
  * credit wall on the active session's provider is the whole app's problem, and
- * the newest block wins. Cleared when a new turn starts or the user dismisses.
+ * the newest block wins. Cleared when a new turn starts, a later turn on the
+ * same session completes successfully without a billing payload, or the user
+ * dismisses.
  */
 export interface ActiveBillingBlock {
   block: BillingBlock
@@ -43,6 +46,9 @@ export function clearBillingBlock(sessionId?: string): void {
   }
 
   $billingBlock.set(null)
+  // surfaceBillingBlock raises a sticky toast keyed by provider — drop it with
+  // the banner so a recovered failover does not leave a permanent credit wall.
+  dismissNotification(`billing-block:${current.block.provider}`)
 }
 
 export function requestBillingSettings(): void {

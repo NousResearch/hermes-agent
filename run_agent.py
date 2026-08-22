@@ -7210,12 +7210,29 @@ class AIAgent:
             return False
 
     def _provider_supports_vision_tool_messages(self) -> bool:
-        """Return True if the active provider accepts list-type tool content.
+        """Return True if the active provider/model accepts list-type tool content.
 
         Some providers (e.g. Xiaomi MiMo) support multimodal user messages
         but reject list-type tool message content with 400 errors.  This
         checks the provider profile's ``supports_vision_tool_messages`` field.
+
+        The profile field is keyed on the *provider*, which is too coarse for
+        an OpenAI-compatible relay that fronts several vendors: the OpenCode Go
+        catalog serves MiMo alongside Kimi, GLM, MiniMax, DeepSeek and Qwen, so
+        setting the flag provider-wide downgrades multipart tool results for
+        every one of them (the objection raised on #47026).  Consult a
+        per-model override first so the incompatibility can be scoped to the
+        routes that actually have it.
         """
+        try:
+            from agent.image_routing import supports_vision_tool_messages_override
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            override = supports_vision_tool_messages_override(provider, model)
+            if override is not None:
+                return override
+        except Exception:
+            pass
         try:
             from providers import get_provider_profile
             provider = (getattr(self, "provider", "") or "").strip()

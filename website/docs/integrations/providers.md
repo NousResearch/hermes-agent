@@ -1349,6 +1349,28 @@ model:
 
 The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
 
+**Images in tool results (`supports_vision_tool_messages`).** Vision capability and
+*where* a model accepts an image are two different things. Some models read images in
+`user` messages but reject a content-parts list inside a `role: "tool"` message, which
+is how Hermes returns screenshots from `vision_analyze` / `browser_vision` /
+`computer_use`. A provider profile can declare this with
+`supports_vision_tool_messages=False`, but that flag is provider-wide — too coarse for
+an OpenAI-compatible relay serving several vendors, where only some routes are strict.
+Scope it to the affected model instead:
+
+```yaml
+providers:
+  opencode-go:
+    models:
+      mimo-v2.5:
+        supports_vision: true                  # images in user messages: yes
+        supports_vision_tool_messages: false   # images in tool results: no
+```
+
+Models without the key are unaffected and keep resolving through the provider profile,
+so sibling models on the same provider still receive native screenshots. Same boolean
+tokens as `supports_vision`.
+
 Switch between them mid-session with the triple syntax:
 
 ```

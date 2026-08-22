@@ -384,6 +384,105 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
+def supports_vision_tool_messages_override(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """Per-model override for accepting list-type ``role: "tool"`` content.
+
+    ``ProviderProfile.supports_vision_tool_messages`` is keyed on the provider,
+    which cannot express a relay that fronts several vendors: the OpenCode Go
+    catalog serves MiMo alongside Kimi, GLM, MiniMax, DeepSeek and Qwen, and
+    only the MiMo route rejects a content-parts list inside a ``role: "tool"``
+    message.  Setting the flag provider-wide fixes MiMo by downgrading every
+    other family on the same relay (the objection raised on #47026), so allow
+    the incompatibility to be scoped to the affected model:
+
+        providers:
+          <provider>:
+            models:
+              <model>:
+                supports_vision_tool_messages: false
+
+    Resolution deliberately mirrors ``_supports_vision_override`` so the two
+    capability keys behave identically for the same config shapes: the same
+    provider-candidate order (``requested_provider``, the runtime provider, and
+    the config-declared ``model.provider``, plus the bare name behind
+    ``custom:<name>``) and the same legacy list-form ``custom_providers``
+    fallback.  Without that parity the override would silently not resolve for
+    named custom providers, which are rewritten to ``provider="custom"`` at
+    runtime.
+
+    Returns None when unset or unparseable, so callers fall through to the
+    provider profile.  Uses the same strict boolean coercion as
+    ``supports_vision``, so a quoted ``"false"`` cannot read as True.
+    """
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+        except Exception:
+            return None
+    if not isinstance(cfg, dict):
+        return None
+
+    model_cfg_raw = cfg.get("model")
+    model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
+    config_provider = str(model_cfg.get("provider") or "").strip()
+
+    candidates: List[str] = []
+    for candidate in (requested_provider, provider, config_provider):
+        if not candidate:
+            continue
+        candidates.append(candidate)
+        if candidate.startswith("custom:"):
+            stripped = candidate[len("custom:"):]
+            if stripped:
+                candidates.append(stripped)
+
+    providers_raw = cfg.get("providers")
+    providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
+    for name in dict.fromkeys(candidates):
+        entry_raw = providers_cfg.get(name)
+        entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
+        models_raw = entry.get("models")
+        models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
+        per_model_raw = models_cfg.get(model)
+        per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
+        coerced = _coerce_capability_bool(
+            per_model.get("supports_vision_tool_messages")
+        )
+        if coerced is not None:
+            return coerced
+
+    # Legacy list-style ``custom_providers``, same shape and candidate priority
+    # as ``_supports_vision_override``.
+    custom_providers = cfg.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for candidate in dict.fromkeys(candidates):
+            candidate_name = candidate.strip().lower()
+            for entry_raw in custom_providers:
+                if not isinstance(entry_raw, dict):
+                    continue
+                entry_name = str(entry_raw.get("name") or "").strip().lower()
+                if entry_name != candidate_name:
+                    continue
+                models_raw = entry_raw.get("models")
+                models_cfg = models_raw if isinstance(models_raw, dict) else {}
+                per_model_raw = models_cfg.get(model)
+                per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
+                coerced = _coerce_capability_bool(
+                    per_model.get("supports_vision_tool_messages")
+                )
+                if coerced is not None:
+                    return coerced
+
+    return None
+
+
 def _lookup_supports_vision(
     provider: str,
     model: str,

@@ -183,6 +183,61 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
 
 
+def test_adapter_group_allowlist_falls_back_to_environment(monkeypatch):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv(
+        "WHATSAPP_GROUP_ALLOWED_USERS",
+        "120363000000000001@g.us,120363000000000002@g.us",
+    )
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})
+    )
+
+    assert adapter._group_allow_from == {
+        "120363000000000001@g.us",
+        "120363000000000002@g.us",
+    }
+
+
+def test_adapter_group_allowlist_keeps_explicit_config_over_environment(monkeypatch):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv(
+        "WHATSAPP_GROUP_ALLOWED_USERS", "120363000000000002@g.us"
+    )
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "group_policy": "allowlist",
+                "group_allow_from": ["120363000000000001@g.us"],
+            },
+        )
+    )
+
+    assert adapter._group_allow_from == {"120363000000000001@g.us"}
+
+
+def test_adapter_explicit_empty_group_allowlist_blocks_environment(monkeypatch):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv(
+        "WHATSAPP_GROUP_ALLOWED_USERS", "120363000000000002@g.us"
+    )
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"group_policy": "allowlist", "group_allow_from": []},
+        )
+    )
+
+    assert adapter._group_allow_from == set()
+
+
 # --- Broadcast / status / newsletter pseudo-chats are always dropped ---
 
 

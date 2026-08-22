@@ -129,6 +129,95 @@ class TestProvider:
         p = self._make(basic)
         p.revoke_session(refresh_token="anything")  # must not raise
 
+    def test_revoke_kills_session_lineage(self, basic):
+        # A revoked refresh token must immediately kill the session: the
+        # access token no longer verifies and the refresh token can no
+        # longer rotate — no waiting out the ~30-day TTL.
+        p = self._make(basic)
+        s = p.complete_password_login(username="admin", password="hunter2")
+        assert p.verify_session(access_token=s.access_token) is not None
+        p.revoke_session(refresh_token=s.refresh_token)
+        assert p.verify_session(access_token=s.access_token) is None
+        with pytest.raises(RefreshExpiredError):
+            p.refresh_session(refresh_token=s.refresh_token)
+
+    def test_revoke_kills_rotated_lineage(self, basic):
+        # Rotation carries the session jti forward, so revoking the ORIGINAL
+        # refresh token also kills the rotated access/refresh pair — one
+        # entry kills the whole session lineage.
+        p = self._make(basic)
+        s = p.complete_password_login(username="admin", password="hunter2")
+        rotated = p.refresh_session(refresh_token=s.refresh_token)
+        assert p.verify_session(access_token=rotated.access_token) is not None
+        p.revoke_session(refresh_token=s.refresh_token)
+        assert p.verify_session(access_token=rotated.access_token) is None
+        with pytest.raises(RefreshExpiredError):
+            p.refresh_session(refresh_token=rotated.refresh_token)
+
+    def test_revoke_ignores_foreign_or_legacy_tokens(self, basic):
+        p = self._make(basic)
+        s = p.complete_password_login(username="admin", password="hunter2")
+        # Access tokens are not revocable (only refresh tokens carry the
+        # session jti in a form revoke_session keys on); must not raise.
+        p.revoke_session(refresh_token=s.access_token)
+        assert p.verify_session(access_token=s.access_token) is not None
+        # Tokens minted before jti existed (no jti claim) are not revocable
+        # but must not raise either.
+        legacy_payload = {"sub": "admin", "kind": "refresh", "exp": 2**40}
+        legacy_rt = basic._sign(legacy_payload, p._secret)
+        p.revoke_session(refresh_token=legacy_rt)
+        assert p.refresh_session(refresh_token=legacy_rt).user_id == "admin"
+
+    def test_revocation_persists_across_instances(self, basic, tmp_path):
+        # Two provider instances sharing one state file (restart /
+        # multi-worker with an explicit secret): a revocation written by one
+        # is enforced by the other, including after a reload.
+        shared_secret = secrets.token_bytes(32)
+        store_path = tmp_path / "revocations.json"
+
+        def make():
+            return basic.BasicAuthProvider(
+                username="admin",
+                password_hash=basic.hash_password("hunter2"),
+                secret=shared_secret,
+                revocations_path=store_path,
+            )
+
+        p1, p2 = make(), make()
+        s = p1.complete_password_login(username="admin", password="hunter2")
+        assert p2.verify_session(access_token=s.access_token) is not None
+        p1.revoke_session(refresh_token=s.refresh_token)
+        # p2 picks up the on-disk revocation (mtime-based reload).
+        assert p2.verify_session(access_token=s.access_token) is None
+        with pytest.raises(RefreshExpiredError):
+            p2.refresh_session(refresh_token=s.refresh_token)
+        # A brand-new instance (simulated restart) also enforces it.
+        assert make().verify_session(access_token=s.access_token) is None
+
+    def test_expired_revocations_are_pruned(self, basic, tmp_path):
+        # Entries whose token exp has passed are dropped on flush, so the
+        # set never grows beyond sessions revoked within one refresh TTL.
+        store_path = tmp_path / "revocations.json"
+        p = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=basic.hash_password("hunter2"),
+            secret=secrets.token_bytes(32),
+            revocations_path=store_path,
+        )
+        s = p.complete_password_login(username="admin", password="hunter2")
+        p.revoke_session(refresh_token=s.refresh_token)
+        assert store_path.exists()
+        data = basic.json.loads(store_path.read_text())
+        assert data  # at least one live entry
+
+        # Manually plant an already-expired entry and flush — it must vanish.
+        store_path.write_text(
+            basic.json.dumps({"dead-jti": int(basic.time.time()) - 1})
+        )
+        p._revocations._flush()
+        data = basic.json.loads(store_path.read_text())
+        assert "dead-jti" not in data
+
     def test_oauth_methods_raise_not_implemented(self, basic):
         p = self._make(basic)
         with pytest.raises(NotImplementedError):

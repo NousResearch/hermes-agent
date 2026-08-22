@@ -1812,6 +1812,35 @@ def _validate_job_mode_invariants(
         )
 
 
+def normalize_repeat_count(repeat):
+    """Coerce a cron ``repeat`` value to ``None`` (forever) or a positive int.
+
+    The tool schema and success payload advertise ``"forever"`` for infinite
+    jobs, but create/update compared the raw value with ``<= 0``. Passing
+    the documented string then raised ``TypeError`` (#85383).
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        text = repeat.strip().lower()
+        if text in {"", "forever", "infinite", "inf", "none", "null"}:
+            return None
+        try:
+            repeat = int(text)
+        except ValueError:
+            raise ValueError(
+                f"Invalid repeat value {repeat!r}; use a positive integer or 'forever'"
+            ) from None
+    if isinstance(repeat, bool):
+        raise ValueError("repeat must be a count or 'forever', not a boolean")
+    if isinstance(repeat, (int, float)):
+        count = int(repeat)
+        return None if count <= 0 else count
+    raise ValueError(
+        f"Invalid repeat value {repeat!r}; use a positive integer or 'forever'"
+    )
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1906,9 +1935,8 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: 0 / negative / "forever" → None (infinite)
+    repeat = normalize_repeat_count(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

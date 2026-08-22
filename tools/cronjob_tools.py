@@ -1652,8 +1652,12 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                from cron.jobs import normalize_repeat_count
+
+                # 0 / negative / "forever" → None (infinite). The schema
+                # documents "forever"; comparing the raw string with <=
+                # raised TypeError (#85383).
+                normalized_repeat = normalize_repeat_count(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -1722,8 +1726,12 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "description": "Optional human-friendly name"
             },
             "repeat": {
-                "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "type": ["integer", "string"],
+                "description": (
+                    "Optional repeat count. Positive integer, or 'forever' "
+                    "for infinite recurrence. Omit for defaults (once for "
+                    "one-shot, forever for recurring)."
+                ),
             },
             "deliver": {
                 "type": "string",

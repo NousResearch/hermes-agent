@@ -246,6 +246,33 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_accepts_repeat_forever_string(self):
+        """Documented 'forever' must not TypeError against <= 0 (#85383)."""
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run proposal-evaluator.py once.",
+                schedule="30 6 * * *",
+                name="proposal-evaluator",
+                repeat="forever",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["repeat"] == "forever"
+
+    def test_create_repeat_numeric_still_works(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Once",
+                schedule="30 6 * * *",
+                name="once-job",
+                repeat=1,
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["repeat"] != "forever"
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

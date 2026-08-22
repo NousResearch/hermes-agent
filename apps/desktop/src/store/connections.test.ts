@@ -113,6 +113,17 @@ describe('connection registry cache', () => {
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
   })
 
+  it('restores a remote registry primary through its exact connection id', async () => {
+    list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
+  })
+
   it('uses only the resolved descriptor identity for the active gateway', () => {
     setConnectionsRegistry({ ...registry, primary: 'homelab' })
     $connection.set({ connectionId: 'work-vps', mode: 'remote' })

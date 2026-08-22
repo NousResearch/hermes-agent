@@ -999,6 +999,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             event.type
           )
         }
+      } else if (event.type === 'clarify.cancel' || event.type === 'clarify.expire') {
+        // The server-side wait is GONE — /stop released it (clarify.cancel)
+        // or the deadline elapsed server-side (clarify.expire). A parked
+        // dialog for that request is actionable-but-dead: answering can only
+        // fail. Clear it immediately, regardless of any client-side deadline
+        // (#86036 follow-up; keeltrace's lifecycle review on PR #86036).
+        const cancelId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+        const cancelSid = typeof payload?.session_id === 'string' ? payload.session_id : null
+        if (cancelId) {
+          clearClarifyRequest(cancelId, cancelSid)
+        } else {
+          clearClarifyRequest(undefined, cancelSid)
+        }
       } else if (event.type === 'clarify.request') {
         // Surface the clarify tool's overlay. The Python side is blocked on
         // `clarify.respond`, so without this handler the agent would hang

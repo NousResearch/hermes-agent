@@ -170,3 +170,51 @@ describe('clarify.request stream hydration', () => {
     expect(clarifyParts()).toHaveLength(1)
   })
 })
+
+
+describe('clarify.cancel / clarify.expire (#86036 follow-up)', () => {
+  it('clears the parked request when the server cancels the wait', async () => {
+    await mountStream()
+
+    clarifyRequest({
+      choices: ['a', 'b'],
+      multi_select: false,
+      question: 'which one?',
+      request_id: 'req-cancel-1'
+    })
+
+    expect($clarifyRequests.get()['session-1']?.requestId).toBe('req-cancel-1')
+
+    act(() =>
+      handleEvent!({
+        payload: { request_id: 'req-cancel-1' },
+        session_id: SID,
+        type: 'clarify.cancel'
+      })
+    )
+
+    expect($clarifyRequests.get()['session-1']).toBeUndefined()
+  })
+
+  it('clears the parked request on server-side expiry regardless of client deadline', async () => {
+    await mountStream()
+
+    clarifyRequest({
+      choices: ['a'],
+      multi_select: false,
+      question: 'wait forever?',
+      request_id: 'req-expire-1',
+      timeout_seconds: 0
+    })
+
+    act(() =>
+      handleEvent!({
+        payload: { request_id: 'req-expire-1' },
+        session_id: SID,
+        type: 'clarify.expire'
+      })
+    )
+
+    expect($clarifyRequests.get()['session-1']).toBeUndefined()
+  })
+})

@@ -1,7 +1,7 @@
 ---
 name: codebase-inspection
 description: "Inspect codebases w/ pygount: LOC, languages, ratios."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -10,7 +10,7 @@ metadata:
     tags: [LOC, Code Analysis, pygount, Codebase, Metrics, Repository]
     related_skills: [github-repo-management]
 prerequisites:
-  commands: [pygount]
+  commands: [uvx]
 ---
 
 # Codebase Inspection with pygount
@@ -27,9 +27,13 @@ Analyze repositories for lines of code, language breakdown, file counts, and cod
 
 ## Prerequisites
 
+`pygount` runs via `uvx` in an isolated environment — no system-wide installation needed:
+
 ```bash
-pip install --break-system-packages pygount 2>/dev/null || pip install pygount
+uvx pygount --help
 ```
+
+If `uvx` is not available, install it with `uv` (`pip install uv`) or install pygount directly in a virtualenv (`pip install pygount`).
 
 ## 1. Basic Summary (Most Common)
 
@@ -37,7 +41,7 @@ Get a full language breakdown with file counts, code lines, and comment lines:
 
 ```bash
 cd /path/to/repo
-pygount --format=summary \
+uvx pygount --format=summary \
   --folders-to-skip=".git,node_modules,venv,.venv,__pycache__,.cache,dist,build,.next,.tox,.eggs,*.egg-info" \
   .
 ```
@@ -63,33 +67,33 @@ Adjust based on the project type:
 
 ```bash
 # Only count Python files
-pygount --suffix=py --format=summary .
+uvx pygount --suffix=py --format=summary .
 
 # Only count Python and YAML
-pygount --suffix=py,yaml,yml --format=summary .
+uvx pygount --suffix=py,yaml,yml --format=summary .
 ```
 
 ## 4. Detailed File-by-File Output
 
 ```bash
 # Default format shows per-file breakdown
-pygount --folders-to-skip=".git,node_modules,venv" .
+uvx pygount --folders-to-skip=".git,node_modules,venv" .
 
 # Sort by code lines (pipe through sort)
-pygount --folders-to-skip=".git,node_modules,venv" . | sort -t$'\t' -k1 -nr | head -20
+uvx pygount --folders-to-skip=".git,node_modules,venv" . | sort -t$'\t' -k1 -nr | head -20
 ```
 
 ## 5. Output Formats
 
 ```bash
 # Summary table (default recommendation)
-pygount --format=summary .
+uvx pygount --format=summary .
 
 # JSON output for programmatic use
-pygount --format=json .
+uvx pygount --format=json .
 
 # Pipe-friendly: Language, file count, code, docs, empty, string
-pygount --format=summary . 2>/dev/null
+uvx pygount --format=summary . 2>/dev/null
 ```
 
 ## 6. Interpreting Results

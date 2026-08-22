@@ -43,8 +43,12 @@ export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): s
 }
 
 export function resolveManualSessionOrderIds(currentIds: string[], orderIds: string[], manual: boolean): string[] {
-  if (!manual || !currentIds.length || !orderIds.length) {
+  if (!manual || !currentIds.length) {
     return []
+  }
+
+  if (!orderIds.length) {
+    return [...new Set(currentIds)]
   }
 
   const current = new Set(currentIds)
@@ -55,6 +59,67 @@ export function resolveManualSessionOrderIds(currentIds: string[], orderIds: str
   }
 
   return reconcileFreshFirst(currentIds, orderIds)
+}
+
+/**
+ * Reorder only the ids named by `subsetOrder`, preserving every other id and
+ * slot. All-profile session groups use this to persist a drag inside one
+ * profile without allowing the gesture to move a row across profile identity.
+ * Invalid/duplicate ids fail closed and preserve reference identity.
+ */
+export function reorderSubset(ids: string[], subsetOrder: string[]): string[] {
+  const subset = new Set(subsetOrder)
+
+  if (subset.size !== subsetOrder.length || subsetOrder.some(id => !ids.includes(id))) {
+    return ids
+  }
+
+  let nextSubset = 0
+  const next = ids.map(id => (subset.has(id) ? subsetOrder[nextSubset++] : id))
+
+  return next.every((id, index) => id === ids[index]) ? ids : next
+}
+
+/** Fold loaded ids into a saved order without deleting rows that may merely be
+ * hidden by profile scope, a filter, pinning, or an unloaded page. */
+export function reconcileRetainingUnseenIds(currentIds: string[], orderIds: string[]): string[] {
+  const saved = [...new Set(orderIds)]
+
+  return mergeFreshByPosition([...new Set(currentIds)], saved)
+}
+
+/** Apply one profile group's visible drag result to that profile's persisted
+ * slots only. Other profiles and unseen rows retain both identity and position. */
+export function reorderProfileSessionOrder(
+  orders: Record<string, string[]>,
+  profile: string,
+  retainedIds: string[],
+  renderedSortableIds: string[],
+  visibleOrder: string[]
+): Record<string, string[]> {
+  const retained = new Set(retainedIds)
+  const rendered = new Set(renderedSortableIds)
+
+  if (
+    !visibleOrder.length ||
+    !renderedSortableIds.length ||
+    rendered.size !== renderedSortableIds.length ||
+    renderedSortableIds.some(id => !retained.has(id)) ||
+    new Set(visibleOrder).size !== visibleOrder.length ||
+    visibleOrder.length !== renderedSortableIds.length ||
+    visibleOrder.some(id => !rendered.has(id))
+  ) {
+    return orders
+  }
+
+  const base = reconcileRetainingUnseenIds(retainedIds, orders[profile] ?? [])
+  const next = reorderSubset(base, visibleOrder)
+
+  if (next === base && orders[profile] === base) {
+    return orders
+  }
+
+  return { ...orders, [profile]: next }
 }
 
 /**

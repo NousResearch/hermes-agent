@@ -37,9 +37,36 @@ vi.mock('./virtual-session-list', () => ({
 }))
 
 vi.mock('./session-row', () => ({
-  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
-    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
+  SidebarSessionRow: ({
+    branchStem,
+    reorderable,
+    session
+  }: {
+    branchStem?: string
+    reorderable?: boolean
+    session: SessionInfo
+  }) => (
+    <div
+      data-branch-stem={branchStem ?? ''}
+      data-reorderable={String(Boolean(reorderable))}
+      data-testid={`session-row-${session.id}`}
+    >
+      {branchStem ?? ''}
+      {session.id}
+    </div>
   )
+}))
+
+vi.mock('./projects', () => ({
+  EnteredProjectContent: () => null,
+  ProjectOverviewRow: () => null,
+  SidebarWorkspaceGroup: ({
+    group,
+    renderRows
+  }: {
+    group: { id: string; sessions: SessionInfo[] }
+    renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  }) => <div data-testid={`profile-group-${group.id}`}>{renderRows(group.sessions)}</div>
 }))
 
 function makeSession(id: string, startedAt = 1000): SessionInfo {
@@ -180,5 +207,160 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const thirdRowsRef = mockVirtualListPropsHistory[2].rows
     expect(thirdRowsRef).not.toBe(secondRowsRef)
+  })
+})
+
+describe('SidebarSessionsSection all-profile manual ordering', () => {
+  it('makes rows reorderable inside independent profile groups in Manual mode', () => {
+    const onReorderProfileSessions = vi.fn()
+    const alpha = [makeSession('alpha-1'), makeSession('alpha-2')].map(session => ({ ...session, profile: 'alpha' }))
+    const beta = [makeSession('beta-1'), makeSession('beta-2')].map(session => ({ ...session, profile: 'beta' }))
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        groups={[
+          { id: 'alpha', label: 'Alpha', mode: 'profile', path: null, sessions: alpha },
+          { id: 'beta', label: 'Beta', mode: 'profile', path: null, sessions: beta }
+        ]}
+        label="Sessions"
+        manualOrderIdsByProfile={{
+          alpha: ['alpha-2', 'alpha-1'],
+          beta: ['beta-1', 'beta-2']
+        }}
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onReorderProfileSessions={onReorderProfileSessions}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    expect(globalThis.document.querySelectorAll('[data-reorderable="true"]')).toHaveLength(4)
+    expect(
+      [
+        ...(globalThis.document
+          .querySelector('[data-testid="profile-group-alpha"]')
+          ?.querySelectorAll('[data-testid^="session-row-"]') ?? [])
+      ].map(row => row.textContent)
+    ).toEqual(['alpha-2', 'alpha-1'])
+    expect(
+      [
+        ...(globalThis.document
+          .querySelector('[data-testid="profile-group-beta"]')
+          ?.querySelectorAll('[data-testid^="session-row-"]') ?? [])
+      ].map(row => row.textContent)
+    ).toEqual(['beta-1', 'beta-2'])
+    expect(globalThis.document.body.textContent).toContain('To pick up a draggable item, press the space bar')
+  })
+
+  it('keeps branch children clustered under non-sortable parents in profile Manual mode', () => {
+    const parent = { ...makeSession('parent', 3000), profile: 'alpha' }
+    const child = { ...makeSession('child', 2500), parent_session_id: 'parent', profile: 'alpha' } as SessionInfo
+    const other = { ...makeSession('other', 2000), profile: 'alpha' }
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        groups={[{ id: 'alpha', label: 'Alpha', mode: 'profile', path: null, sessions: [parent, child, other] }]}
+        label="Sessions"
+        manualOrderIdsByProfile={{ alpha: ['other', 'parent'] }}
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onReorderProfileSessions={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    const rows = [...globalThis.document.querySelectorAll('[data-testid^="session-row-"]')]
+
+    expect(rows.map(row => row.textContent)).toEqual(['other', 'parent', '└─ child'])
+    expect(
+      globalThis.document.querySelector('[data-testid="session-row-parent"]')?.getAttribute('data-reorderable')
+    ).toBe('true')
+    expect(
+      globalThis.document.querySelector('[data-testid="session-row-child"]')?.getAttribute('data-reorderable')
+    ).toBe('false')
+    expect(
+      globalThis.document.querySelector('[data-testid="session-row-child"]')?.getAttribute('data-branch-stem')
+    ).toBe('└─ ')
+  })
+
+  it('keeps grouped rows static when Manual mode is not active', () => {
+    const rows = [makeSession('alpha-1'), makeSession('alpha-2')]
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        groups={[{ id: 'alpha', label: 'Alpha', mode: 'profile', path: null, sessions: rows }]}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    expect(globalThis.document.querySelectorAll('[data-reorderable="true"]')).toHaveLength(0)
+  })
+
+  it('renders colliding bare ids from each profile using that profile order', () => {
+    const alpha = [makeSession('shared'), makeSession('alpha-2')].map(session => ({ ...session, profile: 'alpha' }))
+    const beta = [makeSession('shared'), makeSession('beta-2')].map(session => ({ ...session, profile: 'beta' }))
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        groups={[
+          { id: 'alpha', label: 'Alpha', mode: 'profile', path: null, sessions: alpha },
+          { id: 'beta', label: 'Beta', mode: 'profile', path: null, sessions: beta }
+        ]}
+        label="Sessions"
+        manualOrderIdsByProfile={{
+          alpha: ['shared', 'alpha-2'],
+          beta: ['beta-2', 'shared']
+        }}
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onReorderProfileSessions={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        sessions={[]}
+      />
+    )
+
+    const rowIds = (profile: string) =>
+      [
+        ...(globalThis.document
+          .querySelector(`[data-testid="profile-group-${profile}"]`)
+          ?.querySelectorAll('[data-testid^="session-row-"]') ?? [])
+      ].map(row => row.textContent)
+
+    expect(rowIds('alpha')).toEqual(['shared', 'alpha-2'])
+    expect(rowIds('beta')).toEqual(['beta-2', 'shared'])
   })
 })

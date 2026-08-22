@@ -51,6 +51,7 @@ import {
   $sidebarProjectOrderIds,
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
+  $sidebarSessionOrderIdsByProfile,
   $sidebarSessionOrderManual,
   $sidebarShowArchived,
   $sidebarStatusFilter,
@@ -64,7 +65,8 @@ import {
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
-  setSidebarSessionOrderIds,
+  setSidebarSessionOrderIdsByProfile,
+  setSidebarSessionOrderIdsForProfile,
   setSidebarSessionOrderManual,
   setSidebarWorkspaceOrderIds,
   setSidebarWorkspaceParentOrderIds,
@@ -147,7 +149,13 @@ import type { SidebarNavItem } from '../../types'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
-import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import {
+  orderByIds,
+  reconcileOrderIds,
+  reconcileRetainingUnseenIds,
+  reorderProfileSessionOrder,
+  sameIds
+} from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -414,6 +422,7 @@ export function ChatSidebar({
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
   const messagingProfile = sidebarProfileForScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
+  const agentOrderIdsByProfile = useStore($sidebarSessionOrderIdsByProfile)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const workspaceParentOrderIds = useStore($sidebarWorkspaceParentOrderIds)
@@ -681,27 +690,41 @@ export function ChatSidebar({
     [sortedSessions, isPinnedSession]
   )
 
+  const manualOrderPool = showArchived ? archivedSessions : sessions
+
   useEffect(() => {
-    const next = resolveManualSessionOrderIds(
-      unpinnedAgentSessions.map(s => s.id),
-      agentOrderIds,
-      agentOrderManual
-    )
-
-    if (!next.length && agentOrderManual) {
-      setSidebarSessionOrderManual(false)
-    }
-
-    if (!next.length && agentOrderIds.length) {
-      setSidebarSessionOrderIds([])
-
+    if (!agentOrderManual || !manualOrderPool.length) {
       return
     }
 
-    if (next.length && !sameIds(next, agentOrderIds)) {
-      setSidebarSessionOrderIds(next)
+    const currentByProfile = new Map<string, string[]>()
+
+    for (const session of manualOrderPool) {
+      const key = normalizeProfileKey(session.profile)
+      const ids = currentByProfile.get(key) ?? []
+      ids.push(session.id)
+      currentByProfile.set(key, ids)
     }
-  }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
+
+    let next = agentOrderIdsByProfile
+
+    for (const [profile, currentIds] of currentByProfile) {
+      // Backward-compatible migration: a profile without a scoped order adopts
+      // the ids it owns from the legacy global order. A colliding bare id may
+      // seed both profiles, but all subsequent writes are profile-isolated.
+      const saved = next[profile]
+      const legacy = saved?.length ? saved : agentOrderIds.filter(id => currentIds.includes(id))
+      const reconciled = reconcileRetainingUnseenIds(currentIds, legacy)
+
+      if (!saved || !sameIds(saved, reconciled)) {
+        next = { ...next, [profile]: reconciled }
+      }
+    }
+
+    if (next !== agentOrderIdsByProfile) {
+      setSidebarSessionOrderIdsByProfile(next)
+    }
+  }, [agentOrderIds, agentOrderIdsByProfile, agentOrderManual, manualOrderPool])
 
   // Recents render in recency order. The hand-picked order is layered on per
   // date group inside the section (orderRowsWithinGroups) rather than baked
@@ -1434,9 +1457,38 @@ export function ChatSidebar({
 
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.
-  const reorderSessions = (ids: string[]) => {
+  const reorderSessions = (ids: string[], renderedSortableIds: string[]) => {
+    const profile = normalizeProfileKey(profileScope)
+
+    const currentIds = manualOrderPool
+      .filter(session => normalizeProfileKey(session.profile) === profile)
+      .map(session => session.id)
+
+    const next = reorderProfileSessionOrder(agentOrderIdsByProfile, profile, currentIds, renderedSortableIds, ids)
+
+    if (next === agentOrderIdsByProfile) {
+      return
+    }
+
     setSidebarSessionOrderManual(true)
-    setSidebarSessionOrderIds(ids)
+    setSidebarSessionOrderIdsForProfile(profile, next[profile])
+  }
+
+  const reorderProfileSessions = (profile: string, ids: string[], renderedSortableIds: string[]) => {
+    const profileKey = normalizeProfileKey(profile)
+
+    const currentIds = manualOrderPool
+      .filter(session => normalizeProfileKey(session.profile) === profileKey)
+      .map(session => session.id)
+
+    const next = reorderProfileSessionOrder(agentOrderIdsByProfile, profileKey, currentIds, renderedSortableIds, ids)
+
+    if (next === agentOrderIdsByProfile) {
+      return
+    }
+
+    setSidebarSessionOrderManual(true)
+    setSidebarSessionOrderIdsForProfile(profileKey, next[profileKey])
   }
 
   // Persist the new project overview order (drag-to-reorder); orderByIds applies
@@ -1789,7 +1841,12 @@ export function ChatSidebar({
                   ) : undefined
                 }
                 liveSessions={inProject ? agentSessions : undefined}
-                manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
+                manualOrderIds={
+                  agentOrderManual && !showAllProfiles
+                    ? agentOrderIdsByProfile[normalizeProfileKey(profileScope)]
+                    : sortOrderIds
+                }
+                manualOrderIdsByProfile={agentOrderManual && profileGrouped ? agentOrderIdsByProfile : undefined}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1798,6 +1855,9 @@ export function ChatSidebar({
                 // is a folder, and the new session lands in the active profile
                 // — the same one the composer would have started it in.
                 onNewSessionInWorkspace={onNewSessionInWorkspace}
+                onReorderProfileSessions={
+                  showAllProfiles && profileGrouped && ordering === 'manual' ? reorderProfileSessions : undefined
+                }
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}

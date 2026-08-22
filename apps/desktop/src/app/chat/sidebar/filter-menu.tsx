@@ -87,6 +87,10 @@ const ORDERINGS: Option<SidebarOrdering>[] = [
   { icon: 'list-ordered', id: 'manual', label: 'Manual' }
 ]
 
+export function visibleOrderingOptions(hasCost: boolean, ordering: SidebarOrdering): Option<SidebarOrdering>[] {
+  return ORDERINGS.filter(option => option.id !== 'cost' || hasCost || ordering === 'cost')
+}
+
 const ROW_META: Option<SidebarRowMeta>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
   { icon: 'comment', id: 'preview', label: 'Preview' },
@@ -178,16 +182,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
 
-  // Two options are conditional: dragging a row is what picks manual, so it
-  // only appears as a way back out once there's a hand-picked order to leave;
-  // and cost is hidden until some session actually reports spend.
-  const orderings = ORDERINGS.filter(option => {
-    if (option.id === 'manual') {
-      return ordering === 'manual'
-    }
-
-    return option.id !== 'cost' || hasCost || ordering === 'cost'
-  })
+  // Manual is a real, keyboard-reachable mode — not a state users must first
+  // discover by dragging. Cost remains conditional on data (or active state).
+  const orderings = visibleOrderingOptions(hasCost, ordering)
 
   const rowMetaOptions = ROW_META.filter(option => {
     if (option.id === 'cost') {

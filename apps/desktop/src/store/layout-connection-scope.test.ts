@@ -3,7 +3,13 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { HermesConnection } from '@/global'
 import { readKey } from '@/lib/storage'
 
-import { $pinnedSessionIds, $sidebarSessionOrderIds, $sidebarSessionOrderManual, pinSession } from './layout'
+import {
+  $pinnedSessionIds,
+  $sidebarSessionOrderIds,
+  $sidebarSessionOrderIdsByProfile,
+  $sidebarSessionOrderManual,
+  pinSession
+} from './layout'
 import { getRememberedSessionId, setConnection, setRememberedSessionId } from './session'
 
 // Two Desktop windows share one renderer origin (and therefore one
@@ -37,6 +43,7 @@ beforeEach(() => {
   setConnection(localConn)
   $pinnedSessionIds.set([])
   $sidebarSessionOrderIds.set([])
+  $sidebarSessionOrderIdsByProfile.set({})
   $sidebarSessionOrderManual.set(false)
 })
 
@@ -119,21 +126,26 @@ describe('connection-scoped sidebar lists (#77318)', () => {
 
   it('scopes the manual session order and its flag per connection', () => {
     $sidebarSessionOrderIds.set(['s1', 's2'])
+    $sidebarSessionOrderIdsByProfile.set({ default: ['s1', 's2'] })
     $sidebarSessionOrderManual.set(true)
 
     setConnection(remoteA)
     expect($sidebarSessionOrderIds.get()).toEqual([])
+    expect($sidebarSessionOrderIdsByProfile.get()).toEqual({})
     expect($sidebarSessionOrderManual.get()).toBe(false)
 
     $sidebarSessionOrderIds.set(['r1'])
+    $sidebarSessionOrderIdsByProfile.set({ default: ['r1'] })
     $sidebarSessionOrderManual.set(true)
 
     setConnection(localConn)
     expect($sidebarSessionOrderIds.get()).toEqual(['s1', 's2'])
+    expect($sidebarSessionOrderIdsByProfile.get()).toEqual({ default: ['s1', 's2'] })
     expect($sidebarSessionOrderManual.get()).toBe(true)
 
     setConnection(remoteA)
     expect($sidebarSessionOrderIds.get()).toEqual(['r1'])
+    expect($sidebarSessionOrderIdsByProfile.get()).toEqual({ default: ['r1'] })
   })
 
   it('scopes remembered session navigation per connection, not just per profile', () => {

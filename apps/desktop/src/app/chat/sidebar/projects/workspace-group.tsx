@@ -31,13 +31,37 @@ import {
 interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  /** Optional persisted rank for this group's rows. Used by Manual ordering in
+   * the All-profiles profile view; other group modes keep the global sort. */
+  manualOrderIds?: string[]
+  /** Manual profile rows must expose the full loaded list, not a preview that
+   * makes row four and beyond unreachable to drag or keyboard reordering. */
+  manualProfileOrder?: boolean
   onNewSession?: (path: null | string) => void
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function visibleWorkspaceSessions<T>(
+  sessions: T[],
+  isProfileGroup: boolean,
+  visibleCount: number,
+  manualProfileOrder: boolean
+): T[] {
+  const limit = isProfileGroup ? (manualProfileOrder ? sessions.length : PROJECT_PREVIEW_COUNT) : visibleCount
+
+  return sessions.slice(0, limit)
+}
+
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  manualOrderIds,
+  manualProfileOrder = false,
+  onNewSession,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -54,10 +78,14 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
   // A lane ranks by whatever the sort key says before it trims itself, so the
   // rows it hides are the ones the sort ranked last.
-  const sessions = rankSessions(group.sessions, rankIds)
+  const sessions = rankSessions(
+    group.sessions,
+    isProfileGroup && manualOrderIds?.length && !manualProfileOrder ? manualOrderIds : rankIds
+  )
+
   // A profile previews the same handful a project does, and clicking its label
   // is how you see the rest. Workspace groups page within what's loaded.
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : visibleCount)
+  const visibleSessions = visibleWorkspaceSessions(sessions, isProfileGroup, visibleCount, manualProfileOrder)
   const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 

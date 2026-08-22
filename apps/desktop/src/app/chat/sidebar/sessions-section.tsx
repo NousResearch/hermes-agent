@@ -146,9 +146,14 @@ interface SidebarSessionsSectionProps {
   // sequence inside one, so a reorder no longer costs the whole list its
   // dividers. Pinned passes nothing — its rows arrive in pin order already.
   manualOrderIds?: string[]
+  // Collision-proof profile-scoped orders for All-profiles Manual grouping.
+  manualOrderIdsByProfile?: Record<string, string[]>
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
-  onReorderSessions?: (ids: string[]) => void
+  onReorderSessions?: (ids: string[], renderedSortableIds: string[]) => void
+  // All-profiles Manual mode exposes one independent sortable list per profile.
+  // The profile id is explicit so persistence can reject cross-profile ids.
+  onReorderProfileSessions?: (profile: string, ids: string[], renderedSortableIds: string[]) => void
   // Drag-to-reorder for the project overview list (top-level projects).
   onReorderProjects?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
@@ -206,7 +211,9 @@ export function SidebarSessionsSection({
   collapsible = true,
   sortable = false,
   manualOrderIds,
+  manualOrderIdsByProfile,
   onReorderSessions,
+  onReorderProfileSessions,
   onReorderProjects,
   projectBackRow,
   dndSensors,
@@ -444,15 +451,42 @@ export function SidebarSessionsSection({
       </>
     )
   } else if (groups?.length) {
-    // Profile/source groups never reorder; render them flat with static rows.
-    inner = groups.map(group => (
-      <SidebarWorkspaceGroup
-        group={group}
-        key={group.id}
-        onNewSession={onNewSessionInWorkspace}
-        renderRows={renderRows}
-      />
-    ))
+    // In All-profiles Manual mode, each profile owns an independent sortable
+    // context. A row can move only among siblings carrying the same profile;
+    // source/workspace groups and every non-manual ordering stay static.
+    inner = groups.map(group => {
+      const reorderProfileRows =
+        group.mode === 'profile' && onReorderProfileSessions
+          ? (items: SessionInfo[]) => {
+              const rawRows = toSessionRows(flattenSessionsWithBranches(items))
+              const rows = orderRowsWithinGroups(rawRows, manualOrderIdsByProfile?.[group.id] ?? [])
+              const ids = reorderableRowIds(rows)
+
+              return ids.length > 1 ? (
+                <ReorderableList
+                  ids={ids}
+                  onReorder={next => onReorderProfileSessions(group.id, next, ids)}
+                  sensors={dndSensors}
+                >
+                  {rows.map(row => renderListRow(row, true))}
+                </ReorderableList>
+              ) : (
+                rows.map(row => renderListRow(row, false))
+              )
+            }
+          : renderRows
+
+      return (
+        <SidebarWorkspaceGroup
+          group={group}
+          key={group.id}
+          manualOrderIds={undefined}
+          manualProfileOrder={Boolean(group.mode === 'profile' && onReorderProfileSessions)}
+          onNewSession={onNewSessionInWorkspace}
+          renderRows={reorderProfileRows}
+        />
+      )
+    })
   } else if (flatVirtualized) {
     const virtual = (
       <VirtualSessionList
@@ -475,7 +509,11 @@ export function SidebarSessionsSection({
 
     inner =
       sessionsDraggable && onReorderSessions ? (
-        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+        <ReorderableList
+          ids={sortableRowIds}
+          onReorder={next => onReorderSessions(next, sortableRowIds)}
+          sensors={dndSensors}
+        >
           {virtual}
         </ReorderableList>
       ) : (
@@ -483,7 +521,11 @@ export function SidebarSessionsSection({
       )
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
-      <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+      <ReorderableList
+        ids={sortableRowIds}
+        onReorder={next => onReorderSessions(next, sortableRowIds)}
+        sensors={dndSensors}
+      >
         {flatRows.map(row => renderListRow(row, true, dividerAction))}
       </ReorderableList>
     )

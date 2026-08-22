@@ -9,7 +9,7 @@ import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
-import { $showAllProfiles, setShowAllProfiles } from './profile'
+import { $showAllProfiles, normalizeProfileKey, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
 
@@ -33,6 +33,7 @@ const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorksp
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
+const SIDEBAR_SESSION_ORDER_BY_PROFILE_STORAGE_KEY = 'hermes.desktop.sessionOrder.byProfile'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping'
 const SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping.allProfiles'
@@ -102,6 +103,27 @@ export const $sidebarSessionOrderIds = connectionScopedAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
+)
+export const $sidebarSessionOrderIdsByProfile = connectionScopedAtom<Record<string, string[]>>(
+  SIDEBAR_SESSION_ORDER_BY_PROFILE_STORAGE_KEY,
+  {},
+  Codecs.json<Record<string, string[]>>(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(raw).flatMap(([profile, value]) => {
+        if (!Array.isArray(value)) {
+          return []
+        }
+
+        const ids = [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+
+        return ids.length ? [[normalizeProfileKey(profile), ids] as const] : []
+      })
+    )
+  })
 )
 export const $sidebarSessionOrderManual = connectionScopedAtom(
   SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY,
@@ -609,13 +631,21 @@ export function setSidebarGrouping(grouping: SidebarGrouping) {
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {
   if (ordering === 'manual') {
+    if ($showAllProfiles.get()) {
+      $sidebarAllProfilesAgentsGrouped.set(false)
+      $sidebarAllProfilesGrouping.set('profile')
+    } else if ($sidebarAgentsGrouped.get()) {
+      setSidebarAgentsGrouped(false)
+    }
+
     setSidebarSessionOrderManual(true)
 
     return
   }
 
-  // Picking a sort key is the only way back out of a hand-dragged order, so it
-  // has to drop the saved sequence as well as the flag.
+  // A sort key temporarily takes over rendering, but the profile scoped manual
+  // sequences remain persisted so returning to Manual restores the user's work.
+  // The legacy global list is migration input only and keeps its old lifecycle.
   setSidebarSessionOrderManual(false)
   setSidebarSessionOrderIds([])
   $sidebarSortKey.set(ordering)
@@ -659,8 +689,8 @@ function clearSidebarFilters() {
   $sidebarShowArchived.set(false)
 }
 
-/** Every knob the filter menu owns, back to the sidebar as it ships. Ordering
- *  goes through its setter so a hand-dragged sequence is dropped along with it. */
+/** Every knob the filter menu owns, back to the sidebar as it ships. Reset is
+ *  the explicit destructive action for saved manual sequences. */
 export function resetSidebarView() {
   setSidebarGrouping(SIDEBAR_DEFAULT_GROUPING)
   // Both scopes, not just the one on screen: each keeps its own grouping (and
@@ -671,6 +701,7 @@ export function resetSidebarView() {
   $sidebarFlatAgentsGrouped.set(false)
   $sidebarAllProfilesAgentsGrouped.set(false)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
+  $sidebarSessionOrderIdsByProfile.set({})
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   $sidebarCardRows.set(false)
   clearSidebarFilters()
@@ -694,6 +725,21 @@ function setOrderIds($atom: WritableAtom<string[]>, ids: string[]) {
 
 export function setSidebarSessionOrderIds(ids: string[]) {
   setOrderIds($sidebarSessionOrderIds, ids)
+}
+
+export function setSidebarSessionOrderIdsByProfile(orders: Record<string, string[]>): void {
+  $sidebarSessionOrderIdsByProfile.set(orders)
+}
+
+export function setSidebarSessionOrderIdsForProfile(profile: string, ids: string[]): void {
+  const key = normalizeProfileKey(profile)
+  const current = $sidebarSessionOrderIdsByProfile.get()
+
+  if (arraysEqual(current[key] ?? [], ids)) {
+    return
+  }
+
+  $sidebarSessionOrderIdsByProfile.set({ ...current, [key]: ids })
 }
 
 export function setSidebarSessionOrderManual(manual: boolean) {

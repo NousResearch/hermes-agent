@@ -8,7 +8,10 @@ import {
   orderRowsWithinGroups,
   rankSessions,
   reconcileOrderIds,
+  reconcileRetainingUnseenIds,
   reorderableRowIds,
+  reorderProfileSessionOrder,
+  reorderSubset,
   resolveManualSessionOrderIds,
   sameIds
 } from './order'
@@ -28,6 +31,123 @@ describe('resolveManualSessionOrderIds', () => {
 
   it('clears manual order when none of the saved ids still exist', () => {
     expect(resolveManualSessionOrderIds(['newest'], ['gone'], true)).toEqual([])
+  })
+
+  it('seeds manual order from the current rows when the user selects Manual', () => {
+    expect(resolveManualSessionOrderIds(['newest', 'older'], [], true)).toEqual(['newest', 'older'])
+  })
+})
+
+describe('reorderSubset', () => {
+  it('reorders only the named subset while preserving every other slot', () => {
+    expect(reorderSubset(['a1', 'b1', 'a2', 'b2', 'a3'], ['a3', 'a1', 'a2'])).toEqual(['a3', 'b1', 'a1', 'b2', 'a2'])
+  })
+
+  it('fails closed for duplicate or foreign ids', () => {
+    const ids = ['a1', 'b1', 'a2']
+
+    expect(reorderSubset(ids, ['a2', 'a2'])).toBe(ids)
+    expect(reorderSubset(ids, ['a2', 'foreign'])).toBe(ids)
+  })
+})
+
+describe('reconcileRetainingUnseenIds', () => {
+  it('never deletes persisted slots hidden by a filter', () => {
+    expect(reconcileRetainingUnseenIds(['a1', 'a2'], ['a1', 'b1', 'a2', 'b2'])).toEqual(['a1', 'b1', 'a2', 'b2'])
+  })
+
+  it('keeps an unseen paged tail and appends it only once when the page loads', () => {
+    const firstPage = reconcileRetainingUnseenIds(['a1', 'a2'], ['a2', 'a1', 'a3', 'a4'])
+    const loadedTail = reconcileRetainingUnseenIds(['a1', 'a2', 'a3', 'a4'], firstPage)
+
+    expect(firstPage).toEqual(['a2', 'a1', 'a3', 'a4'])
+    expect(loadedTail).toEqual(['a2', 'a1', 'a3', 'a4'])
+  })
+})
+
+describe('reorderProfileSessionOrder', () => {
+  it('reorders only visible profile slots while retaining filtered and paged ids', () => {
+    expect(
+      reorderProfileSessionOrder(
+        { alpha: ['a1', 'a-hidden', 'a2', 'a-paged'] },
+        'alpha',
+        ['a1', 'a-hidden', 'a2'],
+        ['a1', 'a2'],
+        ['a2', 'a1']
+      )
+    ).toEqual({ alpha: ['a2', 'a-hidden', 'a1', 'a-paged'] })
+  })
+
+  it('updates only the dragged profile when bare session ids collide', () => {
+    const orders = {
+      alpha: ['shared', 'alpha-2'],
+      beta: ['shared', 'beta-2']
+    }
+
+    expect(
+      reorderProfileSessionOrder(orders, 'beta', ['shared', 'beta-2'], ['shared', 'beta-2'], ['beta-2', 'shared'])
+    ).toEqual({
+      alpha: ['shared', 'alpha-2'],
+      beta: ['beta-2', 'shared']
+    })
+  })
+
+  it('fails closed when a dragged profile reports a foreign id', () => {
+    const orders = { alpha: ['a1', 'a2'], beta: ['b1', 'b2'] }
+
+    expect(reorderProfileSessionOrder(orders, 'alpha', ['a1', 'a2'], ['a1', 'a2'], ['a2', 'b1'])).toBe(orders)
+  })
+
+  it.each([
+    ['fully stale', ['stale-a', 'stale-b'], ['stale-b', 'stale-a']],
+    ['partially stale', ['current-a', 'stale-a'], ['stale-a', 'current-a']]
+  ])('fails closed without mutating persistence for a %s rendered snapshot', (_, rendered, payload) => {
+    const orders = { alpha: ['current-b', 'current-a'] }
+    const originalOrder = [...orders.alpha]
+
+    expect(
+      reorderProfileSessionOrder(orders, 'alpha', ['current-a', 'current-a', 'current-b'], rendered, payload)
+    ).toBe(orders)
+    expect(orders.alpha).toEqual(originalOrder)
+  })
+
+  it('fails closed when a same-profile payload omits a rendered sortable id', () => {
+    const orders = { alpha: ['a1', 'a2', 'a3'] }
+
+    expect(reorderProfileSessionOrder(orders, 'alpha', ['a1', 'a2', 'a3'], ['a1', 'a2', 'a3'], ['a2', 'a1'])).toBe(
+      orders
+    )
+  })
+
+  it('retains hidden slots while requiring the exact rendered sortable id set', () => {
+    expect(
+      reorderProfileSessionOrder(
+        { alpha: ['a1', 'hidden', 'a2', 'paged'] },
+        'alpha',
+        ['a1', 'hidden', 'a2'],
+        ['a1', 'a2'],
+        ['a2', 'a1']
+      )
+    ).toEqual({ alpha: ['a2', 'hidden', 'a1', 'paged'] })
+  })
+
+  it('survives filter, drag, and clear-filter as one lifecycle', () => {
+    const persisted = { alpha: ['a1', 'a-hidden', 'a2', 'a-tail'] }
+    const dragged = reorderProfileSessionOrder(persisted, 'alpha', ['a1', 'a-hidden', 'a2'], ['a1', 'a2'], ['a2', 'a1'])
+
+    expect(reconcileRetainingUnseenIds(['a1', 'a-hidden', 'a2', 'a-tail'], dragged.alpha)).toEqual([
+      'a2',
+      'a-hidden',
+      'a1',
+      'a-tail'
+    ])
+  })
+
+  it('survives first-page drag followed by loading the unseen tail', () => {
+    const persisted = { alpha: ['a1', 'a2', 'a3', 'a4'] }
+    const dragged = reorderProfileSessionOrder(persisted, 'alpha', ['a1', 'a2'], ['a1', 'a2'], ['a2', 'a1'])
+
+    expect(reconcileRetainingUnseenIds(['a1', 'a2', 'a3', 'a4'], dragged.alpha)).toEqual(['a2', 'a1', 'a3', 'a4'])
   })
 })
 

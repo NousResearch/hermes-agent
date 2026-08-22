@@ -13313,6 +13313,20 @@ def main():
         "(matched by path substring or basename).",
     )
 
+    sessions_inspect = sessions_subparsers.add_parser(
+        "inspect",
+        help="Show a session's current activity and task-plan progress",
+    )
+    sessions_inspect.add_argument(
+        "session_id",
+        help="Session ID or unique ID prefix",
+    )
+    sessions_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the activity and task plan as JSON",
+    )
+
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
             "--older-than",

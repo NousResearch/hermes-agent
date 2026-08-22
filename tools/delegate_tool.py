@@ -497,6 +497,10 @@ def _handle_control_action(
                         else None
                     ),
                     "accepting_steer": bool(r.get("accepting_steer", False)),
+                    # Durable child-session handle for out-of-band inspection
+                    # (`hermes sessions inspect <id>`). Unlike subagent_id,
+                    # this resolves directly in the session store.
+                    "session_id": getattr(agent, "session_id", None),
                     "live_transcript": getattr(agent, "_live_transcript_path", None),
                 }
             )

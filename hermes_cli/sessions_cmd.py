@@ -19,6 +19,7 @@ one-way (main.py imports this module; the reverse happens only lazily at call
 time — no import cycle).
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -59,6 +60,154 @@ def _confirm_prompt(prompt: str) -> bool:
 #: generous: the rows are worthless but harmless, and a young never-active row
 #: may simply be a chat that nobody has replied to yet.
 _NEVER_ACTIVE_DEFAULT_DAYS = 30.0
+
+
+def _decode_tool_calls(value):
+    """Return persisted tool calls as a list, tolerating JSON storage."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return value if isinstance(value, list) else []
+
+
+def _is_paired_todo_result(messages, tool_index):
+    """Whether a tool row belongs to the nearest assistant's todo call."""
+    tool_call_id = messages[tool_index].get("tool_call_id")
+    if not tool_call_id:
+        return False
+    for prior in reversed(messages[:tool_index]):
+        role = prior.get("role")
+        if role == "assistant":
+            for call in _decode_tool_calls(prior.get("tool_calls")):
+                if not isinstance(call, dict) or call.get("id") != tool_call_id:
+                    continue
+                function = call.get("function")
+                return isinstance(function, dict) and function.get("name") == "todo"
+            return False
+        if role in {"user", "system"}:
+            return False
+    return False
+
+
+def _latest_todo_plan(messages):
+    """Project the latest canonical todo result into inspect-friendly state."""
+    from tools.todo_tool import MAX_TODO_RESULT_CHARS, TodoStore
+
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "tool" or not _is_paired_todo_result(messages, index):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+            continue
+        try:
+            decoded = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        todos = decoded.get("todos") if isinstance(decoded, dict) else None
+        if not isinstance(todos, list):
+            continue
+        if not todos:
+            return None
+
+        # Reuse the runtime's validation, de-duplication, ordering and bounds so
+        # inspection cannot project a shape the agent itself would reject.
+        normalized = TodoStore().write(todos)
+        counts = {
+            status: sum(item["status"] == status for item in normalized)
+            for status in ("pending", "in_progress", "completed", "cancelled")
+        }
+        total = len(normalized)
+        terminal = counts["completed"] + counts["cancelled"]
+        current = next(
+            (item for item in normalized if item["status"] == "in_progress"),
+            None,
+        ) or next(
+            (item for item in normalized if item["status"] == "pending"),
+            None,
+        )
+        return {
+            "todos": normalized,
+            "summary": {"total": total, **counts},
+            "current_stage": current["content"] if current else None,
+            "progress_percent": round(terminal * 100 / total),
+        }
+    return None
+
+
+def _session_inspection(db, session_id):
+    """Build a read-only session activity + task-plan snapshot."""
+    resolved = db.resolve_session_id(session_id)
+    if not resolved:
+        return None
+    exported = db.export_session_lineage(resolved)
+    if not exported:
+        return None
+    current_id = exported.get("id") or resolved
+    activity = db.get_session_activity(current_id) or {}
+    return {
+        "session": {
+            "id": current_id,
+            "title": exported.get("title"),
+            "source": exported.get("source"),
+            "state": "active" if exported.get("ended_at") is None else "ended",
+            "started_at": exported.get("started_at"),
+            "ended_at": exported.get("ended_at"),
+            "end_reason": exported.get("end_reason"),
+        },
+        "activity": {
+            "last_activity_at": activity.get("last_activity_at"),
+            "description": (
+                activity.get("last_activity_description")
+                or activity.get("description")
+                or ""
+            ),
+            "provenance": (
+                activity.get("last_activity_provenance")
+                or activity.get("provenance")
+                or "unknown"
+            ),
+            "seconds_since_activity": activity.get("seconds_since_activity"),
+        },
+        "plan": _latest_todo_plan(exported.get("messages") or []),
+    }
+
+
+def _print_session_inspection(snapshot):
+    """Render an inspection snapshot for humans."""
+    session = snapshot["session"]
+    activity = snapshot["activity"]
+    print(f"Session: {session['id']}")
+    if session.get("title"):
+        print(f"Title: {session['title']}")
+    print(f"Source: {session.get('source') or '-'}")
+    print(f"State: {session['state']}")
+
+    description = activity.get("description") or "No recent activity recorded"
+    age = activity.get("seconds_since_activity")
+    age_suffix = f" ({age:.1f}s ago)" if isinstance(age, (int, float)) else ""
+    print(f"Activity: {description}{age_suffix}")
+
+    plan = snapshot.get("plan")
+    if not plan:
+        print("Task plan: No task plan recorded.")
+        return
+    summary = plan["summary"]
+    terminal = summary["completed"] + summary["cancelled"]
+    print(
+        f"Task plan: {plan['progress_percent']}% "
+        f"({terminal}/{summary['total']} terminal)"
+    )
+    markers = {
+        "completed": "x",
+        "in_progress": ">",
+        "pending": " ",
+        "cancelled": "~",
+    }
+    for item in plan["todos"]:
+        print(f"  [{markers[item['status']]}] {item['id']}: {item['content']}")
 
 
 def _prune_never_active_keyed(db, args):
@@ -399,6 +548,20 @@ def cmd_sessions(args, sessions_parser=None):
             else:
                 sid = s["id"]
                 print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+
+    elif action == "inspect":
+        try:
+            snapshot = _session_inspection(db, args.session_id)
+            if snapshot is None:
+                print(f"Session '{args.session_id}' not found.")
+                return 1
+            if getattr(args, "json", False):
+                print(_json.dumps(snapshot, indent=2, ensure_ascii=False))
+            else:
+                _print_session_inspection(snapshot)
+            return 0
+        finally:
+            db.close()
 
     elif action == "export":
         from hermes_cli.session_filters import (

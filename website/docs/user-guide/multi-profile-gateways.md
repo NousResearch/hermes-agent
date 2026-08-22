@@ -366,6 +366,18 @@ These are equivalent to `hermes -p coder gateway <action>` — useful if a
 profile alias is not on `PATH` or if you target profiles dynamically from a
 script.
 
+### Automating macOS restarts
+
+Use the profile-aware Hermes commands above instead of invoking `launchctl`
+directly. Hermes detects whether the service is registered in the
+`gui/<uid>` or `user/<uid>` domain; hard-coding either domain makes automation
+depend on how the user session was started.
+
+If an external wrapper must create a transient job with `launchctl submit`,
+remove that submitted label on every exit and handled signal. Submitted jobs
+are inferred KeepAlive jobs, so a failing helper that exits without removing
+itself will be launched again.
+
 ## Service files
 
 Each profile installs its own service with a unique name, so installations

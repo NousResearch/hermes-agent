@@ -4940,7 +4940,15 @@ def refresh_launchd_plist_if_needed() -> bool:
         # Label for the transient one-shot job (see `launchctl submit` below).
         # Unique per reload so concurrent/repeated reloads never collide.
         submit_label = f"{label}.reload.{os.getpid()}.{int(time.time())}"
+        cleanup_command = (
+            f"launchctl remove {shlex.quote(submit_label)} 2>/dev/null"
+        )
         reload_script = (
+            # `launchctl submit` jobs are inferred KeepAlive. Install cleanup
+            # before any work so normal exits and handled signals cannot leave
+            # a helper that launchd respawns indefinitely.
+            f"trap {shlex.quote(cleanup_command)} EXIT; "
+            f"trap 'exit 1' HUP INT TERM; "
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
             # Wait for the OLD gateway to actually exit before bootstrapping.
@@ -4972,12 +4980,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"done; "
             f"if ! launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
-            f"fi; "
-            # Submitted jobs stay registered with launchd after the script
-            # exits; without this, every reload leaks one dead label. Removing
-            # our own label is the documented way to end a one-shot submit job
-            # (it SIGTERMs the job, but this is the final statement anyway).
-            f"launchctl remove {shlex.quote(submit_label)} 2>/dev/null"
+            f"fi"
         )
         try:
             # Spawn the reload helper via `launchctl submit` (a transient

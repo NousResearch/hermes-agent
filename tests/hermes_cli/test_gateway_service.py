@@ -383,10 +383,15 @@ class TestLaunchdServiceRecovery:
         script = cmd[bash_idx + 2]
         assert "bootout" in script and "bootstrap" in script
         assert str(plist_path) in script
-        # The one-shot job must deregister its own transient label at the end,
-        # otherwise every reload leaks a dead label in launchd.
+        # The one-shot job must deregister its transient label on every shell
+        # exit path. A final cleanup command alone is skipped when launchd
+        # terminates the helper, leaving an inferred KeepAlive job behind.
         submit_label = cmd[cmd.index("-l") + 1]
-        assert f"launchctl remove {submit_label}" in script
+        cleanup_trap = (
+            f"trap 'launchctl remove {submit_label} 2>/dev/null' EXIT; "
+            "trap 'exit 1' HUP INT TERM; "
+        )
+        assert script.startswith(cleanup_trap)
 
     def test_refresh_defers_reload_even_when_not_a_posix_descendant(self, tmp_path, monkeypatch):
         """The detached helper is used even when the gateway is NOT an ancestor.

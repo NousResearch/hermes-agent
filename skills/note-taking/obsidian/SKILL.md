@@ -15,15 +15,17 @@ metadata:
 
 Use this skill for filesystem-first Obsidian vault work: reading notes, listing notes, searching note files, creating notes, appending content, and adding wikilinks.
 
-## Vault path
+## Vault selection
 
-Use a known or resolved vault path before calling file tools.
+Resolve one concrete absolute vault path before calling file tools. Apply this precedence:
 
-The documented vault-path convention is the `OBSIDIAN_VAULT_PATH` environment variable, for example from `${HERMES_HOME:-~/.hermes}/.env`. If it is unset, use `~/Documents/Obsidian Vault`.
+1. An explicit absolute path, vault name, or vault ID always wins. Resolve a name or ID with `terminal` using `obsidian vaults verbose`; if the CLI is unavailable or the match is ambiguous, ask for the absolute path.
+2. With no explicit target, use `OBSIDIAN_VAULT_PATH` when set, preserving existing `${HERMES_HOME:-~/.hermes}/.env` setups.
+3. Otherwise, use `obsidian vaults verbose` when available. Use the only known vault; if multiple vaults are known, ask which one. If none are known, use `~/Documents/Obsidian Vault` when it exists; otherwise ask for the absolute path.
 
-File tools do not expand shell variables. Do not pass paths containing `$OBSIDIAN_VAULT_PATH` to `read_file`, `write_file`, `patch`, or `search_files`; resolve the vault path first and pass a concrete absolute path. Vault paths may contain spaces, which is another reason to prefer file tools over shell commands.
+Do not infer the target from Obsidian's currently active vault. Verify that the selected path exists and is accessible; verify write access before modifying notes. If validation fails, report the path and failed check instead of silently falling back.
 
-If the vault path is unknown, `terminal` is acceptable for resolving `OBSIDIAN_VAULT_PATH` or checking whether the fallback path exists. Once the path is known, switch back to file tools.
+File tools do not expand shell variables, `~`, vault names, or IDs. Resolve the selected vault to a concrete absolute path before using `read_file`, `write_file`, `patch`, or `search_files`. Vault paths may contain spaces, which is another reason to prefer file tools over shell commands.
 
 ## Read a note
 

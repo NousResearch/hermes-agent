@@ -4215,6 +4215,114 @@ class TestRunConversation:
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
+    def test_stop_misreport_guard_opted_in_anthropic_mode_mid_sentence(self, agent):
+        """Config-opted-in backends get the guard in anthropic_messages mode."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = ["minimax"]
+        msg = SimpleNamespace(
+            content="Based on the search results, the best next", tool_calls=None
+        )
+        assert agent._should_treat_stop_as_truncated("stop", msg, []) is True
+
+    def test_stop_misreport_guard_opted_in_natural_ending_passes(self, agent):
+        """A natural sentence ending is not treated as truncated."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = ["minimax"]
+        msg = SimpleNamespace(
+            content="Based on the search results, update the config.", tool_calls=None
+        )
+        assert agent._should_treat_stop_as_truncated("stop", msg, []) is False
+
+    def test_stop_misreport_guard_not_opted_in_anthropic_mode_skipped(self, agent):
+        """Without opt-in, anthropic_messages never fires (no #13971 regression)."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = False
+        msg = SimpleNamespace(
+            content="Based on the search results, the best next", tool_calls=None
+        )
+        assert agent._should_treat_stop_as_truncated("stop", msg, []) is False
+
+    def test_stop_misreport_guard_near_cap_usage_overrides_natural_ending(self, agent):
+        """Output tokens >= 90% of the requested cap is hard evidence of a cap hit."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = ["minimax"]
+        msg = SimpleNamespace(
+            content="Based on the search results, update the config.", tool_calls=None
+        )
+        response = SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=950)
+        )
+        assert agent._should_treat_stop_as_truncated(
+            "stop", msg, [], response=response, api_kwargs={"max_tokens": 1000}
+        ) is True
+
+    def test_stop_misreport_guard_opted_in_skips_tool_turn_precondition(self, agent):
+        """Opted-in chat_completions backends fire without tool history."""
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = ["minimax"]
+        msg = SimpleNamespace(
+            content="Based on the search results, the best next", tool_calls=None
+        )
+        assert agent._should_treat_stop_as_truncated("stop", msg, []) is True
+
+    def test_stop_misreport_guard_not_opted_in_requires_ollama_glm(self, agent):
+        """Without opt-in, non-Ollama-GLM chat_completions backends never fire."""
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = False
+        msg = SimpleNamespace(
+            content="Based on the search results, the best next", tool_calls=None
+        )
+        messages = [{"role": "tool", "content": "search result"}]
+        assert agent._should_treat_stop_as_truncated("stop", msg, messages) is False
+
+    def test_stop_misreport_opt_in_matches_base_url_substring(self, agent):
+        """The opt-in list matches provider id, base URL, or model name."""
+        agent._stop_misreport_opt_in_cache = ["127.0.0.1:8025"]
+        agent.provider = "openrouter"
+        agent._base_url_lower = "http://127.0.0.1:8025/v1"
+        assert agent._backend_opted_into_stop_misreport_guard() is True
+        agent._stop_misreport_opt_in_cache = ["some-other-host"]
+        assert agent._backend_opted_into_stop_misreport_guard() is False
+        agent._stop_misreport_opt_in_cache = True
+        assert agent._backend_opted_into_stop_misreport_guard() is True
+
+    def test_minimax_opted_in_stop_without_tools_requests_continuation(self, agent):
+        """End-to-end: an opted-in shim misreporting stop gets continued."""
+        self._setup_agent(agent)
+        agent.provider = "minimax"
+        agent._stop_misreport_opt_in_cache = ["minimax"]
+
+        misreported_stop = _mock_response(
+            content="Based on the search results, the best next",
+            finish_reason="stop",
+        )
+        continued = _mock_response(
+            content=" step is to update the config.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            misreported_stop,
+            continued,
+        ]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert (
+            result["final_response"]
+            == "Based on the search results, the best next step is to update the config."
+        )
+
 
 
 

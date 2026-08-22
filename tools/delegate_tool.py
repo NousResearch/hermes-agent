@@ -2393,8 +2393,14 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         static_ceiling = int(cfg.get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
     except (TypeError, ValueError):
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
+    try:
+        min_chars = int(cfg.get("min_summary_chars", _MIN_SUMMARY_CHARS))
+    except (TypeError, ValueError):
+        min_chars = _MIN_SUMMARY_CHARS
 
     dynamic_budget = _parent_summary_char_budget(parent_agent, len(summaries))
+    if dynamic_budget is not None and min_chars > 0:
+        dynamic_budget = max(min_chars, dynamic_budget)
 
     # Combine the two caps. Either can be absent/disabled.
     candidates = [c for c in (static_ceiling, dynamic_budget) if c and c > 0]
@@ -2402,6 +2408,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         return  # both disabled / unknown → leave summaries untouched
     cap = min(candidates)
 
+    trimmed_count = 0
     for entry in summaries:
         summary = entry["summary"]
         if len(summary) <= cap:
@@ -2414,12 +2421,35 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         entry["summary_truncated"] = True
         if spill_path:
             entry["summary_full_path"] = spill_path
+        trimmed_count += 1
         logger.debug(
             "[subagent-%s] summary trimmed %d → ~%d chars (spill=%s)",
             entry.get("task_index", "?"),
             original_len,
             cap,
             spill_path or "none",
+        )
+
+    if trimmed_count:
+        # One operator-visible line per batch (not per summary) so a wide
+        # fan-out can't spam the log. Names the binding constraint so the
+        # operator knows which knob to turn.
+        binding = (
+            "dynamic context-headroom budget"
+            if dynamic_budget and cap == dynamic_budget and (
+                not static_ceiling or dynamic_budget < static_ceiling
+            )
+            else "static delegation.max_summary_chars ceiling"
+        )
+        logger.warning(
+            "delegate_task: trimmed %d subagent summar%s to ~%d chars each "
+            "(binding constraint: %s). Full texts spilled to disk; in-context "
+            "footers carry read_file offsets. Raise delegation.min_summary_chars "
+            "or delegation.max_summary_chars to loosen this.",
+            trimmed_count,
+            "y" if trimmed_count == 1 else "ies",
+            cap,
+            binding,
         )
 
 

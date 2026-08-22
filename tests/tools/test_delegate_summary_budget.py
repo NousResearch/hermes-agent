@@ -76,3 +76,56 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+def test_trim_emits_single_batch_warning_naming_dynamic_binding(monkeypatch, caplog):
+    # Parent nearly full → dynamic budget (floored at 2000) binds below the
+    # static 24000 ceiling.
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        parent = _FakeParent(context_length=131_000, used_tokens=120_000, max_tokens=8_000)
+        big = "HEAD\n" + ("X" * 50_000) + "\nTAIL"
+        results = [{"task_index": i, "summary": big, "status": "completed"} for i in range(5)]
+        with caplog.at_level("WARNING", logger="tools.delegate_tool"):
+            dt._apply_summary_budget(results, parent)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1  # one line per batch, not per summary
+    msg = warnings[0].getMessage()
+    assert "trimmed 5 subagent summaries" in msg
+    assert "binding constraint: dynamic context-headroom budget" in msg
+
+
+def test_trim_warning_names_static_binding_when_ceiling_is_lower(monkeypatch, caplog):
+    # Huge parent context → dynamic budget far above the static ceiling.
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        parent = _FakeParent(context_length=2_000_000, used_tokens=10_000, max_tokens=8_000)
+        big = "HEAD\n" + ("X" * 50_000) + "\nTAIL"
+        results = [{"task_index": 0, "summary": big, "status": "completed"}]
+        with caplog.at_level("WARNING", logger="tools.delegate_tool"):
+            dt._apply_summary_budget(results, parent)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "binding constraint: static delegation.max_summary_chars ceiling" in (
+        warnings[0].getMessage()
+    )
+
+
+def test_min_summary_chars_floors_dynamic_budget(monkeypatch):
+    # Without the floor this parent/batch lands on the built-in 2000-char
+    # dynamic floor; min_summary_chars=8000 must raise the cap.
+    monkeypatch.setattr(
+        dt, "_load_config",
+        lambda: {"max_summary_chars": 24000, "min_summary_chars": 8000},
+    )
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        parent = _FakeParent(context_length=131_000, used_tokens=120_000, max_tokens=8_000)
+        big = "HEAD\n" + ("X" * 50_000) + "\nTAIL"
+        results = [{"task_index": i, "summary": big, "status": "completed"} for i in range(5)]
+        dt._apply_summary_budget(results, parent)
+        for r in results:
+            assert r["summary_truncated"] is True
+            # Trimmed to ~8000 (75/25 head/tail + footer), not the 2000 floor.
+            assert len(r["summary"]) > 6000
+            assert len(r["summary"]) < 12000

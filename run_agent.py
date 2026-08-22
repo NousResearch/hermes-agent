@@ -1779,22 +1779,107 @@ class AIAgent:
             return True
         return provider_lower == "ollama"
 
+    def _backend_opted_into_stop_misreport_guard(self) -> bool:
+        """Config opt-in for backends that misreport truncation as 'stop'.
+
+        Reads ``agent.treat_stop_as_length`` from config.yaml:
+        - ``true``  — apply the guard to every backend
+        - list      — only backends whose provider id, base URL, or model
+                      name contains one of the case-insensitive substrings
+                      (e.g. ["minimax", "127.0.0.1:8025"])
+        - ``false`` — only the built-in Ollama-GLM auto-detection (default)
+
+        Read once per agent and cached (mirroring
+        ``_file_mutation_verifier_enabled``) — the guard runs at most once
+        per turn, and a config flip applying on the next session is fine.
+        The provider/URL match runs at call time so mid-session failover to
+        a fallback backend is matched against the now-active backend.
+        """
+        cached = getattr(self, "_stop_misreport_opt_in_cache", None)
+        if cached is None:
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _agent = _cfg.get("agent") if isinstance(_cfg, dict) else None
+            cached = _agent.get("treat_stop_as_length", False) if isinstance(_agent, dict) else False
+            self._stop_misreport_opt_in_cache = cached
+        if cached is True:
+            return True
+        if isinstance(cached, list):
+            haystack = " ".join([
+                (self.provider or "").lower(),
+                self._base_url_lower or "",
+                (self.model or "").lower(),
+            ])
+            return any(
+                str(needle).lower() in haystack for needle in cached if needle
+            )
+        return False
+
+    def _output_tokens_near_requested_cap(self, response, api_kwargs) -> bool:
+        """True when reported output tokens are >= 90% of the requested cap.
+
+        Hard-evidence signal: a provider that reports 'stop' while having
+        generated (nearly) the entire requested output budget almost
+        certainly hit its own cap and misreported. Returns False whenever
+        usage or the requested cap is unavailable.
+        """
+        try:
+            cap = self._requested_output_cap_from_api_kwargs(api_kwargs)
+            if not cap:
+                return False
+            usage = getattr(response, "usage", None)
+            if usage is None and isinstance(response, dict):
+                usage = response.get("usage")
+            if usage is None:
+                return False
+            if isinstance(usage, dict):
+                out = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+            else:
+                out = (getattr(usage, "completion_tokens", 0)
+                       or getattr(usage, "output_tokens", 0) or 0)
+            return bool(out) and int(out) >= int(cap * 0.9)
+        except Exception:
+            return False
+
     def _should_treat_stop_as_truncated(
         self,
         finish_reason: str,
         assistant_message,
         messages: Optional[list] = None,
+        response: Any = None,
+        api_kwargs: Any = None,
     ) -> bool:
-        """Detect conservative stop->length misreports for Ollama-hosted GLM models."""
-        if finish_reason != "stop" or self.api_mode != "chat_completions":
+        """Detect conservative stop->length misreports.
+
+        Two paths:
+        - Auto-detect: Ollama-hosted GLM models (chat_completions only),
+          which require a tool-turn precondition to avoid the #13971
+          false-positive class.
+        - Config opt-in (``agent.treat_stop_as_length``): known-bad shims
+          such as the MiniMax /anthropic endpoint or local MLX servers that
+          hit their own output cap but report finish_reason='stop'. Works
+          for both chat_completions and anthropic_messages api modes and
+          drops the tool-turn precondition — the observed failure was a
+          plain mid-sentence reply with no tool history.
+        """
+        if finish_reason != "stop":
             return False
-        if not self._is_ollama_glm_backend():
+        if self.api_mode not in ("chat_completions", "anthropic_messages"):
             return False
-        if not any(
-            isinstance(msg, dict) and msg.get("role") == "tool"
-            for msg in (messages or [])
-        ):
-            return False
+        opted_in = self._backend_opted_into_stop_misreport_guard()
+        if not opted_in:
+            if self.api_mode != "chat_completions":
+                return False
+            if not self._is_ollama_glm_backend():
+                return False
+            if not any(
+                isinstance(msg, dict) and msg.get("role") == "tool"
+                for msg in (messages or [])
+            ):
+                return False
         if assistant_message is None or getattr(assistant_message, "tool_calls", None):
             return False
 
@@ -1805,6 +1890,10 @@ class AIAgent:
         visible_text = self._strip_think_blocks(content).strip()
         if not visible_text:
             return False
+
+        if self._output_tokens_near_requested_cap(response, api_kwargs):
+            return True
+
         if len(visible_text) < 20 or not re.search(r"\s", visible_text):
             return False
 

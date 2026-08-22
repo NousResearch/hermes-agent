@@ -3485,6 +3485,34 @@ def run_conversation(
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
+                    # Stop→length misreport guard (config opt-in only — the
+                    # built-in Ollama-GLM auto-detect is chat_completions
+                    # only).  Normalize lazily, solely to feed the guard, so
+                    # non-opted-in backends pay nothing; the truncated path
+                    # below re-normalizes anyway.  Partial-stream stubs are
+                    # excluded — they already resolve to finish_reason='length'
+                    # via their own tag and must not be re-judged.
+                    if (
+                        finish_reason == "stop"
+                        and getattr(response, "id", "") != PARTIAL_STREAM_STUB_ID
+                        and agent._backend_opted_into_stop_misreport_guard()
+                    ):
+                        _anth_stop_result = _tfr.normalize_response(
+                            response, strip_tool_prefix=agent._is_anthropic_oauth
+                        )
+                        if agent._should_treat_stop_as_truncated(
+                            finish_reason,
+                            _anth_stop_result,
+                            messages,
+                            response=response,
+                            api_kwargs=api_kwargs,
+                        ):
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Provider reported stop but the response looks "
+                                f"truncated — treating as finish_reason='length'",
+                                force=True,
+                            )
+                            finish_reason = "length"
                 elif agent.api_mode == "bedrock_converse":
                     # Bedrock response already normalized at dispatch — use transport
                     _bt_fr = agent._get_transport()
@@ -3499,9 +3527,12 @@ def run_conversation(
                         finish_reason,
                         assistant_message,
                         messages,
+                        response=response,
+                        api_kwargs=api_kwargs,
                     ):
                         agent._vprint(
-                            f"{agent.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
+                            f"{agent.log_prefix}⚠️  Provider reported stop but the response looks "
+                            f"truncated — treating as finish_reason='length'",
                             force=True,
                         )
                         finish_reason = "length"

@@ -54,6 +54,20 @@ DEFAULT_CONFIG = {
         # implicit provider stale timeouts are capped to the remaining
         # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Some OpenAI/Anthropic-compatible shims (e.g. the MiniMax /anthropic
+        # endpoint, some local MLX servers) report finish_reason="stop" when
+        # they actually hit their output-token cap, silently truncating the
+        # reply. When this fires, Hermes treats the response as
+        # finish_reason="length" and runs the normal continuation path.
+        #   true        = apply the mid-sentence / near-output-cap heuristics
+        #                 to every backend
+        #   list of str = only backends whose provider id, base URL, or model
+        #                 name contains one of these case-insensitive
+        #                 substrings (e.g. ["minimax", "127.0.0.1:8025"])
+        #   false       = only the built-in Ollama-GLM auto-detection
+        # False positives are bounded by the 4-attempt continuation cap and
+        # cost at most one extra API call when the response ended naturally.
+        "treat_stop_as_length": False,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -1934,6 +1948,13 @@ DEFAULT_CONFIG = {
         # instruction). 0 disables the hard ceiling; the dynamic headroom
         # budget still applies.
         "max_summary_chars": 24000,
+        # Floor for the dynamic per-summary budget computed from the parent's
+        # remaining context headroom. The dynamic budget can shrink toward the
+        # built-in 2000-char floor when the parent's context is nearly full or
+        # the batch is large; raise this to keep summaries more complete at the
+        # cost of parent headroom. max_summary_chars still caps from above (if
+        # min_summary_chars > max_summary_chars, the static ceiling wins).
+        "min_summary_chars": 2000,
 
         "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
                                      # = no timeout: children fail only from real errors

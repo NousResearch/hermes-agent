@@ -17,8 +17,10 @@ import { readKey, writeKey } from './storage'
 // but its storage key follows the active connection. The local connection
 // keeps the BARE key — byte-identical behavior for single-backend users, the
 // same contract as `backendScopeKey` in @hermes/shared — while a remote
-// connection gets `<key>.remote.<encoded baseUrl>.<encoded profile>`, the
-// shape `workspaceCwdKey` already established.
+// connection gets `<key>.remote.<encoded baseUrl>.<encoded profile>` by
+// default (the shape `workspaceCwdKey` already established). Gateway-wide
+// mirrors (pins) pass `{ includeProfile: false }` so a profile switch cannot
+// fragment the cache and re-assert a stale copy.
 //
 // Legacy globally-keyed values are deliberately NOT migrated into remote
 // scopes: those keys accumulated writes from every window, so ownership of
@@ -34,14 +36,32 @@ export interface ConnectionScopeDescriptor {
   profile?: null | string
 }
 
+export interface ConnectionScopeOptions {
+  /**
+   * When false, a remote suffix is `.remote.<baseUrl>` only. Use this for
+   * gateway-wide mirrors (pins) so a profile switch cannot reload a stale
+   * per-profile copy. Defaults to true — session order and other
+   * profile-local lists stay isolated.
+   */
+  includeProfile?: boolean
+}
+
 /** The storage-key suffix for a connection. Local (and unknown) connections
  *  map to the bare key; remote connections get their own namespace. */
-export function connectionScopeSuffix(connection: ConnectionScopeDescriptor | null | undefined): string {
+export function connectionScopeSuffix(
+  connection: ConnectionScopeDescriptor | null | undefined,
+  includeProfile = true
+): string {
   if (connection?.mode !== 'remote') {
     return ''
   }
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
+
+  if (!includeProfile) {
+    return `.remote.${base}`
+  }
+
   const profile = encodeURIComponent(connection.profile || 'default')
 
   return `.remote.${base}.${profile}`
@@ -51,24 +71,34 @@ interface ScopedEntry<T> {
   $value: WritableAtom<T>
   codec: Codec<T>
   fallback: T
+  includeProfile: boolean
   key: string
+  /** Last suffix this entry loaded or persisted under. */
+  suffix: string
   /** True while a rescope is applying a loaded value — the persistence
    *  subscriber must not echo that read back into storage. */
   applying: boolean
 }
 
+let activeConnection: ConnectionScopeDescriptor | null | undefined
 let activeSuffix = ''
+let activeGatewaySuffix = ''
 
 const registry: ScopedEntry<any>[] = []
 const scopeListeners = new Set<() => void>()
+
+function suffixFor(entry: Pick<ScopedEntry<unknown>, 'includeProfile'>): string {
+  return connectionScopeSuffix(activeConnection, entry.includeProfile)
+}
 
 /** The suffix for the connection the window is currently on. */
 export function activeConnectionScopeSuffix(): string {
   return activeSuffix
 }
 
-/** Observe scope changes (fires BEFORE the scoped atoms repaint, so
- *  per-connection bookkeeping can reset ahead of the reload). */
+/** Observe gateway-identity changes (fires BEFORE scoped atoms that
+ *  follow the connection reload, so pin-sync bookkeeping can reset).
+ *  Profile-only switches do not fire: pin state is gateway-wide. */
 export function onConnectionScopeChange(listener: () => void): () => void {
   scopeListeners.add(listener)
 
@@ -76,7 +106,7 @@ export function onConnectionScopeChange(listener: () => void): () => void {
 }
 
 function loadEntry<T>(entry: ScopedEntry<T>): T {
-  const raw = readKey(entry.key + activeSuffix)
+  const raw = readKey(entry.key + suffixFor(entry))
 
   if (raw === null) {
     return entry.fallback
@@ -94,8 +124,22 @@ function loadEntry<T>(entry: ScopedEntry<T>): T {
  * Reads seed from the current scope's key; writes land under it. When the
  * window's connection changes, every scoped atom reloads from the new scope.
  */
-export function connectionScopedAtom<T>(key: string, fallback: T, codec: Codec<T> = Codecs.json<T>()): WritableAtom<T> {
-  const entry: ScopedEntry<T> = { $value: atom<T>(fallback), applying: false, codec, fallback, key }
+export function connectionScopedAtom<T>(
+  key: string,
+  fallback: T,
+  codec: Codec<T> = Codecs.json<T>(),
+  options?: ConnectionScopeOptions
+): WritableAtom<T> {
+  const includeProfile = options?.includeProfile !== false
+  const entry: ScopedEntry<T> = {
+    $value: atom<T>(fallback),
+    applying: false,
+    codec,
+    fallback,
+    includeProfile,
+    key,
+    suffix: connectionScopeSuffix(activeConnection, includeProfile)
+  }
   entry.$value.set(loadEntry(entry))
   registry.push(entry)
 
@@ -115,7 +159,7 @@ export function connectionScopedAtom<T>(key: string, fallback: T, codec: Codec<T
       return
     }
 
-    writeKey(entry.key + activeSuffix, entry.codec.encode(value))
+    writeKey(entry.key + suffixFor(entry), entry.codec.encode(value))
   })
 
   return entry.$value
@@ -135,21 +179,35 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
   }
 
   const next = connectionScopeSuffix(connection)
+  const nextGateway = connectionScopeSuffix(connection, false)
 
   if (next === activeSuffix) {
     return
   }
 
+  activeConnection = connection
   activeSuffix = next
 
-  // Bookkeeping listeners first: pin-sync's mirrored/pending sets describe
-  // the PREVIOUS backend and must be gone before the reload below triggers
-  // their reconcile against the new scope's lists.
-  for (const listener of scopeListeners) {
-    listener()
+  // Pin-sync's mirrored/pending sets describe the PREVIOUS gateway. Fire
+  // only when the connection (not the profile) changes — pins are
+  // gateway-wide, so a profile switch must not reset bookkeeping and then
+  // re-PATCH a leftover per-profile copy.
+  if (nextGateway !== activeGatewaySuffix) {
+    activeGatewaySuffix = nextGateway
+
+    for (const listener of scopeListeners) {
+      listener()
+    }
   }
 
   for (const entry of registry) {
+    const entrySuffix = suffixFor(entry)
+
+    if (entrySuffix === entry.suffix) {
+      continue
+    }
+
+    entry.suffix = entrySuffix
     entry.applying = true
 
     try {

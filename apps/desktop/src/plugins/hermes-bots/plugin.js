@@ -9649,11 +9649,14 @@ function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputPr
         ref: inputRef,
         value,
         rows: 1,
+        size: 'sm',
         // Multi-line room prompts (#89884): the composer was a single-line
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
-        // Shift+Enter falls through to the textarea's native newline.
-        className: cn('max-h-40 min-h-9 resize-none', inputProps.className),
+        // Shift+Enter falls through to the textarea's native newline. The
+        // compact block resting state matches the adjacent Bots footer's
+        // 28px button, so both pane dividers share one baseline.
+        className: cn('block max-h-40 min-h-7 resize-none', inputProps.className),
         onChange: event => {
           onChange(event.target.value)
           refreshToken(event.target)

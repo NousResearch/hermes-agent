@@ -36,6 +36,18 @@ test('both room composers wire onSubmitDraft (#89884)', () => {
   assert.match(source, /onSubmitDraft: \(\) => submitReply\(id\),/)
 })
 
+test('collapsed room composer matches the adjacent footer control height', () => {
+  const start = source.indexOf('function GroupMentionInput')
+  const nextFn = source.indexOf('\nfunction ', start + 1)
+  const component = source.slice(start, nextFn)
+
+  // The textarea may grow for Shift+Enter, but its one-row resting state must
+  // stay on the same 28px control grid as the Bots pane footer button. A
+  // taller minimum raises the room footer divider above the adjacent pane.
+  assert.match(component, /size: 'sm'/)
+  assert.match(component, /block max-h-40 min-h-7 resize-none/)
+})
+
 test('room log anchors to the bottom with a user-scroll guard (#89835)', () => {
   const workspace = source.slice(source.indexOf('function GroupChatWorkspace'))
   assert.match(workspace, /bottomSentinelRef/)

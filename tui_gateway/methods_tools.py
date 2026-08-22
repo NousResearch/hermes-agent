@@ -635,9 +635,12 @@ def _(rid, params: dict) -> dict:
                     session.pop("moa_one_shot_restore", None)
                     return _err(rid, 5030, f"moa unavailable: {exc}")
             else:
-                # No agent built yet (lazy/fresh session): the override is
-                # consumed by the first build, so the turn runs MoA without an
-                # in-place switch.
+                # No agent built yet (lazy/fresh session): the first build
+                # consumes the override, so the turn runs MoA without an
+                # in-place switch. If a build is already in flight it has
+                # already snapshotted the previous value, so
+                # _reconcile_deferred_build_overrides applies this one to the
+                # agent once it is installed.
                 session["model_override"] = {
                     "provider": "moa",
                     "model": preset,

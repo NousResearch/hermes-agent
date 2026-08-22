@@ -9537,23 +9537,24 @@ def check_respawn_guard(
     return None
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+def _has_spawnable_in_lane(
+    conn: sqlite3.Connection, status: str, lane: str,
+) -> bool:
+    """Shared probe behind :func:`has_spawnable_ready` /
+    :func:`has_spawnable_review`.
 
-    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
-    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
-    work waiting) or a "correctly idle" condition (only control-plane
-    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
-    that pull tasks via ``claim_task`` directly).
-
-    Falls back to "any ready+assigned" if ``profile_exists`` is not
-    importable (e.g. partial install) — preserves the old behavior so
-    the warning still fires in degraded environments.
+    A task counts as spawnable only when the dispatcher would actually
+    attempt a spawn for it this tick: its assignee maps to a real Hermes
+    profile AND :func:`check_respawn_guard` does not defer it (#80513).
+    Guard deferrals (``recent_success`` / ``active_pr`` /
+    ``rate_limit_cooldown`` / ``blocker_auth``) are idle-by-design — the
+    dispatcher deliberately declines those tasks every tick, so counting
+    them as "real work waiting" produced endless false "dispatcher
+    stuck" alarms on quiet boards.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "SELECT id, assignee FROM tasks "
+        f"WHERE status = '{status}' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
     if not rows:
@@ -9564,34 +9565,50 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
+        if not profile_exists(row["assignee"]):
+            continue
+        try:
+            deferred = check_respawn_guard(conn, row["id"], lane=lane)
+        except Exception:
+            # Probe must stay conservative: on an unexpected guard error,
+            # keep legacy behavior and count the task as spawnable.
+            deferred = None
+        if deferred is not None:
+            continue
+        return True
     return False
+
+
+def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+    """Return True iff there is at least one ready+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile and which the respawn
+    guard does not defer this tick.
+
+    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
+    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
+    work waiting) or a "correctly idle" condition (only control-plane
+    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
+    that pull tasks via ``claim_task`` directly — or tasks deliberately
+    parked by the respawn guard, e.g. a recent completed run or an open
+    PR; #80513).
+
+    Falls back to "any ready+assigned" if ``profile_exists`` is not
+    importable (e.g. partial install) — preserves the old behavior so
+    the warning still fires in degraded environments.
+    """
+    return _has_spawnable_in_lane(conn, "ready", "ready")
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile and which the respawn
+    guard does not defer this tick.
 
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
     should have spawned a review agent.
     """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
-    return False
+    return _has_spawnable_in_lane(conn, "review", "review")
 
 
 def review_dispatch_enabled() -> bool:

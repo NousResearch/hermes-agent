@@ -2808,6 +2808,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             now = int(time.time())
             # Rate-limit repeats: at most one warning per 5 minutes.
             if now - health_state["last_warn_at"] >= 300:
+                guarded_txt = ""
+                if res.respawn_guarded:
+                    shown = ", ".join(
+                        f"{tid} ({reason})"
+                        for tid, reason in res.respawn_guarded[:5]
+                    )
+                    extra = len(res.respawn_guarded) - 5
+                    if extra > 0:
+                        shown += f", … (+{extra} more)"
+                    guarded_txt = (
+                        f" Respawn-guard deferrals this tick: {shown}."
+                    )
                 print(
                     f"[{_fmt_ts(now)}] WARN dispatcher stuck: "
                     f"ready queue non-empty for {health_state['bad_ticks']} "
@@ -2815,7 +2827,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                     f"Check profile health (venv, PATH, credentials) and "
                     f"`hermes kanban list --status ready` / "
                     f"`hermes kanban list --status blocked` for recent "
-                    f"spawn_failed tasks.",
+                    f"spawn_failed tasks.{guarded_txt}",
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now

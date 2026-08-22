@@ -1707,7 +1707,10 @@ class GatewayKanbanWatchersMixin:
                         await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
                     results = await asyncio.to_thread(_tick_once)
                     any_spawned = False
+                    guarded_pairs: list[tuple[str, str]] = []
                     for slug, res in (results or []):
+                        if res is not None and getattr(res, "respawn_guarded", None):
+                            guarded_pairs.extend(res.respawn_guarded)
                         if res is not None and getattr(res, "spawned", None):
                             any_spawned = True
                             # Quiet by default — only log when something actually
@@ -1732,12 +1735,26 @@ class GatewayKanbanWatchersMixin:
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
+                        guarded_txt = ""
+                        if guarded_pairs:
+                            shown = ", ".join(
+                                f"{tid} ({reason})"
+                                for tid, reason in guarded_pairs[:5]
+                            )
+                            extra = len(guarded_pairs) - 5
+                            if extra > 0:
+                                shown += f", … (+{extra} more)"
+                            guarded_txt = (
+                                " Respawn-guard deferrals this tick: "
+                                f"{shown}."
+                            )
                         logger.warning(
                             "kanban dispatcher stuck: ready queue non-empty for "
                             "%d consecutive ticks but 0 workers spawned. Check "
                             "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
+                            "`hermes kanban list --status ready`.%s",
                             bad_ticks,
+                            guarded_txt,
                         )
                         last_warn_at = now
             except asyncio.CancelledError:

@@ -230,7 +230,13 @@ from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+_dotenv_gateway_context = os.environ.get("_HERMES_GATEWAY") == "1"
+load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=_project_env,
+    cwd_env=True,
+    use_terminal_cwd=_dotenv_gateway_context,
+)
 
 
 _REASONING_TAGS = (

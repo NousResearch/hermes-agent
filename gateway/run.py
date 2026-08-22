@@ -2079,7 +2079,12 @@ _hermes_home = get_hermes_home()
 from dotenv import load_dotenv  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=Path(__file__).resolve().parents[1] / '.env',
+    cwd_env=True,
+    use_terminal_cwd=True,
+)
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -2107,6 +2112,8 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     load_hermes_dotenv(
         hermes_home=_hermes_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
+        cwd_env=True,
+        use_terminal_cwd=True,
     )
     _bridge_max_turns_from_config(_hermes_home)
 

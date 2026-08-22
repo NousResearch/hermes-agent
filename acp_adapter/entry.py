@@ -106,7 +106,7 @@ def _load_env() -> None:
     from hermes_cli.env_loader import load_hermes_dotenv
 
     hermes_home = get_hermes_home()
-    loaded = load_hermes_dotenv(hermes_home=hermes_home)
+    loaded = load_hermes_dotenv(hermes_home=hermes_home, cwd_env=True)
     if loaded:
         for env_file in loaded:
             logging.getLogger(__name__).info("Loaded env from %s", env_file)

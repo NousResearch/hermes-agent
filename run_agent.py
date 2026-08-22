@@ -126,7 +126,13 @@ from hermes_cli.timeouts import (
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+_dotenv_gateway_context = os.environ.get("_HERMES_GATEWAY") == "1"
+_loaded_env_paths = load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=_project_env,
+    cwd_env=True,
+    use_terminal_cwd=_dotenv_gateway_context,
+)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)

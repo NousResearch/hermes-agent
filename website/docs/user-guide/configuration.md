@@ -69,6 +69,50 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](/user-guide/managed-scope).
 :::
 
+### Project-local `.env` files
+
+CWD `.env` loading is disabled by default because a repository can control that
+file. Opt in to exact project directories in your user-controlled
+`~/.hermes/config.yaml`:
+
+```yaml
+dotenv:
+  trusted_cwds:
+    - /Users/alice/code/project-a
+    - /home/alice/code/project-b
+```
+
+Trust-list paths must be literal absolute paths: environment variables and `~`
+are not expanded. For the local CLI, classic runtime, TUI, and ACP adapter, the
+project directory is the process launch directory (`cd /dir && hermes`), matching
+the local terminal backend. The messaging gateway uses its effective
+`terminal.cwd`; local placeholders resolve using the gateway's existing
+`MESSAGING_CWD`/home fallback, while remote-backend placeholders do not map to a
+local dotenv file. Hermes resolves symlinks and trusts only an exact
+directory match; a repository marker cannot opt itself in, and parent entries do
+not implicitly trust every child repository. The same policy is applied by the
+CLI, classic chat runtime, TUI gateway, ACP adapter, messaging gateway startup,
+and gateway credential reload.
+
+For an opted-in directory, precedence is:
+
+1. names declared in `~/.hermes/.env`
+2. allowed names in the trusted CWD `.env`
+3. inherited shell environment
+4. Hermes source-tree `.env` developer fallback
+
+The trusted CWD file can replace stale inherited values but cannot replace names
+explicitly owned by the user `.env`. The source-tree developer file retains its
+legacy shell-override behavior only when no user or CWD dotenv source exists.
+Project files can provide
+provider credentials and provider-specific settings, but they can never set
+Hermes controls (`HERMES_*`), terminal or messaging controls, process-loader
+variables such as `PATH`, `PYTHONPATH`, `LD_*`, or `DYLD_*`, proxy/TLS overrides,
+or `SUDO_PASSWORD`. CWD values are parsed without variable interpolation, and a
+symlinked CWD `.env` is rejected. Ignored protected names are reported without
+printing their values. Put Hermes behavior and security configuration in
+`config.yaml`, not a project `.env`.
+
 ## Runtime Limits
 
 Long-running Hermes server surfaces (including the gateway and
@@ -86,6 +130,7 @@ value to `0`, `false`, or `null` to disable the adjustment. On Windows and in
 sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
+
 
 ## Environment Variable Substitution
 

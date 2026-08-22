@@ -707,6 +707,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 # only external secret fetches are unnecessary for installation maintenance.
 load_hermes_dotenv(
     project_env=PROJECT_ROOT / ".env",
+    cwd_env=True,
     load_external_secrets=sys.argv[1:2] != ["update"],
 )
 

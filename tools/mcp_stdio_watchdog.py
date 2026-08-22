@@ -105,8 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         description="Parent-death watchdog for a stdio MCP subprocess.",
     )
     parser.add_argument("--ppid", type=int, required=True)
+    parser.add_argument("--create-time", dest="create_time", default=None,
+                        help="ignored (injected by MCP transport; not used by watchdog)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    args, _unknown = parser.parse_known_args(argv)
 
     real_argv = list(args.command)
     if real_argv and real_argv[0] == "--":

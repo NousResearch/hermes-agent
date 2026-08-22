@@ -5067,6 +5067,90 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     print("    hermes gateway restart")
     print("    hermes gateway status")
 
+def _installed_gateway_profile_homes() -> list:
+    """Every profile home that has a Windows gateway autostart entry installed.
+
+    ``gateway_windows``'s helpers are profile-implicit: ``get_task_name()``,
+    ``get_task_script_path()`` and ``is_installed()`` all resolve through
+    ``get_hermes_home()``, so on their own they only ever describe whichever
+    profile the updater happens to be running as.  Rather than thread a profile
+    argument through each of them, scope the call with
+    ``set_hermes_home_override`` — a context-local override built for exactly
+    this ("in-process, per-task scoping") — and ask the existing helpers once
+    per profile.
+
+    Returns homes in ``list_profile_names()`` order (``default`` first).  A
+    profile whose check raises is skipped rather than fatal: this runs inside
+    ``hermes update`` and must never fail it.
+    """
+    from hermes_cli import gateway_windows
+    from hermes_cli.profiles import get_profile_dir, list_profile_names
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = []
+    for name in list_profile_names():
+        try:
+            home = get_profile_dir(name)
+        except Exception as exc:
+            logger.debug("Could not resolve home for profile %r: %s", name, exc)
+            continue
+        token = set_hermes_home_override(str(home))
+        try:
+            if gateway_windows.is_installed():
+                homes.append(home)
+        except Exception as exc:
+            logger.debug("Could not check gateway install for profile %r: %s", name, exc)
+        finally:
+            reset_hermes_home_override(token)
+    return homes
+
+
+def _snapshot_launcher_scripts(script_path) -> dict:
+    """Read the ``.cmd``/``.vbs`` launcher pair before a refresh rewrites it.
+
+    Returns ``{path: bytes or None}``; ``None`` means the file does not exist
+    yet (creating one is not destructive, so there is nothing to preserve).
+    """
+    snapshot = {}
+    for path in (script_path, script_path.with_suffix(".vbs")):
+        try:
+            snapshot[path] = path.read_bytes()
+        except OSError:
+            snapshot[path] = None
+    return snapshot
+
+
+def _preserve_replaced_launchers(snapshot: dict) -> list:
+    """Save any launcher whose content the refresh actually replaced.
+
+    ``_write_task_script`` renders from the current template, so the refresh is
+    a content *replace*, not a touch: on a host that wrapped the generated
+    ``.cmd`` (a local supervisor or a watchdog pointing its ``/TR`` at it) the
+    wrapper is flattened back to the stock script.  Healing a legacy launcher
+    is the whole point of this function — a pre-aa2ae36c3f ``pythonw`` script
+    also looks "customized" — so refusing to rewrite is not an option.  Keeping
+    a copy is.
+
+    Only a *changed* file is preserved.  That is what keeps a second update
+    from overwriting the user's saved wrapper with the stock content the first
+    update wrote: by then the on-disk script already matches the template, so
+    nothing is copied and the original backup survives.
+    """
+    saved = []
+    for path, old in snapshot.items():
+        if old is None:
+            continue
+        try:
+            if path.read_bytes() == old:
+                continue
+            backup = path.with_name(path.name + ".pre-refresh.bak")
+            backup.write_bytes(old)
+            saved.append(backup)
+        except OSError as exc:
+            logger.debug("Could not preserve replaced launcher %s: %s", path, exc)
+    return saved
+
+
 def _refresh_windows_gateway_launchers() -> None:
     """Regenerate installed Windows gateway launcher scripts after update.
 
@@ -5083,16 +5167,58 @@ def _refresh_windows_gateway_launchers() -> None:
     ``_write_task_script`` is idempotent and renders from current code, so
     this is a no-op for modern installs. Best-effort: a failed refresh must
     never fail the update.
+
+    Refreshes **every** profile with an installed launcher, not just the one
+    the updater is running as.  ``is_installed()`` and ``_write_task_script()``
+    are profile-implicit, so before #91675 an update healed a single profile
+    and left every other profile's launcher stale in perpetuity — which for a
+    pre-aa2ae36c3f profile means a Scheduled Task that can never start a
+    gateway, with the one mechanism designed to heal it permanently skipping
+    it.  Each profile is scoped and caught independently so one bad profile
+    cannot cost the others their refresh.
+
+    Because the render is a content replace, a launcher whose content actually
+    changed is copied to ``<name>.pre-refresh.bak`` first, so a host that
+    wrapped the generated script can get its wrapper back.
     """
     if not _m()._is_windows():
         return
     try:
         from hermes_cli import gateway_windows
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        if not gateway_windows.is_installed():
-            return
-        gateway_windows._write_task_script()
-        print("  ✓ Refreshed Windows gateway launcher scripts")
+        refreshed = 0
+        preserved = []
+        for home in _m()._installed_gateway_profile_homes():
+            token = set_hermes_home_override(str(home))
+            try:
+                try:
+                    snapshot = _snapshot_launcher_scripts(
+                        gateway_windows.get_task_script_path()
+                    )
+                except Exception as exc:
+                    # Resolving the path must never cost a profile its refresh;
+                    # healing the launcher matters more than preserving a copy.
+                    logger.debug("Could not snapshot launchers for %s: %s", home, exc)
+                    snapshot = {}
+                gateway_windows._write_task_script()
+                preserved.extend(_preserve_replaced_launchers(snapshot))
+                refreshed += 1
+            except Exception as exc:
+                logger.debug(
+                    "Could not refresh Windows gateway launchers for %s: %s", home, exc
+                )
+            finally:
+                reset_hermes_home_override(token)
+        if refreshed == 1:
+            print("  ✓ Refreshed Windows gateway launcher scripts")
+        elif refreshed > 1:
+            print(
+                "  ✓ Refreshed Windows gateway launcher scripts "
+                f"({refreshed} profiles)"
+            )
+        for backup in preserved:
+            print(f"    previous launcher saved to {backup}")
     except Exception as exc:
         logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
 

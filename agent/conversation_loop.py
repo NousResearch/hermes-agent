@@ -412,6 +412,22 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     agent._stream_needs_break = True
 
 
+def _is_xai_bad_credentials_403(provider: str, status_code: Any, api_error: Any) -> bool:
+    """xAI reports an expired or invalid OAuth access token as HTTP 403 with
+    body code ``unauthenticated:bad-credentials`` rather than 401, so the
+    401-only refresh trigger never fires and a long-lived worker keeps its
+    dead in-memory token (#82052). Scoped to xai-oauth: other providers'
+    403s remain non-retryable authorization failures.
+    """
+    if provider != "xai-oauth" or status_code != 403:
+        return False
+    text = str(api_error).lower()
+    return (
+        "bad-credentials" in text
+        or "oauth2 access token could not be validated" in text
+    )
+
+
 def _is_copilot_provider(agent: Any) -> bool:
     """Delegate to ``AIAgent._is_copilot_provider`` (single owner of the check).
 
@@ -4802,13 +4818,18 @@ def run_conversation(
                 if (
                     agent.api_mode == "codex_responses"
                     and agent.provider in {"openai-codex", "xai-oauth"}
-                    and status_code == 401
+                    and (
+                        status_code == 401
+                        or _is_xai_bad_credentials_403(
+                            agent.provider, status_code, api_error
+                        )
+                    )
                     and not _retry.codex_auth_retry_attempted
                 ):
                     _retry.codex_auth_retry_attempted = True
                     if agent._try_refresh_codex_client_credentials(force=True):
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after {status_code}. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "chat_completions"

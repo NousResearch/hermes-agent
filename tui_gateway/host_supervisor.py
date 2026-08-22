@@ -89,14 +89,15 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(int(pid)))
     except Exception:
-        return False
+        # Callers treat False as proof that the process is gone. A failed
+        # status lookup is uncertainty, not proof of death, so fail safe by
+        # continuing to regard the PID as alive.
+        logger.debug("failed to check liveness for pid=%s; assuming alive", pid, exc_info=True)
+        return True
 
 
 def _pid_command(pid: int) -> str:
@@ -544,11 +545,11 @@ class HostSupervisor:
                 return
             time.sleep(0.05)
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             return
         except Exception:
-            logger.debug("failed to SIGKILL compute host pid=%s", pid, exc_info=True)
+            logger.debug("failed to force-terminate compute host pid=%s", pid, exc_info=True)
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

@@ -427,6 +427,9 @@ _GATE_ENV_KEYS = (
     "DISCORD_IGNORED_CHANNELS",
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_FREE_RESPONSE_CATEGORIES",
+    "DISCORD_IGNORED_CATEGORIES",
+    "DISCORD_REQUIRE_MENTION_CATEGORIES",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
     "DISCORD_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_BOTS",
@@ -1318,6 +1321,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # first-writer-wins process-global env bridge.
             self._snapshot_gate_env()
 
+            # Surface ambiguous per-category rule pairings (a category in both
+            # free_response_categories and ignored_categories) once at startup.
+            self._warn_category_rule_conflicts()
+
             # Parse allowed user entries (may contain usernames or IDs)
             self._allowed_user_ids = self._get_allowed_users()
 
@@ -1615,8 +1622,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                     parent_id = str(message.channel.parent_id)
                 free_channels = self._discord_free_response_channels()
+                free_categories = self._discord_free_response_categories()
                 channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
+                category_keys = self._discord_category_keys(message.channel)
+                if (
+                    "*" not in free_channels
+                    and not (channel_keys & free_channels)
+                    and "*" not in free_categories
+                    and not (category_keys & free_categories)
+                ):
                     return False, False
 
         return True, role_authorized
@@ -2680,6 +2694,8 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
             free_channels = self._discord_free_response_channels()
+            free_categories = self._discord_free_response_categories()
+            category_keys = self._discord_category_keys(message.channel)
             in_bot_thread = (
                 isinstance(message.channel, discord.Thread)
                 and str(message.channel.id) in self._threads
@@ -2689,6 +2705,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._discord_require_mention()
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
+                and "*" not in free_categories
+                and not (category_keys & free_categories)
                 and not in_bot_thread
                 and not self._self_is_explicitly_mentioned(message)
             ):
@@ -6718,6 +6736,110 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_category_keys(self, channel: Any) -> set[str]:
+        """Return the Discord category ID a channel/thread belongs to.
+
+        Resolves ``channel.category`` — discord.py exposes the category on
+        both text channels and threads (threads resolve through their
+        parent channel), so a single lookup covers both. Returns an empty
+        set for DMs, uncategorised channels, and channel objects without a
+        category.
+
+        ``discord.Thread.category`` raises ``ClientException`` when the
+        parent channel is not cached (e.g. a thread seen right after a
+        partial gateway fetch), so the property access is guarded: a
+        missing parent is treated the same as no category — the message
+        falls through to the channel-ID rules.
+
+        Category rules match on category IDs only: names are not stable
+        and a category can be renamed without breaking the bot.
+        """
+        try:
+            category = getattr(channel, "category", None)
+        except Exception:
+            category = None
+        category_id = getattr(category, "id", None)
+        if category_id is None:
+            return set()
+        return {str(category_id)}
+
+    def _discord_free_response_categories(self) -> set:
+        """Return Discord category IDs where no bot mention is required.
+
+        A category listed here makes every channel and thread inside it a
+        free-response scope, mirroring ``free_response_channels`` at the
+        category level. A single ``"*"`` entry (list or comma-separated
+        string) is preserved in the returned set so callers can
+        short-circuit on wildcard membership, consistent with the channel
+        list.
+        """
+        raw = self.config.extra.get("free_response_categories")
+        if raw is None:
+            raw = self._gate_env("DISCORD_FREE_RESPONSE_CATEGORIES")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_ignored_categories(self) -> set:
+        """Return Discord category IDs where the bot never responds.
+
+        A category listed here silences every channel and thread inside
+        it — even when the bot is explicitly @mentioned — mirroring
+        ``ignored_channels`` at the category level.
+        """
+        raw = self.config.extra.get("ignored_categories")
+        if raw is None:
+            raw = self._gate_env("DISCORD_IGNORED_CATEGORIES")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_require_mention_categories(self) -> set:
+        """Return Discord category IDs where @mention is always required.
+
+        A category listed here flips the message to gated (mention
+        required) even when the global ``require_mention`` default is
+        false, and overrides any free-response exemption for that
+        category. This is the per-category counterpart of
+        ``require_mention`` — it lets a bot be free everywhere except a
+        single category without enumerating every other channel.
+        """
+        raw = self.config.extra.get("require_mention_categories")
+        if raw is None:
+            raw = self._gate_env("DISCORD_REQUIRE_MENTION_CATEGORIES")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _warn_category_rule_conflicts(self) -> None:
+        """Log once per conflicted category at startup.
+
+        A category listed in both ``free_response_categories`` and
+        ``ignored_categories`` is ambiguous: the ignore rule wins at
+        message time, but the pairing is almost always a config mistake
+        (the category can never be free AND silent). Surface it once so
+        the operator can remove it from one of the lists.
+        """
+        free = self._discord_free_response_categories()
+        ignored = self._discord_ignored_categories()
+        for category_id in sorted((free & ignored) - {"*"}):
+            logger.warning(
+                "[%s] Category %s is listed in both free_response_categories "
+                "and ignored_categories; ignored_categories wins. Remove it "
+                "from one of the lists.",
+                self.name,
+                category_id,
+            )
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
 
@@ -8073,6 +8195,9 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.free_response_categories: Category IDs (channels + threads inside) where bot responds without mention
+        #   discord.ignored_categories: Category IDs (channels + threads inside) where bot NEVER responds (even when mentioned)
+        #   discord.require_mention_categories: Category IDs where @mention is required even when globally free
 
         thread_id = None
         parent_channel_id = None
@@ -8124,7 +8249,28 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
 
+            # Category-level ignore rules (per-category mention/ignore rules):
+            # a category listed in ignored_categories silences every channel
+            # and thread inside it, even when the bot is @mentioned.
+            category_keys = self._discord_category_keys(message.channel)
+            ignored_categories = self._discord_ignored_categories()
+            if "*" in ignored_categories or (category_keys & ignored_categories):
+                logger.debug("[%s] Ignoring message in ignored category: %s", self.name, category_keys)
+                return False
+
             free_channels = self._discord_free_response_channels()
+            free_categories = self._discord_free_response_categories()
+            require_mention_categories = self._discord_require_mention_categories()
+            # A category in require_mention_categories flips the message to
+            # gated (@mention required) even when the global require_mention
+            # default is false — and overrides a free-response exemption for
+            # that category. Precedence: allowed_channels → ignored_channels
+            # → ignored_categories → free_response_channels/
+            # free_response_categories → require_mention_categories →
+            # require_mention global default.
+            category_requires_mention = "*" in require_mention_categories or bool(
+                category_keys & require_mention_categories
+            )
 
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
@@ -8135,6 +8281,8 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_keys & free_channels)
+                or "*" in free_categories
+                or bool(category_keys & free_categories)
                 or is_voice_linked_channel
             )
 
@@ -8149,9 +8297,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
-                    return False
+            if (require_mention or category_requires_mention) and not in_bot_thread:
+                if not is_free_channel or category_requires_mention:
+                    if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                        return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -10415,6 +10564,30 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["ignored_channels"] = str(ic)
         if not _skip_env_bridge and not os.getenv("DISCORD_IGNORED_CHANNELS"):
             os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+    # Per-category mention/ignore rules: mirror the channel-ID keys at the
+    # category level. A listed category applies to every channel and thread
+    # inside it.
+    frc_cat = discord_cfg.get("free_response_categories")
+    if frc_cat is not None:
+        if isinstance(frc_cat, list):
+            frc_cat = ",".join(str(v) for v in frc_cat)
+        seeded_extra["free_response_categories"] = str(frc_cat)
+        if not _skip_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CATEGORIES"):
+            os.environ["DISCORD_FREE_RESPONSE_CATEGORIES"] = str(frc_cat)
+    ic_cat = discord_cfg.get("ignored_categories")
+    if ic_cat is not None:
+        if isinstance(ic_cat, list):
+            ic_cat = ",".join(str(v) for v in ic_cat)
+        seeded_extra["ignored_categories"] = str(ic_cat)
+        if not _skip_env_bridge and not os.getenv("DISCORD_IGNORED_CATEGORIES"):
+            os.environ["DISCORD_IGNORED_CATEGORIES"] = str(ic_cat)
+    rmc_cat = discord_cfg.get("require_mention_categories")
+    if rmc_cat is not None:
+        if isinstance(rmc_cat, list):
+            rmc_cat = ",".join(str(v) for v in rmc_cat)
+        seeded_extra["require_mention_categories"] = str(rmc_cat)
+        if not _skip_env_bridge and not os.getenv("DISCORD_REQUIRE_MENTION_CATEGORIES"):
+            os.environ["DISCORD_REQUIRE_MENTION_CATEGORIES"] = str(rmc_cat)
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = discord_cfg.get("allowed_channels")
     if ac is not None:

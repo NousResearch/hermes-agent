@@ -28,7 +28,7 @@ export function registerFsIpc({
   directoryExists,
   resolveGitBinary
 }: FsIpcDeps) {
-  ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
+  ipcMain.handle('hermes:fs:readDir', async (_event, dirPath, profile) => readDirForIpc(dirPath, { profile }))
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 

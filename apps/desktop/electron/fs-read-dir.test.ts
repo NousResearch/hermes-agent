@@ -4,9 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
 import { readDirForIpc } from './fs-read-dir'
+import * as wslPathBridge from './wsl-path-bridge'
 
 function mkTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-read-dir-'))
@@ -372,4 +373,44 @@ test('readDirForIpc bounds concurrent stats while preserving complete sorted out
   )
   assert.equal(result.entries.find(entry => entry.name === failedName)?.isDirectory, false)
   assert.equal(result.entries.filter(entry => entry.isDirectory).length, successfulDirectoryNames.size)
+})
+
+// ── profile threading (fs-ipc.ts's IPC handler forwards options.profile) ──
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+test('readDirForIpc forwards options.profile to resolveLocalReadPath, not just the default fallback', async () => {
+  // Without this, resolveLocalReadPath's own profile argument falls back to
+  // a process-global "active" profile pinned to the primary window — a
+  // secondary/pool profile's directory read would resolve WSL bridge
+  // eligibility against the WRONG profile. This proves the IPC-facing entry
+  // point actually reaches through with the caller's profile, not that
+  // resolveLocalReadPath itself works (that's covered in
+  // wsl-path-bridge-profile.test.ts).
+  const root = mkTmpDir()
+  const spy = vi.spyOn(wslPathBridge, 'resolveLocalReadPath')
+
+  try {
+    await readDirForIpc(root, { profile: 'team-pool' })
+    assert.equal(spy.mock.calls.length, 1)
+    assert.equal(spy.mock.calls[0][0], root)
+    assert.equal(spy.mock.calls[0][2], 'team-pool')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('readDirForIpc passes undefined profile through when the caller omits it', async () => {
+  const root = mkTmpDir()
+  const spy = vi.spyOn(wslPathBridge, 'resolveLocalReadPath')
+
+  try {
+    await readDirForIpc(root)
+    assert.equal(spy.mock.calls.length, 1)
+    assert.equal(spy.mock.calls[0][2], undefined)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

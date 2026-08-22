@@ -65,7 +65,11 @@ function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readDir(path)
+    // The active $connection's profile — WITHOUT it, the Electron IPC path
+    // resolves WSL bridge eligibility against the primary window's own
+    // profile, not whichever (possibly secondary/pool) profile's directory
+    // is actually being browsed. Mirrors selectDesktopPaths's profile thread.
+    return bridge().readDir(path, desktopFsProfile())
   }
 
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))

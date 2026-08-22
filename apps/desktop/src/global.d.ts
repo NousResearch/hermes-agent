@@ -287,7 +287,7 @@ declare global {
         message: string
         componentStack: string
       }) => void
-      readDir: (path: string) => Promise<HermesReadDirResult>
+      readDir: (path: string, profile?: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>

@@ -84,7 +84,14 @@ async function readDirForIpc(dirPath, options: any = {}) {
 
   // On a Windows host with a WSL backend, a WSL/POSIX cwd (`/home/...`,
   // `/mnt/c/...`) isn't readable as-is; bridge it to a UNC/drive form first.
-  const readPath = resolveLocalReadPath(String(dirPath ?? ''))
+  // `options.profile` is the profile of the connection whose directory is
+  // being read — WITHOUT it, resolveLocalReadPath falls back to a
+  // process-global "active" profile that only tracks the PRIMARY window's
+  // backend, so browsing a secondary/pool profile with a different bridge
+  // eligibility than the primary silently used the wrong one (#66447-adjacent
+  // gap: the picker's defaultPath was fixed to thread a profile, this read
+  // path never was).
+  const readPath = resolveLocalReadPath(String(dirPath ?? ''), undefined, options.profile)
 
   try {
     ;({ resolvedPath: resolved } = await resolveDirectoryForIpc(readPath, {

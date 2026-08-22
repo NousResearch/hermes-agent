@@ -86,7 +86,11 @@ describe('desktop filesystem facade', () => {
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
 
-    expect(readDir).toHaveBeenCalledWith('/work')
+    // readDir threads the active connection's profile (like selectPaths
+    // already does below) — WITHOUT it, the WSL bridge resolves eligibility
+    // against the primary window's profile even when browsing a secondary
+    // profile's directory (#66447-adjacent gap).
+    expect(readDir).toHaveBeenCalledWith('/work', 'team-local')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
     expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
     expect(gitRoot).toHaveBeenCalledWith('/work')
@@ -142,6 +146,27 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('threads the CURRENTLY active local profile to readDir on every switch, not a pinned primary', async () => {
+    // Both profiles are local (mode: 'local') — isDesktopFsRemoteMode() takes
+    // the Electron IPC branch for both, so this proves readDir doesn't just
+    // forward SOME profile, but the one the renderer is actually looking at
+    // right now, even when it changes mid-session (secondary/pool profile
+    // browsed after the primary, and back again). Without threading it,
+    // wsl-path-bridge.ts's resolveLocalReadPath falls back to a
+    // process-global "active" profile pinned to the PRIMARY window only.
+    $connection.set({ mode: 'local', profile: 'primary' } as never)
+    await readDesktopDir('/home/alex/primary-project')
+    expect(readDir).toHaveBeenLastCalledWith('/home/alex/primary-project', 'primary')
+
+    $connection.set({ mode: 'local', profile: 'team-pool' } as never)
+    await readDesktopDir('/home/alex/pool-project')
+    expect(readDir).toHaveBeenLastCalledWith('/home/alex/pool-project', 'team-pool')
+
+    $connection.set({ mode: 'local', profile: 'primary' } as never)
+    await readDesktopDir('/home/alex/primary-again')
+    expect(readDir).toHaveBeenLastCalledWith('/home/alex/primary-again', 'primary')
   })
 
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {

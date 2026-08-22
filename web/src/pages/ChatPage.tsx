@@ -890,13 +890,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
     const useWebgl = terminalTierWidthPx(host) >= 768;
-    let deregisterBengaliJoiner: (() => void) | null = null;
+    const deregisterBengaliJoiner = registerBengaliCharacterJoiner(term);
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
         webgl.onContextLoss(() => webgl.dispose());
         term.loadAddon(webgl);
-        deregisterBengaliJoiner = registerBengaliCharacterJoiner(term);
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
@@ -1506,7 +1505,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
-      deregisterBengaliJoiner?.();
+      deregisterBengaliJoiner();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

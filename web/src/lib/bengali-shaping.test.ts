@@ -19,7 +19,7 @@ describe("DASHBOARD_CHAT_TERMINAL_FONT_FAMILY", () => {
 });
 
 describe("getBengaliCharacterJoinRanges", () => {
-  it("joins Bengali conjunct samples as script runs", () => {
+  it("joins only conjunct clusters within Bengali words", () => {
     const text =
       "প্রযুক্তি ক্লিপবোর্ড যুক্তাক্ষর শ্রদ্ধা কর্তৃপক্ষ";
 
@@ -28,22 +28,37 @@ describe("getBengaliCharacterJoinRanges", () => {
     );
 
     expect(joined).toEqual([
-      "প্রযুক্তি",
-      "ক্লিপবোর্ড",
-      "যুক্তাক্ষর",
-      "শ্রদ্ধা",
-      "কর্তৃপক্ষ",
+      "প্র",
+      "ক্তি",
+      "ক্লি",
+      "র্ড",
+      "ক্তা",
+      "ক্ষ",
+      "শ্র",
+      "দ্ধা",
+      "র্তৃ",
+      "ক্ষ",
     ]);
   });
 
-  it("does not join Latin text or isolated Bengali characters", () => {
+  it("does not join Latin text or Bengali text without a conjunct", () => {
     const text = "run ক test বাংলা";
 
     const joined = getBengaliCharacterJoinRanges(text).map(([start, end]) =>
       text.slice(start, end),
     );
 
-    expect(joined).toEqual(["বাংলা"]);
+    expect(joined).toEqual([]);
+  });
+
+  it("keeps long Bengali runs split at conjunct boundaries", () => {
+    const text = "বাংলাপ্রযুক্তিবাংলাক্লিপবোর্ডবাংলা";
+
+    const joined = getBengaliCharacterJoinRanges(text).map(([start, end]) =>
+      text.slice(start, end),
+    );
+
+    expect(joined).toEqual(["প্র", "ক্তি", "ক্লি", "র্ড"]);
   });
 });
 
@@ -63,7 +78,8 @@ describe("registerBengaliCharacterJoiner", () => {
     const dispose = registerBengaliCharacterJoiner(term);
 
     expect(registeredHandler("প্রযুক্তি")).toEqual([
-      [0, "প্রযুক্তি".length],
+      [0, "প্র".length],
+      [5, "প্রযুক্তি".length],
     ]);
 
     dispose();

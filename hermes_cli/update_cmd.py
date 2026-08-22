@@ -1683,6 +1683,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _m().sys.exit(1)
 
     node_failures = _update_node_dependencies()
+    _m()._refresh_tui_cached_bundle_after_update(_m().PROJECT_ROOT / "ui-tui")
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     desktop_build_ok = _rebuild_desktop_after_update(
         _m().PROJECT_ROOT / "apps" / "desktop",
@@ -6589,6 +6590,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
+        _m()._refresh_tui_cached_bundle_after_update(_m().PROJECT_ROOT / "ui-tui")
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
         desktop_build_ok = _rebuild_desktop_after_update(

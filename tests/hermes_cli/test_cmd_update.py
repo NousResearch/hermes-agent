@@ -254,6 +254,7 @@ class TestCmdUpdateBranchFallback:
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
+        node_events = []
         with patch("shutil.which", return_value=None), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
@@ -268,7 +269,16 @@ class TestCmdUpdateBranchFallback:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": ["new.option"]},
-        ) as migrate_config, patch("hermes_cli.main.sys") as mock_sys:
+        ) as migrate_config, patch("hermes_cli.main.sys") as mock_sys, patch(
+            "hermes_cli.update_cmd._update_node_dependencies",
+            side_effect=lambda: node_events.append("node") or [],
+        ), patch(
+            "hermes_cli.main._refresh_tui_cached_bundle_after_update",
+            side_effect=lambda _path: node_events.append("tui-cache"),
+        ), patch(
+            "hermes_cli.main._build_web_ui",
+            side_effect=lambda _path: node_events.append("web") or True,
+        ):
             mock_sys.stdin.isatty.return_value = False
             mock_sys.stdout.isatty.return_value = False
             mock_run.side_effect = _make_run_side_effect(
@@ -282,6 +292,7 @@ class TestCmdUpdateBranchFallback:
             captured = capsys.readouterr()
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
+            assert node_events == ["node", "tui-cache", "web"]
 
 
 class TestCmdUpdateMigrationPrompt:

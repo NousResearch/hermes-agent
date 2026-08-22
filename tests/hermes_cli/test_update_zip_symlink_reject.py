@@ -115,13 +115,29 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
             dst.write(src.read())
         return dest, None
 
+    frontend_events = []
+
     # Stub the post-extract pip/uv reinstall so we don't actually run pip.
     # The function may sys.exit(1) when those commands fail; that's fine —
     # we only care that ZIP validation + extraction completed without
     # raising "symlink member".
     with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
          patch("subprocess.run") as fake_run, \
-         patch("subprocess.check_call"):
+         patch("subprocess.check_call"), \
+         patch(
+             "hermes_cli.update_cmd._update_node_dependencies",
+             side_effect=lambda: frontend_events.append("node") or [],
+         ), \
+         patch.object(
+             hermes_main,
+             "_refresh_tui_cached_bundle_after_update",
+             side_effect=lambda _path: frontend_events.append("tui-cache"),
+         ), \
+         patch.object(
+             hermes_main,
+             "_build_web_ui",
+             side_effect=lambda _path: frontend_events.append("web") or True,
+         ):
         fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         try:
             hermes_main._update_via_zip(args)
@@ -135,3 +151,4 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
     assert (fake_root / "README.md").read_text() == "ok\n"
+    assert frontend_events == ["node", "tui-cache", "web"]

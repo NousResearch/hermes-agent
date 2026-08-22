@@ -11,9 +11,12 @@ HERMES_HOME root.
 import json
 import logging
 import os
+import platform
+import shlex
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -639,6 +642,39 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
 # Backup
 # ---------------------------------------------------------------------------
 
+def format_restore_hint_path(path, system: Optional[str] = None) -> str:
+    """Render ``path`` as ONE shell argument for a ``hermes import`` hint.
+
+    The restore hints are printed to be copy-pasted verbatim, but ``hermes
+    import`` takes exactly one positional ``zipfile``.  An unquoted path
+    containing spaces -- ``/Users/me/My Backups/hermes-backup.zip``, or any
+    Windows path under ``C:\\Program Files`` -- is split by the shell into
+    several arguments, so the pasted command fails with an unrecognised extra
+    argument before the restore even starts.  That is the worst possible
+    moment for it: the hints fire right after a backup, a migration failure,
+    or a pre-update snapshot.
+
+    Quoting is host-specific, so mirror the convention already used by
+    ``hermes_cli.browser_connect.manual_chrome_debug_command`` -- including
+    its injectable ``system`` argument, which lets both branches be tested on
+    one host: ``subprocess.list2cmdline`` (CreateProcess rules) on Windows,
+    ``shlex.quote`` (POSIX shell rules) everywhere else.  Both are no-ops for
+    paths that need no escaping, so the ordinary case is unchanged.
+
+    Branching on ``platform.system()`` rather than ``os.name`` is deliberate:
+    ``os.name`` is what ``pathlib`` dispatches on, so a test that overrode it
+    could not construct a path at all.
+
+    Callers pass the path they want printed; this helper only quotes it and
+    never resolves or rewrites it.
+    """
+    system = system or platform.system()
+    text = str(path)
+    if system == "Windows":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
+
+
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
     hermes_root = get_default_hermes_root()
@@ -860,7 +896,13 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             print(f"  ... and {len(errors) - 10} more")
 
     if not errors:
-        print(f"\nRestore with: hermes import {out_path.name}")
+        # Full path, not the basename: ``run_import`` resolves its argument
+        # against the caller's cwd, and the default output lands in the home
+        # directory.  ``out_path`` is always absolute (``--output`` is
+        # ``.expanduser().resolve()``d; the default is built from ``Path.home()``).
+        # Quoted, because a full path is exactly what can contain spaces and
+        # ``hermes import`` accepts only one positional ``zipfile``.
+        print(f"\nRestore with: hermes import {format_restore_hint_path(out_path)}")
 
 
 # ---------------------------------------------------------------------------

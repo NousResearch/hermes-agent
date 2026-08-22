@@ -6,7 +6,7 @@ import sqlite3
 import stat
 import zipfile
 from argparse import Namespace
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -230,6 +230,71 @@ class TestBackup:
 
 
 
+
+    def test_restore_hint_prints_full_archive_path(self, tmp_path, monkeypatch, capsys):
+        """The ``hermes import`` hint must be runnable from any directory.
+
+        ``run_import`` resolves its argument against the *current working
+        directory*, so a bare basename only restores when the user happens to
+        be sitting in the archive's directory.  The default output lands in
+        the home directory, so the printed command was broken from anywhere
+        else.  Mirrors ``_run_pre_update_backup``, which already printed the
+        full path.
+
+        NOTE: this path has no spaces, so it does not pin the *quoting*.  See
+        ``test_restore_hint_quotes_a_path_containing_spaces`` for that.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_dir = tmp_path / "archives"
+        out_dir.mkdir()
+        out_zip = out_dir / "backup.zip"
+
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        out = capsys.readouterr().out
+        assert f"Restore with: hermes import {out_zip.resolve()}" in out
+        # The old bare-basename form is not runnable from another cwd.
+        assert f"hermes import {out_zip.name}\n" not in out
+
+    def test_restore_hint_quotes_a_path_containing_spaces(self, tmp_path, monkeypatch, capsys):
+        """A full path that contains spaces must be emitted as ONE argument.
+
+        ``hermes import`` takes exactly one positional ``zipfile``.  Printing
+        the path bare means the shell splits ``.../my archives/backup.zip``
+        into two words, so the pasted command dies on an unexpected extra
+        argument -- the full-path fix alone is not enough to make the hint
+        runnable.
+
+        The expected form is written out literally rather than recomputed with
+        ``shlex.quote`` so that the assertion still fails if the production
+        code swaps in a different (wrong) quoting function.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_dir = tmp_path / "my archives"
+        out_dir.mkdir()
+        out_zip = out_dir / "backup.zip"
+
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        out = capsys.readouterr().out
+        resolved = out_zip.resolve()
+        assert f"Restore with: hermes import '{resolved}'\n" in out
+        # The unquoted form is what the shell would split.
+        assert f"hermes import {resolved}\n" not in out
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
@@ -555,6 +620,77 @@ class TestFormatSize:
     def test_terabytes(self):
         from hermes_cli.backup import _format_size
         assert "TB" in _format_size(2 * 1024 ** 4)
+
+
+class TestFormatRestoreHintPath:
+    """Unit tests for the shared ``hermes import`` argument formatter.
+
+    Every restore hint (``hermes backup``, ``hermes claw migrate``, the
+    pre-update backup) routes through this helper, so the host-specific
+    quoting rules are pinned once here.  Expected strings are literal, not
+    recomputed from ``shlex``/``subprocess``, so a wrong quoting function
+    cannot make these pass.
+
+    The host is selected with the function's own ``system`` argument, mirroring
+    ``browser_connect.manual_chrome_debug_command``.  Note this is NOT
+    incidental: overriding a global such as ``os.name`` to fake a host would
+    make ``pathlib`` try to build a ``WindowsPath`` on a POSIX runner and raise
+    ``NotImplementedError``, so the Windows cases also use ``PureWindowsPath``,
+    which is constructible anywhere.
+    """
+
+    def test_posix_leaves_a_plain_path_untouched(self):
+        from hermes_cli.backup import format_restore_hint_path
+        assert format_restore_hint_path(
+            PurePosixPath("/home/me/.hermes/backups/pre-update-1.zip"), system="Linux"
+        ) == "/home/me/.hermes/backups/pre-update-1.zip"
+
+    def test_posix_quotes_spaces(self):
+        from hermes_cli.backup import format_restore_hint_path
+        assert format_restore_hint_path(
+            PurePosixPath("/home/me/My Backups/hermes-backup.zip"), system="Darwin"
+        ) == "'/home/me/My Backups/hermes-backup.zip'"
+
+    def test_posix_neutralizes_shell_metacharacters(self):
+        """A path is data, never something the shell should get to evaluate."""
+        from hermes_cli.backup import format_restore_hint_path
+        assert format_restore_hint_path(
+            PurePosixPath("/tmp/back$up;rm/x.zip"), system="Linux"
+        ) == "'/tmp/back$up;rm/x.zip'"
+
+    def test_windows_uses_createprocess_quoting(self):
+        """``shlex.quote`` would emit POSIX single quotes, which cmd.exe treats
+        as literal characters -- Windows needs ``list2cmdline``'s double quotes.
+        """
+        from hermes_cli.backup import format_restore_hint_path
+        assert format_restore_hint_path(
+            PureWindowsPath(r"C:\Users\Me\My Backups\hermes-backup.zip"),
+            system="Windows",
+        ) == r'"C:\Users\Me\My Backups\hermes-backup.zip"'
+
+    def test_windows_leaves_a_plain_path_untouched(self):
+        from hermes_cli.backup import format_restore_hint_path
+        assert format_restore_hint_path(
+            PureWindowsPath(r"C:\hermes\backups\pre-update-1.zip"), system="Windows"
+        ) == r"C:\hermes\backups\pre-update-1.zip"
+
+    def test_defaults_to_the_running_host(self, monkeypatch):
+        """The default path really consults ``platform.system()`` -- the
+        explicit-argument tests above would all still pass if the parameter
+        were ignored on the production call sites.
+        """
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import format_restore_hint_path
+
+        monkeypatch.setattr(backup_mod.platform, "system", lambda: "Windows")
+        assert format_restore_hint_path(
+            PureWindowsPath(r"C:\My Backups\x.zip")
+        ) == r'"C:\My Backups\x.zip"'
+
+        monkeypatch.setattr(backup_mod.platform, "system", lambda: "Linux")
+        assert format_restore_hint_path(
+            PurePosixPath("/tmp/My Backups/x.zip")
+        ) == "'/tmp/My Backups/x.zip'"
 
 
 class TestValidation:
@@ -1602,6 +1738,34 @@ class TestRunPreUpdateBackup:
 
 
 
+    def test_restore_hint_is_shell_quoted(self, tmp_path, monkeypatch, capsys):
+        """The pre-update restore hint must survive a HERMES_HOME with spaces.
+
+        This is the hint a user reaches for after a bad update, and profile
+        homes routinely sit under paths like ``~/Library/Application Support``
+        or a Windows ``C:\\Users\\First Last``.  Unquoted, the shell splits
+        the path and ``hermes import`` rejects the extra positional.
+
+        The other tests in this class use the ``hermes_home`` fixture, whose
+        ``<tmp>/.hermes`` root needs no escaping -- so their assertions on this
+        line hold with or without the quoting.  This one uses a space-bearing
+        root on purpose.
+        """
+        root = tmp_path / "Application Support" / ".hermes"
+        root.mkdir(parents=True)
+        _make_hermes_tree(root)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=False, backup=True))
+        out = capsys.readouterr().out
+
+        zips = self._zips(root)
+        assert len(zips) == 1
+        archive = zips[0]
+        assert f"Restore:  hermes import '{archive}'\n" in out
+        assert f"hermes import {archive}\n" not in out
 
     def test_config_off_disables_everything_silently(self, hermes_home, capsys):
         """pre_update_backup: off — an explicit opt-out disables the quick

@@ -3669,7 +3669,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return snapshot_id
 
     try:
-        from hermes_cli.backup import create_pre_update_backup
+        from hermes_cli.backup import create_pre_update_backup, format_restore_hint_path
     except Exception as exc:
         print(
             f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update."
@@ -3724,7 +3724,10 @@ def _run_pre_update_backup(args) -> Optional[str]:
         display_path = str(out_path)
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
-    print(f"  Restore:  hermes import {out_path}")
+    # Shell-quoted: this already printed the full path, and a full path under a
+    # profile directory or a Windows user folder can contain spaces, which the
+    # shell would split into extra positionals ``hermes import`` rejects.
+    print(f"  Restore:  hermes import {format_restore_hint_path(out_path)}")
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
     return snapshot_id

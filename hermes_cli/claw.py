@@ -514,13 +514,26 @@ def _cmd_migrate(args):
     backup_archive: Optional[Path] = None
     if not no_backup:
         try:
-            from hermes_cli.backup import create_pre_migration_backup, _format_size
+            from hermes_cli.backup import (
+                create_pre_migration_backup,
+                format_restore_hint_path,
+                _format_size,
+            )
             backup_archive = create_pre_migration_backup(hermes_home=hermes_home)
             if backup_archive:
                 size_str = _format_size(backup_archive.stat().st_size)
                 print()
                 print_success(f"Pre-migration backup: {backup_archive} ({size_str})")
-                print_info(f"Restore with: hermes import {backup_archive.name}")
+                # Full path, not the basename: ``hermes import`` resolves its
+                # argument against the caller's cwd, and this archive always
+                # lives under ``<HERMES_HOME>/backups/``.  ``.resolve()`` because
+                # ``HERMES_HOME`` is used verbatim and may be relative (the
+                # Migrator calls below resolve it for the same reason), and
+                # shell-quoted because that path can contain spaces.
+                print_info(
+                    "Restore with: hermes import "
+                    f"{format_restore_hint_path(backup_archive.resolve())}"
+                )
         except Exception as e:
             print()
             print_error(f"Could not create pre-migration backup: {e}")
@@ -549,8 +562,17 @@ def _cmd_migrate(args):
         print_error(f"Migration failed: {e}")
         logger.debug("OpenClaw migration error", exc_info=True)
         if backup_archive:
+            # Re-imported locally rather than relying on the binding from the
+            # pre-backup branch above: this runs inside an ``except`` handler,
+            # where a NameError would replace the migration error the user
+            # actually needs to see.
+            from hermes_cli.backup import format_restore_hint_path
+
             print_info(f"A pre-migration backup is available at: {backup_archive}")
-            print_info(f"Restore with: hermes import {backup_archive.name}")
+            print_info(
+                "Restore with: hermes import "
+                f"{format_restore_hint_path(backup_archive.resolve())}"
+            )
         return
 
     # Print results

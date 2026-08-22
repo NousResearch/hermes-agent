@@ -86,14 +86,22 @@ def compose_user_api_content(
     """Compose the API-bound content of the current turn's user message.
 
     Single source for the ``api_content`` sidecar and the wire bytes so they never drift
-    (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected."""
+    (what turn N sends is what turn N+1 replays). ``None`` when neither runtime
+    context nor reserved-fence neutralization changes the user content.
+
+    Runtime memory and plugin context are appended only to the API copy; stored
+    transcript content remains clean. A user-authored reserved fence receives an
+    ``api_content`` sidecar even without runtime context, so it cannot impersonate
+    Hermes' injected memory boundary on the provider wire.
+    """
     if not isinstance(content, str):
         return None
     fenced = build_memory_context_block(ext_prefetch_cache) if ext_prefetch_cache else ""
     injections = [part for part in (fenced, plugin_user_context) if part]
+    neutralized_content = neutralize_user_forged_memory_context(content)
     if not injections:
-        return None
-    return neutralize_user_forged_memory_context(content) + "\n\n" + "\n\n".join(injections)
+        return neutralized_content if neutralized_content != content else None
+    return neutralized_content + "\n\n" + "\n\n".join(injections)
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:

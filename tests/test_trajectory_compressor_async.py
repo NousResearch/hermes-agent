@@ -199,3 +199,110 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
 
     assert result.startswith("[CONTEXT SUMMARY]:")
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_process_directory_does_not_gather_one_task_per_entry(tmp_path):
+    """Directory processing must not create one coroutine per row then gather(*all).
+
+    The semaphore only caps in-flight API calls. Materializing every JSONL
+    row and wrapping each in a Task still OOMs on large offline dumps (#84703).
+    """
+    import asyncio
+    import json
+
+    from trajectory_compressor import (
+        AggregateMetrics,
+        CompressionConfig,
+        TrajectoryCompressor,
+        TrajectoryMetrics,
+    )
+
+    n_entries = 12
+    max_concurrent = 3
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    src = in_dir / "traj.jsonl"
+    with src.open("w", encoding="utf-8") as handle:
+        for idx in range(n_entries):
+            handle.write(json.dumps({"id": idx, "conversations": []}) + "\n")
+
+    gather_sizes: list[int] = []
+    real_gather = asyncio.gather
+
+    async def spy_gather(*aws, **kwargs):
+        gather_sizes.append(len(aws))
+        return await real_gather(*aws, **kwargs)
+
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = CompressionConfig(
+        max_concurrent_requests=max_concurrent,
+        metrics_enabled=False,
+    )
+    compressor.aggregate_metrics = AggregateMetrics()
+    compressor.logger = MagicMock()
+
+    async def fake_process(entry):
+        await asyncio.sleep(0)
+        return entry, TrajectoryMetrics()
+
+    compressor.process_entry_async = fake_process
+
+    with patch("trajectory_compressor.asyncio.gather", spy_gather):
+        await compressor._process_directory_async(in_dir, out_dir)
+
+    assert gather_sizes, "directory processing should still use asyncio.gather"
+    assert max(gather_sizes) <= max_concurrent, (
+        f"gather submitted {max(gather_sizes)} awaitables; "
+        f"must be <= max_concurrent_requests ({max_concurrent})"
+    )
+
+    written = (out_dir / "traj.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["id"] for line in written] == list(range(n_entries))
+
+
+@pytest.mark.asyncio
+async def test_process_directory_timeout_skips_and_error_keeps_original(tmp_path):
+    """Timeouts are omitted; unexpected errors keep the original row."""
+    import asyncio
+    import json
+
+    from trajectory_compressor import (
+        AggregateMetrics,
+        CompressionConfig,
+        TrajectoryCompressor,
+        TrajectoryMetrics,
+    )
+
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    src = in_dir / "traj.jsonl"
+    with src.open("w", encoding="utf-8") as handle:
+        for idx, tag in enumerate(("ok", "timeout", "error")):
+            handle.write(json.dumps({"id": idx, "tag": tag, "conversations": []}) + "\n")
+
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = CompressionConfig(max_concurrent_requests=2, metrics_enabled=False)
+    compressor.aggregate_metrics = AggregateMetrics()
+    compressor.logger = MagicMock()
+
+    async def fake_process(entry):
+        if entry["tag"] == "timeout":
+            raise asyncio.TimeoutError
+        if entry["tag"] == "error":
+            raise RuntimeError("boom")
+        return {**entry, "ok": True}, TrajectoryMetrics()
+
+    compressor.process_entry_async = fake_process
+    await compressor._process_directory_async(in_dir, out_dir)
+
+    rows = [
+        json.loads(line)
+        for line in (out_dir / "traj.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["tag"] for row in rows] == ["ok", "error"]
+    assert rows[0]["ok"] is True
+    assert "ok" not in rows[1]
+    assert compressor.aggregate_metrics.trajectories_failed == 2

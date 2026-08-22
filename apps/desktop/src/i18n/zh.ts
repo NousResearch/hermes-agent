@@ -344,6 +344,28 @@ export const zh: Translations = {
     resetConfirm: '将所有设置恢复为 Hermes 默认值？',
     exportFailed: '导出失败',
     resetFailed: '重置失败',
+    voiceCommandProvider: {
+      add: '添加本地 STT 提供方',
+      description:
+        '运行受信任的本地命令进行语音识别。Hermes 会提供音频路径并读取命令写出的转录文本；该命令将以当前用户的完整权限运行。',
+      providerName: '提供方名称',
+      command: '命令',
+      commandHelp: '必须包含 {input_path}，以及 {output_path} 或 {output_dir} 之一。',
+      language: '语言',
+      model: '模型',
+      optional: '可选',
+      transcriptFormat: '转录格式',
+      timeout: '超时',
+      timeoutPlaceholder: '300 秒',
+      addProvider: '添加提供方',
+      errors: {
+        invalidName: '请使用以字母开头的小写名称；允许数字、连字符和下划线。',
+        reservedName: '该名称已保留给内置 STT 提供方。',
+        duplicateName: '已存在同名提供方。',
+        missingInput: '命令必须包含 {input_path}。',
+        missingOutput: '命令必须包含 {output_path} 或 {output_dir}。'
+      }
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '账号',

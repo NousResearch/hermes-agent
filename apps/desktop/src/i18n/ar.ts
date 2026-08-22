@@ -305,6 +305,28 @@ export const ar = defineLocale({
     resetConfirm: 'هل تريد إعادة كل الإعدادات إلى افتراضيات Hermes؟',
     exportFailed: 'فشل التصدير',
     resetFailed: 'فشلت إعادة الضبط',
+    voiceCommandProvider: {
+      add: 'إضافة مزود STT محلي',
+      description:
+        'شغّل أمرًا محليًا موثوقًا للتعرف على الكلام. يمرر Hermes مسار الصوت ويقرأ النص الذي يكتبه الأمر؛ ويعمل الأمر بصلاحيات المستخدم الكاملة.',
+      providerName: 'اسم المزود',
+      command: 'الأمر',
+      commandHelp: 'مطلوب: {input_path} وأحد {output_path} أو {output_dir}.',
+      language: 'اللغة',
+      model: 'النموذج',
+      optional: 'اختياري',
+      transcriptFormat: 'تنسيق النص',
+      timeout: 'المهلة',
+      timeoutPlaceholder: '300 ثانية',
+      addProvider: 'إضافة المزود',
+      errors: {
+        invalidName: 'استخدم اسمًا بأحرف صغيرة يبدأ بحرف؛ ويسمح بالأرقام والشرطات والشرطات السفلية.',
+        reservedName: 'هذا الاسم محجوز لمزود STT مدمج.',
+        duplicateName: 'يوجد مزود بهذا الاسم بالفعل.',
+        missingInput: 'يجب أن يتضمن الأمر {input_path}.',
+        missingOutput: 'يجب أن يتضمن الأمر {output_path} أو {output_dir}.'
+      }
+    },
     nav: {
       providers: 'المزودون',
       providerAccounts: 'الحسابات',

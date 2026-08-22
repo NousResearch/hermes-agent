@@ -396,6 +396,27 @@ export interface Translations {
       completionSoundDesc: string
       completionSoundPreview: string
     }
+    voiceCommandProvider: {
+      add: string
+      description: string
+      providerName: string
+      command: string
+      commandHelp: string
+      language: string
+      model: string
+      optional: string
+      transcriptFormat: string
+      timeout: string
+      timeoutPlaceholder: string
+      addProvider: string
+      errors: {
+        invalidName: string
+        reservedName: string
+        duplicateName: string
+        missingInput: string
+        missingOutput: string
+      }
+    }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>

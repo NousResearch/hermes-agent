@@ -237,6 +237,28 @@ export const ja = defineLocale({
     resetConfirm: 'すべての設定を Hermes のデフォルトに戻しますか？',
     exportFailed: '書き出しに失敗しました',
     resetFailed: 'リセットに失敗しました',
+    voiceCommandProvider: {
+      add: 'ローカル STT プロバイダーを追加',
+      description:
+        '信頼できるローカルコマンドで音声を認識します。Hermes が音声パスを渡し、コマンドが書き出した文字起こしを読み取ります。コマンドは現在のユーザー権限で実行されます。',
+      providerName: 'プロバイダー名',
+      command: 'コマンド',
+      commandHelp: '{input_path} と、{output_path} または {output_dir} のいずれかが必要です。',
+      language: '言語',
+      model: 'モデル',
+      optional: '任意',
+      transcriptFormat: '文字起こし形式',
+      timeout: 'タイムアウト',
+      timeoutPlaceholder: '300 秒',
+      addProvider: 'プロバイダーを追加',
+      errors: {
+        invalidName: '小文字で始まる名前を使用してください。数字、ハイフン、アンダースコアを使用できます。',
+        reservedName: 'その名前は組み込み STT プロバイダー用に予約されています。',
+        duplicateName: '同じ名前のプロバイダーがすでに存在します。',
+        missingInput: 'コマンドに {input_path} を含める必要があります。',
+        missingOutput: 'コマンドに {output_path} または {output_dir} を含める必要があります。'
+      }
+    },
     nav: {
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',

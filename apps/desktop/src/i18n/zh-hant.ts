@@ -231,6 +231,28 @@ export const zhHant = defineLocale({
     resetConfirm: '要將所有設定恢復為 Hermes 預設值嗎？',
     exportFailed: '匯出失敗',
     resetFailed: '重設失敗',
+    voiceCommandProvider: {
+      add: '新增本機 STT 提供方',
+      description:
+        '執行受信任的本機指令進行語音辨識。Hermes 會提供音訊路徑並讀取指令寫出的轉錄文字；該指令將以目前使用者的完整權限執行。',
+      providerName: '提供方名稱',
+      command: '指令',
+      commandHelp: '必須包含 {input_path}，以及 {output_path} 或 {output_dir} 其中之一。',
+      language: '語言',
+      model: '模型',
+      optional: '選填',
+      transcriptFormat: '轉錄格式',
+      timeout: '逾時',
+      timeoutPlaceholder: '300 秒',
+      addProvider: '新增提供方',
+      errors: {
+        invalidName: '請使用以字母開頭的小寫名稱；允許數字、連字號和底線。',
+        reservedName: '此名稱保留給內建 STT 提供方。',
+        duplicateName: '已有同名提供方。',
+        missingInput: '指令必須包含 {input_path}。',
+        missingOutput: '指令必須包含 {output_path} 或 {output_dir}。'
+      }
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '帳號',

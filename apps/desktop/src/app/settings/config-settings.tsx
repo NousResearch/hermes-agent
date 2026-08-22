@@ -47,6 +47,7 @@ import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { VoiceCommandProviderAction } from './voice-command-provider-dialog'
 
 export function ConfigSettings({
   activeSectionId,
@@ -383,6 +384,7 @@ function ConfigSettingsInner({
           <QuickEntrySettings />
         </>
       )}
+      {activeSectionId === 'voice' && <VoiceCommandProviderAction config={config} onApply={updateConfig} />}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}

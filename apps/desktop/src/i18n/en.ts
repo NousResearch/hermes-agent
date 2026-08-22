@@ -355,6 +355,28 @@ export const en: Translations = {
     resetConfirm: 'Reset all settings to Hermes defaults?',
     exportFailed: 'Export failed',
     resetFailed: 'Reset failed',
+    voiceCommandProvider: {
+      add: 'Add local STT provider',
+      description:
+        'Run a trusted local command for speech recognition. Hermes supplies the audio path and reads the transcript your command writes; the command runs with your full user permissions.',
+      providerName: 'Provider name',
+      command: 'Command',
+      commandHelp: 'Required: {input_path} and either {output_path} or {output_dir}.',
+      language: 'Language',
+      model: 'Model',
+      optional: 'Optional',
+      transcriptFormat: 'Transcript format',
+      timeout: 'Timeout',
+      timeoutPlaceholder: '300 seconds',
+      addProvider: 'Add provider',
+      errors: {
+        invalidName: 'Use a lowercase name starting with a letter; numbers, hyphens, and underscores are allowed.',
+        reservedName: 'That name is reserved for a built-in STT provider.',
+        duplicateName: 'A provider with that name already exists.',
+        missingInput: 'The command must include {input_path}.',
+        missingOutput: 'The command must include {output_path} or {output_dir}.'
+      }
+    },
     nav: {
       providers: 'Providers',
       providerAccounts: 'Accounts',

@@ -30,6 +30,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -54,6 +55,17 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_hermes_agent_help_guidance_does_not_reference_missing_skill(self):
+        assert "`hermes-agent` skill" not in HERMES_AGENT_HELP_GUIDANCE
+        assert "skill_view" not in HERMES_AGENT_HELP_GUIDANCE
+        assert "https://hermes-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE
+        assert "source of truth" in HERMES_AGENT_HELP_GUIDANCE
+
+    def test_skills_system_prompt_does_not_reference_hermes_agent_skill(self):
+        prompt = build_skills_system_prompt()
+        assert "load the `hermes-agent` skill" not in prompt
+        assert "skill_view(name='hermes-agent')" not in prompt
 
 
 # =========================================================================

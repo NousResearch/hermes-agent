@@ -2919,6 +2919,11 @@ DEFAULT_CONFIG = {
         # of leaving a wedged-but-alive zombie. Set to false to disable.
         "loop_watchdog": True,
 
+        # Minimum seconds between home-channel shutdown broadcasts to the same
+        # destination. The guard is durable across gateway processes; 0 disables
+        # it and restores the original always-send behaviour.
+        "shutdown_notification_cooldown_seconds": 300,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with

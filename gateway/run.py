@@ -2695,6 +2695,7 @@ from gateway.shutdown_watchdog import (
     resolve_shutdown_watchdog_delay,
     start_loop_liveness_watchdog,
 )
+from gateway import shutdown_notice
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
@@ -10965,39 +10966,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if dedup_key in notified:
                 continue
 
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), msg)
-                if result is not None and getattr(result, "success", True) is False:
+            # Durable cross-process cooldown (#shutdown-notice-spam). The
+            # ``notified`` set above only dedupes within THIS process, so a host
+            # that repeatedly cycles the gateway (WSL under Windows Modern
+            # Standby, a crash-looping supervisor) re-broadcasts on every fresh
+            # start. Gate only the home-channel broadcast; the per-active-session
+            # pings above stay ungated, exactly like the drain suppress flag.
+            cooldown_key = shutdown_notice.destination_key(
+                platform.value, home.chat_id, home.thread_id
+            )
+            with shutdown_notice.home_notice_admission(
+                cooldown_key,
+                cooldown_seconds=getattr(
+                    self.config, "shutdown_notification_cooldown_seconds", 0
+                ),
+            ) as admission:
+                if not admission.allowed:
+                    logger.info(
+                        "Home-channel shutdown notification suppressed for %s:%s "
+                        "(sent within the last %ss)",
+                        platform.value,
+                        home.chat_id,
+                        getattr(self.config, "shutdown_notification_cooldown_seconds", 0),
+                    )
+                    continue
+
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        home.chat_id,
+                        home.thread_id,
+                        adapter=adapter,
+                    )
+                    if metadata:
+                        result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    else:
+                        result = await adapter.send(str(home.chat_id), msg)
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.debug(
+                            "Failed to send shutdown notification to home channel %s:%s: %s",
+                            platform.value,
+                            home.chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    notified.add(dedup_key)
+                    admission.record_success()
+                    logger.info(
+                        "Sent shutdown notification to home channel %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                except Exception as e:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
                         home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        e,
                     )
-                    continue
-
-                notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    e,
-                )
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():

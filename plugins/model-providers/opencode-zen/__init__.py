@@ -43,10 +43,23 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return m == "deepseek-reasoner"
 
 
-def _is_glm_5_2_model(model: str | None) -> bool:
-    """Detect GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+def _glm_effort_spec(model: str | None) -> tuple | None:
+    """GLM effort vocabulary for a 5.2/5.3 alias: (efforts, overrides, floor).
+
+    Shared with the zai profile (agent.reasoning_effort). GLM-5.3 accepts
+    the graded low/medium/high/max knob; GLM-5.2 only high/max. Returns
+    None for non-GLM models.
+    """
     m = _flat_model_name(model)
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    if any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3")):
+        from agent.reasoning_effort import GLM53_EFFORTS, GLM53_OVERRIDES
+
+        return GLM53_EFFORTS, GLM53_OVERRIDES, "low"
+    if any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2")):
+        from agent.reasoning_effort import GLM52_EFFORTS, GLM52_OVERRIDES
+
+        return GLM52_EFFORTS, GLM52_OVERRIDES, "high"
+    return None
 
 
 class OpenCodeGoProfile(ProviderProfile):
@@ -73,11 +86,12 @@ class OpenCodeGoProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if _is_glm_5_2_model(model):
-            # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible
-            # reasoning_effort knob (high/max — declared in
-            # agent.reasoning_effort, shared with the zai profile); leave the
-            # server default alone when reasoning is disabled or unset.
+        glm_spec = _glm_effort_spec(model)
+        if glm_spec is not None:
+            # GLM-5.2/5.3 on OpenCode Go uses its native OpenAI-compatible
+            # reasoning_effort knob (efforts declared in agent.reasoning_effort
+            # and shared with the zai profile); leave the server default alone
+            # when reasoning is disabled or unset.
             if not isinstance(reasoning_config, dict):
                 return extra_body, top_level
             if reasoning_config.get("enabled") is False:
@@ -85,16 +99,11 @@ class OpenCodeGoProfile(ProviderProfile):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if not effort or effort == "none":
                 return extra_body, top_level
-            from agent.reasoning_effort import (
-                GLM52_EFFORTS,
-                GLM52_OVERRIDES,
-                clamp_effort,
-            )
+            from agent.reasoning_effort import clamp_effort
 
-            clamped = clamp_effort(effort, GLM52_EFFORTS, GLM52_OVERRIDES)
-            top_level["reasoning_effort"] = (
-                clamped if clamped in GLM52_EFFORTS else "high"
-            )
+            efforts, overrides, floor = glm_spec
+            clamped = clamp_effort(effort, efforts, overrides)
+            top_level["reasoning_effort"] = clamped if clamped in efforts else floor
             return extra_body, top_level
 
         if _is_kimi_k2_model(model):

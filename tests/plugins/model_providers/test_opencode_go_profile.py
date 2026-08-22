@@ -196,6 +196,31 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoGLM53Reasoning:
+    """GLM-5.3 uses its graded low/medium/high/max knob on OpenCode Go."""
+
+    @pytest.mark.parametrize(
+        "effort,expected",
+        [("low", "low"), ("medium", "medium"), ("high", "high"), ("max", "max")],
+    )
+    def test_graded_efforts_pass_through(self, opencode_go_profile, effort, expected):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize(
+        "model", ["glm-5.3", "glm-5-3", "glm-5p3", "opencode/glm-5.3"]
+    )
+    def test_alias_spellings_recognized(self, opencode_go_profile, model):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "max"}
+
+
 class TestOpenCodeGoModelGating:
     """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
 

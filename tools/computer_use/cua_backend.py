@@ -2027,8 +2027,8 @@ class _CuaDriverSession:
         )
 
     def _restart_session_locked(self) -> None:
-        """Recreate the MCP session after the daemon/stdin transport was closed.
-        Caller must hold self._lock (the reconnect-once retry path holds it)."""
+        """Recreate the MCP session after its transport closes or a call times out.
+        Caller must hold self._lock (the recovery paths hold it)."""
         if self._started:
             try:
                 self._stop_lifecycle_locked()
@@ -2250,6 +2250,15 @@ class _CuaDriverSession:
                 timeout=timeout,
             )
         except Exception as e:
+            if isinstance(e, concurrent.futures.TimeoutError):
+                logger.warning(
+                    "cua-driver MCP timed out on %s; restarting session", name
+                )
+                with self._lock:
+                    self._restart_session_locked()
+                raise RuntimeError(
+                    f"cua-driver MCP timed out on {name}; session restarted"
+                ) from e
             if self._is_transient_daemon_error(e):
                 if not self._transport_replay_is_safe(name):
                     self._notify_transport_reset()

@@ -1175,7 +1175,7 @@ class TestCuaDriverWindowResultShapes:
 
 
 class TestCuaDriverSessionReconnect:
-    """Verify reconnect-once on a closed-resource error. After the
+    """Verify recovery after a closed-resource error or timeout. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
     through bridge.run(_aenter/_aexit); instead, reconnect calls
     `_stop_lifecycle_locked` + `_start_lifecycle_locked` directly. The
@@ -1301,6 +1301,47 @@ class TestCuaDriverSessionReconnect:
         assert bridge.calls == [
             ("call", "list_apps", {}),
             ("call", "start_session", {"session": "hermes-label"}),
+            ("call", "list_apps", {}),
+        ]
+
+
+    def test_call_tool_restarts_after_timeout_without_retrying(self):
+        """Recycle a timed-out session without repeating an ambiguous tool call."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.effects = [
+                    concurrent.futures.TimeoutError(),
+                    {"ok": True},
+                ]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        with pytest.raises(
+            RuntimeError,
+            match="cua-driver MCP timed out on get_window_state",
+        ) as exc_info:
+            session.call_tool("get_window_state", {"window_id": 42})
+
+        assert isinstance(exc_info.value.__cause__, concurrent.futures.TimeoutError)
+        assert session._reconnect_log == ["stop", "start"]
+        assert [call[0] for call in bridge.calls] == [
+            ("call", "get_window_state", {"window_id": 42}),
+        ]
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert [call[0] for call in bridge.calls] == [
+            ("call", "get_window_state", {"window_id": 42}),
             ("call", "list_apps", {}),
         ]
 

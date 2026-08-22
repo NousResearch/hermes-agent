@@ -713,6 +713,25 @@ def _format_update_notice(behind: int) -> str:
 _deferred_update_notice_started = False
 
 
+def _render_markup_to_ansi(markup: str) -> str:
+    """Render Rich markup to an ANSI escape string.
+
+    Under ``patch_stdout`` (active in the interactive CLI), ``console.print``
+    writes ANSI escapes directly to the StdoutProxy, which strips the ESC
+    bytes and leaves visible ``[1;33m…[0m`` artifacts (#83969).
+
+    Capturing the rendered output and passing it through ``cprint`` (which
+    routes via ``prompt_toolkit``'s ANSI parser) avoids the mangling.
+    """
+    from io import StringIO
+    from rich.console import Console as _Console
+
+    buf = StringIO()
+    cap = _Console(file=buf, force_terminal=True, color_system="truecolor")
+    cap.print(markup)
+    return buf.getvalue().rstrip("\n")
+
+
 def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
     """Print the update warning once the prefetched check completes.
 
@@ -731,7 +750,9 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            markup = _format_update_notice(behind)
+            ansi = _render_markup_to_ansi(markup)
+            cprint(ansi)
         except Exception:
             pass  # never break the session over an update notice
 

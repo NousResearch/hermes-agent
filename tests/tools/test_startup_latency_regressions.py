@@ -175,37 +175,41 @@ class TestBannerUpdateCheckNonBlocking:
 
         printed = []
 
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
+        def _fake_cprint(text):
+            printed.append(text)
 
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", None), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=5.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch.object(banner, "cprint", _fake_cprint):
+            banner._defer_update_notice(None, max_wait=5.0)
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5
             while not printed and time.time() < deadline:
                 time.sleep(0.02)
         assert printed, "deferred update notice never printed"
-        assert "3 commits behind" in printed[0]
+        # cprint receives ANSI-rendered text (ESC escapes + visible text),
+        # so check that the visible payload contains the expected message.
+        import re
+        visible = re.sub(r"\x1b\[[0-9;]*m", "", printed[0])
+        assert "3 commits behind" in visible
 
     def test_deferred_notice_silent_when_up_to_date(self):
         import hermes_cli.banner as banner
 
         printed = []
 
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
+        def _fake_cprint(text):
+            printed.append(text)
 
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", 0), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=2.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch.object(banner, "cprint", _fake_cprint):
+            banner._defer_update_notice(None, max_wait=2.0)
             done.set()
             time.sleep(0.3)
         assert not printed

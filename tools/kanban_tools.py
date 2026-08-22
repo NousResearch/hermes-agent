@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -652,6 +653,84 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+def _dirty_worktree_completion_error(task: Any, cfg: dict) -> Optional[str]:
+    """Return an actionable error when a local worker worktree is dirty.
+
+    Remote/container workspace paths are deliberately fail-open: only a local
+    path that Git positively identifies as a dirty worktree is rejected.
+    """
+    if not cfg_get(
+        cfg, "kanban", "completion_guard", "reject_dirty_worktrees", default=True,
+    ):
+        return None
+    if not task or task.workspace_kind != "worktree" or not task.workspace_path:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", task.workspace_path, "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    preview = ", ".join(line.strip() for line in proc.stdout.splitlines()[:5])
+    return (
+        "completion blocked: this Git worktree has uncommitted changes "
+        f"({preview}). Commit the intended files and include commit_sha in "
+        "metadata, or block the task with an explicit recovery handoff."
+    )
+
+
+def _code_delivery_root_error(kb: Any, conn: Any, task: Any, metadata: Any, cfg: dict) -> Optional[str]:
+    """Require merged-PR evidence for an opted-in orchestrator delivery root."""
+    if not cfg_get(
+        cfg,
+        "kanban",
+        "completion_guard",
+        "require_merged_pr_for_code_roots",
+        default=False,
+    ):
+        return None
+    orchestrator = str(cfg_get(cfg, "kanban", "orchestrator_profile", default="architect"))
+    if not task or task.assignee != orchestrator:
+        return None
+    parents = kb.parent_ids(conn, task.id)
+    # A delivery root is a dependency sink. Review/remediation cards can have
+    # code-producing parents too, but still feed another task and must not be
+    # mistaken for the final user-facing delivery boundary.
+    if not parents or kb.child_ids(conn, task.id):
+        return None
+    has_code_evidence = False
+    for parent_id in parents:
+        run = kb.latest_run(conn, parent_id)
+        run_metadata = run.metadata if run and isinstance(run.metadata, dict) else {}
+        if any(run_metadata.get(key) for key in ("changed_files", "commit_sha", "key_files")):
+            has_code_evidence = True
+            break
+    if not has_code_evidence:
+        return None
+    handoff = metadata if isinstance(metadata, dict) else {}
+    pr_url = str(handoff.get("pr_url") or "").strip()
+    human_approval = handoff.get("human_approval") is True
+    merged = (
+        str(handoff.get("pr_state") or "").upper() == "MERGED"
+        or bool(handoff.get("merged_at"))
+    )
+    merge_commit = str(handoff.get("merge_commit") or "").strip()
+    if pr_url and "/pull/" in pr_url and human_approval and merged and merge_commit:
+        return None
+    return (
+        "completion blocked: this code-delivery root requires merged PR evidence. "
+        "Keep it in the human-review gate until the user confirms the merge, then "
+        "retry with metadata containing pr_url, pr_state='MERGED' (or merged_at), "
+        "merge_commit, and human_approval=true."
+    )
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     delegated_err = _reject_delegated_child_mutation("kanban_complete")
@@ -752,6 +831,14 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+            cfg = load_config()
+            guard_error = _dirty_worktree_completion_error(task, cfg)
+            if guard_error is None:
+                guard_error = _code_delivery_root_error(
+                    kb, conn, task, metadata, cfg,
+                )
+            if guard_error is not None:
+                return tool_error(guard_error)
             rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or result or "").strip(),

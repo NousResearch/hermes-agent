@@ -132,6 +132,117 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_rejects_dirty_worktree(monkeypatch, tmp_path):
+    """A worker must not report done while its implementation is uncommitted."""
+    import subprocess
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "coder")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="implement feature",
+            assignee="coder",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = json.loads(kt._handle_complete({
+        "summary": "implemented and tested",
+        "metadata": {"changed_files": ["tracked.txt"]},
+    }))
+
+    assert "error" in out
+    assert "uncommitted changes" in out["error"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_code_delivery_root_without_merge_approval(monkeypatch, tmp_path):
+    """An opted-in orchestrator root cannot turn child code into a false done."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  orchestrator_profile: architect\n"
+        "  completion_guard:\n"
+        "    require_merged_pr_for_code_roots: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "architect")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        child = kb.create_task(conn, title="implement", assignee="coder")
+        kb.claim_task(conn, child)
+        assert kb.complete_task(
+            conn,
+            child,
+            summary="implementation ready",
+            metadata={"changed_files": ["src/feature.py"], "commit_sha": "abc123"},
+        )
+        root = kb.create_task(conn, title="deliver feature", assignee="architect")
+        kb.link_tasks(conn, child, root)
+        kb.recompute_ready(conn)
+        kb.claim_task(conn, root)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", root)
+
+    rejected = json.loads(kt._handle_complete({
+        "summary": "all children completed",
+        "metadata": {"outcome": "completed_via_child_pipeline"},
+    }))
+    assert "error" in rejected
+    assert "merged PR evidence" in rejected["error"]
+
+    approved = json.loads(kt._handle_complete({
+        "summary": "PR merged after human review",
+        "metadata": {
+            "pr_url": "https://github.com/example/repo/pull/42",
+            "pr_state": "MERGED",
+            "merge_commit": "def456",
+            "human_approval": True,
+        },
+    }))
+    assert approved.get("ok") is True
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

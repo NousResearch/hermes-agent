@@ -2633,6 +2633,15 @@ DEFAULT_CONFIG = {
         # decomposer prompt, model, or skills; configure that LLM path under
         # auxiliary.kanban_decomposer.
         "orchestrator_profile": "",
+        # Dispatcher-worker completion safety. Dirty local Git worktrees are
+        # rejected by default so an implementation cannot disappear behind a
+        # successful summary while files remain uncommitted. The merged-PR
+        # root gate is opt-in because not every board uses GitHub or assigns
+        # its orchestration root to a delivery role.
+        "completion_guard": {
+            "reject_dirty_worktrees": True,
+            "require_merged_pr_for_code_roots": False,
+        },
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.

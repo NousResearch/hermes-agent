@@ -132,6 +132,24 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> List[Dict[str, Any]]
     return blocks
 
 
+def _probe_git_branch(cwd: str) -> str:
+    """Branch checked out in *cwd* right now, or "" if that can't be read."""
+    if not cwd:
+        return ""
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        logger.debug("git branch probe failed for %s", cwd, exc_info=True)
+    return ""
+
+
 def build_trace_jsonl(
     messages: List[Dict[str, Any]],
     *,
@@ -139,6 +157,7 @@ def build_trace_jsonl(
     model: str = "",
     cwd: str = "",
     redact: bool = True,
+    git_branch: Optional[str] = None,
 ) -> str:
     """Render Hermes conversation messages as Claude Code JSONL text.
 
@@ -152,22 +171,22 @@ def build_trace_jsonl(
     Tool results are emitted as user turns carrying a ``tool_result``
     block keyed by ``tool_call_id`` — the same way Claude Code records
     them. Turns are linked via ``uuid`` / ``parentUuid``.
+
+    ``cwd`` is the workspace the session ran in, and belongs to the
+    session, not to whoever is exporting it — callers with a session row
+    should pass ``meta["cwd"]``.
+
+    ``git_branch`` is used verbatim when given (``""`` included, meaning
+    "known to be unavailable"). Left as ``None`` it is probed from ``cwd``
+    with git, which is a subprocess per call and reports the branch that
+    is checked out *now* rather than the one the session ran on — so a
+    caller holding the recorded ``sessions.git_branch`` should pass it.
     """
     lines: List[str] = []
     parent: Optional[str] = None
     base_ts = _now_iso()
-    git_branch = ""
-    try:
-        import subprocess
-        if cwd:
-            r = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
-            )
-            if r.returncode == 0:
-                git_branch = r.stdout.strip()
-    except Exception:
-        git_branch = ""
+    if git_branch is None:
+        git_branch = _probe_git_branch(cwd)
 
     def _common(turn_uuid: str) -> Dict[str, Any]:
         return {
@@ -382,13 +401,18 @@ def upload_session_trace(
         return "No transcript to upload for this session yet."
 
     resolved_model = model or meta.get("model") or ""
+    # The trace describes where the *session* ran. Falling through to the
+    # uploader's own cwd would stamp the operator's shell directory onto
+    # someone else's transcript.
+    resolved_cwd = cwd or meta.get("cwd") or ""
     try:
         jsonl = build_trace_jsonl(
             messages,
             session_id=session_id,
             model=resolved_model,
-            cwd=cwd,
+            cwd=resolved_cwd,
             redact=redact,
+            git_branch=meta.get("git_branch") or "",
         )
     except TraceRedactionError:
         return _REDACTION_BLOCKED_MESSAGE

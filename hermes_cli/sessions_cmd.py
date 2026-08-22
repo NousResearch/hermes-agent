@@ -566,7 +566,6 @@ def cmd_sessions(args, sessions_parser=None):
                 db.close()
                 status = upload_session_trace(
                     resolved,
-                    cwd="",
                     redact=redact_trace,
                     private=not getattr(args, "public", False),
                 )
@@ -604,8 +603,11 @@ def cmd_sessions(args, sessions_parser=None):
                     messages,
                     session_id=sid,
                     model=meta.get("model") or "",
-                    cwd="",
+                    cwd=meta.get("cwd") or "",
                     redact=redact_trace,
+                    # Passed explicitly (even when empty) so a bulk export
+                    # never fans out one git subprocess per session.
+                    git_branch=meta.get("git_branch") or "",
                 )
 
             try:

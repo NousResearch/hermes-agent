@@ -177,3 +177,72 @@ def test_upload_happy_path_mocked(monkeypatch):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# cwd / gitBranch provenance
+# ---------------------------------------------------------------------------
+
+def test_git_branch_is_used_verbatim_when_supplied():
+    jsonl = build_trace_jsonl(
+        _sample_messages(), session_id="s1", cwd="/w/p", git_branch="release/2.1"
+    )
+    assert {json.loads(x)["gitBranch"] for x in jsonl.strip().split("\n")} == {"release/2.1"}
+
+
+def test_an_explicit_empty_branch_suppresses_the_probe():
+    """"" means "known unavailable" — distinct from None's "go find out"."""
+    with patch.object(trace_upload, "_probe_git_branch",
+                      side_effect=AssertionError("probed despite an explicit branch")):
+        jsonl = build_trace_jsonl(
+            _sample_messages(), session_id="s1", cwd="/w/p", git_branch=""
+        )
+    assert {json.loads(x)["gitBranch"] for x in jsonl.strip().split("\n")} == {""}
+
+
+def test_branch_is_probed_from_cwd_when_not_supplied():
+    """Back-compat: callers holding only a cwd keep the old behavior."""
+    with patch.object(trace_upload, "_probe_git_branch", return_value="main") as probe:
+        jsonl = build_trace_jsonl(_sample_messages(), session_id="s1", cwd="/w/p")
+    probe.assert_called_once_with("/w/p")
+    assert {json.loads(x)["gitBranch"] for x in jsonl.strip().split("\n")} == {"main"}
+
+
+def test_probe_returns_empty_without_a_cwd():
+    assert trace_upload._probe_git_branch("") == ""
+
+
+def test_upload_takes_cwd_and_branch_from_the_session_row():
+    """The uploader's own directory must never label someone else's session."""
+    meta = {"model": "claude-x", "cwd": "/w/recorded", "git_branch": "feature/z"}
+    captured = {}
+
+    def _capture(messages, **kwargs):
+        captured.update(kwargs)
+        return ""
+
+    with patch.object(trace_upload, "load_session_messages",
+                      return_value=(_sample_messages(), meta)), \
+         patch.object(trace_upload, "_resolve_hf_token", return_value="tok"), \
+         patch.object(trace_upload, "build_trace_jsonl", side_effect=_capture):
+        upload_session_trace("20260817_abc")
+
+    assert captured["cwd"] == "/w/recorded"
+    assert captured["git_branch"] == "feature/z"
+
+
+def test_an_explicit_cwd_still_wins_over_the_session_row():
+    meta = {"model": "m", "cwd": "/w/recorded", "git_branch": "b"}
+    captured = {}
+
+    def _capture(messages, **kwargs):
+        captured.update(kwargs)
+        return ""
+
+    with patch.object(trace_upload, "load_session_messages",
+                      return_value=(_sample_messages(), meta)), \
+         patch.object(trace_upload, "_resolve_hf_token", return_value="tok"), \
+         patch.object(trace_upload, "build_trace_jsonl", side_effect=_capture):
+        upload_session_trace("20260817_abc", cwd="/w/override")
+
+    assert captured["cwd"] == "/w/override"

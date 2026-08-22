@@ -8,6 +8,7 @@ or a temp file (local).
 
 import codecs
 import json
+import locale
 import logging
 import os
 import re
@@ -359,6 +360,102 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     thread = threading.Thread(target=_write, daemon=True)
     proc._hermes_stdin_thread = thread
     thread.start()
+
+
+class _Utf8WithFallbackDecoder:
+    """Incremental decoder that decodes UTF-8 and retries failures in *fallback*.
+
+    Git Bash on Windows is a byte pipe, not a transcoder: MSYS tools
+    (``ls``, ``grep``, ...) write UTF-8, while native Windows programs
+    (``powershell.exe``, ``taskkill``, ``pnpm``) write the system ANSI
+    codepage. A single command's output can contain both. Decoding the whole
+    stream as UTF-8 with ``errors="replace"`` turns every ANSI byte into
+    U+FFFD, and because ``replace`` is applied at decode time the original
+    bytes are gone -- the agent is left reading a wall of replacement
+    characters instead of the error message it needs (#89442).
+
+    The invariant that keeps this safe: **output that is valid UTF-8 decodes
+    exactly as it did before.** The fallback is only consulted for bytes that
+    strict UTF-8 rejects, which today are already lost to U+FFFD. So this can
+    recover text, and cannot corrupt text that was previously fine.
+
+    Decoding is per LINE rather than per 4096-byte read. A line is the unit
+    that has a single origin (one program wrote it), and multi-byte legacy
+    encodings are not self-synchronising, so a fallback decode of an
+    arbitrary byte range can split a two-byte GBK character and produce
+    mojibake. Buffering costs nothing here: ``_wait_for_process`` renders the
+    collected output only after the drain thread joins, so nothing observes
+    the stream mid-command.
+    """
+
+    #: Flush an unterminated buffer once it gets this large, so a program that
+    #: never emits a newline (a progress spinner, ``head -c`` of a blob) cannot
+    #: pin bytes in memory or land them all in the tail of a bounded capture.
+    _MAX_BUFFERED_BYTES = 32768
+
+    #: ``\n`` and ``\r``. CR is a boundary too: progress output redraws with a
+    #: bare CR and would otherwise buffer to the cap.
+    _BOUNDARIES = (0x0A, 0x0D)
+
+    def __init__(self, fallback: str) -> None:
+        self._fallback = fallback
+        self._buf = bytearray()
+
+    def decode(self, chunk: bytes, final: bool = False) -> str:
+        if chunk:
+            self._buf.extend(chunk)
+        parts = []
+        cut = 0
+        for i, byte in enumerate(self._buf):
+            if byte in self._BOUNDARIES:
+                parts.append(self._decode_unit(bytes(self._buf[cut:i + 1])))
+                cut = i + 1
+        if cut:
+            del self._buf[:cut]
+        if self._buf and (final or len(self._buf) >= self._MAX_BUFFERED_BYTES):
+            parts.append(self._decode_unit(bytes(self._buf)))
+            self._buf.clear()
+        return "".join(parts)
+
+    def _decode_unit(self, raw: bytes) -> str:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        # A NUL byte means this is binary, not text in some other codepage.
+        # Legacy codepages are byte-dense (cp1252 decodes almost anything), so
+        # without this a `cat` of a binary file would come back as mojibake
+        # instead of the U+FFFD it produces today. Text encodings in actual use
+        # never emit an interior NUL, so this costs nothing on the real case.
+        if b"\x00" not in raw:
+            try:
+                return raw.decode(self._fallback)
+            except (UnicodeDecodeError, LookupError):
+                pass
+        return raw.decode("utf-8", errors="replace")
+
+
+def _system_ansi_encoding() -> "str | None":
+    """Return the host's locale encoding, or None when it is already UTF-8.
+
+    ``locale.getencoding()`` rather than ``getpreferredencoding()``: the latter
+    reports ``utf-8`` whenever Python UTF-8 mode is on, which says nothing
+    about what a *native child process* will write to the pipe.
+
+    None means "no fallback", which makes the decoder provably a no-op on the
+    UTF-8 hosts that are the overwhelming majority.
+    """
+    try:
+        name = locale.getencoding()
+    except Exception:
+        return None
+    if not name:
+        return None
+    try:
+        canonical = codecs.lookup(name).name
+    except LookupError:
+        return None
+    return None if canonical == "utf-8" else canonical
 
 
 def _popen_bash(
@@ -848,6 +945,19 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    def _output_fallback_encoding(self) -> "str | None":
+        """Encoding to retry a line in when it is not valid UTF-8.
+
+        None (the default) keeps the historical behaviour exactly: strict-UTF-8
+        with U+FFFD substitution. Remote backends inherit that on purpose --
+        their bytes come from a container or a host whose codepage this process
+        cannot observe, so guessing from the *local* locale would be a fabricated
+        answer. Only :class:`~tools.environments.local.LocalEnvironment`
+        overrides it, because there the writer really is a child of this
+        process. See #89442.
+        """
+        return None
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -1058,7 +1168,24 @@ class BaseEnvironment(ABC):
         # was constructed with ``encoding="utf-8", errors="replace"`` on
         # ``Popen``) so binary or mis-encoded output is preserved with
         # U+FFFD substitution rather than clobbering the whole buffer.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        #
+        # Note that reading the fd directly means the ``Popen`` text wrapper is
+        # bypassed entirely: the raw bytes reach us intact, and this decoder --
+        # not ``Popen``'s ``encoding=`` -- is what decides how they are read.
+        # Backends that can name a fallback codepage for non-UTF-8 lines say so
+        # via ``_output_fallback_encoding``; everything else keeps the strict
+        # UTF-8 decoder unchanged.
+        _fallback = None
+        try:
+            _fallback = self._output_fallback_encoding()
+        except Exception:
+            # Resolving an encoding must never be able to fail a command.
+            _fallback = None
+        decoder = (
+            _Utf8WithFallbackDecoder(_fallback)
+            if _fallback
+            else codecs.getincrementaldecoder("utf-8")(errors="replace")
+        )
 
         def _drain_iterable(stream):
             # Fallback path: ``stream`` is not backed by a real OS file

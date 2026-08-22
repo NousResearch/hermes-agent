@@ -2337,6 +2337,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         from hermes_constants import find_node_executable
 
         path = find_node_executable(bin)
+        if not path:
+            # Fallback to PATH (PR #58150): if no Hermes-managed Node exists,
+            # use the system one rather than failing outright.
+            path = shutil.which(bin)
         if not path and bin == "node":
             try:
                 from hermes_cli.dep_ensure import ensure_dependency

@@ -171,11 +171,13 @@ def _(rid, params: dict) -> dict:
             # ones not enumerated here), ACP adapter clients, webhook sessions,
             # custom `HERMES_SESSION_SOURCE` values, and older installs with
             # different source labels. We deny-list only the noisy internal
-            # sources (``tool`` sub-agent runs and ``kanban`` dispatcher
-            # workers) rather than allow-listing a fixed set of platform names
-            # that goes stale whenever a new platform is added or a user names
-            # their own source.
-            deny = frozenset({"kanban", "tool"})
+            # sources (``tool``/``subagent`` runs, ``kanban`` dispatcher workers,
+            # and ``cron`` scheduled jobs) rather than allow-listing a fixed set
+            # of platform names that goes stale whenever a new platform is added
+            # or a user names their own source. Cron must be denied so
+            # tui_auto_resume_recent cannot land on a scheduled-job session after
+            # the user's last interactive turn (#82300).
+            deny = frozenset({"kanban", "tool", "cron", "subagent"})
 
             # ``title``: EXACT-title registry lookup, not a listing. The core
             # UNIQUE title index means at most one session per db carries a
@@ -265,11 +267,11 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Return the most recent human-facing session id, or ``None``.
 
-    Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
-    sub-agent rows and ``kanban`` worker rows).  Used by TUI auto-resume when
-    ``display.tui_auto_resume_recent`` is on; the field is also handy
-    for any CLI tooling that wants "latest session" without paginating
-    the full list.
+    Mirrors ``session.list``'s deny-list behaviour (drops ``tool`` /
+    ``subagent`` rows, ``kanban`` workers, and ``cron`` scheduled jobs).
+    Used by TUI auto-resume when ``display.tui_auto_resume_recent`` is on;
+    the field is also handy for any CLI tooling that wants "latest session"
+    without paginating the full list.
 
     Contract: a ``{"session_id": null}`` result means "no eligible
     session found right now".  Errors are also folded into that
@@ -283,10 +285,10 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _ok(rid, {"session_id": None})
         try:
-            deny = frozenset({"kanban", "tool"})
-            # Over-fetch by a generous bounded amount so heavy sub-agent
-            # users (lots of recent ``tool`` rows) don't get a false
-            # "no eligible session" answer.  ``session.list`` uses a
+            deny = frozenset({"kanban", "tool", "cron", "subagent"})
+            # Over-fetch by a generous bounded amount so heavy sub-agent /
+            # cron users (lots of recent non-interactive rows) don't get a
+            # false "no eligible session" answer.  ``session.list`` uses a
             # similar over-fetch strategy.
             rows = db.list_sessions_rich(
                 source=None, limit=200, order_by_last_active=True, compact_rows=True

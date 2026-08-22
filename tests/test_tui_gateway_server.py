@@ -14825,12 +14825,14 @@ def test_session_activate_can_omit_duplicate_desktop_transcript(monkeypatch):
 
 
 def test_session_most_recent_returns_first_non_denied(monkeypatch):
-    """Drops `tool` rows like session.list does, returns the first hit."""
+    """Drops non-interactive rows like session.list does, returns the first hit."""
 
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [
-                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
+                {"id": "cron-1", "source": "cron", "title": "job", "started_at": 102},
+                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 101},
+                {"id": "sub-1", "source": "subagent", "title": "child", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
             ]
 
@@ -14845,10 +14847,33 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     assert resp["result"]["source"] == "tui"
 
 
+def test_session_most_recent_skips_cron_before_human_session(monkeypatch):
+    """#82300: a more-recent cron job must not win auto-resume."""
+
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [
+                {"id": "cron-1", "source": "cron", "title": "nightly", "started_at": 200},
+                {"id": "cli-1", "source": "cli", "title": "user", "started_at": 100},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "cli-1"
+    assert resp["result"]["source"] == "cli"
+
+
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
-            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+            return [
+                {"id": "tool-1", "source": "tool", "started_at": 2},
+                {"id": "cron-1", "source": "cron", "started_at": 1},
+            ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 

@@ -1,6 +1,8 @@
+import type { GatewaySourceScope } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
+import type { HermesGateway } from '@/hermes'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -62,6 +64,10 @@ export interface GatewayEventContext {
   isActiveEvent: boolean
   /** Event timestamp in epoch seconds (payload timestamp or receipt time). */
   occurredAt: number
+  /** Exact backend that emitted the event, or null when the source tag is invalid. */
+  sourceScope: GatewaySourceScope | null
+  /** Already-registered gateway for sourceScope; never falls back to the active socket. */
+  sourceGateway: HermesGateway | null
   /** The event came from the active (connection, profile) source. */
   fromActiveSource: () => boolean
   /** Coalesced trailing refreshHermesConfig (one per session.info burst). */

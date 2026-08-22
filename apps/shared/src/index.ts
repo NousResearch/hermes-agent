@@ -52,6 +52,7 @@ export {
   type GatewayEvent,
   type GatewayEventName,
   type GatewayRequestId,
+  type GatewaySourceScope,
   type JsonRpcErrorPayload,
   type JsonRpcFrame,
   JsonRpcGatewayClient,

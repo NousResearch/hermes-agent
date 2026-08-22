@@ -67,9 +67,9 @@ export function getMcpOAuthFlow(flowId: string, profile?: ProfileScope): Promise
 
 /** Cancel an in-flight MCP OAuth flow server-side, freeing the per-server
  *  "already in progress" slot so a retry doesn't 409. */
-export function cancelMcpOAuthFlow(flowId: string, profile?: null | string): Promise<{ ok: boolean; status: string }> {
-  return hermesApi<{ ok: boolean; status: string }>({
-    ...profileScoped(profile),
+export function cancelMcpOAuthFlow(flowId: string, profile?: ProfileScope): Promise<{ ok: boolean; status: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; status: string }>({
+    ...capabilityScoped(profile),
     path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
     method: 'DELETE'
   })
@@ -90,16 +90,19 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
 
 /** Add one server to `mcp_servers` (validated + name-collision-checked
  *  server-side — the same endpoint the dashboard's add form uses). */
-export function addMcpServer(body: {
-  name: string
-  url?: string
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  auth?: string
-}): Promise<McpServerSummary> {
-  return hermesApi<McpServerSummary>({
-    ...profileScoped(),
+export function addMcpServer(
+  body: {
+    name: string
+    url?: string
+    command?: string
+    args?: string[]
+    env?: Record<string, string>
+    auth?: string
+  },
+  profile?: ProfileScope
+): Promise<McpServerSummary> {
+  return window.hermesDesktop.api<McpServerSummary>({
+    ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'POST',
     body
@@ -108,17 +111,17 @@ export function addMcpServer(body: {
 
 /** Remove one server from `mcp_servers` (the inline setup card's rollback
  *  when a directory install is cancelled after the config write). */
-export function removeMcpServer(name: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+export function removeMcpServer(name: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
 }
 
-export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+export function setMcpServerEnabled(name: string, enabled: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }

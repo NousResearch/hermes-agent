@@ -63,6 +63,22 @@ describe('clarify.request stream hydration', () => {
     })
   })
 
+  it('parks the exact gateway source that raised the request', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        connectionId: 'homelab',
+        payload: { choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-scoped' },
+        profile: 'research',
+        session_id: SID,
+        type: 'clarify.request'
+      })
+    )
+
+    expect($clarifyRequests.get()[SID]?.scope).toEqual({ connectionId: 'homelab', profile: 'research' })
+  })
+
   it('reveals a clarify prompt raised by the active session', () => {
     mountStream()
 

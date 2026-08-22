@@ -35,7 +35,7 @@ import {
   sessionClarifyRequest,
   warnDroppedChoices
 } from '@/store/clarify'
-import { $gateway } from '@/store/gateway'
+import { gatewayForScope } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
@@ -397,7 +397,6 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
 function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs; request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const gateway = useStore($gateway)
 
   const matchingRequest = useMemo(() => {
     if (!request || request.questions?.length) {
@@ -449,6 +448,8 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
         return
       }
 
+      const gateway = gatewayForScope(matchingRequest.scope)
+
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
@@ -470,7 +471,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, matchingRequest, ready]
   )
 
   const trimmedDraft = draft.trim()
@@ -910,7 +911,6 @@ const emptyStage = { choices: [] as string[], draft: '' }
 function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const gateway = useStore($gateway)
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
@@ -970,8 +970,16 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
   const allStaged = answeredCount === questions.length
 
   const confirmAll = useCallback(async () => {
-    if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+    if (!request) {
+      notifyError(new Error(copy.notReady), copy.sendFailed)
+
+      return
+    }
+
+    const gateway = gatewayForScope(request.scope)
+
+    if (!gateway) {
+      notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
       return
     }
@@ -1000,7 +1008,7 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, questions, request, stagedAnswer])
+  }, [copy, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1026,13 +1034,14 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
     }
 
     clearClarifyRequest(request.requestId, request.sessionId)
+    const gateway = gatewayForScope(request.scope)
 
     try {
       await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
     } catch {
       // The tool times out on its own; a failed skip must never block the UI.
     }
-  }, [gateway, request])
+  }, [request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

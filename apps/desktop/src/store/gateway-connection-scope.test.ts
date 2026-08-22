@@ -43,6 +43,8 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
+  gatewayForScope,
+  gatewaySourceScopeFromEvent,
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway
@@ -123,5 +125,26 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     pruneSecondaryGateways(new Set())
 
     expect(gatewayMocks.closed).toHaveLength(1)
+  })
+})
+
+describe('event source routing', () => {
+  it('keeps the primary and a same-named registry profile distinct', async () => {
+    const primary = gatewayForScope({ connectionId: null, profile: 'default' })
+
+    await openGatewayForAgent('homelab', 'default')
+
+    expect(gatewayForScope({ connectionId: null, profile: 'default' })).toBe(primary)
+    expect(gatewayForScope({ connectionId: 'homelab', profile: 'default' })).not.toBe(primary)
+  })
+
+  it('does not fall back when an event source tag is missing or malformed', () => {
+    expect(gatewaySourceScopeFromEvent({ profile: 'default' })).toEqual({
+      connectionId: null,
+      profile: 'default'
+    })
+    expect(gatewaySourceScopeFromEvent({ connectionId: '', profile: 'default' })).toBeNull()
+    expect(gatewaySourceScopeFromEvent({ connectionId: 'homelab' })).toBeNull()
+    expect(gatewayForScope(null)).toBeNull()
   })
 })

@@ -23,6 +23,12 @@ export type GatewayEventName =
   | 'skin.changed'
   | (string & {})
 
+/** Exact Desktop backend that emitted an event. */
+export interface GatewaySourceScope {
+  connectionId: null | string
+  profile: string
+}
+
 export interface GatewayEvent<P = unknown> {
   payload?: P
   /** Renderer-side source tag added by the Desktop gateway registry. */

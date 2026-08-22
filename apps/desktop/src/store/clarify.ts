@@ -1,6 +1,7 @@
+import type { GatewaySourceScope } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
+import { gatewayForScope } from './gateway'
 import { $activeSessionId } from './session'
 
 export interface ClarifyQuestion {
@@ -17,6 +18,7 @@ export interface ClarifyRequest {
   choices: string[] | null
   multiSelect: boolean
   sessionId: string | null
+  scope?: GatewaySourceScope | null
   /** Batch (multi-question) clarify: present instead of question/choices. */
   questions?: ClarifyQuestion[]
   /** Answers already locked server-side (reconnect replay): qid → answer. */
@@ -198,9 +200,10 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   // Clear first: the answer is already decided, and an in-flight RPC must not
   // leave a live card the user can answer a second time.
   clearClarifyRequest(request.requestId, request.sessionId)
+  const gateway = gatewayForScope(request.scope)
 
   try {
-    await $gateway.get()?.request('clarify.respond', { request_id: request.requestId, answer: '' })
+    await gateway?.request('clarify.respond', { request_id: request.requestId, answer: '' })
   } catch {
     // The tool times out on its own; a failed skip must never swallow the
     // message the user is actually sending.

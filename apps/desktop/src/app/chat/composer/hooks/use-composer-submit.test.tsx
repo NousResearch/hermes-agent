@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
-import { $gateway } from '@/store/gateway'
+import { setPrimaryGateway } from '@/store/gateway'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -395,17 +395,18 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
         question: 'which one?',
         choices: ['a', 'b'],
         multiSelect: false,
-        sessionId
+        sessionId,
+        scope: { connectionId: null, profile: 'default' }
       }
     })
-    $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
+    setPrimaryGateway({ request: gatewayRequest } as never, 'default')
   }
 
   afterEach(() => {
     cleanup()
     gatewayRequest.mockClear()
     $clarifyRequests.set({})
-    $gateway.set(null)
+    setPrimaryGateway(null)
     vi.restoreAllMocks()
   })
 

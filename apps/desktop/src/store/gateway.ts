@@ -1,4 +1,10 @@
-import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  type ConnectionState,
+  type GatewayEvent,
+  type GatewaySourceScope,
+  registryBackendScopeKey,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -18,6 +24,40 @@ import { setConnection, setGatewayState } from '@/store/session'
 // only ever have the primary, so their path is byte-for-byte unchanged.
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
+
+function normalizeSourceScope(scope: GatewaySourceScope | null | undefined): GatewaySourceScope | null {
+  const profile = typeof scope?.profile === 'string' ? scope.profile.trim() : ''
+
+  if (!scope || !profile) {
+    return null
+  }
+
+  if (scope.connectionId === null) {
+    return { connectionId: null, profile }
+  }
+
+  const connectionId = typeof scope.connectionId === 'string' ? scope.connectionId.trim() : ''
+
+  return connectionId ? { connectionId, profile } : null
+}
+
+export function gatewaySourceScopeFromEvent(
+  event: Pick<GatewayEvent, 'connectionId' | 'profile'>
+): GatewaySourceScope | null {
+  const profile = typeof event.profile === 'string' ? event.profile.trim() : ''
+
+  if (!profile) {
+    return null
+  }
+
+  if (event.connectionId === undefined) {
+    return { connectionId: null, profile }
+  }
+
+  const connectionId = typeof event.connectionId === 'string' ? event.connectionId.trim() : ''
+
+  return connectionId ? { connectionId, profile } : null
+}
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
@@ -178,6 +218,21 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   g.primaryGateway = gateway
   g.primaryProfile = normKey(profile)
+}
+
+/** Resolve an already-registered source without falling back to another backend. */
+export function gatewayForScope(scope: GatewaySourceScope | null | undefined): HermesGateway | null {
+  const source = normalizeSourceScope(scope)
+
+  if (!source) {
+    return null
+  }
+
+  if (source.connectionId === null && normKey(source.profile) === g.primaryProfile) {
+    return g.primaryGateway
+  }
+
+  return g.secondaries.get(registryBackendScopeKey(source.connectionId, source.profile))?.gateway ?? null
 }
 
 export function isActivePrimary(): boolean {

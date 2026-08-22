@@ -1,6 +1,5 @@
 import { translateNow } from '@/i18n'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
-import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -12,7 +11,7 @@ import type { GatewayEventContext } from './types'
  *  secret requests. The Python side is blocked on the matching *.respond, so
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
-  const { deps, event, payload, sessionId, occurredAt } = ctx
+  const { deps, event, payload, sessionId, occurredAt, sourceGateway, sourceScope } = ctx
   const { activeSessionIdRef, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'clarify.request') {
@@ -53,7 +52,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         question: '',
         questions,
         requestId,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        scope: sourceScope
       })
 
       if (sessionId) {
@@ -100,7 +100,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         question,
         choices: choices.length > 0 ? choices : null,
         multiSelect,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        scope: sourceScope
       })
 
       if (sessionId) {
@@ -159,7 +160,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const reason = typeof payload?.reason === 'string' ? payload.reason : ''
 
     if (requestId && server) {
-      setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+      setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null, scope: sourceScope })
 
       if (sessionId) {
         upsertToolCall(
@@ -191,7 +192,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const command = typeof payload?.command === 'string' ? payload.command : ''
     const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
 
-    void receiveApprovalRequest($gateway.get(), {
+    void receiveApprovalRequest(sourceGateway, {
       // false only when a tirith warning forbids it; backend omits the field otherwise.
       allowPermanent: payload?.allow_permanent !== false,
       choices: Array.isArray(payload?.choices)
@@ -201,6 +202,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       description,
       requestId: typeof payload?.request_id === 'string' ? payload.request_id : undefined,
       sessionId: sessionId ?? null,
+      scope: sourceScope,
       smartDenied: payload?.smart_denied === true
     }).catch(() => undefined)
 
@@ -228,7 +230,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
-      setSudoRequest({ requestId, sessionId: sessionId ?? null })
+      setSudoRequest({ requestId, sessionId: sessionId ?? null, scope: sourceScope })
 
       if (sessionId) {
         updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
@@ -258,7 +260,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         requestId,
         envVar,
         prompt: promptText,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        scope: sourceScope
       })
 
       if (sessionId) {

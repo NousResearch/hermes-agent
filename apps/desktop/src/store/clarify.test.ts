@@ -11,7 +11,7 @@ import {
   setClarifyRequest,
   skipClarifyRequest
 } from './clarify'
-import { $gateway } from './gateway'
+import { setPrimaryGateway } from './gateway'
 import { $activeSessionId } from './session'
 
 function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
@@ -20,7 +20,8 @@ function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
     question: `question-${requestId}`,
     choices: null,
     multiSelect: false,
-    sessionId
+    sessionId,
+    scope: { connectionId: null, profile: 'default' }
   }
 }
 
@@ -92,12 +93,12 @@ describe('skipClarifyRequest', () => {
   beforeEach(() => {
     $clarifyRequests.set({})
     request.mockClear()
-    $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
+    setPrimaryGateway({ request } as never, 'default')
   })
 
   afterEach(() => {
     $clarifyRequests.set({})
-    $gateway.set(null)
+    setPrimaryGateway(null)
   })
 
   it('answers the session\u2019s clarify with an empty answer and drops it', async () => {
@@ -123,6 +124,15 @@ describe('skipClarifyRequest', () => {
     request.mockRejectedValueOnce(new Error('socket closed'))
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
+    expect(hasClarifyRequest('session-a')).toBe(false)
+  })
+
+  it('does not send an unscoped request through another gateway', async () => {
+    setClarifyRequest({ ...clarify('session-a', 'req-a'), scope: null })
+
+    await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
+
+    expect(request).not.toHaveBeenCalled()
     expect(hasClarifyRequest('session-a')).toBe(false)
   })
 })

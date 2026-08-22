@@ -18,7 +18,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, ChevronDown, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $gateway } from '@/store/gateway'
+import { gatewayForScope } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import {
   type ApprovalRequest,
@@ -106,7 +106,6 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navi
 const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline' }> = ({ request, surface }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
-  const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
@@ -134,6 +133,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         return
       }
 
+      const gateway = gatewayForScope(request.scope)
+
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
@@ -150,13 +151,13 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)
-        void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+        void replayPendingApproval(gateway, request.sessionId, request.scope).catch(() => undefined)
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, request]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.

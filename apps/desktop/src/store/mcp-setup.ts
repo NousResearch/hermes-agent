@@ -1,6 +1,7 @@
+import type { GatewaySourceScope } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
+import { gatewayForScope } from './gateway'
 
 /**
  * Pending `mcp.setup.request`s — the desktop half of the `setup_mcp` tool's
@@ -17,6 +18,7 @@ export interface McpSetupRequest {
   /** Agent-supplied one-liner: why this server helps right now. */
   reason: string
   sessionId: string | null
+  scope?: GatewaySourceScope | null
 }
 
 /** The card's answer, serialized back through `mcp.setup.respond`. */
@@ -103,9 +105,10 @@ export async function skipMcpSetupRequest(sessionId: string | null | undefined):
   // Clear first: the answer is already decided, and an in-flight RPC must not
   // leave a live card the user can answer a second time.
   clearMcpSetupRequest(request.requestId, request.sessionId)
+  const gateway = gatewayForScope(request.scope)
 
   try {
-    await $gateway.get()?.request('mcp.setup.respond', {
+    await gateway?.request('mcp.setup.respond', {
       request_id: request.requestId,
       result: JSON.stringify({ server: request.server, status: 'declined' })
     })

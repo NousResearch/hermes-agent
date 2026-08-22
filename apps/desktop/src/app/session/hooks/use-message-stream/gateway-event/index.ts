@@ -8,7 +8,7 @@ import {
   UNSCOPED_STREAM_EVENT_TYPES
 } from '@/lib/gateway-events'
 import { setSessionCompacting } from '@/store/compaction'
-import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
+import { activeGatewayConnectionId, gatewayForScope, gatewaySourceScopeFromEvent } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
@@ -167,6 +167,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+      const sourceScope = gatewaySourceScopeFromEvent(event)
+      const sourceGateway = gatewayForScope(sourceScope)
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn
@@ -198,7 +200,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId)
 
       if (replaySessionId) {
-        void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
+        void replayPendingApproval(sourceGateway, replaySessionId, sourceScope).catch(() => undefined)
       }
 
       // Mid-turn compaction does not emit another message.start. The first
@@ -225,6 +227,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         explicitSid,
         isActiveEvent,
         occurredAt,
+        sourceGateway,
+        sourceScope,
         fromActiveSource,
         scheduleConfigRefresh
       }

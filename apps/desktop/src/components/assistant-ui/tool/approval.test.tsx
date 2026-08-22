@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
-import { $gateway } from '@/store/gateway'
+import { setPrimaryGateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
@@ -36,12 +36,19 @@ function setRequest(
   extra: { choices?: string[]; smartDenied?: boolean } = {}
 ) {
   $activeSessionId.set('sess-1')
-  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
+  setApprovalRequest({
+    allowPermanent,
+    command,
+    description: 'dangerous command',
+    sessionId: 'sess-1',
+    scope: { connectionId: null, profile: 'default' },
+    ...extra
+  })
 }
 
 function mockGateway() {
   const request = vi.fn().mockResolvedValue({ resolved: true })
-  $gateway.set({ request } as unknown as HermesGateway)
+  setPrimaryGateway({ request } as unknown as HermesGateway, 'default')
 
   return request
 }
@@ -50,7 +57,7 @@ afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
-  $gateway.set(null)
+  setPrimaryGateway(null)
 })
 
 describe('PendingToolApproval', () => {
@@ -86,6 +93,21 @@ describe('PendingToolApproval', () => {
       expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
     })
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('re-resolves the scoped gateway when the user answers', async () => {
+    const stale = mockGateway()
+    setRequest()
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    const current = vi.fn().mockResolvedValue({ resolved: true })
+    setPrimaryGateway({ request: current } as unknown as HermesGateway, 'default')
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+
+    await waitFor(() => {
+      expect(current).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
+    })
+    expect(stale).not.toHaveBeenCalled()
   })
 
   it('reveals the full command inline when the Command toggle is clicked', () => {

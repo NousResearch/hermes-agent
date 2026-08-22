@@ -1311,6 +1311,14 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Emit a terminal notification (BEL + OSC 9) whenever Hermes blocks on
+        # an interactive prompt (clarify, command approval, sudo password,
+        # secret capture, slash-command confirmation). Notification-aware
+        # terminals (Ghostty, iTerm2, Kitty, WezTerm) flash the pane/tab;
+        # the BEL works universally in tmux, screen, and SSH. Set false to
+        # disable. Default true — the agent blocking silently is worse than
+        # a harmless bell.
+        "input_alert": True,
         # Stream the model's reasoning/thinking live before the response.
         # Default ON: on thinking models the reasoning phase can run tens of
         # seconds, and with this off the user stares at a spinner the whole

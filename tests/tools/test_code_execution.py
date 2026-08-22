@@ -12,13 +12,18 @@ Run with:  python -m pytest tests/test_code_execution.py -v
    or:     python tests/test_code_execution.py
 """
 
+import base64
+import fnmatch
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
 import os
+import shlex
 import socket
+import tempfile
 import time
+from typing import Any, Callable, cast
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -46,6 +51,8 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _resolve_sandbox_tools,
+    _sandbox_failure_hint,
 )
 from tools.registry import registry
 
@@ -630,21 +637,359 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
-        )
+    def test_empty_enabled_tools_denies_all(self):
+        """``enabled_tools=[]`` is an explicit deny-all: no sandbox tool stubs
+        are generated, so ``from hermes_tools import terminal`` raises
+        ImportError. Previously ``[]`` was conflated with ``None`` and
+        broadened to every sandbox tool (#84271)."""
+        code = "from hermes_tools import terminal\nprint('should not reach')\n"
         with patch("model_tools.handle_function_call",
-                    return_value=json.dumps({"ok": True})):
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-empty-deny-all",
+                enabled_tools=[],
+            ))
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_nonoverlapping_tools_deny_all(self):
+        """A non-empty ``enabled_tools`` with no sandbox overlap must not fall
+        back to every sandbox tool — the exact authenticated manifest is used,
+        and an empty intersection denies all (#84271)."""
+        code = "from hermes_tools import terminal\nprint('fallback')\n"
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_none_enabled_tools_legacy_default(self):
+        """``enabled_tools=None`` keeps the documented legacy default (every
+        sandbox tool) — the mode is explicit (``is None``), not derived from
+        truthiness, so the empty-list deny-all does not shadow it (#84271)."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "r = terminal('echo hi')\n"
+            "print(r.get('output', ''))\n"
+        )
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-none-default",
+                enabled_tools=None,
+            ))
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestResolveSandboxTools(unittest.TestCase):
+    """Shared helper used by both the local UDS and remote file-RPC paths."""
+
+    def test_none_is_legacy_default(self):
+        self.assertEqual(_resolve_sandbox_tools(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_deny_all(self):
+        self.assertEqual(_resolve_sandbox_tools([]), frozenset())
+
+    def test_nonoverlapping_is_deny_all(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["vision_analyze", "browser_snapshot"]),
+            frozenset(),
+        )
+
+    def test_intersection_keeps_only_sandbox_tools(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["terminal", "vision_analyze"]),
+            frozenset(["terminal"]),
+        )
+
+
+class TestSandboxFailureHints(unittest.TestCase):
+    _IMPORT_ERROR = "ImportError: cannot import name 'terminal' from 'hermes_tools'"
+
+    def test_empty_grant_does_not_advertise_sandbox_tools(self):
+        hint = _sandbox_failure_hint(self._IMPORT_ERROR, enabled_tools=[])
+
+        assert hint is not None
+        self.assertIn("Importable tools here: none.", hint)
+
+    def test_partial_grant_advertises_only_the_intersection(self):
+        hint = _sandbox_failure_hint(
+            self._IMPORT_ERROR,
+            enabled_tools=["terminal", "vision_analyze"],
+        )
+
+        assert hint is not None
+        self.assertIn("Importable tools here: terminal.", hint)
+        self.assertNotIn("write_file", hint)
+
+
+class _FakeFileRpcEnvironment:
+    """Map the remote poller's shell operations onto a local temp directory."""
+
+    def __init__(self, rpc_dir):
+        self.rpc_dir = rpc_dir
+
+    def execute(self, command, cwd=None, timeout=None):
+        parts = shlex.split(command)
+        if parts[:2] == ["ls", "-1"]:
+            pattern = os.path.normpath(parts[2])
+            directory, filename = os.path.split(pattern)
+            paths = sorted(
+                os.path.join(directory, name)
+                for name in os.listdir(directory)
+                if fnmatch.fnmatch(name, filename)
+            )
+            return {"output": "\n".join(paths)}
+
+        if parts[0] == "cat":
+            with open(parts[1], encoding="utf-8") as request_file:
+                return {"output": request_file.read()}
+
+        if parts[:2] == ["rm", "-f"]:
+            try:
+                os.unlink(parts[2])
+            except FileNotFoundError:
+                pass
+            return {"output": ""}
+
+        if parts[0] == "echo" and "base64" in parts:
+            redirect_index = parts.index(">")
+            move_index = parts.index("mv")
+            temporary_path = parts[redirect_index + 1]
+            response_path = parts[move_index + 2]
+            with open(temporary_path, "wb") as response_file:
+                response_file.write(base64.b64decode(parts[1]))
+            os.replace(temporary_path, response_path)
+            return {"output": ""}
+
+        raise AssertionError(f"Unexpected fake remote command: {command}")
+
+
+class TestSandboxRpcAuthorization(unittest.TestCase):
+    """Exercise the real generated _call() authorization boundaries."""
+
+    _RPC_TOKEN = "test-rpc-token"
+    _REQUESTS = (
+        ("terminal", {"command": "echo denied"}),
+        ("write_file", {"path": "blocked.txt", "content": "blocked"}),
+    )
+
+    @staticmethod
+    def _dispatch_recorder(dispatched):
+        def dispatch(function_name, function_args, task_id=None, user_task=None):
+            dispatched.append((function_name, function_args))
+            return _mock_handle_function_call(
+                function_name,
+                function_args,
+                task_id=task_id,
+                user_task=user_task,
+            )
+
+        return dispatch
+
+    def _run_uds_calls(self, enabled_tools, requests):
+        from tools.code_execution_tool import _rpc_server_loop
+
+        allowed_tools = _resolve_sandbox_tools(enabled_tools)
+        dispatched = []
+        tool_call_log = []
+        tool_call_counter = [0]
+        stop_event = threading.Event()
+
+        with tempfile.TemporaryDirectory(prefix="hermes-rpc-") as temp_dir:
+            socket_path = os.path.join(temp_dir, "rpc.sock")
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(socket_path)
+            server_sock.listen(1)
+
+            def run_server():
+                with patch(
+                    "model_tools.handle_function_call",
+                    side_effect=self._dispatch_recorder(dispatched),
+                ):
+                    _rpc_server_loop(
+                        server_sock,
+                        "test-task",
+                        tool_call_log,
+                        tool_call_counter,
+                        max_tool_calls=10,
+                        allowed_tools=allowed_tools,
+                        stop_event=stop_event,
+                        rpc_token=self._RPC_TOKEN,
+                    )
+
+            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread.start()
+            namespace = {"__name__": "hermes_tools"}
+            try:
+                with patch.dict(
+                    os.environ,
+                    {
+                        "HERMES_RPC_SOCKET": socket_path,
+                        "HERMES_RPC_TOKEN": self._RPC_TOKEN,
+                    },
+                ):
+                    exec(
+                        generate_hermes_tools_module(
+                            list(allowed_tools),
+                            transport="uds",
+                        ),
+                        namespace,
+                    )
+                    call = cast(
+                        Callable[[str, dict[str, str]], dict[str, Any]],
+                        namespace["_call"],
+                    )
+                    responses = [
+                        call(tool_name, args)
+                        for tool_name, args in requests
+                    ]
+            finally:
+                client_sock = cast(Any, namespace.get("_sock"))
+                if client_sock is not None:
+                    client_sock.close()
+                stop_event.set()
+                server_sock.close()
+                server_thread.join(timeout=5)
+
+        self.assertFalse(server_thread.is_alive())
+        return responses, dispatched
+
+    def _run_file_calls(self, enabled_tools, requests):
+        from tools.code_execution_tool import _rpc_poll_loop
+
+        allowed_tools = _resolve_sandbox_tools(enabled_tools)
+        dispatched = []
+        tool_call_log = []
+        tool_call_counter = [0]
+        stop_event = threading.Event()
+
+        with tempfile.TemporaryDirectory(prefix="hermes-rpc-") as temp_dir:
+            rpc_dir = os.path.join(temp_dir, "rpc")
+            os.mkdir(rpc_dir)
+            env = _FakeFileRpcEnvironment(rpc_dir)
+
+            def run_poller():
+                with patch(
+                    "model_tools.handle_function_call",
+                    side_effect=self._dispatch_recorder(dispatched),
+                ):
+                    _rpc_poll_loop(
+                        env,
+                        rpc_dir,
+                        "test-task",
+                        tool_call_log,
+                        tool_call_counter,
+                        max_tool_calls=10,
+                        allowed_tools=allowed_tools,
+                        stop_event=stop_event,
+                        rpc_token=self._RPC_TOKEN,
+                    )
+
+            poller_thread = threading.Thread(target=run_poller, daemon=True)
+            poller_thread.start()
+            namespace = {"__name__": "hermes_tools"}
+            try:
+                with patch.dict(
+                    os.environ,
+                    {
+                        "HERMES_RPC_DIR": rpc_dir,
+                        "HERMES_RPC_TOKEN": self._RPC_TOKEN,
+                    },
+                ):
+                    exec(
+                        generate_hermes_tools_module(
+                            list(allowed_tools),
+                            transport="file",
+                        ),
+                        namespace,
+                    )
+                    call = cast(
+                        Callable[[str, dict[str, str]], dict[str, Any]],
+                        namespace["_call"],
+                    )
+                    responses = [
+                        call(tool_name, args)
+                        for tool_name, args in requests
+                    ]
+            finally:
+                stop_event.set()
+                poller_thread.join(timeout=5)
+
+        self.assertFalse(poller_thread.is_alive())
+        return responses, dispatched
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_uds_empty_and_nonoverlapping_grants_reject_both_tools(self):
+        for enabled_tools in ([], ["vision_analyze"]):
+            with self.subTest(enabled_tools=enabled_tools):
+                responses, dispatched = self._run_uds_calls(
+                    enabled_tools,
+                    self._REQUESTS,
+                )
+
+                for response, (tool_name, _) in zip(responses, self._REQUESTS):
+                    self.assertIn(
+                        f"Tool '{tool_name}' is not available",
+                        response.get("error", ""),
+                    )
+                self.assertEqual(dispatched, [])
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_uds_partial_grant_dispatches_only_the_intersection(self):
+        responses, dispatched = self._run_uds_calls(
+            ["terminal", "vision_analyze"],
+            (
+                ("terminal", {"command": "echo allowed"}),
+                ("write_file", {"path": "blocked.txt", "content": "blocked"}),
+            ),
+        )
+
+        self.assertIn("mock output for: echo allowed", responses[0].get("output", ""))
+        self.assertIn("Available: terminal", responses[1].get("error", ""))
+        self.assertEqual([name for name, _ in dispatched], ["terminal"])
+
+    def test_file_empty_and_nonoverlapping_grants_reject_both_tools(self):
+        for enabled_tools in ([], ["vision_analyze"]):
+            with self.subTest(enabled_tools=enabled_tools):
+                responses, dispatched = self._run_file_calls(
+                    enabled_tools,
+                    self._REQUESTS,
+                )
+
+                for response, (tool_name, _) in zip(responses, self._REQUESTS):
+                    self.assertIn(
+                        f"Tool '{tool_name}' is not available",
+                        response.get("error", ""),
+                    )
+                self.assertEqual(dispatched, [])
+
+    def test_file_partial_grant_dispatches_only_the_intersection(self):
+        responses, dispatched = self._run_file_calls(
+            ["terminal", "vision_analyze"],
+            (
+                ("terminal", {"command": "echo allowed"}),
+                ("write_file", {"path": "blocked.txt", "content": "blocked"}),
+            ),
+        )
+
+        self.assertIn("mock output for: echo allowed", responses[0].get("output", ""))
+        self.assertIn("Available: terminal", responses[1].get("error", ""))
+        self.assertEqual([name for name, _ in dispatched], ["terminal"])
 
 
 # ---------------------------------------------------------------------------

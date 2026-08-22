@@ -283,15 +283,127 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
+def _sort_number(value: Any) -> float:
+    """Coerce a spool ordering field to a float; unusable values sort first.
+
+    Ordering fields are read back from JSON on disk and may be missing or
+    corrupt.  A sort key that mixes ``str`` and ``int`` raises ``TypeError``
+    and would abort the entire recovery pass, so anything non-numeric is
+    normalised to ``0.0``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
+    """Order recovery payloads by drop order — ``(ts, seq, filename)``.
+
+    Recovery used to walk ``sorted(glob("*.json"))``, but spool files are
+    named ``pending-<uuid4>.json`` (see :func:`_write_payload`), so filename
+    order is effectively random.  ``SessionDB`` restores a conversation by
+    AUTOINCREMENT id — true insertion order, never timestamp — so replaying
+    in filename order permanently scrambles the recovered transcript and can
+    separate an assistant tool call from its result.
+
+    The payloads already carry ``ts`` and ``seq``
+    (:func:`spool_dropped_transcript_message`), so this mirrors
+    :func:`drain_transcript_spool`'s ``sorted(entries, key=lambda e: e[:3])``
+    and the live drain and the cross-restart drain agree on replay order.
+
+    Returns ``(path, payload)`` pairs in replay order.  A file whose payload
+    cannot be parsed sorts last, by name, and is returned with ``None`` so
+    the caller reports it through its own error handling.
+    """
+    entries = []
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            entries.append(((1, 0.0, 0.0, path.name), path, None))
+            continue
+        entries.append((
+            (
+                0,
+                _sort_number(payload.get("ts")),
+                _sort_number(payload.get("seq")),
+                path.name,
+            ),
+            path,
+            payload,
+        ))
+    entries.sort(key=lambda entry: entry[0])
+    return [(path, payload) for _key, path, payload in entries]
+
+
+def _transcript_append_kwargs(
+    session_id: str,
+    message: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build ``SessionDB.append_message`` kwargs for a spooled transcript row.
+
+    Mirrors ``SessionStore._append_transcript_message`` in
+    ``gateway/session.py`` field for field, so a message replayed after a
+    restart lands as the same row the live drain would have written.  The
+    fields are listed explicitly rather than splatted from *message*: the
+    spool payload is arbitrary JSON from disk and an unexpected key would
+    raise ``TypeError`` and abort the recovery pass.
+
+    ``timestamp`` keeps the payload-level ``ts`` fallback, which is the only
+    clock available when the message itself was spooled without one.
+    """
+    from agent.turn_context import extract_api_content_sidecar
+
+    role = message.get("role", "unknown")
+    # Reasoning columns are assistant-only in the live writer; copying them
+    # onto another role would fabricate rows the gateway never produces.
+    assistant_only = role == "assistant"
+
+    def _if_assistant(key: str) -> Any:
+        return message.get(key) if assistant_only else None
+
+    # Only a *missing* timestamp falls back to the payload clock.  A truthiness
+    # test would rewrite epoch 0, which is a valid timestamp.
+    timestamp = message.get("timestamp")
+    if timestamp is None:
+        timestamp = payload.get("ts")
+
+    return {
+        "session_id": session_id,
+        "role": role,
+        "content": message.get("content"),
+        "tool_name": message.get("tool_name"),
+        "tool_calls": message.get("tool_calls"),
+        "tool_call_id": message.get("tool_call_id"),
+        "reasoning": _if_assistant("reasoning"),
+        "reasoning_content": _if_assistant("reasoning_content"),
+        "reasoning_details": _if_assistant("reasoning_details"),
+        "codex_reasoning_items": _if_assistant("codex_reasoning_items"),
+        "codex_message_items": _if_assistant("codex_message_items"),
+        "platform_message_id": (
+            message.get("platform_message_id") or message.get("message_id")
+        ),
+        "observed": bool(message.get("observed")),
+        "timestamp": timestamp,
+        # The api_content sidecar is the exact bytes sent to the API for this
+        # row; gateway/session.py requires it to survive "any gateway-side
+        # persistence path or the next turn's replay diverges at this row".
+        "api_content": extract_api_content_sidecar(message),
+    }
+
+
 def recover_pending_to_db(
     session_db=None,
 ) -> int:
     """Recover flushed pending messages into state.db via SessionDB.
 
-    Reads all ``*.json`` files from the flush directory, inserts messages
-    using ``SessionDB.append_message`` (so FTS indexing, session metadata
-    updates, and all required columns are handled correctly), and deletes
-    the flush file on success.
+    Reads all ``*.json`` files from the flush directory in drop order,
+    inserts messages using ``SessionDB.append_message`` (so FTS indexing,
+    session metadata updates, and all required columns are handled
+    correctly), and deletes the flush file on success.
 
     Parameters
     ----------
@@ -305,7 +417,7 @@ def recover_pending_to_db(
         Number of messages recovered.
     """
     flush_dir = _get_flush_dir()
-    flush_files = sorted(flush_dir.glob("*.json"))
+    flush_files = _order_flush_files(flush_dir.glob("*.json"))
     if not flush_files:
         return 0
 
@@ -325,9 +437,16 @@ def recover_pending_to_db(
             pass
 
     recovered = 0
-    for path in flush_files:
+    # Sessions whose spool replay already failed this pass.  Ordering is a
+    # per-session property, so one unhealthy session must not hold back the
+    # others.
+    blocked_sessions = set()
+    for path, payload in flush_files:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload is None:
+                # Unparseable on the ordering pass — re-read so the failure
+                # is raised and reported here exactly as it was before.
+                payload = json.loads(path.read_text(encoding="utf-8"))
             # Agent-history snapshots use a different schema (reason +
             # messages list) and are meant for manual operator recovery,
             # not automatic DB insertion. Skip them silently.
@@ -347,12 +466,28 @@ def recover_pending_to_db(
                         path,
                     )
                     continue
-                session_db.append_message(
-                    session_id=spooled_sid,
-                    role=message.get("role", "unknown"),
-                    content=message.get("content") or "",
-                    timestamp=message.get("timestamp") or payload.get("ts"),
-                )
+                if spooled_sid in blocked_sessions:
+                    # An older message for this session could not be replayed.
+                    # Writing this one now would give it a lower row id than
+                    # the message it follows, permanently inverting the
+                    # transcript, so leave it for the next start.
+                    continue
+                try:
+                    session_db.append_message(
+                        **_transcript_append_kwargs(spooled_sid, message, payload)
+                    )
+                except Exception as exc:
+                    # Same contract as drain_transcript_spool: stop this
+                    # session's replay on the first failure and keep the
+                    # remaining spool files for the next attempt.
+                    blocked_sessions.add(spooled_sid)
+                    logger.warning(
+                        "Replay of spooled transcript message %s for %s failed; "
+                        "keeping it and any later spooled message for that "
+                        "session for the next start: %s",
+                        path, spooled_sid, exc,
+                    )
+                    continue
                 recovered += 1
                 path.unlink(missing_ok=True)
                 continue

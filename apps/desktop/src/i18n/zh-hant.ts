@@ -2062,6 +2062,7 @@ export const zhHant = defineLocale({
       noChanges: '沒有變更',
       notRepo: '不是 Git 儲存庫',
       noDiff: '沒有可顯示的差異',
+      noDiffFolder: '空資料夾，或獨立的 git 儲存庫',
       scopeUncommitted: '未提交',
       scopeBranch: '分支',
       scopeLastTurn: '上一輪',

@@ -1916,6 +1916,7 @@ export const ar = defineLocale({
       noChanges: 'لا توجد تغييرات',
       notRepo: 'ليس مستودع git',
       noDiff: 'لا يوجد فرق لعرضه',
+      noDiffFolder: 'مجلد فارغ أو مستودع git منفصل',
       scopeUncommitted: 'غير مُودَع',
       scopeBranch: 'فرع',
       scopeLastTurn: 'آخر دور',

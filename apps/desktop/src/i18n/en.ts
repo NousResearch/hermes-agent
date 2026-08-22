@@ -2464,6 +2464,7 @@ export const en: Translations = {
       noChanges: 'No changes',
       notRepo: 'Not a git repository',
       noDiff: 'No diff to show',
+      noDiffFolder: 'Empty folder, or a separate git repo',
       scopeUncommitted: 'Uncommitted',
       scopeBranch: 'Branch',
       scopeLastTurn: 'Last turn',

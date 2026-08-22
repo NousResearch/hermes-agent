@@ -1519,18 +1519,38 @@ class HonchoSessionManager:
             raise
         except Exception as e:
             logger.debug("Honcho message search failed (peer_perspective=%s): %s", peer_id, e)
-            # Fall back to peer-authored search if the perspective filter is
-            # unsupported by the running Honcho version.
+            messages = []
+
+        if not messages:
+            # Some API builds (e.g. self-hosted from source) silently return
+            # empty for the peer_perspective filter because the column is not
+            # filterable in their schema. Retry with the peer_id column filter
+            # before giving up.
             try:
                 messages = self._authed_call(
-                    "peer search",
-                    lambda: self._get_or_create_peer(peer_id).search(q, limit=limit),
+                    "message search (peer_id)",
+                    lambda: self.honcho.search(
+                        q,
+                        filters={"peer_id": peer_id},
+                        limit=limit,
+                    ),
                 )
             except HonchoAuthError:
                 raise
             except Exception as e2:
-                logger.debug("Honcho peer search fallback also failed: %s", e2)
-                return ""
+                logger.debug("Honcho message search failed (peer_id=%s): %s", peer_id, e2)
+                # Fall back to peer-authored search if filters are unsupported
+                # by the running Honcho version.
+                try:
+                    messages = self._authed_call(
+                        "peer search",
+                        lambda: self._get_or_create_peer(peer_id).search(q, limit=limit),
+                    )
+                except HonchoAuthError:
+                    raise
+                except Exception as e3:
+                    logger.debug("Honcho peer search fallback also failed: %s", e3)
+                    return ""
 
         if not messages:
             return ""

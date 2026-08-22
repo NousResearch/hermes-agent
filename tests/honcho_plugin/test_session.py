@@ -182,6 +182,26 @@ class TestPeerLookupHelpers:
         assert "[assistant" in result
 
 
+    def test_search_context_falls_back_to_peer_id_filter_on_empty_perspective(self):
+        """Older API builds return empty for peer_perspective; retry with peer_id."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.search.side_effect = [
+            [],  # peer_perspective filter unsupported → silently empty
+            [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")],
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
+
+        # Peer_id retry returns content despite the empty perspective result.
+        assert "Robert runs neuralancer" in result
+        assert honcho_client.search.call_count == 2
+        first_args, first_kwargs = honcho_client.search.call_args_list[0]
+        second_args, second_kwargs = honcho_client.search.call_args_list[1]
+        assert first_kwargs["filters"] == {"peer_perspective": session.user_peer_id}
+        assert second_kwargs["filters"] == {"peer_id": session.user_peer_id}
+
+
     def test_create_conclusion_defaults_to_user_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()

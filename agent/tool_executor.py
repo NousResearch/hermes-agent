@@ -2691,6 +2691,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+
+
+
+if not _execution_blocked and agent.tool_progress_callback:
+            try:
+                agent.tool_progress_callback(
+                    "tool.completed", function_name, None, None,
+                    duration=tool_duration, is_error=_is_error_result,
+                    result=function_result,
+                )
+            except Exception as cb_err:
+                logging.debug(f"Tool progress callback error: {cb_err}")
+
+>>>>>> (feat(gateway): render todo tool results as editable Telegram checklist (#31001))
         agent._current_tool = None
         _status_suffix = " (error)" if _is_error_result else ""
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")

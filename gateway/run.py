@@ -838,6 +838,36 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+_STATUS_MAP = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "completed": "[x]",
+    "cancelled": "[-]",
+}
+
+
+def _render_todo_checklist(result_str: str) -> str:
+    """Parse a todo tool result and render a compact checklist.
+
+    Returns the checklist string, or an empty string on failure (caller
+    should handle the empty case gracefully).
+    """
+    try:
+        data = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    todos = data.get("todos") if isinstance(data, dict) else None
+    if not todos:
+        return ""
+    lines = ["📋 Task List"]
+    for item in todos:
+        content = (item.get("content") or "")[:80]
+        status = _STATUS_MAP.get(item.get("status", "pending"), "[ ]")
+        item_id = item.get("id", "")
+        lines.append(f"{status} {content} ({item_id})" if item_id else f"{status} {content}")
+    return "\n".join(lines)
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -28589,6 +28619,131 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx.native_tool_complete_callback = (
             turn_runner.native_tool_complete_callback
         )
+
+
+        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+            """Callback invoked by agent on tool lifecycle events."""
+            if not progress_queue or not _run_still_current():
+                return
+
+            # Todo checklist: on tool.completed, render todo results as an
+            # editable checklist in the progress message bubble.  Must run
+            # BEFORE the onboarding early-return below so it is not blocked
+            # by that handler's blanket return for tool.completed events.
+            if event_type == "tool.completed" and tool_name == "todo":
+                try:
+                    progress_queue.put(_render_todo_checklist(kwargs.get("result", "")))
+                except Exception:
+                    logger.debug("Failed to render todo checklist", exc_info=True)
+                return
+
+            # First-touch onboarding: the first time a tool takes longer than
+            # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
+            # (progress_mode == "all"), append a one-time hint suggesting
+            # /verbose.  We only fire when (a) the user hasn't seen the hint
+            # before and (b) /verbose is actually usable on this platform
+            # (gateway gate must be open).  The CLI has its own trigger.
+            # NOTE: the outer return below drops ALL tool.completed events
+            # until the hint fires — non-todo tool.completed events are
+            # intentionally discarded during this window.
+            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
+                try:
+                    duration = kwargs.get("duration") or 0
+                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                        from agent.onboarding import (
+                            TOOL_PROGRESS_FLAG,
+                            is_seen,
+                            mark_seen,
+                            tool_progress_hint_gateway,
+                        )
+                        _cfg = _load_gateway_config()
+                        gate_on = is_truthy_value(
+                            cfg_get(_cfg, "display", "tool_progress_command"),
+                            default=False,
+                        )
+                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                            long_tool_hint_fired[0] = True
+                            progress_queue.put(tool_progress_hint_gateway())
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                except Exception as _hint_err:
+                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+                return
+
+
+            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            if event_type not in {"tool.started",}:
+                return
+
+            # Suppress tool-progress bubbles once the user has sent `stop`.
+            # When the LLM response carries N parallel tool calls, the agent
+            # fires N "tool.started" events back-to-back before checking for
+            # interrupts — without this guard, a late `stop` still renders
+            # all N as 🔍 bubbles, making the interrupt feel ignored.
+            # (agent lives in run_sync's scope; agent_holder[0] is the shared
+            # handle across nested scopes — see line ~9607.)
+            try:
+                _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                if _agent_for_interrupt is not None and getattr(
+                    _agent_for_interrupt, "is_interrupted", False
+                ):
+                    return
+            except Exception:
+                pass
+
+            # "new" mode: only report when tool changes
+            if progress_mode == "new" and tool_name == last_tool[0]:
+                return
+            last_tool[0] = tool_name
+            
+            # Build progress message with primary argument preview
+            from agent.display import get_tool_emoji
+            emoji = get_tool_emoji(tool_name, default="⚙️")
+            
+            # Verbose mode: show detailed arguments, respects tool_preview_length
+            if progress_mode == "verbose":
+                if args:
+                    from agent.display import get_tool_preview_max_len
+                    _pl = get_tool_preview_max_len()
+                    args_str = json.dumps(args, ensure_ascii=False, default=str)
+                    # When tool_preview_length is 0 (default), don't truncate
+                    # in verbose mode — the user explicitly asked for full
+                    # detail.  Platform message-length limits handle the rest.
+                    if _pl > 0 and len(args_str) > _pl:
+                        args_str = args_str[:_pl - 3] + "..."
+                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                elif preview:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                else:
+                    msg = f"{emoji} {tool_name}..."
+                progress_queue.put(msg)
+                return
+            
+            # "all" / "new" modes: short preview, respects tool_preview_length
+            # config (defaults to 40 chars when unset to keep gateway messages
+            # compact — unlike CLI spinners, these persist as permanent messages).
+            if preview:
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                if len(preview) > _cap:
+                    preview = preview[:_cap - 3] + "..."
+                msg = f"{emoji} {tool_name}: \"{preview}\""
+            else:
+                msg = f"{emoji} {tool_name}..."
+            
+            # Dedup: collapse consecutive identical progress messages.
+            # Common with execute_code where models iterate with the same
+            # code (same boilerplate imports → identical previews).
+            if msg == last_progress_msg[0]:
+                repeat_count[0] += 1
+                # Update the last line in progress_lines with a counter
+                # via a special "dedup" queue message.
+                progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                return
+            last_progress_msg[0] = msg
+            repeat_count[0] = 0
+            
+            progress_queue.put(msg)
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.

@@ -210,7 +210,12 @@ jobs:
         run: |
           sudo snap install snapcraft --classic
           sudo snap install lxd
-          sudo lxd init --auto
+          # explicit subnet: lxd init --auto picks one that can collide with
+          # the runner's virtual networks, leaving containers without egress
+          sudo lxd init --auto \
+            --network-address='' \
+            --network-ipv4-address=10.100.0.1/24 \
+            --network-ipv4-nat=true
           sudo usermod -aG lxd "$USER"
 
       - name: Setup Node

@@ -50,12 +50,28 @@ def _make_dummy_env(**kwargs):
         network=kwargs.get("network", True),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
+        mount_profile_skills=kwargs.get("mount_profile_skills", True),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
     )
+
+
+def test_profile_skills_mount_policy_is_forwarded(monkeypatch):
+    """Shared containers can omit only the creating profile's skills tree."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    captured = []
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda **kwargs: captured.append(kwargs) or [],
+    )
+
+    _make_dummy_env(mount_profile_skills=False)
+
+    assert captured == [{"include_profile_skills": False}]
 
 
 def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, caplog):
@@ -605,6 +621,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-profile-skills": "true",
     }
 
 
@@ -683,6 +700,30 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
     )
+
+
+def test_disabling_profile_skills_replaces_legacy_persistent_container(monkeypatch):
+    """An unlabeled legacy container has the immutable profile-skills mount."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(
+        task_id="reuse-without-profile-skills",
+        mount_profile_skills=False,
+    )
+
+    assert env._container_id == "fresh-cid"
+    assert any(
+        isinstance(cmd, list) and cmd[1:4] == ["rm", "-f", "reused-cid"]
+        for cmd, _kwargs in calls
+    ), "the legacy mounted container must be removed before replacement"
+    assert any(
+        isinstance(cmd, list)
+        and cmd[1] == "run"
+        and "hermes-profile-skills=false" in cmd
+        for cmd, _kwargs in calls
+    ), "the replacement container must record its immutable mount posture"
 
 
 def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
@@ -1254,7 +1295,7 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        lambda **_: [],
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
@@ -1294,7 +1335,7 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
-        lambda: [],
+        lambda **_: [],
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",

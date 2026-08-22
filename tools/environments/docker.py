@@ -43,6 +43,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_PROFILE_SKILLS_LABEL_KEY = "hermes-profile-skills"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -883,6 +884,7 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: Optional[str] = None,
         auto_mount_cwd: bool = False,
+        mount_profile_skills: bool = True,
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
@@ -1046,7 +1048,9 @@ class DockerEnvironment(BaseEnvironment):
 
             # Mount skill directories (local + external) so skill
             # scripts/templates are available inside the container.
-            for skills_mount in get_skills_directory_mount():
+            for skills_mount in get_skills_directory_mount(
+                include_profile_skills=mount_profile_skills,
+            ):
                 src = Path(skills_mount["host_path"])
                 if not src.is_dir():
                     logger.warning(
@@ -1370,11 +1374,13 @@ class DockerEnvironment(BaseEnvironment):
         # container-start time and never changes for the container's lifetime.
         profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
+        profile_skills_label = "true" if mount_profile_skills else "false"
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_PROFILE_SKILLS_LABEL_KEY}={profile_skills_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1387,6 +1393,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _PROFILE_SKILLS_LABEL_KEY: profile_skills_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1396,14 +1403,14 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only.  The egress posture gets its own label
-        # because env vars, CA mounts, and host mappings are immutable after
-        # container creation — reusing a pre-egress or pre-rotation container
-        # would silently bypass the credential firewall.
+        # Reuse matches on labels only. Egress and profile-skills mount posture
+        # get their own labels because env vars and bind mounts are immutable
+        # after container creation. Reusing a container with either posture
+        # changed would preserve stale credentials or access.
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, profile_name, egress_label, mount_profile_skills,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1664,6 +1671,7 @@ class DockerEnvironment(BaseEnvironment):
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
             task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_PROFILE_SKILLS_LABEL_KEY, "true") == "true",
         )
         if existing is not None:
             cid, state = existing
@@ -1828,6 +1836,7 @@ class DockerEnvironment(BaseEnvironment):
         task_label: str,
         profile_label: str,
         egress_label: str,
+        mount_profile_skills: bool,
     ) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
@@ -1839,7 +1848,9 @@ class DockerEnvironment(BaseEnvironment):
 
         Restricted to the docker-stored label set this class creates; never
         matches containers that happened to be named ``hermes-*`` but were
-        started by some other tool.
+        started by some other tool. Containers whose immutable profile-skills
+        mount posture differs are removed before the caller starts fresh;
+        missing legacy labels mean the historical mounted/``true`` posture.
         """
         try:
             filters = [
@@ -1849,7 +1860,11 @@ class DockerEnvironment(BaseEnvironment):
             ]
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
-                fmt = "{{.ID}}\t{{.State}}"
+                fmt = (
+                    '{{.ID}}\t{{.State}}\t{{.Label "'
+                    + _PROFILE_SKILLS_LABEL_KEY
+                    + '"}}'
+                )
             else:
                 # When egress is off, we widen the probe to find any
                 # task+profile container (regardless of egress label), then
@@ -1858,7 +1873,13 @@ class DockerEnvironment(BaseEnvironment):
                 # this, a container created with egress=on can be silently
                 # reused after the operator runs "hermes egress disable",
                 # preserving baked-in proxy env and CA mounts.
-                fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
+                fmt = (
+                    '{{.ID}}\t{{.State}}\t{{.Label "'
+                    + _EGRESS_LABEL_KEY
+                    + '"}}\t{{.Label "'
+                    + _PROFILE_SKILLS_LABEL_KEY
+                    + '"}}'
+                )
             result = subprocess.run(
                 [
                     self._docker_exe, "ps", "-a",
@@ -1892,12 +1913,13 @@ class DockerEnvironment(BaseEnvironment):
         first = None
         for ln in lines:
             if egress_label == "off":
-                # Format: ID\tState\tEgressLabel — parse all three fields
-                # and reject containers with a non-off egress label.
-                parts = ln.split("\t", 2)
+                # Format: ID\tState\tEgressLabel\tProfileSkillsLabel. Legacy
+                # test doubles and containers may omit the final label.
+                parts = ln.split("\t", 3)
                 if len(parts) < 3:
                     continue
                 cid, state, egress_val = parts[0], parts[1].lower(), parts[2]
+                profile_skills_val = parts[3] if len(parts) == 4 else ""
                 if egress_val not in ("", "<no value>", "off"):
                     logger.debug(
                         "skipping container %s for egress=off reuse: "
@@ -1905,10 +1927,42 @@ class DockerEnvironment(BaseEnvironment):
                     )
                     continue
             else:
-                parts = ln.split("\t", 1)
-                if len(parts) != 2:
+                parts = ln.split("\t", 2)
+                if len(parts) < 2:
                     continue
                 cid, state = parts[0], parts[1].lower()
+                profile_skills_val = parts[2] if len(parts) == 3 else ""
+
+            normalized_skills = profile_skills_val.strip().lower()
+            if normalized_skills in ("", "<no value>", "true"):
+                actual_mount_profile_skills = True
+            elif normalized_skills == "false":
+                actual_mount_profile_skills = False
+            else:
+                actual_mount_profile_skills = None
+            if actual_mount_profile_skills is not mount_profile_skills:
+                logger.warning(
+                    "Existing container %s has %s=%r but the requested profile "
+                    "skills mount posture is %s — removing it and starting fresh.",
+                    cid[:12], _PROFILE_SKILLS_LABEL_KEY,
+                    profile_skills_val or "<missing>",
+                    "true" if mount_profile_skills else "false",
+                )
+                try:
+                    subprocess.run(
+                        [self._docker_exe, "rm", "-f", cid],
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                        timeout=30,
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                    )
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    logger.warning(
+                        "Failed to remove profile-skills-mismatched container %s: %s",
+                        cid[:12], e,
+                    )
+                continue
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

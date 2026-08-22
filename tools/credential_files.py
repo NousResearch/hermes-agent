@@ -246,6 +246,8 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 def get_skills_directory_mount(
     container_base: str = "/root/.hermes",
+    *,
+    include_profile_skills: bool = True,
 ) -> list[Dict[str, str]]:
     """Return mount info for all skill directories (local + external).
 
@@ -260,13 +262,14 @@ def get_skills_directory_mount(
     directly with zero overhead.
 
     Returns a list of dicts with ``host_path`` and ``container_path`` keys.
-    The local skills dir mounts at ``<container_base>/skills``, external dirs
-    at ``<container_base>/external_skills/<index>``.
+    The local skills dir mounts at ``<container_base>/skills`` unless
+    ``include_profile_skills`` is false. External and project dirs are always
+    returned because they are shared checkouts rather than profile-local state.
     """
     mounts = []
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
-    if skills_dir.is_dir():
+    if include_profile_skills and skills_dir.is_dir():
         host_path = _safe_skills_path(skills_dir)
         mounts.append({
             "host_path": host_path,

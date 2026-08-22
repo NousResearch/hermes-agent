@@ -564,6 +564,23 @@ def test_config_yaml_terminal_backend_overrides_stale_shell(tmp_path, monkeypatc
     assert os.getenv("TERMINAL_ENV") == "local"
 
 
+def test_config_yaml_bridges_docker_profile_skills_mount_policy(tmp_path, monkeypatch):
+    home = _seed_terminal_home(
+        tmp_path,
+        monkeypatch,
+        config_yaml=(
+            "terminal:\n"
+            "  backend: docker\n"
+            "  docker_mount_profile_skills: false\n"
+        ),
+    )
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_PROFILE_SKILLS", "true")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_DOCKER_MOUNT_PROFILE_SKILLS") == "False"
+
+
 def test_no_terminal_section_leaves_env_value_alone(tmp_path, monkeypatch):
     """When config.yaml has no terminal section, the .env value is still the
     user's active setting — the bridge must NOT clobber it with merged

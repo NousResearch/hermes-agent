@@ -95,6 +95,16 @@ class TestCwdHandling:
         assert config["host_cwd"] == "/Users/someone/projects"
         assert config["docker_mount_cwd_to_workspace"] is True
 
+    def test_docker_profile_skills_mount_defaults_on_and_can_be_disabled(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_PROFILE_SKILLS", raising=False)
+        assert _tt_mod._get_env_config()["docker_mount_profile_skills"] is True
+
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_PROFILE_SKILLS", "false")
+        assert _tt_mod._get_env_config()["docker_mount_profile_skills"] is False
+
     def test_windows_path_replaced_for_modal(self, monkeypatch):
         """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
         monkeypatch.setenv("TERMINAL_ENV", "modal")
@@ -174,6 +184,31 @@ class TestCwdHandling:
         assert captured["cwd"] == "/workspace"
         assert captured["host_cwd"] == "/home/user/project"
         assert captured["auto_mount_cwd"] is True
+
+    def test_create_environment_passes_profile_skills_mount_policy(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            _tt_mod,
+            "_DockerEnvironment",
+            lambda **kwargs: captured.update(kwargs) or object(),
+        )
+
+        _tt_mod._create_environment(
+            env_type="docker",
+            image="python:3.11",
+            cwd="/root",
+            timeout=60,
+            container_config={"docker_mount_profile_skills": False},
+        )
+
+        assert captured["mount_profile_skills"] is False
+
+    def test_container_config_keeps_profile_skills_mount_policy(self):
+        config = _tt_mod._container_config_from_config(
+            {"docker_mount_profile_skills": False}
+        )
+
+        assert config["docker_mount_profile_skills"] is False
 
     def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""

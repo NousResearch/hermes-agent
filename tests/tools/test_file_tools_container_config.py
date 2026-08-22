@@ -20,6 +20,7 @@ def _make_env_config(**overrides):
         "container_persistent": False,
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": True,
+        "docker_mount_profile_skills": True,
         "docker_forward_env": ["MY_SECRET", "API_KEY"],
     }
     base.update(overrides)
@@ -53,6 +54,13 @@ class TestFileToolsContainerConfig:
         """docker_mount_cwd_to_workspace is forwarded to container_config."""
         cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is True
+
+    def test_docker_mount_profile_skills_passed(self):
+        cc = self._run(
+            _make_env_config(docker_mount_profile_skills=False), "t-profile-skills"
+        ).get("container_config", {})
+
+        assert cc.get("docker_mount_profile_skills") is False
 
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):

@@ -87,6 +87,39 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["container_path"] == "/home/user/.hermes/skills"
 
+    def test_profile_skills_can_be_omitted_without_dropping_shared_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        profile_skills = hermes_home / "skills"
+        external_skills = tmp_path / "external-skills"
+        project_skills = tmp_path / "project-skills"
+        for directory in (profile_skills, external_skills, project_skills):
+            directory.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "agent.skill_utils.get_external_skills_dirs",
+            lambda: [external_skills],
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_project_skills_dirs",
+            lambda: [project_skills],
+        )
+
+        mounts = get_skills_directory_mount(include_profile_skills=False)
+
+        assert mounts == [
+            {
+                "host_path": str(external_skills),
+                "container_path": "/root/.hermes/external_skills/0",
+            },
+            {
+                "host_path": str(project_skills),
+                "container_path": "/root/.hermes/project_skills/0",
+            },
+        ]
+
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
         hermes_home = tmp_path / ".hermes"

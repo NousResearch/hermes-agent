@@ -21,7 +21,7 @@ description: "4阶段根因调试：先理解缺陷再修复"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `debugging`, `troubleshooting`, `problem-solving`, `root-cause`, `investigation` |
-| 相关 skill | [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans), [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) |
+| 相关 skill | [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`plan`](/user-guide/skills/bundled/software-development/software-development-plan), [`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
 
 ## 参考：完整 SKILL.md
 

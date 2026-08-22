@@ -9969,6 +9969,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
+            # DB-level dedupe guard (#79576): a platform_message_id maps to
+            # exactly ONE transcript row per session. When a row already
+            # exists, skip the insert and return the existing row id instead
+            # of stacking a duplicate user turn. The gateway's #47237 check
+            # (has_platform_message_id) runs outside this transaction, so it
+            # can race with a sibling writer (gateway + agent processes, or
+            # two retries of the same Telegram update); this in-transaction
+            # check is atomic under BEGIN IMMEDIATE and also covers paths
+            # that never consulted the guard (crash-resilience persist,
+            # shutdown flush). Rows without a platform_message_id are never
+            # deduped.
+            if platform_message_id is not None:
+                _existing = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+                    (session_id, platform_message_id),
+                ).fetchone()
+                if _existing is not None:
+                    return _existing[0]
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
@@ -10023,6 +10042,47 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(
             _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
         )
+
+    @staticmethod
+    def _dedupe_batch_by_platform_message_id(
+        conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Drop rows whose platform_message_id already exists for the session.
+
+        Enforces the one-platform_message_id-per-session invariant for the
+        batch write path (issue #79576). Rows without a platform_message_id
+        (or ``message_id`` alias) pass through untouched. Within-batch
+        duplicates keep only the first occurrence. Runs inside the caller's
+        write transaction, so the existence check and the inserts commit
+        atomically — closing the check-then-insert race that the gateway's
+        #47237 guard has when a sibling writer (gateway + agent processes)
+        persists the same inbound turn concurrently.
+        """
+        filtered: List[Dict[str, Any]] = []
+        seen_in_batch: set = set()
+        existing: Optional[set] = None
+        for msg in messages:
+            platform_msg_id = msg.get("platform_message_id") or msg.get("message_id")
+            if platform_msg_id is None:
+                filtered.append(msg)
+                continue
+            if platform_msg_id in seen_in_batch:
+                continue
+            if existing is None:
+                existing = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT platform_message_id FROM messages "
+                        "WHERE session_id = ? AND platform_message_id IS NOT NULL",
+                        (session_id,),
+                    ).fetchall()
+                }
+            if platform_msg_id in existing:
+                continue
+            existing.add(platform_msg_id)
+            seen_in_batch.add(platform_msg_id)
+            filtered.append(msg)
+        return filtered
 
     def append_messages_batch(
         self,
@@ -10083,8 +10143,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
-            inserted, tool_calls_total = self._insert_message_rows(
+            # DB-level dedupe guard (#79576): same invariant as
+            # append_message — one platform_message_id per session. The
+            # turn-boundary flush and the gateway's crash-resilience persist
+            # can both try to write the same inbound user turn, and the
+            # pre-write has_platform_message_id check (#47237) can race with
+            # a sibling writer, so enforce the invariant atomically here
+            # instead of relying on callers. Rows without a
+            # platform_message_id are never deduped.
+            filtered = self._dedupe_batch_by_platform_message_id(
                 conn, session_id, messages
+            )
+            if not filtered:
+                return 0
+            inserted, tool_calls_total = self._insert_message_rows(
+                conn, session_id, filtered
             )
             # One aggregated counter update for the whole batch.
             if tool_calls_total > 0:

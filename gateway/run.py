@@ -21035,19 +21035,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 if 'message_text' in locals() and message_text is not None and session_entry is not None:
                     _already_persisted = False
-                    try:
-                        _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                    except Exception:
-                        _recent_transcript = []
-                    for _msg in reversed(_recent_transcript[-10:]):
-                        if _msg.get("role") == "user":
-                            _expected_user_content = (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
+                    # Prefer the platform message_id for dedupe (#79576): it
+                    # identifies the exact inbound event, so re-processing the
+                    # SAME event (gateway redelivery, retry loop) is skipped
+                    # while a genuinely NEW message with identical text is
+                    # still persisted. The old content-equality check could
+                    # not tell those apart and either stacked duplicates (when
+                    # the read path failed on a corrupt state.db) or silently
+                    # dropped a real same-text retry.
+                    _event_msg_id = getattr(event, "message_id", None)
+                    if _event_msg_id:
+                        try:
+                            _already_persisted = (
+                                await self.async_session_store.has_platform_message_id(
+                                    session_entry.session_id, str(_event_msg_id)
+                                )
                             )
-                            _already_persisted = (_msg.get("content") == _expected_user_content)
-                            break
+                        except Exception:
+                            _already_persisted = False
+                    if not _already_persisted:
+                        try:
+                            _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
+                        except Exception:
+                            _recent_transcript = []
+                        for _msg in reversed(_recent_transcript[-10:]):
+                            if _msg.get("role") == "user":
+                                _expected_user_content = (
+                                    persist_user_message
+                                    if persist_user_message is not None
+                                    else message_text
+                                )
+                                if _msg.get("content") != _expected_user_content:
+                                    # Different content — definitely a new turn.
+                                    break
+                                # Content matches. Treat it as the SAME event
+                                # only when the matching row carries no
+                                # platform message id — i.e. it was written by
+                                # a path (the agent's early turn-start
+                                # persistence) that could not stamp the inbound
+                                # event id. If the row DOES carry an id it
+                                # belongs to a different event, so a same-text
+                                # NEW message must still be persisted (#79576).
+                                if not (_msg.get("message_id") or _msg.get("platform_message_id")):
+                                    _already_persisted = True
+                                break
                     if not _already_persisted:
                         _user_entry = {
                             "role": "user",
@@ -21064,8 +21095,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }
                         if 'persist_user_display_kind' in locals() and persist_user_display_kind:
                             _user_entry["display_kind"] = persist_user_display_kind
-                        if getattr(event, "message_id", None):
-                            _user_entry["message_id"] = str(event.message_id)
+                        if _event_msg_id:
+                            _user_entry["message_id"] = str(_event_msg_id)
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             _user_entry,

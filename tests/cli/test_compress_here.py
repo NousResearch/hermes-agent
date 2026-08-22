@@ -27,6 +27,7 @@ def _wire_agent(shell, compressed_head):
     shell.agent.tools = None
     shell.agent._compress_context.return_value = (compressed_head, "")
     shell.agent._compression_skipped_due_to_lock = False
+    shell.agent._last_compression_goal_notice = None
 
 
 def test_compress_here_compresses_head_only(capsys):
@@ -103,6 +104,26 @@ def test_bare_compress_still_full(capsys):
     assert call.args[0] == history
     out = capsys.readouterr().out
     assert "Summarizing up to here" not in out
+
+
+def test_bare_compress_surfaces_migrated_standing_goal(capsys):
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    _wire_agent(shell, list(history))
+    shell.agent._last_compression_goal_notice = (
+        'Standing goal carried forward: "finish the migration". '
+        "Use /goal status to review it or /goal clear to stop it."
+    )
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress("/compress")
+
+    out = capsys.readouterr().out
+    assert "Standing goal carried forward" in out
+    assert "finish the migration" in out
+    assert "/goal status" in out
+    assert "/goal clear" in out
 
 
 def test_focus_still_works(capsys):

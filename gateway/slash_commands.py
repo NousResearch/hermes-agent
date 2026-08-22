@@ -4510,6 +4510,11 @@ class GatewaySlashCommandsMixin:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
+            goal_notice = getattr(
+                tmp_agent, "_last_compression_goal_notice", None
+            )
+            if isinstance(goal_notice, str) and goal_notice:
+                lines.append(f"ℹ️ {goal_notice}")
             if _summary_aborted:
                 lines.append(
                     t(

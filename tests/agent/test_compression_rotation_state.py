@@ -116,6 +116,10 @@ class TestGoalMigratesOnRotation:
                 migrated = goals.load_goal(child)
                 assert migrated is not None
                 assert migrated.goal == "finish the migration"
+                notice = agent._last_compression_goal_notice
+                assert "finish the migration" in notice
+                assert "/goal status" in notice
+                assert "/goal clear" in notice
             goals._DB_CACHE.clear()
 
 

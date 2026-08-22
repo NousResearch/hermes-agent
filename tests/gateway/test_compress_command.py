@@ -86,6 +86,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     agent_instance._compress_context.return_value = (compressed, "")
     # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
     agent_instance._compression_skipped_due_to_lock = False
+    agent_instance._last_compression_goal_notice = None
 
     def _estimate(messages, **_kwargs):
         return 100 if messages == history else 60
@@ -102,6 +103,46 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+
+
+@pytest.mark.asyncio
+async def test_compress_command_surfaces_migrated_standing_goal():
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
+    agent_instance._last_compression_goal_notice = (
+        'Standing goal carried forward: "finish the migration". '
+        "Use /goal status to review it or /goal clear to stop it."
+    )
+
+    def _estimate(messages, **_kwargs):
+        return 100 if messages == history else 60
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Standing goal carried forward" in result
+    assert "finish the migration" in result
+    assert "/goal status" in result
+    assert "/goal clear" in result
 
 
 @pytest.mark.asyncio

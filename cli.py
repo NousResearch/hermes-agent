@@ -13411,6 +13411,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
                     print(f"     {summary['note']}")
+                goal_notice = getattr(
+                    self.agent, "_last_compression_goal_notice", None
+                )
+                if isinstance(goal_notice, str) and goal_notice:
+                    print(f"     ℹ️ {goal_notice}")
 
             except Exception as e:
                 finalize_context_engine_compression_notification(

@@ -2289,6 +2289,10 @@ def compress_context(
     # boundary, so the previous flush baseline remains authoritative.
     agent._last_compression_attempt_recorded = True
     agent._last_compression_attempt_in_place = None
+    # Per-attempt UI signal consumed by manual compression surfaces. Clear it
+    # before every early-return path so a previous migration is never reported
+    # again by an unrelated compression attempt.
+    agent._last_compression_goal_notice = None
     # Clear the lock-skip signal at the VERY TOP, before the codex route and
     # the breaker gates below can early-return (per-attempt state rule,
     # #58630/#69853). A stale ``True``/holder value from a prior lock-skip
@@ -3676,8 +3680,22 @@ def compress_context(
                     # per-session lookup with no parent walk, so without this an
                     # active goal silently dies at the boundary (#33618).
                     try:
-                        from hermes_cli.goals import migrate_goal_to_session
-                        migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
+                        from hermes_cli.goals import (
+                            format_goal_migration_notice,
+                            load_goal,
+                            migrate_goal_to_session,
+                        )
+
+                        if migrate_goal_to_session(
+                            old_session_id,
+                            agent.session_id,
+                            reason="compression",
+                        ):
+                            _migrated_goal = load_goal(agent.session_id)
+                            if _migrated_goal is not None:
+                                agent._last_compression_goal_notice = (
+                                    format_goal_migration_notice(_migrated_goal)
+                                )
                     except Exception as _goal_err:
                         logger.debug("Could not migrate goal on compression: %s", _goal_err)
                     # Same boundary hazard for /heartbeat state — carry it too.

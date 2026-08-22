@@ -922,6 +922,24 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "… [truncated]"
 
 
+def format_goal_migration_notice(state: GoalState) -> str:
+    """Describe a carried-forward goal for compression command output."""
+    goal = re.sub(r"\s+", " ", state.goal or "").strip()
+    goal = _truncate(goal, 160)
+    created = ""
+    if state.created_at:
+        try:
+            created = datetime.fromtimestamp(
+                state.created_at, tz=timezone.utc
+            ).strftime(" (set %Y-%m-%d UTC)")
+        except (OverflowError, OSError, ValueError):
+            created = ""
+    return (
+        f'Standing goal carried forward{created}: "{goal}". '
+        "Use /goal status to review it or /goal clear to stop it."
+    )
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with ``pid`` is currently alive.
 
@@ -2321,6 +2339,7 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "migrate_goal_to_session",
+    "format_goal_migration_notice",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

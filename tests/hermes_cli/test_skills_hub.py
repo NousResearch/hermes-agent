@@ -489,3 +489,4 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+

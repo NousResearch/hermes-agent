@@ -49,6 +49,7 @@ interface GlyphSpinnerProps {
    *  keeps it in the tree through a fade-out and does not want it animating
    *  once it is no longer the thing being waited on. */
   paused?: boolean
+  decorative?: boolean
   spinner?: SpinnerName
 }
 
@@ -73,6 +74,7 @@ export function GlyphSpinner({
   ariaLabel = 'Loading',
   className,
   paused = false,
+  decorative = false,
   spinner = 'braille'
 }: GlyphSpinnerProps) {
   const spin = FRAMES_BY_NAME[spinner] ?? FRAMES_BY_NAME.braille!
@@ -94,9 +96,10 @@ export function GlyphSpinner({
 
   return (
     <span
-      aria-label={ariaLabel}
+      aria-hidden={decorative ? true : undefined}
+      aria-label={decorative ? undefined : ariaLabel}
       className={cn('inline-flex items-center justify-center font-mono leading-none tabular-nums', className)}
-      role="status"
+      role={decorative ? undefined : 'status'}
     >
       {/* Hidden from assistive tech: the accessible name is the label above.
           The frames are decorative, and this is a live region — the old

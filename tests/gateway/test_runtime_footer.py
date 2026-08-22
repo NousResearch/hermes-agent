@@ -317,3 +317,130 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     with_timing = build_footer_line(**common, turn_seconds=125.0)
     assert baseline == "gpt-5.4 · 5% · /var/data"
     assert with_timing == baseline
+
+
+def test_rate_tier_not_in_default_fields():
+    """rate_tier is opt-in — default field set stays byte-identical."""
+    from gateway.runtime_footer import _DEFAULT_FIELDS
+
+    assert "rate_tier" not in _DEFAULT_FIELDS
+    assert list(_DEFAULT_FIELDS) == _LEGACY_DEFAULT_FIELDS
+
+
+def test_rate_tier_renders_only_for_matching_models(monkeypatch):
+    """rate_tier appears for models matching a configured window, skipped otherwise."""
+    import datetime as dt
+
+    from gateway.runtime_footer import format_runtime_footer, rate_tier_for_model
+
+    # deterministic time: inside the built-in DeepSeek peak window (UTC 08:00 → SGT 16:00)
+    monkeypatch.setattr(
+        "gateway.runtime_footer._dt.datetime",
+        _FakeDateTime(dt.datetime(2026, 8, 20, 8, 30, tzinfo=dt.timezone.utc)),
+    )
+
+    ds = format_runtime_footer(
+        model="deepseek/deepseek-v4-flash",
+        context_tokens=10_000,
+        context_length=100_000,
+        fields=("model", "context_pct", "rate_tier", "cwd"),
+        cwd="/var/data",
+    )
+    assert ds == "deepseek-v4-flash · 10% · peak · /var/data"
+
+    # No window matches → field silently skipped.
+    non_ds = format_runtime_footer(
+        model="claude-opus-5",
+        context_tokens=10_000,
+        context_length=100_000,
+        fields=("model", "context_pct", "rate_tier"),
+        cwd="/var/data",
+    )
+    assert non_ds == "claude-opus-5 · 10%"
+
+    # Direct function: same guarantees at the unit level.
+    assert rate_tier_for_model("deepseek-v4-flash") == "peak"
+    assert rate_tier_for_model("claude-opus-5") is None
+
+
+def test_rate_tier_custom_windows_sgt(monkeypatch):
+    """User rate_windows override: custom tz + windows win over the built-in default."""
+    import datetime as dt
+
+    from gateway.runtime_footer import (
+        format_runtime_footer,
+        rate_tier_for_model,
+        resolve_footer_config,
+        _DEFAULT_RATE_WINDOWS,
+    )
+
+    # Windows {mymodel: {tz: Asia/Singapore, peak: [[20,22]]}}.
+    # At 12:30 UTC = 20:30 SGT → custom PEAK; the built-in DeepSeek UTC window
+    # (01-04/06-10) says off-peak. Proves tz + custom windows are authoritative.
+    cfg = {
+        "display": {
+            "runtime_footer": {
+                "enabled": True,
+                "fields": ["model", "rate_tier"],
+                "rate_windows": {
+                    "mymodel": {"tz": "Asia/Singapore", "peak": [[20, 22]]}
+                },
+            }
+        }
+    }
+    resolved = resolve_footer_config(cfg, "telegram")
+    # merge keeps the built-in deepseek default AND the custom entry
+    assert "deepseek" in resolved["rate_windows"]
+    assert "mymodel" in resolved["rate_windows"]
+
+    monkeypatch.setattr(
+        "gateway.runtime_footer._dt.datetime",
+        _FakeDateTime(dt.datetime(2026, 8, 20, 12, 30, tzinfo=dt.timezone.utc)),
+    )
+    out = format_runtime_footer(
+        model="acme/mymodel-2",
+        context_tokens=10_000,
+        context_length=100_000,
+        fields=("model", "rate_tier"),
+        rate_windows=resolved["rate_windows"],
+    )
+    assert out == "mymodel-2 · peak"
+
+    # the same instant is off-peak for the built-in deepseek default
+    assert rate_tier_for_model("deepseek-v4-flash", resolved["rate_windows"]) == "off-peak"
+    assert _DEFAULT_RATE_WINDOWS["deepseek"]["tz"] == "UTC"
+
+
+def test_rate_tier_default_windows_boundaries():
+    """Built-in DeepSeek peak windows are 01-03 and 06-09 UTC."""
+    import datetime as dt
+
+    from gateway.runtime_footer import rate_tier_for_model
+
+    peak_hours = {1, 2, 3, 6, 7, 8, 9}
+    for hour in range(24):
+        t = dt.datetime(2026, 8, 20, hour, 30, tzinfo=dt.timezone.utc)
+        expected = "peak" if hour in peak_hours else "off-peak"
+        assert rate_tier_for_model("deepseek-v4-flash", now=t) == expected, (
+            f"UTC {hour}:00 wrong"
+        )
+
+
+def test_deepseek_rate_tier_legacy_helper():
+    """Backward-compat helper still returns the same UTC-based tiers."""
+    import datetime as dt
+
+    from gateway.runtime_footer import deepseek_rate_tier
+
+    assert deepseek_rate_tier(dt.datetime(2026, 8, 20, 2, 30, tzinfo=dt.timezone.utc)) == "peak"
+    assert deepseek_rate_tier(dt.datetime(2026, 8, 20, 5, 30, tzinfo=dt.timezone.utc)) == "off-peak"
+
+
+class _FakeDateTime:
+    """Minimal stand-in so monkeypatching gateway.runtime_footer._dt.datetime works."""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def now(self, tz=None):
+        return self._fixed.astimezone(tz) if tz else self._fixed

@@ -89,8 +89,8 @@ def test_deepseek_v4_pro_pricing_entry_exists():
 
     Before this fix, deepseek-v4-pro sessions showed as unknown cost
     in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.  Rates track the 2026-07 price cut
-    ($1.74/$3.48 → $0.435/$0.87).
+    entry for that model.  See #24218.  Rates track the 2026-08-20 live
+    snapshot of api-docs.deepseek.com (off-peak tier; peak = 2x).
     """
     entry = get_pricing_entry(
         "deepseek-v4-pro",
@@ -100,9 +100,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 0.435
-    assert float(entry.output_cost_per_million) == 0.87
-    assert float(entry.cache_read_cost_per_million) == 0.003625
+    assert float(entry.input_cost_per_million) == 0.66
+    assert float(entry.output_cost_per_million) == 1.98
+    assert float(entry.cache_read_cost_per_million) == 0.022
 
 
 

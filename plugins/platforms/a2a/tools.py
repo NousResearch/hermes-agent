@@ -23,8 +23,10 @@ v1.0 JSON-RPC ``message/send`` method; replies from v0.3 peers still parse.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,6 +64,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return {
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
+        "headers": entry.get("headers", {}) or {},
         "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
         "tenant": entry.get("tenant", ""),
@@ -74,22 +77,99 @@ def _auth_header(auth: dict) -> dict:
     return {}
 
 
+class _A2aTransportError(ValueError):
+    """Transport-level failure of the A2A streaming path.
+
+    Distinct from application-level JSON-RPC errors so _send_task can fall
+    back to message/send for transport problems (endpoint missing, stream
+    died, truncated response) WITHOUT resubmitting a task the peer already
+    processed and rejected at the application level.
+    """
+
+
+# HTTP statuses where the peer effectively does not serve the streaming
+# endpoint (card advertised streaming, endpoint disagrees) -> fall back.
+_STREAM_FALLBACK_HTTP_CODES = frozenset({404, 405, 501})
+# Idle cap per socket read while streaming. Server keepalives arrive every
+# ~5s (adapter _SSE_KEEPALIVE); 30s = ~6 missed keepalives before we call
+# the stream dead. The total turn is bounded by the wall-clock deadline
+# inside _http_post_sse instead.
+_STREAM_READ_TIMEOUT_S = 30.0
+
+
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-A2A/1.0", **headers}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
+    # Custom peer headers are operator-controlled but Content-Type and
+    # A2A-Version are protocol-owned and must not be clobbered; a config typo
+    # would otherwise cause peer rejection or protocol-version mismatches.
+    # User-Agent stays overridable (some proxies filter user agents).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
+    """POST with Accept: text/event-stream and yield decoded SSE data payloads.
+
+    Yields each ``data:`` frame's parsed JSON. Malformed data lines are
+    skipped silently. Comment lines (keepalives) and event/id fields are
+    consumed without yielding. Raises urllib errors / _A2aTransportError for
+    the caller to format.
+
+    Timeout semantics: the socket's per-read timeout is capped at
+    ``_STREAM_READ_TIMEOUT_S`` (keepalive-starvation detection — server
+    keepalives arrive every ~5s), and the *total* turn is bounded by a
+    wall-clock deadline of ``timeout + _STREAM_READ_TIMEOUT_S``. Without the
+    deadline, a peer that keeps sending keepalives could hold the stream
+    open indefinitely, since a per-read timeout resets on every byte.
+    """
+    data = json.dumps(body).encode("utf-8")
+    # Accept is protocol-owned for this streaming request, alongside
+    # Content-Type/A2A-Version (same precedence policy as _http_post_json).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    deadline = time.monotonic() + timeout + _STREAM_READ_TIMEOUT_S
+    with urllib.request.urlopen(req, timeout=min(timeout, _STREAM_READ_TIMEOUT_S)) as resp:  # noqa: S310 (configured peers)
+        ctype = resp.headers.get("Content-Type", "")
+        if not ctype.startswith("text/event-stream"):
+            # Peer ignored the stream request; body is a plain JSON-RPC response.
+            yield json.loads(resp.read().decode("utf-8"))
+            return
+        for raw in resp:
+            if time.monotonic() > deadline:
+                raise _A2aTransportError(
+                    f"stream exceeded total deadline of {timeout}s")
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue  # keepalive comments, event/id fields
+            payload = line[len("data:"):].strip()
+            try:
+                yield json.loads(payload)
+            except (json.JSONDecodeError, RecursionError):
+                continue  # malformed/hostile frame — skip, do not abort
 
 
 def _card_url(base_url: str) -> str:
@@ -146,6 +226,83 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
+def _send_task_stream(agent_label: str, rpc_url: str, rpc_body: dict, headers: dict,
+                       timeout: int, ctx: str, task_id: str) -> tuple[str, str, str]:
+    """Send one SendStreamingMessage and collect the terminal StreamResponse.
+
+    Frames are JSON-RPC-wrapped StreamResponse objects (A2A v1.0 §9.4); the
+    stream closes on the terminal state. Returns (reply_text, context_id, state).
+
+    Raises _A2aTransportError when the stream cannot produce a result
+    (closed before any result frame, or closed without a terminal state) —
+    both are safe to retry via message/send. Raises ValueError for
+    application-level JSON-RPC errors — the peer processed and rejected the
+    task, so retrying would duplicate side effects.
+    """
+    rpc_body = dict(rpc_body, method="SendStreamingMessage")
+    result = None
+    saw_terminal = False
+    artifact_parts: list = []
+    task_id_out = task_id
+    for frame in _http_post_sse(rpc_url, rpc_body, headers, timeout):
+        if not isinstance(frame, dict):
+            continue
+        if frame.get("error"):
+            # Application-level rejection on a healthy stream: return it
+            # to the caller, never fall back (would resubmit the task).
+            raise ValueError(f"Peer '{agent_label}' returned an error: "
+                             f"{frame['error'].get('message', frame['error'])}")
+        candidate = frame.get("result")
+        if not isinstance(candidate, dict):
+            continue
+        # StreamResponse is member-discriminated (A2A v1.0): task snapshots,
+        # statusUpdate events, artifactUpdate events, bare messages.
+        if isinstance(candidate.get("artifactUpdate"), dict):
+            art = candidate["artifactUpdate"].get("artifact") or {}
+            if art.get("parts"):
+                artifact_parts.extend(art["parts"])
+            continue
+        if isinstance(candidate.get("statusUpdate"), dict):
+            upd = candidate["statusUpdate"]
+            cand = {"status": upd.get("status") or {},
+                    "contextId": upd.get("contextId", ""),
+                    "taskId": upd.get("taskId", "")}
+        elif isinstance(candidate.get("task"), dict):
+            cand = candidate["task"]
+        elif isinstance(candidate.get("message"), dict):
+            cand = {"status": {"state": "", "message": candidate["message"]},
+                    "contextId": candidate["message"].get("contextId", "")}
+        else:
+            cand = candidate
+        result = cand
+        if cand.get("taskId"):
+            task_id_out = cand["taskId"]  # peer-assigned id keys the history
+        state = (cand.get("status") or {}).get("state", "")
+        if state in protocol.TERMINAL_STATES:
+            saw_terminal = True
+            break
+    if result is None:
+        raise _A2aTransportError(
+            f"Peer '{agent_label}' stream closed without a result")
+    if not saw_terminal:
+        # Truncated stream (peer died after WORKING): indistinguishable from
+        # success if we returned here, so fail loud. Safe to fall back — the
+        # task's outcome is unknown.
+        raise _A2aTransportError(
+            f"Peer '{agent_label}' stream closed without a terminal state")
+    if artifact_parts:
+        # Accumulate every artifact part (multi-artifact/chunked streams);
+        # artifacts carry the final output ahead of status messages, matching
+        # the message/send extraction order.
+        result = dict(result, artifacts=[{"parts": artifact_parts}])
+    reply = _reply_text_from_result(result)
+    reply_ctx = result.get("contextId", ctx)
+    state = (result.get("status") or {}).get("state", "")
+    protocol.persist_message(reply_ctx, "agent", reply, task_id_out)
+    protocol.metrics.inbound_total += 1
+    return reply, reply_ctx, state
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
@@ -153,7 +310,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     outbound redaction, audit, persistence, and metrics.
     """
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **(peer.get("headers", {}) or {})}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
 
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
@@ -183,7 +340,32 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
 
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    rpc_url = _rpc_url(base_url, card)
+
+    # Streaming path: if the peer advertises streaming, SendStreamingMessage
+    # keeps bytes flowing (SSE keepalives) so proxies with idle timeouts
+    # (e.g. Cloudflare's ~100s) do not kill long-running turns.
+    if isinstance(card, dict) and (card.get("capabilities") or {}).get("streaming"):
+        try:
+            return _send_task_stream(agent_label, rpc_url, rpc_body,
+                                     headers, timeout, ctx, rpc_body["id"])
+        except _A2aTransportError as exc:
+            # Stream endpoint missing/incompatible, dead or truncated stream —
+            # the task's outcome is unknown, so retrying via message/send is safe.
+            logger.debug("A2A: streaming send failed for %s (%s); falling back to message/send",
+                         agent_label, exc)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _STREAM_FALLBACK_HTTP_CODES:
+                raise
+            logger.debug("A2A: streaming endpoint returned %s for %s; falling back to message/send",
+                         exc.code, agent_label)
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException) as exc:
+            # Connection-level failures (DNS, refused, reset, bad framing,
+            # read timeout) — includes HTTPError subclasses not matched above.
+            logger.debug("A2A: streaming connection failed for %s (%s); falling back to message/send",
+                         agent_label, exc)
+
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
     if "error" in resp:
         err = resp["error"]
         raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")

@@ -11,10 +11,14 @@ active_profile (child-process inheritance contract).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 def _run_apply_profile_override(
@@ -105,12 +109,107 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
 
         from hermes_cli.main import _apply_profile_override
+
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
 
+    def test_unauthorized_external_noninteractive_profile_launch_is_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """An external unattended launch cannot cross profiles without authority."""
+        monkeypatch.delenv("HERMES_DISPATCH_SOURCE_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
 
+        with pytest.raises(SystemExit) as exc_info:
+            _run_apply_profile_override(
+                tmp_path,
+                monkeypatch,
+                hermes_home=None,
+                active_profile="coder",
+                argv=["hermes", "chat", "-p", "coder", "-q", "hello"],
+            )
+
+        assert exc_info.value.code == 77
+        assert sys.argv == ["hermes", "chat", "-p", "coder", "-q", "hello"]
+
+    def test_non_tty_interactive_form_still_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """A subprocess cannot bypass authority by omitting query flags."""
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: False))
+        monkeypatch.delenv("HERMES_DISPATCH_SOURCE_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_apply_profile_override(
+                tmp_path,
+                monkeypatch,
+                hermes_home=None,
+                active_profile="coder",
+                argv=["hermes", "chat", "-p", "coder"],
+            )
+
+        assert exc_info.value.code == 77
+
+    def test_human_interactive_profile_after_chat_is_consumed(
+        self, tmp_path, monkeypatch
+    ):
+        """Interactive profile selection remains intentional and consumes -p."""
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "chat", "-p", "coder"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+        assert sys.argv == ["hermes", "chat"]
+
+    def test_direct_one_shot_noninteractive_profile_launch_records_redacted_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        """Bounded direct authority permits the launch and records no prompt."""
+        sentinel = "DIRECT-PROMPT-SENTINEL"
+        authority = {
+            "authority_class": "direct_one_shot",
+            "authority_reference": "DEC-TEST-PROFILE-001",
+            "source": "external",
+            "target": "coder",
+            "scope": "one bounded profile integration test",
+            "one_shot": True,
+            "expires_at": time.time() + 300,
+            "execution_id": "profile-integration-exec-001",
+            "evidence": "test_apply_profile_override",
+            "terminal_condition": "test call returns",
+        }
+        monkeypatch.delenv("HERMES_DISPATCH_SOURCE_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setenv("HERMES_EXECUTION_AUTHORITY", json.dumps(authority))
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "chat", "-p", "coder", "-q", sentinel],
+        )
+
+        ledger = tmp_path / ".hermes" / "execution-provenance.jsonl"
+        row = json.loads(ledger.read_text(encoding="utf-8").strip())
+        assert result is not None
+        assert result.endswith("coder")
+        assert sys.argv == ["hermes", "chat", "-q", sentinel]
+        assert row["authority_class"] == "direct_one_shot"
+        assert row["source"] == "external"
+        assert row["target"] == "coder"
+        assert sentinel not in row["execution_path"]
+        assert sentinel not in ledger.read_text(encoding="utf-8")
+        assert "[REDACTED]" in row["execution_path"]
 
 
 class TestSupervisedChildIgnoresStickyProfile:

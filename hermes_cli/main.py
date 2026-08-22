@@ -517,6 +517,45 @@ _ensure_project_root_on_path_fast()
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
+def _profile_name_from_home(value: str | None) -> str:
+    """Return a profile identity from a profile-scoped HERMES_HOME."""
+    if not value:
+        return ""
+    path = Path(value)
+    if path.parent.name == "profiles":
+        return path.name
+    return "default" if path.name == ".hermes" else ""
+
+
+def _enforce_cross_profile_execution(target: str) -> None:
+    """Fail closed on unproven cross-profile agent launches and record valid ones."""
+    source = (
+        os.environ.get("HERMES_DISPATCH_SOURCE_PROFILE", "").strip()
+        or os.environ.get("HERMES_PROFILE", "").strip()
+        or _profile_name_from_home(os.environ.get("HERMES_HOME"))
+        or "external"
+    )
+    from hermes_cli.execution_provenance import (
+        ExecutionAuthorityError,
+        authorize_profile_execution,
+    )
+
+    try:
+        authorize_profile_execution(
+            source=source,
+            target=target,
+            argv=list(sys.argv),
+            authority_json=os.environ.get("HERMES_EXECUTION_AUTHORITY"),
+            interactive=sys.stdin.isatty(),
+            kanban_task=os.environ.get("HERMES_KANBAN_TASK"),
+            kanban_run=os.environ.get("HERMES_KANBAN_RUN_ID"),
+            kanban_claim_lock=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"),
+        )
+    except ExecutionAuthorityError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(77) from exc
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
@@ -636,6 +675,7 @@ def _apply_profile_override() -> None:
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
         if Path(hermes_home_env).parent.name == "profiles":
+            _enforce_cross_profile_execution(Path(hermes_home_env).name)
             return
 
     # 2. If no flag, check active_profile in the hermes root.
@@ -665,6 +705,7 @@ def _apply_profile_override() -> None:
 
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
+        _enforce_cross_profile_execution(profile_name)
         try:
             from hermes_cli.profiles import resolve_profile_env
 

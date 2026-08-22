@@ -2,7 +2,7 @@
 
 > **Audience:** Gateway operators and contributors
 > **Source files:** `gateway/profile_routing.py`, `gateway/run.py` (`_profile_name_for_source`), `gateway/platforms/base.py` (`build_source`), `gateway/config.py`
-> **Related:** [Session Lifecycle](session-lifecycle.md), `docs/design/profile-builder.md`
+> **Related:** [Session Lifecycle](session-lifecycle.md), [Cross-Profile Execution Provenance](execution-provenance.md), `docs/design/profile-builder.md`
 
 ## Overview
 

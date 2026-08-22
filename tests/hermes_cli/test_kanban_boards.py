@@ -255,6 +255,10 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        dispatcher_home = fresh_home / "profiles" / "dispatcher"
+        dispatcher_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(dispatcher_home))
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
         kb.create_board("spawntest")
 
         task = kb.Task(
@@ -278,6 +282,7 @@ class TestWorkerSpawnEnv:
         kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
+        assert env["HERMES_DISPATCH_SOURCE_PROFILE"] == "dispatcher"
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
         assert env["HERMES_KANBAN_TASK"] == "t_abc"
         # DB path should match the per-board DB, not the legacy default.

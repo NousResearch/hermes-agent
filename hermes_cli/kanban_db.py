@@ -10741,6 +10741,17 @@ def _default_spawn(
     for key in _VAR_MAP:
         env.pop(key, None)
 
+    # Preserve the actual dispatcher's profile before HERMES_PROFILE is changed
+    # to the worker assignee below. Source labels are audit context; live
+    # Kanban custody remains the authorization boundary.
+    from hermes_cli.profiles import get_active_profile_name, resolve_profile_env
+
+    env["HERMES_DISPATCH_SOURCE_PROFILE"] = (
+        os.environ.get("HERMES_PROFILE")
+        or get_active_profile_name()
+        or "default"
+    )
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's
@@ -10750,7 +10761,6 @@ def _default_spawn(
     # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
-    from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
     except FileNotFoundError:

@@ -768,6 +768,17 @@ class GatewaySlashCommandsMixin:
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
+        # Include shared cross-profile execution custody so direct/untracked
+        # work cannot disappear behind this profile-local status view.
+        try:
+            from hermes_cli.execution_provenance import format_execution_status
+
+            execution_lines = format_execution_status()
+        except Exception:
+            execution_lines = ["Execution provenance unavailable"]
+        if execution_lines:
+            lines.extend(["", "Cross-profile executions:", *execution_lines])
+
         return "\n".join(lines)
 
     @staticmethod

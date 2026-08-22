@@ -7048,6 +7048,18 @@ class BasePlatformAdapter(ABC):
         (typing-task cleanup, on_processing_complete hook) can't stall the
         whole shutdown path.  Stragglers are released from our tracking and
         allowed to finish unwinding on their own.
+
+        The settle tail runs in a ``finally`` so a cancellation landing
+        anywhere in the drain above can NEVER skip it.  The caller
+        (``GatewayRunner._bounded_adapter_teardown`` via
+        ``_await_adapter_cleanup_with_timeout``) cancels this coroutine
+        outright once its per-adapter budget
+        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default 5s) expires,
+        so without the ``finally`` the #72680 flush below never runs and a
+        queued follow-up is lost with no on-disk recovery copy.  The tail is
+        deliberately await-free: awaiting during cancellation would raise
+        immediately and re-truncate it.  ``CancelledError`` is not caught, so
+        cancellation still propagates to the caller.
         """
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
@@ -7059,45 +7071,47 @@ class BasePlatformAdapter(ABC):
         # until it completes on its own.  Retrying the drain until the
         # task set stabilizes closes the window.
         MAX_DRAIN_ROUNDS = 5
-        for _ in range(MAX_DRAIN_ROUNDS):
-            tasks = [task for task in self._background_tasks if not task.done()]
-            if not tasks:
-                break
-            for task in tasks:
-                self._expected_cancelled_tasks.add(task)
-                task.cancel()
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        *(asyncio.shield(t) for t in tasks),
-                        return_exceptions=True,
-                    ),
-                    timeout=5.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[%s] %d background task(s) did not exit within 5s; "
-                    "releasing tracking and letting them unwind in the background",
-                    self.name, len([t for t in tasks if not t.done()]),
-                )
-                break
-            # Loop: late-arrival tasks spawned during the gather above
-            # will be in self._background_tasks now.  Re-check.
-        self._background_tasks.clear()
-        self._expected_cancelled_tasks.clear()
-        self._session_tasks.clear()
-        # Flush pending messages to disk before clearing (#72680).
         try:
-            from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
-        except Exception:
-            pass
-        self._pending_messages.clear()
-        self._active_sessions.clear()
-        for state in list(self._text_debounce_store().values()):
-            if state.task is not None and not state.task.done():
-                state.task.cancel()
-        self._text_debounce_store().clear()
+            for _ in range(MAX_DRAIN_ROUNDS):
+                tasks = [task for task in self._background_tasks if not task.done()]
+                if not tasks:
+                    break
+                for task in tasks:
+                    self._expected_cancelled_tasks.add(task)
+                    task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(asyncio.shield(t) for t in tasks),
+                            return_exceptions=True,
+                        ),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] %d background task(s) did not exit within 5s; "
+                        "releasing tracking and letting them unwind in the background",
+                        self.name, len([t for t in tasks if not t.done()]),
+                    )
+                    break
+                # Loop: late-arrival tasks spawned during the gather above
+                # will be in self._background_tasks now.  Re-check.
+        finally:
+            self._background_tasks.clear()
+            self._expected_cancelled_tasks.clear()
+            self._session_tasks.clear()
+            # Flush pending messages to disk before clearing (#72680).
+            try:
+                from gateway.shutdown_flush import flush_pending_to_file
+                flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+            except Exception:
+                pass
+            self._pending_messages.clear()
+            self._active_sessions.clear()
+            for state in list(self._text_debounce_store().values()):
+                if state.task is not None and not state.task.done():
+                    state.task.cancel()
+            self._text_debounce_store().clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

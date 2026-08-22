@@ -828,3 +828,63 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+class TestWeixinSSLCipherFix:
+    """Regression tests for the SSL cipher fix (#84394).
+
+    WeChat's CDN rejects Python's default restrictive cipher list with
+    SSLV3_ALERT_HANDSHAKE_FAILURE.  _make_ssl_connector must reset ciphers
+    to OpenSSL DEFAULT so media downloads succeed.
+    """
+
+    def test_ssl_connector_sets_default_ciphers(self):
+        """The SSL context created inside _make_ssl_connector must have its
+        cipher list reset to DEFAULT so WeChat CDN handshakes succeed.
+
+        We can't instantiate the full aiohttp.TCPConnector without a running
+        event loop, so we verify the SSL context construction logic directly
+        by patching aiohttp.TCPConnector to capture the ssl argument, and
+        patching SSLContext.set_ciphers to record the reset call.
+        """
+        import ssl
+
+        try:
+            import certifi
+        except ImportError:
+            pytest.skip("certifi not available")
+
+        captured_ssl_ctx = {}
+        set_ciphers_calls = []
+
+        class _FakeConnector:
+            def __init__(self, **kwargs):
+                captured_ssl_ctx["ssl"] = kwargs.get("ssl")
+
+        real_set_ciphers = ssl.SSLContext.set_ciphers
+
+        def _recording_set_ciphers(self, ciphers):
+            set_ciphers_calls.append(ciphers)
+            return real_set_ciphers(self, ciphers)
+
+        with patch("gateway.platforms.weixin.aiohttp.TCPConnector", _FakeConnector), patch(
+            "ssl.SSLContext.set_ciphers", _recording_set_ciphers
+        ):
+            from gateway.platforms.weixin import _make_ssl_connector
+
+            _make_ssl_connector()
+
+        ssl_ctx = captured_ssl_ctx.get("ssl")
+        assert ssl_ctx is not None, "No SSL context was passed to TCPConnector"
+
+        # The fix must explicitly reset the cipher list to OpenSSL DEFAULT.
+        # Asserting on the resulting get_ciphers() list is unreliable because
+        # create_default_context() already returns a non-empty list on most
+        # OpenSSL builds, so the test would pass even if the reset line were
+        # removed.  Recording the set_ciphers call makes the test fail if the
+        # fix is reverted.
+        assert set_ciphers_calls == ["DEFAULT"], (
+            "set_ciphers('DEFAULT') was not called on the SSL context — "
+            "WeChat CDN rejects Python's restrictive default cipher list "
+            "with SSLV3_ALERT_HANDSHAKE_FAILURE (#84394)"
+        )
+

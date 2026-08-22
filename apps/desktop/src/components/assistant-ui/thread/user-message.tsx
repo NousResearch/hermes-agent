@@ -9,6 +9,7 @@ import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/type
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -407,7 +408,8 @@ export const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    showStop || showRestore ? 'pr-16' : 'pr-9',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -527,8 +529,17 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {(showStop || showRestore) && (
-                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                {hasBody && (
+                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center gap-0.5 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                    <CopyButton
+                      appearance="icon"
+                      buttonSize="icon-xs"
+                      className="pointer-events-auto"
+                      label={copy.copy}
+                      preventDefault
+                      stopPropagation
+                      text={messageText}
+                    />
                     {showStop ? (
                       <button
                         aria-label={copy.stop}
@@ -543,7 +554,7 @@ export const UserMessage: FC<{
                       >
                         {StopGlyph}
                       </button>
-                    ) : (
+                    ) : showRestore ? (
                       <button
                         aria-label={copy.restoreCheckpoint}
                         className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
@@ -565,7 +576,7 @@ export const UserMessage: FC<{
                       >
                         <Codicon name="discard" size="0.875rem" />
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 )}
               </div>

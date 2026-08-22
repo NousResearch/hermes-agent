@@ -10,7 +10,7 @@
 
 <br/>
 
-[![Version](https://img.shields.io/badge/version-0.21.0-blue.svg)](https://github.com/FraN-arti/max-hermes-plugin)
+[![Version](https://img.shields.io/badge/version-0.22.0-blue.svg)](https://github.com/FraN-arti/max-hermes-plugin)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![Hermes](https://img.shields.io/badge/Hermes-0.20+-7C3AED.svg)](https://hermes-agent.nousresearch.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -110,6 +110,13 @@ hermes gateway restart
   сообщения не обрабатываются повторно.
 - **Отправка:** `POST /messages` c `user_id` (личка) или `chat_id` (группы/каналы).
   Rate limit MAX (2 сообщ./сек на чат) соблюдается автоматически.
+- **Форматирование:** все ответы уходят в HTML MAX: код-блоки — `<pre>` в
+  рамке цитаты, инлайн-код — подсветкой `<mark>`. Markdown MAX не умеет
+  ни многострочный код, ни инлайн-разметку (звёздочки остаются литеральными),
+  поэтому конвертация делается всегда.
+- **Reasoning скрыт:** 💭-блок размышлений не отправляется в MAX по умолчанию
+  (даже если глобально включён `display.show_reasoning`). Вернуть:
+  `MAX_SHOW_REASONING=true`.
 - **«Печатает…»:** индикатор набора через `POST /chats/{id}/actions` (`typing_on`).
 - **TLS:** MAX использует Russian Trusted Root CA (Минцифры). Плагин сам скачивает
   его с официального источника [gu-st.ru](https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt)
@@ -186,6 +193,7 @@ hermes gateway restart
 | `MAX_OWNER_USER_ID` | ❌ | Твой MAX user_id — владелец бота. Полный доступ (терминал, файлы); команды `/approve` и `/deny` работают только у него |
 | `MAX_APPROVED_CHATS` | ❌ | chat_id групп, заранее одобренных для бота. Пусто = бот спрашивает владельца при добавлении в новую группу |
 | `MAX_MEMBERS_TTL` | ❌ | Время в секундах, через которое бот перезапрашивает роли участников группы (по умолчанию 300 = 5 минут) |
+| `MAX_SHOW_REASONING` | ❌ | `true` = показывать 💭 Reasoning-блок в ответах бота (по умолчанию скрыт) |
 
 <br/>
 

@@ -26,6 +26,22 @@ _ATTRIBUTION_HEADERS = {
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
+# Zen's live catalog mixes paid models, currently usable anonymous models, and
+# expired promotional IDs. Hermes exposes the usable anonymous subset through
+# the dedicated keyless opencode-free provider, so none of these IDs should be
+# offered through the credentialed Zen picker.
+_ZEN_FREE_TIER_MODELS = frozenset({
+    "x-preview-f-free",
+    "hy3-free",
+    "laguna-s-2.1-free",
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free",
+    "muse-spark-1.2-contributor-free",
+    "big-pickle",
+    "mimo-v2.5-free",
+    "deepseek-v4-flash-free",
+})
+
 
 def _flat_model_name(model: str | None) -> str:
     """Return the bare OpenCode model ID, tolerating aggregator prefixes."""
@@ -51,6 +67,22 @@ def _is_glm_5_2_model(model: str | None) -> bool:
 
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
+
+    # The relay still advertises these IDs from /v1/models, but rejects every
+    # request for them and the current Go documentation no longer lists them.
+    _UNAVAILABLE_MODELS = frozenset({
+        "hy3-preview",
+        "mimo-v2-omni",
+        "mimo-v2-pro",
+    })
+
+    def fetch_models(self, **kwargs) -> list[str]:
+        models = super().fetch_models(**kwargs)
+        return [
+            model
+            for model in models
+            if _flat_model_name(model) not in self._UNAVAILABLE_MODELS
+        ]
 
     # Per-model completion-token cap. The opencode-go relay's default is
     # too large for mimo-v2.5-pro — it sends max_tokens=262144 but Xiaomi
@@ -192,6 +224,14 @@ def _build_ox_alpha_reasoning_extras(
 
 class OpenCodeZenProfile(ProviderProfile):
     """OpenCode Zen - model-specific reasoning controls."""
+
+    def fetch_models(self, **kwargs) -> list[str]:
+        models = super().fetch_models(**kwargs)
+        return [
+            model
+            for model in models
+            if _flat_model_name(model) not in _ZEN_FREE_TIER_MODELS
+        ]
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

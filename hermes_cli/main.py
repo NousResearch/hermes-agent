@@ -650,7 +650,22 @@ def _apply_profile_override() -> None:
     # would silently redirect the default gateway into that profile — yielding a
     # duplicate gateway for the active profile and no real default gateway. See
     # the "Docker & Profiles & Dashboard" report.
-    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+    #
+    # EXCEPTION 2: once an override has been applied in this process, the
+    # sticky fallback must not re-run. `python -m hermes_cli.main` executes the
+    # module body twice — first as __main__, then again under its real name
+    # when plugin discovery does `from hermes_cli.main import _AUX_TASKS`
+    # (hermes_cli/plugins.py). The second execution sees argv already stripped
+    # of -p, so without this guard it would re-read active_profile and silently
+    # re-home the process onto the sticky profile mid-boot (issue #76704).
+    # HERMES_PROFILE_OVERRIDE_APPLIED is set at the end of this function on
+    # first application and survives the re-execution (a module-level global
+    # would not — the second execution builds a fresh module namespace).
+    if (
+        profile_name is None
+        and not os.environ.get("HERMES_S6_SUPERVISED_CHILD")
+        and not os.environ.get("HERMES_PROFILE_OVERRIDE_APPLIED")
+    ):
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -685,6 +700,15 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Idempotence guard (issue #76704): mark the override as applied so a
+        # re-execution of this module body (the `python -m hermes_cli.main`
+        # double-import, or any re-run of the body in this process) skips the
+        # sticky active_profile fallback above. The flag lives in the process
+        # environment because it must survive module re-execution; it is NOT
+        # keyed by PID because os.execvpe preserves the PID and a deliberate
+        # re-exec that carries an explicit -p (e.g. the dashboard reroute)
+        # must still apply it — step 1 above is never suppressed.
+        os.environ["HERMES_PROFILE_OVERRIDE_APPLIED"] = "1"
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]

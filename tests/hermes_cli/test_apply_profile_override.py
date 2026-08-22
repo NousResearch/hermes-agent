@@ -41,6 +41,11 @@ def _run_apply_profile_override(
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
 
+    # _apply_profile_override sets HERMES_PROFILE_OVERRIDE_APPLIED via a
+    # direct os.environ write (which monkeypatch cannot undo), so each test
+    # must start from a clean slate or the flag leaks across tests.
+    monkeypatch.delenv("HERMES_PROFILE_OVERRIDE_APPLIED", raising=False)
+
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
     from hermes_cli.main import _apply_profile_override
@@ -97,6 +102,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(Path, "home", lambda: root_home)
         monkeypatch.setenv("SUDO_USER", "hermes")
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE_OVERRIDE_APPLIED", raising=False)
         monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", "gateway", "install", "--system"])
 
@@ -154,8 +160,97 @@ class TestSupervisedChildIgnoresStickyProfile:
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE_OVERRIDE_APPLIED", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None
+        assert result.endswith("coder")
+
+
+class TestDoubleImportIdempotenceGuard:
+    """Regression guard for issue #76704.
+
+    ``python -m hermes_cli.main`` executes the module body twice: first as
+    ``__main__``, then again under its real name when plugin discovery does
+    ``from hermes_cli.main import _AUX_TASKS``. The second execution sees
+    argv already stripped of ``-p``, so without an idempotence guard it
+    re-reads the sticky ``active_profile`` and silently re-homes the process
+    onto that profile mid-boot. The guard is an environment flag set on
+    first application and checked before the sticky fallback re-runs.
+    """
+
+    def test_double_import_second_execution_does_not_rehome(
+        self, tmp_path, monkeypatch
+    ):
+        """Simulate the ``-m`` double-import: first execution pins the
+        profile from argv, second execution (argv already stripped) must NOT
+        re-home onto the sticky active_profile."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE_OVERRIDE_APPLIED", raising=False)
+
+        from hermes_cli.main import _apply_profile_override
+
+        # Execution #1 — module body as __main__: argv still carries -p.
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "-p", "default", "gateway", "run"]
+        )
+        _apply_profile_override()
+        assert os.environ["HERMES_HOME"] == str(hermes_root), (
+            "-p default must pin the root hermes home"
+        )
+        assert sys.argv == ["hermes", "gateway", "run"], "-p must be stripped"
+
+        # Execution #2 — module body re-executed under its real name:
+        # argv no longer carries -p. Must NOT fall back to the sticky
+        # active_profile (briefer) and re-home the process.
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run"])
+        _apply_profile_override()
+        assert os.environ["HERMES_HOME"] == str(hermes_root), (
+            "second module execution must not re-home onto active_profile"
+        )
+
+    def test_sticky_fallback_still_applies_on_first_run(self, tmp_path, monkeypatch):
+        """A fresh process (no -p, no env flag) must still follow the sticky
+        active_profile — the guard is scoped to re-executions only."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="briefer",
+            argv=["hermes", "gateway", "run"],
+        )
+        assert result is not None
+        assert result.endswith("briefer")
+
+    def test_explicit_flag_wins_even_when_override_already_applied(
+        self, tmp_path, monkeypatch
+    ):
+        """A deliberate re-exec (os.execvpe preserves env and PID) that
+        carries an explicit ``-p`` must still apply it — the guard only
+        suppresses the sticky fallback, never an explicit flag."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HERMES_PROFILE_OVERRIDE_APPLIED", "1")
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "-p", "coder", "gateway", "run"]
+        )
 
         from hermes_cli.main import _apply_profile_override
         _apply_profile_override()

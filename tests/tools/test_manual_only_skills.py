@@ -64,6 +64,35 @@ class TestSkillViewManualOnly:
             assert result["success"] is False
             assert "manual-invocation-only" in result["error"]
 
+    def test_file_path_cannot_smuggle_out_a_flagged_skill(self, tmp_path):
+        """references/ must not be a side door: the flag lives in SKILL.md."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "manual-skill", frontmatter_extra=FLAG)
+            (skill_dir / "references").mkdir()
+            (skill_dir / "references" / "api.md").write_text("Reference body.\n")
+            skills_tool_module._SKILLS_CACHE.clear()
+
+            result = json.loads(
+                skills_tool_module._skill_view_with_bump(
+                    {"name": "manual-skill", "file_path": "references/api.md"}
+                )
+            )
+            assert result["success"] is False
+            assert "manual-invocation-only" in result["error"]
+
+    def test_unflagged_skill_supporting_file_still_loads(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "auto-skill")
+            (skill_dir / "notes.md").write_text("Notes.\n")
+            skills_tool_module._SKILLS_CACHE.clear()
+
+            result = json.loads(
+                skills_tool_module._skill_view_with_bump(
+                    {"name": "auto-skill", "file_path": "notes.md"}
+                )
+            )
+            assert result["success"] is True
+
     def test_unflagged_skill_still_loads(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "auto-skill")

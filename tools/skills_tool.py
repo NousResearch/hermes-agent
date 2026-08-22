@@ -657,7 +657,7 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
-def _manual_only_refusal(name: str, payload: dict) -> str | None:
+def _manual_only_refusal(name: str, payload: dict, file_path: str | None = None) -> str | None:
     """Return a refusal when the skill *payload* is manual-invocation-only.
 
     Mirrors Claude Code's `disable-model-invocation`: the skill exists and the
@@ -670,9 +670,24 @@ def _manual_only_refusal(name: str, payload: dict) -> str | None:
     src = payload.get("_source_path")
     if not src:
         return None
+    # The flag lives in SKILL.md, but with file_path= set, _source_path is the
+    # requested supporting file — reading it would find no flag and wave the
+    # call through, which is how a manual-only skill's references/ leaks. The
+    # payload carries skill_dir only on the plain view, so derive it: with
+    # file_path set, _source_path is exactly skill_dir / file_path.
+    skill_dir = payload.get("skill_dir")
+    if skill_dir:
+        skill_md = Path(skill_dir) / "SKILL.md"
+    elif file_path:
+        root = Path(src)
+        for _ in Path(file_path).parts:
+            root = root.parent
+        skill_md = root / "SKILL.md"
+    else:
+        skill_md = Path(src)
     try:
         frontmatter, _ = _parse_frontmatter(
-            Path(src).read_text(encoding="utf-8-sig", errors="replace")[:4000]
+            skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
         )
     except OSError:
         return None
@@ -708,7 +723,7 @@ def _skill_view_with_bump(args, **kw):
             # name can still reach the context by other means (an instruction
             # file naming the command, for one), so refuse the load rather than
             # rely on the model not guessing it.
-            refusal = _manual_only_refusal(name, parsed)
+            refusal = _manual_only_refusal(name, parsed, args.get("file_path"))
             if refusal is not None:
                 return refusal
             _record_skill_view(task_id, name, args.get("file_path"), parsed)

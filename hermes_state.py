@@ -4611,12 +4611,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
         """True for the error class a corrupt FTS index raises on writes.
 
-        Only an FTS5-specific error is safe to recover online.  SQLite's
-        generic ``database disk image is malformed`` does not identify the
-        damaged object and may represent canonical B-tree or freelist damage;
-        treating it as FTS-only corruption would continue writing to a
-        structurally damaged database.
+        SQLite's message for a corrupt FTS index varies by version: older
+        builds raise the generic ``database disk image is malformed`` (covered
+        by :func:`is_malformed_db_error`); newer builds raise the FTS5-specific
+        ``fts5: corrupt structure record for table "messages_fts"``. Both mean
+        the same thing for the write path: the canonical rows are fine, the
+        FTS shadow tables are not.  The FTS-only rebuild and fail-open
+        detach are safe here because they only touch derived indexes; if the
+        damage is actually in a canonical B-tree, the rebuild itself fails and
+        the write propagates.
         """
+        if is_malformed_db_error(exc):
+            return True
         msg = str(exc).lower()
         return "fts5" in msg and "corrupt" in msg
 

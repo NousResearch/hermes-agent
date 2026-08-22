@@ -1517,3 +1517,49 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestMonthlyProviderUsage:
+    def test_aggregates_per_provider_within_month(self, tmp_path):
+        import sqlite3
+        import time
+
+        db_path = tmp_path / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE session_model_usage ("
+            "billing_provider TEXT DEFAULT '', "
+            "api_call_count INTEGER DEFAULT 0, "
+            "first_seen REAL)"
+        )
+        now = time.time()
+        month_start = now - 3600
+        conn.execute(
+            "INSERT INTO session_model_usage "
+            "(billing_provider, api_call_count, first_seen) VALUES (?, ?, ?)",
+            ("openai", 10, now),
+        )
+        conn.execute(
+            "INSERT INTO session_model_usage "
+            "(billing_provider, api_call_count, first_seen) VALUES (?, ?, ?)",
+            ("openai", 5, now),
+        )
+        conn.execute(
+            "INSERT INTO session_model_usage "
+            "(billing_provider, api_call_count, first_seen) VALUES (?, ?, ?)",
+            ("anthropic", 7, now),
+        )
+        # Outside the month window — must be excluded.
+        conn.execute(
+            "INSERT INTO session_model_usage "
+            "(billing_provider, api_call_count, first_seen) VALUES (?, ?, ?)",
+            ("openai", 99, month_start - 1),
+        )
+        conn.commit()
+        conn.close()
+
+        usage = doctor._monthly_provider_usage(db_path, month_start)
+        assert dict(usage) == {"openai": 15, "anthropic": 7}
+
+    def test_returns_empty_for_missing_db(self, tmp_path):
+        assert doctor._monthly_provider_usage(tmp_path / "nope.db", 0) == []

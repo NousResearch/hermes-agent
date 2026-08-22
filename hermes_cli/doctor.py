@@ -1031,6 +1031,34 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def _monthly_provider_usage(db_path, month_start):
+    """Return per-provider ``(billing_provider, api_call_count)`` totals for
+    sessions first seen at or after ``month_start`` (a POSIX timestamp).
+
+    Reads ``session_model_usage`` from the read-only ``db_path``. Returns an
+    empty list (never raises) when the db is missing or the query fails.
+    """
+    import sqlite3 as _sqlite3
+
+    path = str(db_path)
+    if not os.path.exists(path):
+        return []
+    try:
+        conn = _sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = conn.execute(
+                "SELECT billing_provider, SUM(api_call_count) "
+                "FROM session_model_usage WHERE first_seen >= ? "
+                "GROUP BY billing_provider ORDER BY 2 DESC",
+                (month_start,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except _sqlite3.Error:
+        return []
+    return [(str(row[0]) if row[0] else "", int(row[1] or 0)) for row in rows]
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -3108,6 +3136,25 @@ def run_doctor(args):
                                 check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
                     except Exception:
                         pass
+
+            # Per-profile monthly provider call counts (local, from
+            # session_model_usage) — a directional usage signal; most providers
+            # expose no authoritative per-account quota API, so this reports what
+            # the gateway actually billed this month rather than a quota number.
+            import time as _time
+
+            _now = _time.localtime()
+            _month_start = _time.mktime(
+                (_now.tm_year, _now.tm_mon, 1, 0, 0, 0, 0, 0, -1)
+            )
+            for p in named_profiles:
+                usage = _monthly_provider_usage(p.path / "state.db", _month_start)
+                if not usage:
+                    continue
+                summary = ", ".join(
+                    f"{provider or 'unbilled'}={count}" for provider, count in usage
+                )
+                check_info(f"  {p.name}: {summary} call(s) this month (local count)")
     except ImportError:
         pass
     except Exception:

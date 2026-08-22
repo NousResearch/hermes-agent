@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { clearSpawnHistory, getSpawnHistory } from '../app/spawnHistoryStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -61,6 +62,7 @@ const buildCtx = (appended: Msg[]) =>
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
+    clearSpawnHistory()
     resetUiState()
     resetTurnState()
     turnController.fullReset()
@@ -1243,9 +1245,10 @@ describe('createGatewayEventHandler', () => {
       type: 'subagent.complete'
     } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+    expect(getTurnState().subagents).toEqual([])
+    expect(getSpawnHistory()[0]?.subagents).toMatchObject([{ id: 'sa-timeout', status: 'timeout' }])
 
-    // Late start/spawn updates must not clobber terminal timeout/error states.
+    // Late start/spawn updates must not resurrect archived terminal ids.
     onEvent({
       payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
       type: 'subagent.start'
@@ -1255,7 +1258,7 @@ describe('createGatewayEventHandler', () => {
       type: 'subagent.spawn_requested'
     } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+    expect(getTurnState().subagents).toEqual([])
 
     onEvent({
       payload: { goal: 'error child', subagent_id: 'sa-error', task_index: 1 },
@@ -1266,7 +1269,13 @@ describe('createGatewayEventHandler', () => {
       type: 'subagent.complete'
     } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-error')?.status).toBe('error')
+    expect(getTurnState().subagents).toEqual([])
+    expect(getSpawnHistory().flatMap(snapshot => snapshot.subagents)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'sa-timeout', status: 'timeout' }),
+        expect.objectContaining({ id: 'sa-error', status: 'error' })
+      ])
+    )
   })
 
   it('normalizes unknown subagent.complete statuses to completed', () => {
@@ -1282,7 +1291,22 @@ describe('createGatewayEventHandler', () => {
       type: 'subagent.complete'
     } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
+    expect(getTurnState().subagents).toEqual([])
+    expect(getSpawnHistory()[0]?.subagents).toMatchObject([{ id: 'sa-weird', status: 'completed' }])
+  })
+
+  it('rejects late old-session subagent events while no session is active', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchUiState({ sid: null })
+    onEvent({
+      payload: { goal: 'inspect old session', subagent_id: 'old-agent', task_index: 0 },
+      session_id: 'old-session',
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().subagents).toEqual([])
+    expect(getSpawnHistory()).toEqual([])
   })
 
   it('nudges toward /agents on the first spawn_requested of a turn', () => {

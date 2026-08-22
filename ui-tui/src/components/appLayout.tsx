@@ -24,6 +24,7 @@ import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
+import { AgentDock } from './agentDock.js'
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
@@ -352,6 +353,12 @@ const ComposerPane = memo(function ComposerPane({
           {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
         </Text>
       )}
+
+      <AgentDock
+        cols={Math.max(1, composer.cols - 2)}
+        onOpen={() => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })}
+        t={ui.theme}
+      />
 
       {status.showStickyPrompt ? (
         <Text color={ui.theme.color.muted} wrap="truncate-end">

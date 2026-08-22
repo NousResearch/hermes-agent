@@ -21,10 +21,11 @@ import React, { type ReactElement } from 'react'
 import { GatewayProvider } from '../../src/app/gatewayContext.js'
 import { patchOverlayState, resetOverlayState } from '../../src/app/overlayStore.js'
 import { patchUiState, resetUiState } from '../../src/app/uiStore.js'
+import { AgentDockView } from '../../src/components/agentDock.js'
 import { FloatingOverlays } from '../../src/components/appOverlays.js'
 import { Banner, SessionPanel } from '../../src/components/branding.js'
 import { fromSkin, type Theme } from '../../src/theme.js'
-import type { SessionInfo } from '../../src/types.js'
+import type { SessionInfo, SubagentProgress } from '../../src/types.js'
 
 const noop = () => {}
 const pending = () => new Promise<never>(() => {})
@@ -80,6 +81,48 @@ const completions = [
   { display: '/clear', meta: 'Clear screen and start a new session', text: '/clear' },
   { display: '/redraw', meta: 'Force a full UI repaint', text: '/redraw' },
   { display: '/history', meta: 'Show conversation history', text: '/history' }
+]
+
+const dockNow = 1_750_000_000_000
+
+const dockAgent = (id: string, index: number, overrides: Partial<SubagentProgress> = {}): SubagentProgress => ({
+  depth: 0,
+  goal: id,
+  id,
+  index,
+  notes: [],
+  parentId: null,
+  startedAt: dockNow - 74_000,
+  status: 'running',
+  taskCount: 1,
+  thinking: [],
+  toolCount: 0,
+  tools: [],
+  ...overrides
+})
+
+// B3 fixture: one running, one failed, one result-ready in the three row
+// slots (a failure must earn a row), with completed work overflowing into
+// the aggregate line. Goals are word-shaped so callsign derivation shows its
+// real behavior, not the indexed fallback.
+const dockAgents: SubagentProgress[] = [
+  dockAgent('inspect gateway auth', 0, { startedAt: dockNow - 134_000, tools: ['Read("src/gateway/auth.ts")'] }),
+  dockAgent('review diff stability', 1, { status: 'failed', summary: 'blocked on stable diff' }),
+  dockAgent('regression sweep suite', 2, { durationSeconds: 44, status: 'completed', summary: '22 tests pass' }),
+  dockAgent('changelog draft', 3, { durationSeconds: 9, status: 'completed' }),
+  dockAgent('flaky quarantine triage', 4, { durationSeconds: 21, status: 'completed', summary: '2 quarantined' })
+]
+
+const dockNestedAgents: SubagentProgress[] = [
+  dockAgent('plan parent batch', 0, { id: 'nested-parent', status: 'queued' }),
+  dockAgent('inspect child task', 0, { depth: 1, id: 'nested-child', parentId: 'nested-parent' }),
+  dockAgent('verify grandchild task', 0, { depth: 2, id: 'nested-grandchild', parentId: 'nested-child' })
+]
+
+const dockTerminalAgents: SubagentProgress[] = [
+  dockAgent('review interrupted task', 0, { durationSeconds: 14, status: 'interrupted' }),
+  dockAgent('test timeout task', 1, { durationSeconds: 30, status: 'timeout' }),
+  dockAgent('audit error task', 2, { durationSeconds: 6, status: 'error' })
 ]
 
 function renderAnsi(node: ReactElement, columns: number): string {
@@ -243,10 +286,31 @@ const addScene = (name: string, bgHex: string, skin: Record<string, string>) => 
   scenes.push({ bg: bgHex, fg: theme.color.text, name, theme })
 }
 
+// Grayscale skin: proves dock statuses stay glyph-distinguishable when the
+// theme carries no hue at all.
+const MONO = {
+  banner_accent: '#bbbbbb',
+  banner_border: '#666666',
+  banner_dim: '#555555',
+  banner_text: '#c0c0c0',
+  banner_title: '#d0d0d0',
+  prompt: '#c0c0c0',
+  session_border: '#555555',
+  session_label: '#d0d0d0',
+  status_bar_bg: '#1a1a1a',
+  status_bar_text: '#c0c0c0',
+  ui_accent: '#e6e6e6',
+  ui_error: '#f2f2f2',
+  ui_label: '#a8a8a8',
+  ui_ok: '#cccccc',
+  ui_warn: '#dcdcdc'
+}
+
 addScene('default · dark terminal', '#101014', {})
 addScene('default · light terminal (Cursor)', '#ffffff', {})
 addScene('slate · dark terminal', '#101014', SLATE)
 addScene('slate · light terminal (raw palette + display shim)', '#ffffff', SLATE)
+addScene('mono · grayscale skin', '#101014', MONO)
 
 let page = `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#666;font:13px/1.35 Menlo,monospace"><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px">`
 
@@ -298,11 +362,102 @@ for (const scene of scenes) {
     88
   )
 
+  const dockNormal = renderAnsi(
+    <Box flexDirection="column" width={88}>
+      <Text color={scene.theme.color.text}>assistant · implementation is moving; transcript remains visible above.</Text>
+      <AgentDockView cols={86} nowMs={dockNow} onOpen={noop} subagents={dockAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>──────────────────────────────────────────────────────────────────────────────</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    88
+  )
+
+  const dock80 = renderAnsi(
+    <Box flexDirection="column" width={80}>
+      <Text color={scene.theme.color.text}>assistant · transcript remains visible above.</Text>
+      <AgentDockView cols={80} nowMs={dockNow} onOpen={noop} subagents={dockAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>{'─'.repeat(80)}</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    80
+  )
+
+  const dock60 = renderAnsi(
+    <Box flexDirection="column" width={60}>
+      <Text color={scene.theme.color.text}>assistant · transcript above.</Text>
+      <AgentDockView cols={60} nowMs={dockNow} onOpen={noop} subagents={dockAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>{'─'.repeat(60)}</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    60
+  )
+
+  const dockNarrow = renderAnsi(
+    <Box flexDirection="column" width={50}>
+      <Text color={scene.theme.color.text}>assistant · transcript remains visible.</Text>
+      <AgentDockView cols={48} nowMs={dockNow} onOpen={noop} subagents={dockAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>────────────────────────────────────────────────</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    50
+  )
+
+  const dockShortHeight = renderAnsi(
+    <Box flexDirection="column" width={80}>
+      <Text color={scene.theme.color.text}>assistant · short viewport keeps transcript space.</Text>
+      <AgentDockView
+        cols={80}
+        nowMs={dockNow}
+        onOpen={noop}
+        subagents={dockAgents}
+        summaryOnly
+        t={scene.theme}
+      />
+      <Text color={scene.theme.color.muted}>{'─'.repeat(80)}</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    80
+  )
+
+  const dockNested = renderAnsi(
+    <Box flexDirection="column" width={80}>
+      <Text color={scene.theme.color.text}>assistant · nested delegation remains visible.</Text>
+      <AgentDockView cols={80} nowMs={dockNow} onOpen={noop} subagents={dockNestedAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>{'─'.repeat(80)}</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    80
+  )
+
+  const dockTerminal = renderAnsi(
+    <Box flexDirection="column" width={80}>
+      <Text color={scene.theme.color.text}>assistant · terminal outcomes remain distinguishable.</Text>
+      <AgentDockView cols={80} nowMs={dockNow} onOpen={noop} subagents={dockTerminalAgents} t={scene.theme} />
+      <Text color={scene.theme.color.muted}>{'─'.repeat(80)}</Text>
+      <Text color={scene.theme.color.prompt}>❯ </Text>
+    </Box>,
+    80
+  )
+
   page += `<div style="background:${scene.bg};color:${scene.fg};padding:14px;border-radius:6px">`
   page += `<div style="font:bold 12px sans-serif;opacity:.6;margin-bottom:8px;color:${scene.fg}">${scene.name}</div>`
   page += `<pre style="margin:0;white-space:pre">${ansiToHtml(intro, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(comps, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(statusLine, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · 88-col terminal (cols 86)</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dockNormal, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · exact 80 cols</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dock80, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · exact 60 cols (frame floor)</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dock60, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · narrow summary (48 cols, no frame)</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dockNarrow, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · short viewport summary (80 cols, 14 rows)</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dockShortHeight, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · queued + nested running tree</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dockNested, scene.fg, scene.bg)}</pre>`
+  page += `<div style="font:bold 11px sans-serif;opacity:.6;margin-top:12px;color:${scene.fg}">persistent agent dock · interrupted + timeout + error</div>`
+  page += `<pre style="margin:4px 0 0;white-space:pre">${ansiToHtml(dockTerminal, scene.fg, scene.bg)}</pre>`
   page += `</div>`
 }
 

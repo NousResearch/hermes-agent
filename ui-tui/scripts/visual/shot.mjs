@@ -20,7 +20,18 @@ app.whenReady().then(async () => {
   await win.loadFile(join(outDir, 'tui-visual.html'))
   await new Promise(r => setTimeout(r, 700))
 
-  const image = await win.webContents.capturePage()
+  // The scene grid can grow when new skins are added. Size the offscreen
+  // surface from the rendered document instead of silently clipping rows at
+  // the old fixed 2100px viewport (which hid the fifth mono scene).
+  const pageSize = await win.webContents.executeJavaScript(`({
+    height: Math.ceil(document.documentElement.scrollHeight),
+    width: Math.ceil(document.documentElement.scrollWidth)
+  })`)
+
+  win.setContentSize(pageSize.width, pageSize.height)
+  await new Promise(r => setTimeout(r, 100))
+
+  const image = await win.webContents.capturePage({ height: pageSize.height, width: pageSize.width, x: 0, y: 0 })
   const outFile = join(outDir, 'tui-visual.png')
 
   writeFileSync(outFile, image.toPNG())

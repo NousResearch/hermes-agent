@@ -753,6 +753,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
+    // Subagent events are always session-owned. During a reset/switch `sid` is
+    // deliberately null; reject late events from the old session instead of
+    // allowing them to repopulate the new composer's automatic dock.
+    if (ev.type.startsWith('subagent.') && ev.session_id && ev.session_id !== sid) {
+      return
+    }
+
     if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
       return
     }
@@ -1404,6 +1411,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }),
           { createIfMissing: false }
         )
+        turnController.settleSubagentTerminalEvent()
 
         return
 

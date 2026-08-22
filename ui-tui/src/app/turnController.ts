@@ -28,6 +28,14 @@ import { getUiState, patchUiState } from './uiStore.js'
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
+const MAX_TERMINAL_SUBAGENT_TOMBSTONES = 512
+
+const isTerminalSubagentStatus = (status: SubagentProgress['status']) =>
+  status === 'completed' ||
+  status === 'error' ||
+  status === 'failed' ||
+  status === 'interrupted' ||
+  status === 'timeout'
 
 // Extracts the raw patch from a diff-only segment produced by
 // pushInlineDiffSegment. Used at message.complete to dedupe against final
@@ -127,6 +135,8 @@ class TurnController {
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
   private interimBoundaryIndex: null | number = null
+  private terminalFallbackSubagentIds = new Set<string>()
+  private terminalSubagentIds = new Set<string>()
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
@@ -277,7 +287,9 @@ class TurnController {
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
-  idle() {
+  idle(opts: { preserveSubagents?: boolean } = {}) {
+    const preserveSubagents = opts.preserveSubagents ?? this.prepareSubagentsForIdle()
+
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
@@ -285,14 +297,15 @@ class TurnController {
     this.pendingSegmentTools = []
     this.segmentMessages = []
 
-    patchTurnState({
+    patchTurnState(state => ({
+      ...state,
       streamPendingTools: [],
       streamSegments: [],
       streaming: '',
-      subagents: [],
+      subagents: preserveSubagents ? state.subagents : [],
       tools: [],
       turnTrail: []
-    })
+    }))
     patchUiState({ busy: false })
     resetFlowOverlays()
   }
@@ -315,7 +328,11 @@ class TurnController {
     // Drain streaming/segment state off the nanostore before writing the
     // preserved snapshot to the transcript — otherwise each flushed segment
     // appears in both `turn.streamSegments` and the transcript for one frame.
-    this.idle()
+    // Detached background children outlive this parent-turn interrupt, so keep
+    // their rows available for the real terminal events. Inspect the live tree
+    // here: an interrupt can arrive before message.complete reaches the ordinary
+    // idle boundary.
+    this.idle({ preserveSubagents: this.prepareSubagentsForIdle() })
     this.clearReasoning()
     this.turnTools = []
     patchTurnState({ activity: [], outcome: '' })
@@ -552,7 +569,9 @@ class TurnController {
   }
 
   recordError() {
-    this.idle()
+    // Parent failure does not imply detached child failure. Recompute from the
+    // live tree because the error can precede message.complete.
+    this.idle({ preserveSubagents: this.prepareSubagentsForIdle() })
     this.clearReasoning()
     this.clearStatusTimer()
     this.pendingSegmentTools = []
@@ -562,6 +581,74 @@ class TurnController {
 
     // Real turn end: surface any notice held back while busy.
     this.flushPendingNotice()
+  }
+
+  private archiveSubagents(subagents: SubagentProgress[]) {
+    if (!subagents.length) {
+      return
+    }
+
+    const sessionId = getUiState().sid
+
+    for (const item of subagents) {
+      const tombstones = item.idSource === 'fallback' ? this.terminalFallbackSubagentIds : this.terminalSubagentIds
+
+      tombstones.add(item.id)
+    }
+
+    while (this.terminalSubagentIds.size > MAX_TERMINAL_SUBAGENT_TOMBSTONES) {
+      const oldest = this.terminalSubagentIds.values().next().value
+
+      if (oldest === undefined) {
+        break
+      }
+
+      this.terminalSubagentIds.delete(oldest)
+    }
+
+    while (this.terminalFallbackSubagentIds.size > MAX_TERMINAL_SUBAGENT_TOMBSTONES) {
+      const oldest = this.terminalFallbackSubagentIds.values().next().value
+
+      if (oldest === undefined) {
+        break
+      }
+
+      this.terminalFallbackSubagentIds.delete(oldest)
+    }
+
+    pushSnapshot(subagents, { sessionId, startedAt: null })
+    void this.persistSpawnTree?.(subagents, sessionId)
+  }
+
+  private prepareSubagentsForIdle() {
+    const subagents = getTurnState().subagents
+    const pendingSubagents = subagents.some(item => !isTerminalSubagentStatus(item.status))
+
+    if (subagents.length > 0 && !pendingSubagents) {
+      this.archiveSubagents(subagents)
+    }
+
+    return pendingSubagents
+  }
+
+  settleSubagentTerminalEvent() {
+    const subagents = getTurnState().subagents
+
+    if (subagents.length === 0 || subagents.some(item => !isTerminalSubagentStatus(item.status))) {
+      return
+    }
+
+    // A parent turn may delegate sequentially: A can finish before B is even
+    // spawned. Keep the terminal rows attached to the active turn so a later
+    // spawn extends the same tree, then archive the complete tree once at
+    // message.complete. Background completions still archive immediately
+    // because their parent turn is already idle.
+    if (getUiState().busy) {
+      return
+    }
+
+    this.archiveSubagents(subagents)
+    patchTurnState(state => ({ ...state, subagents: [] }))
   }
 
   recordMessageComplete(payload: {
@@ -646,21 +733,13 @@ class TurnController {
 
     const wasInterrupted = this.interrupted
 
-    // Archive the turn's spawn tree to history BEFORE idle() drops subagents
-    // from turnState.  Lets /replay and the overlay's history nav pull up
-    // finished fan-outs without a round-trip to disk.
-    const finishedSubagents = getTurnState().subagents
-    const sessionId = getUiState().sid
+    // Background delegations can outlive the parent turn. Preserve a tree with
+    // any nonterminal node so late tool/complete events update the existing
+    // rows and the dock remains truthful across the async wake-up turn. Archive
+    // only terminal trees after their real completion events arrive.
+    const pendingSubagents = this.prepareSubagentsForIdle()
 
-    if (finishedSubagents.length > 0) {
-      pushSnapshot(finishedSubagents, { sessionId, startedAt: null })
-      // Fire-and-forget disk persistence so /replay survives process restarts.
-      // The same snapshot lives in memory via spawnHistoryStore for immediate
-      // recall — disk is the long-term archive.
-      void this.persistSpawnTree?.(finishedSubagents, sessionId)
-    }
-
-    this.idle()
+    this.idle({ preserveSubagents: pendingSubagents })
     this.clearReasoning()
     this.turnTools = []
     this.persistedToolLabels.clear()
@@ -927,7 +1006,12 @@ class TurnController {
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
-    this.idle()
+    // Gateway recovery is not a session boundary. Preserve any detached work
+    // exactly as the normal turn-end paths do so its eventual terminal event
+    // can still update and archive the existing row after reconnect.
+    const pendingSubagents = this.prepareSubagentsForIdle()
+
+    this.idle({ preserveSubagents: pendingSubagents })
     this.bufRef = ''
     this.interrupted = false
     this.lastStatusNote = ''
@@ -940,14 +1024,17 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
-    // Session boundary: drop notice state so session A's sticky can't bleed
-    // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
+    // Recovery/reset boundaries drop notice state rather than flushing a
+    // sticky notice into a later turn. A full session reset also clears the
+    // terminal tombstones below.
     this.clearNoticeState()
     patchTurnState({ activity: [], outcome: '' })
   }
 
   fullReset() {
     this.reset()
+    this.terminalFallbackSubagentIds.clear()
+    this.terminalSubagentIds.clear()
     resetTurnState()
   }
 
@@ -987,6 +1074,16 @@ class TurnController {
   }
 
   startMessage() {
+    // Submission marks the UI busy before the Gateway emits message.start. A
+    // detached child can finish in that gap, leaving an all-terminal tree that
+    // must be archived rather than cleared as the new turn initializes.
+    const pendingSubagents = this.prepareSubagentsForIdle()
+
+    // Older gateways omit subagent_id, so their composite fallback identity is
+    // only unique within one parent turn. Preserve stale-event suppression until
+    // the next real turn begins, then allow an identical legitimate delegation.
+    this.terminalFallbackSubagentIds.clear()
+
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []
@@ -1011,7 +1108,15 @@ class TurnController {
     }
 
     patchUiState({ busy: true })
-    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    patchTurnState(state => ({
+      ...state,
+      activity: [],
+      outcome: '',
+      subagents: pendingSubagents ? state.subagents : [],
+      toolTokens: 0,
+      tools: [],
+      turnTrail: []
+    }))
   }
 
   upsertSubagent(
@@ -1027,6 +1132,15 @@ class TurnController {
     patchTurnState(state => {
       const existing = state.subagents.find(item => item.id === id)
 
+      // Once an explicit terminal event archives a tree, stale start/spawn
+      // events must not resurrect it into the live dock. Server-issued ids stay
+      // tombstoned for the session; composite fallback ids expire next turn.
+      const tombstones = p.subagent_id ? this.terminalSubagentIds : this.terminalFallbackSubagentIds
+
+      if (!existing && tombstones.has(id)) {
+        return state
+      }
+
       // Late events (subagent.complete/tool/progress arriving after message.complete
       // has already fired idle()) would otherwise resurrect a finished
       // subagent into turn.subagents and block the "finished" title on the
@@ -1039,6 +1153,7 @@ class TurnController {
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
+        idSource: p.subagent_id ? 'server' : 'fallback',
         index: p.task_index,
         model: p.model,
         notes: [],
@@ -1093,6 +1208,7 @@ class TurnController {
 
       return { ...state, subagents }
     })
+
   }
 }
 

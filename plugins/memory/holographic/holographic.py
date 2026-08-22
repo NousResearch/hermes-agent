@@ -21,6 +21,7 @@ References:
 
 import hashlib
 import logging
+import re
 import struct
 import math
 
@@ -115,22 +116,46 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     return float(np.mean(np.cos(a - b)))
 
 
+def _cjk_tokenize(text: str) -> list[str]:
+    """CJK-aware tokenization: bigrams for CJK runs, words for the rest.
+
+    unicode61-style whitespace tokenization treats an unspaced CJK sentence
+    as ONE giant token, so Chinese/Japanese/Korean text becomes unmatchable
+    both at index time and at query time. Splitting CJK runs into character
+    bigrams (plus the full run itself so exact-phrase still works) keeps the
+    same HRR atom space small while making sub-phrase overlap measurable.
+    """
+    tokens: list[str] = []
+    for seg in re.split(r'([\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+)', text.lower()):
+        if not seg:
+            continue
+        if re.fullmatch(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', seg):
+            if len(seg) >= 3:
+                tokens.append(seg)  # keep the full run for exact-phrase match
+            for i in range(len(seg) - 1):
+                tokens.append(seg[i:i+2])  # bigrams for sub-phrase overlap
+            if len(seg) == 1:
+                tokens.append(seg)
+        else:
+            for word in seg.split():
+                cleaned = word.strip('.,!?;:\"\'()[]{}')
+                if cleaned:
+                    tokens.append(cleaned)
+    return tokens
+
+
 def encode_text(text: str, dim: int = 1024) -> "np.ndarray":
     """Bag-of-words: bundle of atom vectors for each token.
 
-    Tokenizes by lowercasing, splitting on whitespace, and stripping
-    leading/trailing punctuation from each token.
+    Tokenizes with CJK-aware tokenization (bigrams for CJK runs) instead of
+    plain whitespace splitting, so non-spaced languages stay retrievable.
 
     Returns bundle of all token atom vectors.
     If text is empty or produces no tokens, returns encode_atom("__hrr_empty__", dim).
     """
     _require_numpy()
 
-    tokens = [
-        token.strip(".,!?;:\"'()[]{}")
-        for token in text.lower().split()
-    ]
-    tokens = [t for t in tokens if t]
+    tokens = _cjk_tokenize(text)
 
     if not tokens:
         return encode_atom("__hrr_empty__", dim)

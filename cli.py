@@ -3626,6 +3626,7 @@ def _cprint(text: str):
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
         _pt_print(_PT_ANSI(text))
+        sys.stdout.flush()
         return
 
     app = None
@@ -3640,12 +3641,13 @@ def _cprint(text: str):
     if app is None or not getattr(app, "_is_running", False):
         try:
             _pt_print(_PT_ANSI(text))
+            sys.stdout.flush()
         except Exception:
             # Fallback when stdout is not a real console (e.g. subprocess
             # worker logging to a file). prompt_toolkit raises
             # NoConsoleScreenBufferError (Windows) or OSError (other).
             try:
-                print(text)
+                print(text, flush=True)
             except Exception:
                 pass
         return
@@ -3656,6 +3658,7 @@ def _cprint(text: str):
         loop = None
     if loop is None:
         _pt_print(_PT_ANSI(text))
+        sys.stdout.flush()
         return
 
     import asyncio as _asyncio
@@ -3672,6 +3675,7 @@ def _cprint(text: str):
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
         _pt_print(_PT_ANSI(text))
+        sys.stdout.flush()
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -3705,6 +3709,7 @@ def _cprint(text: str):
     except Exception:
         try:
             _pt_print(_PT_ANSI(text))
+            sys.stdout.flush()
         except Exception:
             pass
 

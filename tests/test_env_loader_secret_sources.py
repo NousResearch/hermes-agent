@@ -174,6 +174,112 @@ def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
     assert os.environ.get("ANTHROPIC_API_KEY") is None
 
 
+def test_multiplex_without_profile_scope_still_loads(tmp_path, monkeypatch):
+    """Multiplex startup without a routed profile scope still loads .env."""
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home_override
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DISCORD_ALLOWED_CHANNELS=123,456\n", encoding="utf-8")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+
+    assert get_hermes_home_override() is None
+
+    was_active = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        loaded = env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+
+    assert os.environ.get("DISCORD_ALLOWED_CHANNELS") == "123,456"
+    assert env_file in loaded
+
+
+def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
+    tmp_path, monkeypatch
+):
+    """The safe multiplex path must still refresh profile secret sources."""
+    from agent import secret_scope
+    import agent.secret_sources.bitwarden as bw_module
+    from agent.secret_sources import registry as reg_module
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "BWS_ACCESS_TOKEN=profile-bootstrap\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "profile-provider-key"}, []),
+    )
+    reg_module._reset_registry_for_tests()
+
+    was_active = secret_scope.is_multiplex_active()
+    home_token = set_hermes_home_override(tmp_path)
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert env_loader.load_hermes_dotenv(hermes_home=tmp_path) == []
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+        reset_hermes_home_override(home_token)
+
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "ANTHROPIC_API_KEY": "profile-provider-key"
+    }
+    assert os.environ.get("BWS_ACCESS_TOKEN") is None
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
+
+
+def test_multiplex_scoped_load_respects_external_secret_opt_out(
+    tmp_path, monkeypatch
+):
+    """Updater opt-out must skip hydration without exporting profile dotenv."""
+    from agent import secret_scope
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    (tmp_path / ".env").write_text("PROFILE_ONLY=secret\n", encoding="utf-8")
+    monkeypatch.delenv("PROFILE_ONLY", raising=False)
+    hydration_calls = []
+    monkeypatch.setattr(
+        env_loader,
+        "hydrate_profile_secret_sources",
+        lambda home: hydration_calls.append(home),
+    )
+
+    was_active = secret_scope.is_multiplex_active()
+    home_token = set_hermes_home_override(tmp_path)
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert env_loader.load_hermes_dotenv(
+            hermes_home=tmp_path,
+            load_external_secrets=False,
+        ) == []
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+        reset_hermes_home_override(home_token)
+
+    assert hydration_calls == []
+    assert os.environ.get("PROFILE_ONLY") is None
+
+
 def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
     """The .op.env bootstrap file must feed cold-profile hydration.
 

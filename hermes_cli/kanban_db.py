@@ -8012,6 +8012,154 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Once the SAME respawn_guarded reason has held for this many consecutive
+# ticks, stop logging a fresh event per tick (#respawn-guard-spam 2026-08-19).
+# A single card guarded for hours was writing one `task_events` row every
+# dispatch_interval_seconds (~60s) forever — 1000+ rows/day on one card,
+# purely diagnostic noise once the first occurrence already explained why.
+_RESPAWN_GUARD_EVENT_DEDUPE_AFTER = 1
+
+# Once the SAME respawn_guarded reason has held continuously for this long,
+# the guard is no longer "a few ticks of recovery" (its documented purpose)
+# — it is a card nobody will ever un-stick without a human/orchestrator
+# decision. Escalate it out of the eternal ready/guarded tick instead of
+# reassessing the identical state forever. 3h comfortably exceeds every
+# legitimate transient guard window (`_RESPAWN_GUARD_SUCCESS_WINDOW` 1h,
+# `DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS` 5m) so it never fires on a guard
+# that's about to clear on its own.
+_RESPAWN_GUARD_ESCALATE_AFTER_SECONDS = 3 * 3600  # 3 hours
+_RESPAWN_GUARD_ESCALATE_ENV = "HERMES_KANBAN_RESPAWN_GUARD_ESCALATE_SECONDS"
+
+
+def _resolve_respawn_guard_escalate_seconds() -> int:
+    """Read the escalation threshold, honoring the operator override env var.
+
+    Mirrors ``_resolve_rate_limit_cooldown_seconds``'s pattern: a bad/blank
+    override falls back to the built-in default rather than raising, since
+    this is evaluated on every dispatch tick and must never crash dispatch.
+    """
+    raw = os.environ.get(_RESPAWN_GUARD_ESCALATE_ENV)
+    if not raw:
+        return _RESPAWN_GUARD_ESCALATE_AFTER_SECONDS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _RESPAWN_GUARD_ESCALATE_AFTER_SECONDS
+    return val if val >= 0 else _RESPAWN_GUARD_ESCALATE_AFTER_SECONDS
+
+
+def _respawn_guard_streak(
+    conn: sqlite3.Connection, task_id: str, reason: str,
+) -> tuple[int, Optional[int]]:
+    """Return ``(consecutive_count, first_seen_at)`` for the current guard streak.
+
+    Walks ``task_events`` newest-first and counts contiguous
+    ``respawn_guarded`` rows whose payload ``reason`` matches ``reason``,
+    stopping at the first non-matching event (any other kind, or a
+    ``respawn_guarded`` with a different reason — a reason change resets
+    the streak, since it's a materially different situation each time).
+    ``first_seen_at`` is the ``created_at`` of the oldest event in that
+    contiguous run — i.e. how long ago this exact guard state started.
+    Returns ``(0, None)`` if the most recent event isn't a matching guard
+    (covers the very first occurrence, before any event has been written).
+    """
+    rows = conn.execute(
+        "SELECT kind, payload, created_at FROM task_events "
+        "WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 500",
+        (task_id,),
+    ).fetchall()
+    count = 0
+    first_seen_at: Optional[int] = None
+    for r in rows:
+        if r["kind"] != "respawn_guarded":
+            break
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else None
+        except Exception:
+            payload = None
+        if not payload or payload.get("reason") != reason:
+            break
+        count += 1
+        first_seen_at = int(r["created_at"])
+    return count, first_seen_at
+
+
+_NONSPAWNABLE_ALERT_AUTHOR = "hermes-dispatcher"
+
+
+def _emit_nonspawnable_alert(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> None:
+    """First-occurrence event + card comment for a ``skipped_nonspawnable`` task.
+
+    Fixes a silent-deadlock class (#kanban-nonspawnable-deadlock 2026-08-19):
+    when ``task.assignee`` names neither a live Hermes profile nor a
+    registered terminal lane, the dispatcher correctly refuses to spawn it
+    (see the call site) but historically recorded NOTHING on the card —
+    no ``task_event``, no comment. A card stuck this way looks identical,
+    from the card itself, to one a human terminal lane just hasn't pulled
+    yet. One retired profile (a deleted ``upx-*`` role reused as an
+    assignee) silently deadlocked a 6-card dependency chain for hours
+    before anyone noticed, because nothing ever pointed at it.
+
+    Emits once per (task, assignee) pair — re-checked every tick via a
+    cheap event scan, not written every tick — so this stays silent for
+    the long-lived, intentional terminal-lane case (a card legitimately
+    waiting on a human to run ``claim_task`` can sit in this bucket for
+    days without repeat noise) while still surfacing the one-time alert an
+    operator or watchdog needs to catch a typo'd or retired assignee. If
+    the assignee is reassigned and later becomes nonspawnable again (e.g.
+    reassigned back to the same typo), that's a new occurrence and alerts
+    again — the dedupe key includes the assignee, not just the task.
+    """
+    try:
+        already = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? "
+            "AND payload LIKE ? LIMIT 1",
+            (
+                task_id,
+                "nonspawnable_alerted",
+                f'%"assignee": "{assignee}"%',
+            ),
+        ).fetchone()
+        if already:
+            return
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "nonspawnable_alerted",
+                {
+                    "assignee": assignee,
+                    "hint": (
+                        "assignee is not a live Hermes profile and not a "
+                        "registered terminal lane; card will not be "
+                        "auto-spawned until reassigned or the lane is "
+                        "registered"
+                    ),
+                },
+            )
+            add_comment(
+                conn, task_id, _NONSPAWNABLE_ALERT_AUTHOR,
+                (
+                    f"\u26a0\ufe0f Dispatcher: assignee `{assignee}` does not "
+                    "resolve to a Hermes profile or a registered terminal "
+                    "lane. This card will stay in `ready`/`review` "
+                    "indefinitely without auto-spawning until it is "
+                    "reassigned to a valid profile/lane (or the lane is "
+                    "registered). If `" + assignee + "` was recently "
+                    "retired, check for its `absorbed_into` successor and "
+                    "reassign there. (This is a one-time alert; the "
+                    "dispatcher will not repeat it for this assignee.)"
+                ),
+            )
+    except Exception:
+        # Best-effort telemetry must never break the dispatch loop — a
+        # broken alert write should degrade to "silent as before", not
+        # crash dispatch for every ready/review task behind it.
+        _log.debug(
+            "kanban dispatch: failed to emit nonspawnable alert for "
+            "task %s assignee %r", task_id, assignee, exc_info=True,
+        )
+
 
 @dataclass
 class DispatchResult:
@@ -8049,6 +8197,7 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -10180,6 +10329,20 @@ def _dispatch_once_locked(
             # multi-lane setups where the ready queue is steadily full
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
+            # Silent-deadlock fix (#kanban-nonspawnable-deadlock 2026-08-19):
+            # a card whose assignee names neither a live Hermes profile nor
+            # a registered terminal lane used to rot here forever with ZERO
+            # task_event and ZERO comment — indistinguishable on the card
+            # itself from a healthy human-pulled terminal lane. One retired
+            # profile (a deleted `upx-*` role) silently deadlocked a whole
+            # dependency chain because nothing surfaced the skip. Emit once
+            # per assignee (not every tick — this bucket also legitimately
+            # covers long-lived terminal lanes that should stay quiet) so an
+            # operator or watchdog can tell "known lane, waiting for a
+            # human" apart from "assignee doesn't exist, needs rerouting"
+            # without polling every tick.
+            if not dry_run:
+                _emit_nonspawnable_alert(conn, row["id"], row_assignee)
             continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
@@ -10205,14 +10368,52 @@ def _dispatch_once_locked(
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
-            # Emit an event so operators can see why the task was
-            # skipped when reading `hermes kanban tail` — without
-            # this the task appears stuck in ready with no diagnosis.
+            # Emit an event so operators can see why the task was skipped
+            # when reading `hermes kanban tail` — without this the task
+            # appears stuck in ready with no diagnosis. BUT: only on the
+            # transition (first occurrence of this reason, or a change
+            # from the previous reason) — a card guarded for hours would
+            # otherwise write one row EVERY tick forever (~1400/day on a
+            # single card observed 2026-08-19), pure noise once the first
+            # event already explains why. And once the SAME reason has
+            # held continuously past the escalation threshold, this is no
+            # longer "a few ticks of recovery" (the guard's documented
+            # purpose) — stop reassessing the identical state forever and
+            # route it to a human/orchestrator decision instead.
             if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
+                streak_count, streak_first_seen = _respawn_guard_streak(
+                    conn, row["id"], guard_reason,
+                )
+                is_transition = streak_count < _RESPAWN_GUARD_EVENT_DEDUPE_AFTER
+                escalate_after = _resolve_respawn_guard_escalate_seconds()
+                should_escalate = (
+                    escalate_after > 0
+                    and streak_first_seen is not None
+                    and (int(time.time()) - streak_first_seen) >= escalate_after
+                )
+                if is_transition or should_escalate:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {
+                                "reason": guard_reason,
+                                "streak": streak_count + 1,
+                            },
+                        )
+                if should_escalate and streak_first_seen is not None:
+                    held_for = int(time.time()) - streak_first_seen
+                    block_task(
+                        conn, row["id"],
+                        kind="needs_input",
+                        reason=(
+                            f"Respawn guard stuck on reason={guard_reason!r} for "
+                            f"{held_for // 60}m across {streak_count + 1} ticks — "
+                            "no human/orchestrator decision has cleared it. "
+                            "Auto-escalated by the dispatcher instead of "
+                            "reassessing the identical state forever; see "
+                            "check_respawn_guard docstring for what each "
+                            "reason means and how to clear it."
+                        ),
                     )
             continue
         if dry_run:
@@ -10328,6 +10529,12 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            # See the matching comment on the ready-lane check above: emit
+            # the same once-per-assignee alert so a retired/typo'd reviewer
+            # profile doesn't silently strand a card in the review column
+            # either (#kanban-nonspawnable-deadlock 2026-08-19).
+            if not dry_run:
+                _emit_nonspawnable_alert(conn, row["id"], row["assignee"])
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)
@@ -10339,11 +10546,43 @@ def _dispatch_once_locked(
         guard_reason = check_respawn_guard(conn, row["id"], lane="review")
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
+            # Same dedupe/escalation policy as the ready-lane guard above —
+            # only log on transition, escalate to needs_input if the same
+            # reason holds past the threshold. See the ready-lane comment
+            # for the full rationale (#respawn-guard-spam 2026-08-19).
             if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
+                streak_count, streak_first_seen = _respawn_guard_streak(
+                    conn, row["id"], guard_reason,
+                )
+                is_transition = streak_count < _RESPAWN_GUARD_EVENT_DEDUPE_AFTER
+                escalate_after = _resolve_respawn_guard_escalate_seconds()
+                should_escalate = (
+                    escalate_after > 0
+                    and streak_first_seen is not None
+                    and (int(time.time()) - streak_first_seen) >= escalate_after
+                )
+                if is_transition or should_escalate:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {
+                                "reason": guard_reason,
+                                "streak": streak_count + 1,
+                            },
+                        )
+                if should_escalate and streak_first_seen is not None:
+                    held_for = int(time.time()) - streak_first_seen
+                    block_task(
+                        conn, row["id"],
+                        kind="needs_input",
+                        reason=(
+                            f"Respawn guard (review lane) stuck on "
+                            f"reason={guard_reason!r} for {held_for // 60}m "
+                            f"across {streak_count + 1} ticks — no human/"
+                            "orchestrator decision has cleared it. "
+                            "Auto-escalated instead of reassessing the "
+                            "identical state forever."
+                        ),
                     )
             continue
         if dry_run:

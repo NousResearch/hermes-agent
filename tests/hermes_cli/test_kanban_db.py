@@ -367,6 +367,127 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+def test_dispatch_once_dedupes_respawn_guarded_events_same_reason(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A guard reason that persists tick-over-tick must NOT write a fresh
+    ``respawn_guarded`` event every tick — only the first occurrence (the
+    transition) is logged. Regression for #respawn-guard-spam 2026-08-19:
+    one card guarded for ~20h wrote ~1400 events/day, all identical."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pr-guard", assignee="alice")
+        kb.add_comment(
+            conn, tid, "worker", "Opened https://github.com/org/repo/pull/1",
+        )
+
+        def fake_spawn(task, workspace, board=None):
+            raise AssertionError("must not spawn while active_pr guard holds")
+
+        # Three consecutive dispatch ticks with the same guard reason.
+        for _ in range(3):
+            res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=5)
+            assert res.respawn_guarded == [(tid, "active_pr")]
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+        assert len(events) == 1, (
+            f"expected exactly one respawn_guarded event across 3 identical "
+            f"ticks, got {len(events)}"
+        )
+        assert events[0].payload["reason"] == "active_pr"
+        assert events[0].payload["streak"] == 1
+
+
+def test_dispatch_once_logs_new_event_on_reason_change(
+    kanban_home, all_assignees_spawnable,
+):
+    """A reason CHANGE (e.g. active_pr -> recent_success) is a materially
+    different situation and must log its own transition event, not be
+    swallowed by the same-reason dedupe."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="reason-change", assignee="alice")
+        # Force two different guard reasons back-to-back via direct event
+        # seeding (cheaper/more deterministic than orchestrating two real
+        # guard conditions through dispatch_once).
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, tid, "respawn_guarded", {"reason": "recent_success"})
+        streak_count, first_seen = _kb._respawn_guard_streak(conn, tid, "active_pr")
+        assert streak_count == 0, "different reason must not extend the streak"
+        assert first_seen is None
+
+        same_count, same_first_seen = _kb._respawn_guard_streak(
+            conn, tid, "recent_success",
+        )
+        assert same_count == 1
+        assert same_first_seen is not None
+
+
+def test_dispatch_once_escalates_respawn_guard_after_threshold(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Once the SAME guard reason has held past the escalation threshold,
+    the dispatcher must stop looping the card in ready forever and instead
+    route it to ``blocked`` (kind=needs_input) for a human/orchestrator
+    decision — the core fix for #respawn-guard-spam 2026-08-19."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RESPAWN_GUARD_ESCALATE_SECONDS", "600")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stuck-guard", assignee="alice")
+        # Comment (the active_pr trigger) must predate the seeded guard
+        # streak, mirroring real dispatch ordering: PR opened, THEN the
+        # guard starts refusing respawns tick after tick. If the comment's
+        # ``commented`` event were newer than the seeded streak it would
+        # (correctly) reset the streak walk, defeating the setup.
+        old_ts = int(_kb.time.time()) - 700
+        kb.add_comment(
+            conn, tid, "worker", "Opened https://github.com/org/repo/pull/2",
+        )
+        # Backdate every pre-existing event (created + commented) so the
+        # streak walk isn't reset by a same/newer-timestamp non-guard event
+        # sitting on top of the seeded guard streak below — mirrors real
+        # dispatch ordering where the PR-open comment predates hours of
+        # guarded ticks.
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (old_ts - 10, tid),
+        )
+
+        def fake_spawn(task, workspace, board=None):
+            raise AssertionError("must not spawn while active_pr guard holds")
+
+        # Seed a stale streak: a respawn_guarded/active_pr event older than
+        # the 600s threshold, as if the dispatcher had been ticking on this
+        # reason for a while already.
+        with _kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                "VALUES (?, NULL, 'respawn_guarded', ?, ?)",
+                (tid, '{"reason": "active_pr", "streak": 1}', old_ts),
+            )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=5)
+        assert not res.spawned
+        assert res.respawn_guarded == [(tid, "active_pr")]
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked", (
+            "a guard reason held past the escalation threshold must route "
+            f"to blocked, got {task.status!r}"
+        )
+        assert task.block_kind == "needs_input"
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+        # The seeded stale event + exactly one new escalation-transition event.
+        assert len(events) == 2
+        assert events[-1].payload["reason"] == "active_pr"
+
+
 
 
 

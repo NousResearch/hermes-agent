@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { ENUM_OPTIONS, FREE_INPUT_KEYS, SECTIONS } from './constants'
-import { voiceProviderKeys } from './voice-provider-fields'
+import { detectedConfigKeys, voiceProviderKeys } from './voice-provider-fields'
 
 const voiceKeys = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
 
@@ -35,6 +35,36 @@ describe('voiceProviderKeys', () => {
   it('scopes to the exact provider segment (no prefix bleed)', () => {
     expect(voiceProviderKeys('tts', 'mini')).toEqual([])
     expect(voiceProviderKeys('stt', 'openai')).toEqual(['stt.openai.model'])
+  })
+
+  it('discovers plugin fields from backend schema and config presence', () => {
+    expect(
+      voiceProviderKeys(
+        'stt',
+        'bifrost',
+        { 'stt.bifrost.model': { type: 'select' } },
+        { stt: { bifrost: { language: 'ru' } } }
+      )
+    ).toEqual(['stt.bifrost.model', 'stt.bifrost.language'])
+  })
+
+  it('marks config-presence-only keys as detected (no schema + no curated entry)', () => {
+    expect(
+      detectedConfigKeys(
+        'stt',
+        'bifrost',
+        { 'stt.bifrost.model': { type: 'select' } },
+        { stt: { bifrost: { language: 'ru', model: 'whisper' } } }
+      )
+    ).toEqual(['stt.bifrost.language'])
+  })
+
+  it('excludes declared (curated/schema) keys from the detected set', () => {
+    // tts.openai.model is a curated Voice key; a config value for it must NOT
+    // be flagged as detected by presence alone.
+    expect(
+      detectedConfigKeys('tts', 'openai', {}, { tts: { openai: { model: 'gpt-4o-mini-tts' } } })
+    ).toEqual([])
   })
 })
 

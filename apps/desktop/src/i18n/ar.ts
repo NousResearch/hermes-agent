@@ -687,6 +687,7 @@ export const ar = defineLocale({
     config: {
       none: 'لا شيء',
       noneParen: '(لا شيء)',
+      detected: 'تم اكتشافه',
       notSet: 'غير مضبوط',
       commaSeparated: 'قيم مفصولة بفواصل',
       searchPlaceholder: 'بحث…',

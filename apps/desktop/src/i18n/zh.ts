@@ -894,6 +894,7 @@ export const zh: Translations = {
       none: '无',
       noneParen: '(无)',
       builtinOnly: '仅内置',
+      detected: '已检测',
       notSet: '未设置',
       commaSeparated: '逗号分隔的值',
       searchPlaceholder: '搜索…',

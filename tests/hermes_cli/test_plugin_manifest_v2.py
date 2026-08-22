@@ -122,6 +122,53 @@ class TestV2Parsing:
         # plugin still loads
         assert mgr._plugins["modern"].enabled or mgr._plugins["modern"].error
 
+    def test_config_fields_list_normalizes_to_config_schema(self, hermes_home):
+        _write_plugin(
+            hermes_home / "plugins", "voice-plugin",
+            manifest_extra={
+                "manifest_version": 2,
+                "config_fields": [
+                    {
+                        "key": "stt.voice_plugin.model",
+                        "label": "Model",
+                        "type": "select",
+                        "options": ["small", "large"],
+                    },
+                ],
+            },
+        )
+        _enable(hermes_home, ["voice-plugin"])
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["voice-plugin"].manifest.config_schema == {
+            "stt.voice_plugin.model": {
+                "label": "Model",
+                "type": "select",
+                "options": ["small", "large"],
+            },
+        }
+
+    def test_config_schema_wins_on_duplicate_config_fields_key(self, hermes_home, caplog):
+        _write_plugin(
+            hermes_home / "plugins", "mixed",
+            manifest_extra={
+                "manifest_version": 2,
+                "config_schema": {"stt.mixed.model": {"type": "string"}},
+                "config_fields": [
+                    {"key": "stt.mixed.model", "type": "select"},
+                    {"key": "stt.mixed.language", "type": "string"},
+                ],
+            },
+        )
+        _enable(hermes_home, ["mixed"])
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        schema = mgr._plugins["mixed"].manifest.config_schema
+        assert schema["stt.mixed.model"]["type"] == "string"
+        assert schema["stt.mixed.language"]["type"] == "string"
+        assert "takes precedence" in caplog.text
+
     def test_unknown_field_in_v2_warns_but_loads(self, hermes_home, caplog):
         _write_plugin(
             hermes_home / "plugins", "modern",

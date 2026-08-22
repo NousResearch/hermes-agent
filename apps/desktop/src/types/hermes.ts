@@ -1,5 +1,6 @@
 export interface ConfigFieldSchema {
   category?: string
+  label?: string
   description?: string
   options?: unknown[]
   /** When true, renders a SearchableSelect (Popover + cmdk) instead of the

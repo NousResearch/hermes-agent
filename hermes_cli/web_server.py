@@ -1494,6 +1494,69 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
     return {**CONFIG_SCHEMA, **overlay}
 
 
+def _plugin_config_schema_fields() -> Dict[str, Dict[str, Any]]:
+    """Return UI schema fields declared by loaded plugin manifests.
+
+    Plugin manifests use ``config_fields`` (normalized to ``config_schema`` by
+    the manifest parser). Only fully-qualified config keys are exposed to the
+    generic settings UI; plugin-local settings remain validation-only.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        manager = get_plugin_manager()
+        manager.discover_and_load()
+        loaded_plugins = getattr(manager, "_plugins", {}).values()
+    except Exception:
+        return {}
+
+    fields: Dict[str, Dict[str, Any]] = {}
+    type_map = {
+        "bool": "boolean", "boolean": "boolean",
+        "int": "number", "integer": "number", "float": "number", "number": "number",
+        "str": "string", "string": "string", "text": "text",
+        "select": "select", "list": "list", "array": "list",
+    }
+    for loaded in sorted(
+        loaded_plugins,
+        key=lambda item: str(getattr(getattr(item, "manifest", None), "key", "")),
+    ):
+        manifest = getattr(loaded, "manifest", None)
+        schema = getattr(manifest, "config_schema", None)
+        if not isinstance(schema, dict):
+            continue
+        for key, spec in schema.items():
+            if not isinstance(key, str) or "." not in key or not isinstance(spec, dict):
+                continue
+            if key in CONFIG_SCHEMA or key in fields:
+                _log.warning("Ignoring plugin config field collision for %s", key)
+                continue
+            field: Dict[str, Any] = {
+                "type": type_map.get(str(spec.get("type", "string")).lower(), "string"),
+            }
+            if spec.get("description"):
+                field["description"] = str(spec["description"])
+            if spec.get("label"):
+                field["label"] = str(spec["label"])
+            if isinstance(spec.get("options"), list):
+                field["options"] = list(spec["options"])
+            fields[key] = field
+    # Provider model catalogs are intentionally not queried here: this
+    # endpoint runs on the web-server event loop and plugin implementations
+    # may perform network I/O in list_models(). Plugins should declare stable
+    # options in config_fields; live catalogs belong in provider-specific,
+    # cached discovery endpoints.
+    return fields
+
+
+def _schema_with_plugin_config_fields(schema: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Overlay plugin-declared UI fields without mutating the base schema."""
+    plugin_fields = _plugin_config_schema_fields()
+    if not plugin_fields:
+        return schema
+    return {**schema, **plugin_fields}
+
+
 from hermes_cli.web_models import (  # noqa: F401
     ConfigUpdate,
     EnvVarUpdate,
@@ -6868,7 +6931,9 @@ async def get_schema(profile: Optional[str] = None):
     # provider plugins) are merged per-request so providers added after server
     # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+        fields = _schema_with_plugin_config_fields(
+            _schema_with_dynamic_provider_options()
+        )
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 

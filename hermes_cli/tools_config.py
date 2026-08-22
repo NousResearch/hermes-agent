@@ -3237,6 +3237,53 @@ def _plugin_browser_providers() -> list[dict]:
     return rows
 
 
+def _plugin_voice_providers(kind: str) -> list[dict]:
+    """Build picker rows from plugin-registered TTS or STT providers."""
+    try:
+        if kind == "tts":
+            from agent.tts_registry import _BUILTIN_NAMES, list_providers
+        else:
+            from agent.transcription_registry import _BUILTIN_NAMES, list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        logger.debug(
+            "plugin voice provider discovery failed for kind=%s; noisy "
+            "provider disappears from the picker",
+            kind, exc_info=True,
+        )
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name or name.lower().strip() in _BUILTIN_NAMES:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            logger.debug(
+                "plugin voice provider %r failed to load its setup schema; "
+                "dropped from the picker", name, exc_info=True,
+            )
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            f"{kind}_provider": name,
+            f"{kind}_plugin_name": name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _plugin_tts_providers() -> list[dict]:
     """Build picker-row dicts from plugin-registered TTS providers.
 
@@ -3375,6 +3422,10 @@ def _visible_providers(
     # is filtered out by ``_plugin_tts_providers`` defensively.
     if cat.get("name") == "Text-to-Speech":
         visible.extend(_plugin_tts_providers())
+
+    # Inject plugin-registered speech-to-text backends alongside built-ins.
+    if cat.get("name") == "Speech-to-Text":
+        visible.extend(_plugin_voice_providers("stt"))
 
     return visible
 

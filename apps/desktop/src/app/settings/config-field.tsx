@@ -45,6 +45,7 @@ export function ConfigField({
   const c = t.settings.config
 
   const label =
+    schema.label ??
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)

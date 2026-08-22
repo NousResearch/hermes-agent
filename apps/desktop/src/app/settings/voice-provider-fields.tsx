@@ -17,10 +17,53 @@ import { enumOptionsFor, getNested, inferFieldSchema, setNested } from './helper
 // Capabilities TTS panel derive from it so the two surfaces never drift.
 const VOICE_KEYS = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
 
-export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): string[] {
+export function voiceProviderKeys(
+  section: 'tts' | 'stt',
+  providerKey: string,
+  schema: Record<string, unknown> = {},
+  config: HermesConfigRecord | null = null
+): string[] {
   const prefix = `${section}.${providerKey}.`
+  const keys = new Set(VOICE_KEYS.filter(key => key.startsWith(prefix)))
 
-  return VOICE_KEYS.filter(key => key.startsWith(prefix))
+  Object.keys(schema)
+    .filter(key => key.startsWith(prefix))
+    .forEach(key => keys.add(key))
+
+  const providerConfig = config ? getNested(config, `${section}.${providerKey}`) : undefined
+  if (providerConfig && typeof providerConfig === 'object' && !Array.isArray(providerConfig)) {
+    Object.keys(providerConfig).forEach(key => keys.add(`${prefix}${key}`))
+  }
+
+  return [...keys]
+}
+
+/**
+ * Config-presence-only keys: fields present in the live config for a provider
+ * but with NO schema entry (neither the curated Voice section nor a backend
+ * config_fields declaration). These render through inferFieldSchema() as
+ * generic inputs, so callers should mark them "(detected)" rather than
+ * presenting them as a fully-supported schema field.
+ */
+export function detectedConfigKeys(
+  section: 'tts' | 'stt',
+  providerKey: string,
+  schema: Record<string, unknown> = {},
+  config: HermesConfigRecord | null = null
+): string[] {
+  const prefix = `${section}.${providerKey}.`
+  const declared = new Set(VOICE_KEYS.filter(key => key.startsWith(prefix)))
+  Object.keys(schema)
+    .filter(key => key.startsWith(prefix))
+    .forEach(key => declared.add(key))
+
+  const providerConfig = config ? getNested(config, `${section}.${providerKey}`) : undefined
+  if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) {
+    return []
+  }
+  return Object.keys(providerConfig)
+    .map(key => `${prefix}${key}`)
+    .filter(key => !declared.has(key))
 }
 
 /**
@@ -32,7 +75,6 @@ export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): 
  */
 export function VoiceProviderFields({ section, providerKey }: { section: 'tts' | 'stt'; providerKey: string }) {
   const { t } = useI18n()
-  const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
   const { data: loadedConfig } = useHermesConfigRecord()
 
   const { data: schemaResponse } = useQuery({
@@ -40,6 +82,15 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
     queryFn: () => getHermesConfigSchema(),
     staleTime: 5 * 60 * 1000
   })
+
+  const keys = useMemo(
+    () => voiceProviderKeys(section, providerKey, schemaResponse?.fields ?? {}, loadedConfig ?? null),
+    [section, providerKey, schemaResponse?.fields, loadedConfig]
+  )
+  const detectedKeys = useMemo(
+    () => detectedConfigKeys(section, providerKey, schemaResponse?.fields ?? {}, loadedConfig ?? null),
+    [section, providerKey, schemaResponse?.fields, loadedConfig]
+  )
 
   // Local editable draft, seeded once from the shared cache (background
   // refetches must not clobber in-progress edits) — the same shape as
@@ -123,9 +174,15 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
         const value = getNested(config, key)
         const field = schema[key] ?? inferFieldSchema(value)
         const isElVoice = key === 'tts.elevenlabs.voice_id'
+        const isDetected = !schema[key] && detectedKeys.includes(key)
 
         return (
           <ConfigField
+            descriptionExtra={
+              isDetected ? (
+                <span className="text-muted-foreground text-xs italic">{t.settings.config.detected}</span>
+              ) : undefined
+            }
             enumOptions={enumOptionsFor(key, value, config, isElVoice ? (elVoices ?? undefined) : undefined)}
             key={key}
             onChange={next => updateConfig(setNested(config, key, next))}

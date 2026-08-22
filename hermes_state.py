@@ -10071,6 +10071,52 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             api_content = msg.get("api_content")
 
+            # Persist a stable display marker on synthetic compaction-summary
+            # rows so rewind/undo pickers and transcript surfaces can
+            # distinguish them from real user turns without content-prefix
+            # heuristics (#81130 root-cause 3). archive_and_compact /
+            # replace_messages both insert the compacted projection here; the
+            # append-only turn flush (run_agent._flush_messages_to_session_db
+            # _unlocked) already stamps the same "hidden" fingerprint on these
+            # rows, so persisting it here too keeps the two write paths
+            # consistent. Without it, a synthetic user-role summary persisted
+            # through a compaction rewrite carries display_kind=NULL and the
+            # /undo target picker's display_clause counts it as a real user
+            # turn — /undo N can land on the summary, soft-delete it without
+            # reviving the archived source rows, and leave an empty context.
+            # The fingerprint mirrors run_agent exactly: only rows that carry
+            # the compressed-summary metadata AND classify as a standalone
+            # handoff (or carry no preserved live user turn) are marked;
+            # merge-into-tail carriers keep real preserved content visible.
+            display_kind = msg.get("display_kind")
+            if not display_kind:
+                try:
+                    from agent.context_compressor import (
+                        COMPRESSED_SUMMARY_METADATA_KEY,
+                        COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
+                        ContextCompressor,
+                    )
+                except Exception:
+                    COMPRESSED_SUMMARY_METADATA_KEY = None
+                    COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = None
+                    ContextCompressor = None
+                _is_synthetic_summary = (
+                    COMPRESSED_SUMMARY_METADATA_KEY
+                    and msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                )
+                if _is_synthetic_summary and ContextCompressor is not None:
+                    try:
+                        _summary_is_standalone = (
+                            ContextCompressor.classify_summary_content(
+                                msg.get("content")
+                            )
+                            == "standalone"
+                        ) or not msg.get(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY)
+                    except Exception:
+                        _summary_is_standalone = False
+                    if _summary_is_standalone:
+                        display_kind = "hidden"
+
             cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
@@ -10097,7 +10143,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     1 if msg.get("observed") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
+                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
                     self._encode_display_metadata(msg.get("display_metadata")),
                 ),
             )
@@ -11326,6 +11372,262 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return len(ids)
 
         return self._execute_write(_do)
+
+    def rewind_through_compaction(
+        self, session_id: str, target_message_id: int
+    ) -> Dict[str, Any]:
+        """Reverse a prior :meth:`archive_and_compact` for ``/undo`` (#81130).
+
+        ``archive_and_compact`` soft-archives the live turns (``active=0,
+        compacted=1``) and inserts fresh compacted rows as ``active=1``.
+        ``/undo`` is "back up N user turns via suffix soft-delete", which only
+        sees the LIVE set — the compacted summary + recent exchanges — so it
+        could never reach the pre-compaction history. This method is the
+        inverse: revives the compaction boundary that contains *target_id*
+        (back to ``active=1, compacted=0``) and soft-deletes the live tail
+        at-or-after ``target_message_id`` so the next reload replays the
+        pre-compaction transcript.
+
+        Pre-conditions: ``target_message_id`` must exist in *session_id*, be a
+        user message, and have ``compacted=1, active=0`` — i.e. it lives in
+        the compacted=1 archive produced by ``archive_and_compact``. For a
+        non-compacted target, raise ``ValueError``; the caller (typically
+        ``SessionStore.rewind_session`` or ``HermesCLI.undo_last``) is
+        expected to fall back to :meth:`rewind_to_message` instead.
+
+        Why revive only the target's boundary (not the whole archive): after
+        several in-place compactions the ``compacted=1`` set piles up N
+        id-ordered boundary layers — each subsequent
+        :meth:`archive_and_compact` re-archives the prior projection. Sweeping
+        all of them on a deep ``/undo`` would restore every historical
+        boundary's rows and blow up the next context window (#81130). Only the
+        boundary the target rests in (delimited by id/ordinal, see
+        :meth:`_compaction_boundary_id_range`) is revived; the live tail at/
+        after the target is soft-deleted so the restored transcript matches
+        the pre-compaction state just before the target's turn.
+
+        Returns a dict with ``rewound_count`` (live rows newly soft-deleted),
+        ``revived_count`` (compacted rows re-activated), ``target_message``,
+        and ``new_head_id`` (id of the last still-active row after the
+        rewind, or ``None``). ``sessions.rewind_count`` is incremented
+        exactly once, matching :meth:`rewind_to_message`.
+
+        Why a separate method rather than a flag on ``rewind_to_message``:
+        the live-archive inversion has a distinct SQL shape (cross-flag
+        UPDATE in both directions, whole-archive revive) and a distinct
+        return shape (``revived_count``). Mixing them would broaden
+        ``rewind_to_message``'s contract for callers that don't need the
+        compaction-aware branch.
+        """
+
+        # 1) Validate target up-front (read-only, outside the write txn).
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"rewind target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+        if not (
+            int(target_row.get("compacted", 0) or 0) == 1
+            and int(target_row.get("active", 0) or 0) == 0
+        ):
+            raise ValueError(
+                f"rewind_through_compaction target must live in the compacted=1 "
+                f"archive (got active={target_row.get('active')!r}, "
+                f"compacted={target_row.get('compacted')!r}, "
+                f"id={target_message_id}) — use rewind_to_message for live targets"
+            )
+
+        # Decode content for callers (prefill the prompt buffer).
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        rewound_live_ids: List[int] = []
+        revived_compacted_ids: List[int] = []
+
+        def _do(conn):
+            # ORDER MATTERS: soft-delete the live tail FIRST, then revive the
+            # compacted archive. Reversing the order would clobber the
+            # revived rows — once they're flipped to active=1, the live-tail
+            # filter below would catch them too (they satisfy active=1).
+            # Doing the soft-delete first means the live-tail filter only
+            # sees the original (compacted-summary + recent exchange) rows.
+            #
+            # The live-tail filter still keys on id >= target_message_id
+            # so any pre-target live rows (e.g. a pre-compaction user row
+            # the agent appended to the live set after picking the target)
+            # stay alive. After archive_and_compact the live set is the
+            # compact tail, so id >= target naturally covers exactly that
+            # tail without spilling into the archive.
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1",
+                (session_id, target_message_id),
+            )
+            live_ids = [r[0] for r in cursor.fetchall()]
+            if live_ids:
+                placeholders = ",".join("?" for _ in live_ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    live_ids,
+                )
+            # Revive ONLY the compaction boundary that contains the target —
+            # not the entire accumulated compacted=1 archive (#81130 LOW).
+            # After N in-place compactions the archive holds N piled-up
+            # boundary layers (each subsequent archive_and_compact re-archives
+            # the prior projection, so a deep /undo that revived everything
+            # would restore every historical boundary's rows and blow up the
+            # next context window). The boundary is delimited by id/ordinal:
+            # each boundary's archived projection begins with its synthetic
+            # summary row (the lowest-id row, stamped display_kind by
+            # _insert_message_rows), so the compacted rows between one
+            # summary-head and the next form exactly one boundary.
+            lo, hi = self._compaction_boundary_id_range(
+                conn, session_id, target_message_id
+            )
+            revived = []
+            if lo is not None and hi is not None:
+                cursor = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND active = 0 AND compacted = 1 "
+                    "AND id >= ? AND id <= ?",
+                    (session_id, lo, hi),
+                )
+                revived = [r[0] for r in cursor.fetchall()]
+            if revived:
+                placeholders = ",".join("?" for _ in revived)
+                conn.execute(
+                    f"UPDATE messages SET active = 1, compacted = 0 "
+                    f"WHERE id IN ({placeholders})",
+                    revived,
+                )
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return revived, live_ids
+
+        revived_compacted_ids, rewound_live_ids = self._execute_write(_do)
+
+        # 2) Recompute new head id and message_count. ``message_count`` must
+        # reflect the LIVE set (matches archive_and_compact semantics — the
+        # session's live load returns active=1 rows, so the counter must too).
+        with self._lock:
+            head_row = self._conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+            count_row = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+        live_count = int(count_row[0]) if count_row and count_row[0] is not None else 0
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE sessions SET message_count = ? WHERE id = ?",
+                    (live_count, session_id),
+                )
+        except Exception:
+            logger.debug(
+                "rewind_through_compaction: message_count update failed "
+                "(non-fatal; live load is the source of truth): %s",
+                session_id,
+            )
+
+        return {
+            "rewound_count": len(rewound_live_ids),
+            "revived_count": len(revived_compacted_ids),
+            "target_message": target_row,
+            "new_head_id": new_head_id,
+        }
+
+    def _compaction_boundary_id_range(
+        self, conn, session_id: str, target_id: int
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Return the ``[lo, hi]`` id range of the compaction boundary that
+        contains *target_id* (an ``active=0, compacted=1`` row), or
+        ``(None, None)`` when there is no archive.
+
+        The ``compacted=1`` archive is the pile-up of every prior
+        :meth:`archive_and_compact`: each subsequent call re-archives the
+        previous projection, so N compactions stack N id-ordered boundary
+        layers. ``rewind_through_compaction`` must revive only the boundary
+        the target resits in, not the whole pile (#81130).
+
+        Boundaries are delimited by id/ordinal. Each boundary's archived
+        projection begins with the synthetic summary row that the producing
+        compact inserted first — the boundary's lowest-id row, stamped with a
+        non-null ``display_kind`` by :meth:`_insert_message_rows`. So the
+        ``active=0, compacted=1`` rows between one summary-head and the next
+        form exactly one boundary. The pre-compaction originals (the FIRST
+        boundary) lie below the lowest summary-head.
+
+        Falls back to the entire archive (``[min, max]`` of the compacted set)
+        when no summary-head is present — a single compaction boundary, or a
+        legacy archive persisted before summary rows carried ``display_kind``,
+        where no id-ordinal split is possible.
+        """
+        compacted_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND active = 0 "
+                "AND compacted = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        ]
+        if not compacted_ids:
+            return None, None
+        # Boundary-head markers: synthetic summary rows persisted by
+        # archive_and_compact / replace_messages carry a non-null display_kind
+        # (see _insert_message_rows). Real user turns are persisted WITHOUT a
+        # display_kind, so a non-empty one among the compacted set identifies
+        # exactly the summary-headed projection boundaries.
+        head_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND active = 0 "
+                "AND compacted = 1 AND role = 'user' "
+                "AND display_kind IS NOT NULL AND display_kind != '' ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        ]
+        live_floor = conn.execute(
+            "SELECT MIN(id) FROM messages WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchone()[0]
+        if not head_ids:
+            # Single accumulated boundary (no summary-marked sub-boundaries) —
+            # keep the historical whole-archive revive.
+            return compacted_ids[0], compacted_ids[-1]
+        heads_below = [h for h in head_ids if h <= target_id]
+        if heads_below:
+            lo = heads_below[-1]
+        else:
+            # Target sits below the lowest summary-head: it is in the original
+            # pre-compaction boundary.
+            lo = compacted_ids[0]
+        next_head = next((h for h in head_ids if h > target_id), None)
+        if next_head is not None:
+            hi = next_head - 1
+        elif live_floor is not None:
+            hi = live_floor - 1
+        else:
+            hi = compacted_ids[-1]
+        # The upper bound must stay within the compacted archive (live rows are
+        # above ``live_floor`` and never compacted).
+        hi = min(hi, compacted_ids[-1])
+        return max(lo, compacted_ids[0]), hi
 
     # =========================================================================
     # Search

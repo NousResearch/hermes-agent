@@ -4028,6 +4028,14 @@ class SessionStore:
         Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
         success, or ``None`` if there's no DB or no user message to back up to.
         ``n`` clamps to the oldest user turn when it exceeds the turn count.
+
+        Cross-compaction-boundary undo (#81130): the rewind target picker also
+        looks at the compacted=1 archive produced by ``archive_and_compact``
+        so ``/undo`` can step back into the pre-compaction transcript. When
+        the picked target lives in the compacted archive, the call routes
+        through :meth:`SessionDB.rewind_through_compaction` (the inverse of
+        ``archive_and_compact``: revives the compacted rows and soft-deletes
+        the live tail) instead of :meth:`SessionDB.rewind_to_message`.
         """
         if not self._db:
             return None
@@ -4035,7 +4043,12 @@ class SessionStore:
         if n < 1:
             n = 1
         try:
-            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+            # include_compacted=True: lets the picker surface rows from the
+            # archive_and_compact archive when the live transcript has been
+            # shortened past the user's pre-compaction turns.
+            recents = self._db.list_recent_user_messages(
+                session_id, limit=max(n, 10), include_compacted=True
+            )
         except Exception as e:
             logger.debug("rewind_session: failed to list user messages: %s", e)
             return None
@@ -4043,13 +4056,24 @@ class SessionStore:
             return None
         target_idx = min(n - 1, len(recents) - 1)
         target_id = recents[target_idx]["id"]
+        # Detect compaction-archive target: rows from archive_and_compact are
+        # active=0+compacted=1. Anything else (active=1, or active=0+compacted=0
+        # from a prior /undo) routes through the standard soft-delete path.
+        target_is_compacted = self._target_row_is_compacted_archived(
+            session_id, target_id
+        )
         try:
-            result = self._db.rewind_to_message(session_id, target_id)
+            if target_is_compacted:
+                result = self._db.rewind_through_compaction(
+                    session_id, target_id
+                )
+            else:
+                result = self._db.rewind_to_message(session_id, target_id)
         except ValueError as e:
             logger.debug("rewind_session: %s", e)
             return None
         except Exception as e:
-            logger.debug("rewind_session: rewind_to_message failed: %s", e)
+            logger.debug("rewind_session: rewind failed: %s", e)
             return None
         target_msg = result.get("target_message") or {}
         content = target_msg.get("content") or ""
@@ -4069,6 +4093,35 @@ class SessionStore:
             "turns_undone": target_idx + 1,
             "target_text": target_text,
         }
+
+    def _target_row_is_compacted_archived(
+        self, session_id: str, target_id: int
+    ) -> bool:
+        """Return True iff *target_id* is in the compacted=1 archive.
+
+        A small read-only probe that powers the cross-compaction-boundary
+        routing in :meth:`rewind_session` (#81130). Returns False when the
+        DB cannot answer (legacy / third-party SessionDB without the
+        ``active``/``compacted`` columns), so the call falls back to the
+        standard ``rewind_to_message`` path.
+        """
+        try:
+            with self._db._lock:
+                row = self._db._conn.execute(
+                    "SELECT active, compacted FROM messages "
+                    "WHERE id = ? AND session_id = ?",
+                    (target_id, session_id),
+                ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        active = row["active"] if hasattr(row, "keys") else row[0]
+        compacted = row["compacted"] if hasattr(row, "keys") else row[1]
+        try:
+            return int(active or 0) == 0 and int(compacted or 0) == 1
+        except (TypeError, ValueError):
+            return False
 
 
 def build_session_context(

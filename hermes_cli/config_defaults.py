@@ -3299,6 +3299,21 @@ DEFAULT_CONFIG = {
         # upstream installer is not appropriate for the machine, for example
         # on non-admin accounts where `/Applications` is not writable.
         "refresh_cua_driver": True,
+        # Update checks default to the historical moving-branch comparison.
+        # Set check_strategy: stable-tags (or stable_tags: true) to compare
+        # against release tags only — useful for locally customized installs
+        # that intentionally stay pinned to a stable tag and carry overlay
+        # commits. In stable-tags mode the CLI banner and the dashboard report
+        # release availability by tag reachability (not origin/main distance),
+        # and the dashboard's generic branch-based "update" apply is disabled.
+        "check_strategy": "branch",
+        "stable_tags": False,
+        "stable_tag_pattern": "v20*",
+        "stable_tag_remote": "origin",
+        # Optional command shown in the banner / dashboard when stable-tag mode
+        # detects a newer stable release. Left empty by default because core
+        # Hermes does not know a user's local overlay/update workflow.
+        "stable_update_command": "",
     },
 
     # Language Server Protocol — semantic diagnostics from real

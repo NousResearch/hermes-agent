@@ -122,12 +122,32 @@ def exit_non_dispatcher_owned_context(token: Token[bool]) -> None:
 
 
 def is_delegated_child_process_context() -> bool:
-    """Return True in this process or a subprocess spawned by a child."""
+    """Return True in this process or a subprocess spawned by a child.
+
+    The environment marker is durable lineage for a real subprocess: unlike
+    the ContextVar, it must remain true for the subprocess's whole lifetime so
+    repeated guards cannot become fail-open. Long-lived managed roles that
+    deliberately leave that lineage (gateway and dispatcher workers) clear the
+    marker at their explicit startup/spawn boundaries.
+    """
     import os
 
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
         os.environ.get(DELEGATED_CHILD_ENV_MARKER)
     )
+
+
+def clear_delegated_child_process_context() -> None:
+    """Clear child lineage at an explicit long-lived owner boundary.
+
+    Ordinary delegated subprocesses must retain both signals so their guards
+    remain fail-closed. A managed process role that becomes authoritative for
+    its own work may call this once at startup to discard inherited lineage.
+    """
+    import os
+
+    _DELEGATED_CHILD_CONTEXT.set(False)
+    os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:

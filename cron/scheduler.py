@@ -355,6 +355,10 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+class CronToolsetResolutionError(RuntimeError):
+    """The effective toolsets for an agent-backed cron run could not be resolved."""
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -373,20 +377,80 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
-    cron_cfg = (cfg or {}).get("cron") or {}
-    if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify"]
-    else:
-        disabled = ["cronjob", "messaging", "clarify"]
-    agent_cfg = (cfg or {}).get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
+    try:
+        cron_cfg = (cfg or {}).get("cron")
+        if cron_cfg is None:
+            cron_cfg = {}
+        if not isinstance(cron_cfg, dict):
+            raise TypeError("cron config must be a mapping")
+        # Only the literal boolean True enables recursive scheduling.  Keep the
+        # historical off sentinels (False/None/""/integer 0) compatible, but
+        # reject 1 and string booleans so Python truthiness cannot widen policy.
+        scheduling_gate = cron_cfg.get("allow_agent_scheduling", False)
+        if scheduling_gate is True:
+            disabled = ["messaging", "clarify"]
+        elif (
+            scheduling_gate is False
+            or scheduling_gate is None
+            or scheduling_gate == ""
+            or (type(scheduling_gate) is int and scheduling_gate == 0)
+        ):
+            disabled = ["cronjob", "messaging", "clarify"]
+        else:
+            raise TypeError("cron.allow_agent_scheduling must be a boolean")
 
-    user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
-    for name in user_disabled:
-        name = str(name).strip()
-        if name and name not in disabled:
-            disabled.append(name)
-    return disabled
+        agent_cfg = (cfg or {}).get("agent")
+        if agent_cfg is None:
+            agent_cfg = {}
+        if not isinstance(agent_cfg, dict):
+            raise TypeError("agent config must be a mapping")
+        raw_disabled = agent_cfg.get("disabled_toolsets")
+        if raw_disabled is not None and not isinstance(
+            raw_disabled, (str, list, tuple, set, frozenset)
+        ):
+            raise TypeError("agent.disabled_toolsets must be a string or list")
+        if isinstance(raw_disabled, (list, tuple, set, frozenset)) and any(
+            not isinstance(item, str) for item in raw_disabled
+        ):
+            raise TypeError("agent.disabled_toolsets entries must be strings")
+        if isinstance(raw_disabled, str) and raw_disabled.strip().startswith("["):
+            # ``hermes config set`` and JSON-mode saves can persist a list as a
+            # string.  A leading ``[`` therefore opts into strict serialized-list
+            # parsing; malformed syntax must not degrade into one inert name.
+            import ast
+
+            try:
+                parsed_disabled = ast.literal_eval(raw_disabled.strip())
+            except (SyntaxError, ValueError):
+                raise TypeError(
+                    "agent.disabled_toolsets serialized list is malformed"
+                )
+            if not isinstance(parsed_disabled, list):
+                raise TypeError(
+                    "agent.disabled_toolsets serialized value must be a list"
+                )
+            if any(
+                not isinstance(item, str) for item in parsed_disabled
+            ):
+                raise TypeError("agent.disabled_toolsets entries must be strings")
+
+        from agent.skill_utils import parse_config_string_list
+
+        user_disabled = parse_config_string_list(raw_disabled)
+        for name in user_disabled:
+            name = str(name).strip()
+            if name and name not in disabled:
+                disabled.append(name)
+        return disabled
+    except Exception as exc:
+        logger.error(
+            "Cron disabled-toolset resolution failed; refusing to discard "
+            "configured deny rules: %s",
+            exc,
+        )
+        raise CronToolsetResolutionError(
+            "cron toolset resolution failed; check cron tool configuration"
+        ) from exc
 
 
 def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
@@ -420,8 +484,8 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
-def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
-    """Resolve the toolset list for a cron job.
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+    """Resolve the toolset list for an agent-backed cron job.
 
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
@@ -431,26 +495,62 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
-       (legacy behavior before this change, preserved as the safety net).
+    3. Raise ``CronToolsetResolutionError`` on any lookup failure. Returning
+       ``None`` would make ``AIAgent`` load the full default toolset and silently
+       widen an unattended job's authority.
+
+    An empty resolved list is valid and remains ``[]``; only ``None`` means
+    "load defaults" at the agent tool-registry boundary.
 
     _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
     ``_get_platform_tools`` for unconfigured platforms, so fresh installs
     get cron WITHOUT ``moa`` by default (issue reported by Norbert —
     surprise $4.63 run).
     """
-    per_job = job.get("enabled_toolsets")
-    if per_job:
-        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
+        platform_toolsets = (cfg or {}).get("platform_toolsets")
+        if platform_toolsets is not None:
+            if not isinstance(platform_toolsets, dict):
+                raise TypeError("platform_toolsets must be a mapping")
+            if "cron" in platform_toolsets and not isinstance(
+                platform_toolsets["cron"], list
+            ):
+                raise TypeError("platform_toolsets.cron must be a list")
+            if "cron" in platform_toolsets and any(
+                not isinstance(item, str) for item in platform_toolsets["cron"]
+            ):
+                raise TypeError("platform_toolsets.cron entries must be strings")
+
+        per_job = job.get("enabled_toolsets")
+        if per_job is not None:
+            if not isinstance(per_job, list):
+                raise TypeError("job.enabled_toolsets must be a list")
+            if any(not isinstance(item, str) for item in per_job):
+                raise TypeError("job.enabled_toolsets entries must be strings")
+        # Empty is the established clear/unset sentinel: create/update normalize
+        # [] to None, so both inherit platform policy.  A platform-level cron: []
+        # below is different — it is an explicit no-tools policy.
+        if per_job:
+            return _merge_mcp_into_per_job_toolsets(per_job, cfg or {})
+        if (
+            isinstance(platform_toolsets, dict)
+            and platform_toolsets.get("cron") == []
+        ):
+            # An explicit empty platform selection is a real no-tools policy.
+            # Bypass _get_platform_tools so implicit plugin/MCP/default toolsets
+            # cannot repopulate it.
+            return []
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
-        logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
+        logger.error(
+            "Cron toolset resolution failed; refusing to widen to the full "
+            "default toolset: %s",
             exc,
         )
-        return None
+        raise CronToolsetResolutionError(
+            "cron toolset resolution failed; check cron tool configuration"
+        ) from exc
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
@@ -5585,11 +5685,14 @@ def run_job(
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         _model_cfg = {}
+        _cfg_load_error = None
         try:
             from hermes_cli.config import read_user_config_raw
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                _cfg = read_user_config_raw(Path(_cfg_path))
+                _cfg = read_user_config_raw(
+                    Path(_cfg_path), require_mapping=True
+                )
                 # Managed scope: a scheduled job must honor administrator-pinned
                 # model / reasoning / toolsets / provider_routing too. This loader
                 # builds its own dict, so overlay managed values via the shared
@@ -5623,11 +5726,34 @@ def run_job(
                         if _global_model:
                             model = _global_model
         except Exception as e:
-            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+            _cfg_load_error = (
+                "config.yaml could not be loaded; repair or replace the file"
+            )
+            logger.warning(
+                "Job '%s': failed to load config.yaml; blocking agent-backed "
+                "run instead of widening to defaults: %s",
+                job_id,
+                e,
+            )
+
+        _authority_error = _cfg_load_error
+        _enabled_toolsets = []
+        _disabled_toolsets = []
+        if _authority_error is None:
+            try:
+                _enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+                _disabled_toolsets = _resolve_cron_disabled_toolsets(_cfg)
+            except CronToolsetResolutionError as exc:
+                _authority_error = str(exc)
+                # Keep all reads before the common blocked_config return safe;
+                # none of these defaults can reach provider/agent execution.
+                _cfg = {}
 
         # Fail fast if no model resolved from job / env / config.yaml: an empty
         # model otherwise reaches the provider as an opaque 400 (#23979).
-        if not (isinstance(model, str) and model.strip()):
+        if _authority_error is None and not (
+            isinstance(model, str) and model.strip()
+        ):
             raise RuntimeError(
                 f"Cron job '{job_name}' has no model configured "
                 f"(job.model={job.get('model')!r}, "
@@ -5703,39 +5829,46 @@ def run_job(
         _guard_job_credential_exfil(job)
 
         # ---------------------------------------------------------------
-        # Pre-dispatch configuration validation (T1-26).
+        # Mandatory toolset resolution + optional pre-dispatch validation.
         #
-        # A job whose configuration cannot possibly produce a successful
-        # run — missing provider API key (no fallback chain), unready
-        # attached skill, unconfigured delivery platform — is refused HERE,
-        # before AIAgent is constructed and before the resolution below can
-        # feed a doomed runtime into it, so a misconfigured job never burns
-        # an LLM call. run_one_job keys off the BLOCKED_CONFIG_MARKER in
-        # the returned error to record last_status='blocked_config' and
-        # alert exactly once (dedup persisted via the job's
-        # `preflight_alerted` bit — the #73506 alert-once shape).
-        # Runs after the wake-gate/prompt build so silent script ticks stay
-        # silent. Opt-out: `cron.preflight: false` in config.yaml.
+        # Effective toolsets are resolved exactly once before provider/MCP/
+        # agent work.  Resolution failure is mandatory-fail-closed because
+        # passing None to AIAgent would load the full default toolset and widen
+        # unattended authority.  Provider/skill/delivery preflight remains the
+        # separately configurable, fail-open check controlled by
+        # ``cron.preflight``.
+        #
+        # Both failure classes reuse the existing blocked_config status and
+        # alert-once lifecycle.  run_one_job keys off BLOCKED_CONFIG_MARKER and
+        # ``preflight_alerted`` is cleared after the next healthy resolution /
+        # active preflight pass so a later recurrence can alert again.
         # ---------------------------------------------------------------
-        _pf_reason = None
-        try:
-            if _cron_preflight_enabled(_cfg):
-                _pf_reason = _preflight_job_config(job, _cfg)
-                if not _pf_reason and job.get("preflight_alerted"):
-                    # Configuration validates again — clear the alert-once
-                    # marker so a FUTURE config break re-alerts.
-                    try:
-                        from cron.jobs import clear_preflight_alerted
-                        clear_preflight_alerted(job_id)
-                    except Exception:
-                        pass
-        except Exception:
-            # The validator must never take down a runnable job — fail open.
-            logger.debug(
-                "Job '%s': preflight validation errored — failing open",
-                job_id, exc_info=True,
-            )
-            _pf_reason = None
+        _pf_reason = _authority_error
+        _pf_can_opt_out = False
+
+        if _pf_reason is None:
+            try:
+                if _cron_preflight_enabled(_cfg):
+                    _pf_reason = _preflight_job_config(
+                        job, _cfg if isinstance(_cfg, dict) else {}
+                    )
+                    _pf_can_opt_out = bool(_pf_reason)
+            except Exception:
+                # Optional validation must never take down a runnable job.
+                logger.debug(
+                    "Job '%s': preflight validation errored — failing open",
+                    job_id, exc_info=True,
+                )
+                _pf_reason = None
+
+        if _pf_reason is None and job.get("preflight_alerted"):
+            # Configuration validates again (or optional validation is now
+            # disabled) — clear alert-once state so a future break re-alerts.
+            try:
+                from cron.jobs import clear_preflight_alerted
+                clear_preflight_alerted(job_id)
+            except Exception:
+                pass
 
         if _pf_reason:
             logger.warning(
@@ -5756,6 +5889,13 @@ def run_job(
                 BLOCKED_CONFIG_SILENT_MARKER if already_alerted
                 else BLOCKED_CONFIG_MARKER
             )
+            remediation = (
+                " Set `cron.preflight: false` in config.yaml to disable this "
+                "optional validation."
+                if _pf_can_opt_out
+                else " Repair the cron tool configuration; this mandatory "
+                "authority check cannot be disabled."
+            )
             blocked_doc = (
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
@@ -5766,8 +5906,7 @@ def run_job(
                 f"**Reason:** {_pf_reason}\n\n"
                 "The job will stay blocked (without re-alerting) until the "
                 "configuration is fixed; the next healthy run clears this "
-                "state. Set `cron.preflight: false` in config.yaml to "
-                "disable this validation."
+                f"state.{remediation}"
             )
             return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
@@ -6026,8 +6165,8 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            enabled_toolsets=_enabled_toolsets,
+            disabled_toolsets=_disabled_toolsets,
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

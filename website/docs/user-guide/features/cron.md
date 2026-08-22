@@ -83,13 +83,27 @@ validates that the job's configuration can actually produce a successful run:
 - delivery platform targets are known and have gateway credentials configured
   (`local`/`origin` targets are never checked).
 
-When validation fails, the job's `last_status` becomes `blocked_config`, ONE
+A separate **mandatory tool-authority check** runs before those optional
+provider/skill/delivery checks. An existing `config.yaml` that cannot be read
+or has structurally invalid cron tool policy blocks agent-backed jobs rather
+than falling back to broader defaults. Toolset resolution failures behave the
+same way. These authority checks cannot be disabled with `cron.preflight`.
+
+Toolset empty-list semantics are intentionally different by scope:
+
+- `platform_toolsets.cron: []` is an explicit **no-tools** policy.
+- A per-job `enabled_toolsets: []` clears that job's override and inherits the
+  cron platform policy, matching create/edit serialization (`[]` is stored as
+  unset). A nonempty per-job list overrides the native platform toolsets.
+
+When either validation layer fails, the job's `last_status` becomes
+`blocked_config`, ONE
 alert is delivered (it is not repeated every tick), and **no LLM call is
 made** — a misconfigured job never spends tokens. The next healthy run clears
 the blocked state so a future configuration break alerts again.
 
-To disable the validation and restore the old behavior (the run proceeds and
-fails during execution):
+To disable only the optional provider/skill/delivery checks and restore their
+old runtime-failure behavior:
 
 ```yaml
 cron:

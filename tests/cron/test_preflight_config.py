@@ -9,8 +9,9 @@ delivery platform — must be blocked BEFORE any agent machinery is constructed:
     alert-once spirit as the dead-pin auto-pause in #73506),
   - the agent is NEVER constructed, so no LLM call is burned.
 
-``cron.preflight: false`` in config.yaml restores the old behavior (the run
-proceeds to resolution and fails loudly every tick).
+``cron.preflight: false`` in config.yaml restores the old behavior for the
+optional provider/skill/delivery checks. Mandatory authority checks such as
+effective toolset resolution remain active.
 
 Related precedent: #27948 (fail-loud for hidden tools — same fail-before-run
 spirit, different check) and #44585 (drift guard: skip-run-no-spend shape).
@@ -62,33 +63,39 @@ class _AuthErrorFactory:
         raise AuthError("No API key configured for provider 'openrouter'")
 
 
-def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
+def _run_job_patched(
+    job,
+    tmp_path,
+    *,
+    resolve=None,
+    skill_view=None,
+    trace=None,
+):
     """Drive run_job with the standard cron-test seams patched.
 
     Returns (success, output, final_response, error, agent_constructed).
+    When *trace* is a dict, it receives the provider, MCP-discovery, and agent
+    constructor mocks so boundary ordering can be asserted without changing
+    the stable return shape used by existing tests.
     """
     fake_db = MagicMock()
+    mcp_patcher = patch("tools.mcp_tool.discover_mcp_tools", return_value=[])
     patches = [
         patch("cron.scheduler._hermes_home", tmp_path),
         patch("cron.scheduler._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
         patch("hermes_state.SessionDB", return_value=fake_db),
-        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
     ]
     if resolve is None:
-        patches.append(
-            patch(
-                "hermes_cli.runtime_provider.resolve_runtime_provider",
-                return_value=dict(_RUNTIME),
-            )
+        runtime_patcher = patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=dict(_RUNTIME),
         )
     else:
-        patches.append(
-            patch(
-                "hermes_cli.runtime_provider.resolve_runtime_provider",
-                side_effect=resolve,
-            )
+        runtime_patcher = patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=resolve,
         )
     if skill_view is not None:
         patches.append(patch("tools.skills_tool.skill_view", side_effect=skill_view))
@@ -102,8 +109,16 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
         with ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
+            mcp_mock = stack.enter_context(mcp_patcher)
+            runtime_mock = stack.enter_context(runtime_patcher)
             success, output, final_response, error = run_job(job)
         agent_constructed = mock_agent_cls.called
+        if trace is not None:
+            trace.update(
+                agent=mock_agent_cls,
+                mcp_discovery=mcp_mock,
+                runtime_provider=runtime_mock,
+            )
     return success, output, final_response, error, agent_constructed
 
 
@@ -191,6 +206,212 @@ class TestMissingProviderKeyBlocks:
         assert error is None
 
 
+class TestToolsetResolutionBlocks:
+    def test_resolution_failure_blocks_before_provider_mcp_or_agent(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "platform_toolsets:\n  cron: web\n", encoding="utf-8"
+        )
+        job = _job()
+        trace = {}
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, output, _final_response, error, agent_constructed = (
+                _run_job_patched(job, tmp_path, trace=trace)
+            )
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None and "[blocked_config]" in error
+        assert "toolset resolution failed" in f"{error} {output}".lower()
+        trace["runtime_provider"].assert_not_called()
+        trace["mcp_discovery"].assert_not_called()
+
+    def test_resolution_failure_stays_mandatory_when_optional_preflight_is_disabled(
+        self, tmp_path
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "cron:\n  preflight: false\n"
+            "platform_toolsets:\n  - not-a-mapping\n",
+            encoding="utf-8",
+        )
+        job = _job()
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, output, _final_response, error, agent_constructed = (
+                _run_job_patched(job, tmp_path)
+            )
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None and "[blocked_config]" in error
+        assert "toolset resolution failed" in f"{error} {output}".lower()
+        assert "cron.preflight: false" not in output
+
+    def test_disabled_toolset_resolution_failure_blocks_before_provider(self, tmp_path):
+        job = _job()
+        trace = {}
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            with patch.object(
+                sched,
+                "_resolve_cron_disabled_toolsets",
+                side_effect=sched.CronToolsetResolutionError(
+                    "cron toolset resolution failed; check cron tool configuration"
+                ),
+            ):
+                success, output, _final_response, error, agent_constructed = (
+                    _run_job_patched(job, tmp_path, trace=trace)
+                )
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None and "[blocked_config]" in error
+        assert "toolset resolution failed" in f"{error} {output}".lower()
+        trace["runtime_provider"].assert_not_called()
+        trace["mcp_discovery"].assert_not_called()
+
+    def test_malformed_agent_policy_uses_blocked_config_before_max_turns(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: test/model\nagent: not-a-mapping\n",
+            encoding="utf-8",
+        )
+        job = _job()
+        trace = {}
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, output, _final_response, error, agent_constructed = (
+                _run_job_patched(job, tmp_path, trace=trace)
+            )
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None and "[blocked_config]" in error
+        assert "toolset resolution failed" in f"{error} {output}".lower()
+        trace["runtime_provider"].assert_not_called()
+        trace["mcp_discovery"].assert_not_called()
+
+    def test_real_empty_platform_toolset_reaches_agent_as_empty(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "platform_toolsets:\n  cron: []\n",
+            encoding="utf-8",
+        )
+        job = _job()
+        trace = {}
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, _output, _final_response, error, agent_constructed = (
+                _run_job_patched(job, tmp_path, trace=trace)
+            )
+
+        assert success is True
+        assert error is None
+        assert agent_constructed is True
+        assert trace["agent"].call_args.kwargs["enabled_toolsets"] == []
+        assert trace["agent"].call_args.kwargs["enabled_toolsets"] is not None
+
+    def test_toolset_policy_resolvers_are_called_once(self, tmp_path):
+        job = _job()
+
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            with patch.object(
+                sched,
+                "_resolve_cron_enabled_toolsets",
+                return_value=["file"],
+            ) as enabled_resolver, patch.object(
+                sched,
+                "_resolve_cron_disabled_toolsets",
+                return_value=["cronjob", "messaging", "clarify"],
+            ) as disabled_resolver:
+                success, _output, _final_response, error, agent_constructed = (
+                    _run_job_patched(job, tmp_path)
+                )
+
+        assert success is True
+        assert error is None
+        assert agent_constructed is True
+        enabled_resolver.assert_called_once()
+        disabled_resolver.assert_called_once()
+
+    def test_mandatory_failure_alert_rearms_after_recovery_with_preflight_disabled(
+        self, tmp_path
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "cron:\n  preflight: false\n", encoding="utf-8"
+        )
+        job = _job()
+        deliveries = []
+        outcomes = iter([False, False, True, False])
+
+        def resolve_toolsets(*_args, **_kwargs):
+            if next(outcomes):
+                return ["file"]
+            raise sched.CronToolsetResolutionError(
+                "cron toolset resolution failed; check cron tool configuration"
+            )
+
+        def fake_deliver(_job, content, adapters=None, loop=None):
+            deliveries.append(content)
+            return None
+
+        fake_db = MagicMock()
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            with patch("cron.scheduler._hermes_home", tmp_path), \
+                 patch("cron.scheduler._resolve_origin", return_value=None), \
+                 patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+                 patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+                 patch("hermes_state.SessionDB", return_value=fake_db), \
+                 patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+                 patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                       return_value=dict(_RUNTIME)), \
+                 patch.object(sched, "_resolve_cron_enabled_toolsets",
+                              side_effect=resolve_toolsets), \
+                 patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+                 patch("run_agent.AIAgent") as mock_agent_cls:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent_cls.return_value = mock_agent
+
+                for tick in range(4):
+                    fresh = [
+                        item
+                        for item in cron_jobs.load_jobs()
+                        if item["id"] == job["id"]
+                    ][0]
+                    assert sched.run_one_job(fresh) is True
+                    stored = [
+                        item
+                        for item in cron_jobs.load_jobs()
+                        if item["id"] == job["id"]
+                    ][0]
+                    blocked_alerts = [
+                        content
+                        for content in deliveries
+                        if "blocked by configuration" in content.lower()
+                    ]
+                    if tick == 0:
+                        assert stored["last_status"] == "blocked_config"
+                        assert stored.get("preflight_alerted")
+                        assert len(blocked_alerts) == 1
+                    elif tick == 1:
+                        assert stored.get("preflight_alerted")
+                        assert len(blocked_alerts) == 1
+                    elif tick == 2:
+                        assert stored["last_status"] == "ok"
+                        assert not stored.get("preflight_alerted")
+                        assert len(blocked_alerts) == 1
+                    else:
+                        assert stored["last_status"] == "blocked_config"
+                        assert stored.get("preflight_alerted")
+                        assert len(blocked_alerts) == 2
+
+
 class TestHealthyJobUnaffected:
     def test_healthy_job_runs_normally(self, tmp_path):
         job = _job()
@@ -225,8 +446,8 @@ class TestHealthyJobUnaffected:
 
 class TestOptOut:
     def test_preflight_false_restores_old_behavior(self, tmp_path):
-        """cron.preflight: false → job proceeds to resolution and fails the
-        old way (error status, re-alerts every tick, no blocked_config)."""
+        """Disabling optional preflight lets provider resolution fail the old
+        way (error status, re-alert every tick, no blocked_config)."""
         (tmp_path / "config.yaml").write_text(
             "cron:\n  preflight: false\n", encoding="utf-8"
         )

@@ -24,6 +24,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
@@ -158,3 +160,49 @@ def test_writeback_roundtrip_byte_identical_when_unchanged(tmp_path):
     out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
     assert out["identical"] is True
     assert out["parsed"]["custom_prompt"] == "keep ${NOT_SET_VAR}"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "- valid-yaml-but-not-a-mapping\n",
+        "[]\n",
+        "false\n",
+        "null\n",
+        "~\n",
+        '!!null ""\n',
+        "--- &a\n...\n",
+        "--- !\n...\n",
+    ],
+)
+def test_raw_reader_strict_mapping_is_opt_in(tmp_path, content):
+    from hermes_cli.config import read_user_config_raw
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(content, encoding="utf-8")
+
+    assert read_user_config_raw(config_path) == {}
+    with pytest.raises(ValueError, match="root must be a mapping"):
+        read_user_config_raw(config_path, require_mapping=True)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "\n",
+        "# comment only\n",
+        "\ufeff",
+        "---\n...\n",
+        "%YAML 1.2\n---\n...\n",
+    ],
+)
+def test_raw_reader_strict_mapping_accepts_genuinely_empty_document(
+    tmp_path, content
+):
+    from hermes_cli.config import read_user_config_raw
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(content, encoding="utf-8")
+
+    assert read_user_config_raw(config_path, require_mapping=True) == {}

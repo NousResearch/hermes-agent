@@ -3275,7 +3275,11 @@ def read_raw_config() -> Dict[str, Any]:
         return data
 
 
-def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def read_user_config_raw(
+    config_path: Optional[Path] = None,
+    *,
+    require_mapping: bool = False,
+) -> Dict[str, Any]:
     """Read a user ``config.yaml`` EXACTLY as written on disk.
 
     No DEFAULT_CONFIG merge, no managed-scope overlay, no ``${ENV_VAR}``
@@ -3308,7 +3312,9 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
       * unparseable YAML / other I/O errors → raises (callers that want
         fail-open already wrap in try/except; callers with last-known-good
         or warn semantics rely on the exception)
-      * non-dict YAML root → ``{}``
+      * non-dict YAML root → ``{}`` by default; when ``require_mapping=True``,
+        raises ``ValueError`` so authority-sensitive callers cannot confuse a
+        malformed existing file with an intentionally empty configuration
 
     ``config_path`` defaults to :func:`get_config_path` (profile-aware).
     Pass an explicit path when the caller resolves its own home (gateway
@@ -3318,10 +3324,34 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
         config_path = get_config_path()
     try:
         with open(config_path, encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+            raw_text = f.read()
+            loaded = fast_safe_load(raw_text)
     except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if loaded is None:
+        explicit_null = False
+        for event in yaml.parse(raw_text):
+            if not isinstance(event, yaml.events.ScalarEvent):
+                continue
+            value = str(event.value or "").strip()
+            is_implicit_empty = (
+                not value and event.tag is None and event.anchor is None
+            )
+            if not is_implicit_empty:
+                explicit_null = True
+                break
+        if require_mapping and explicit_null:
+            raise ValueError("config.yaml root must be a mapping, got null")
+        data = {}
+    else:
+        data = loaded
+    if isinstance(data, dict):
+        return data
+    if require_mapping:
+        raise ValueError(
+            f"config.yaml root must be a mapping, got {type(data).__name__}"
+        )
+    return {}
 
 
 def read_raw_config_readonly() -> Dict[str, Any]:

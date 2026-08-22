@@ -174,7 +174,9 @@ Same agent, same tools, same skills — just strips every interactive / cosmetic
 
 #### `--usage-file` — JSON usage report for pipelines
 
-`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, and `completed` / `failed` flags. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
+`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `cost_status`, `cost_source`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, `completed`, `failed`, `partial`, `successful`, `exit_code`, `failure_reason`, and `turn_exit_reason` (plus `failure` when an exception escapes the agent). The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
+
+The process exits `0` when it has a usable final response, including a non-failed iteration-limit fallback summary. It exits `1` when the agent raises or produces no final response, and `2` for argument validation errors or structured unsuccessful outcomes such as `failed`, `partial`, or an incomplete turn without a usable iteration-limit summary. A diagnostic response is still printed on stdout when available, even when the exit status is nonzero.
 
 ```bash
 hermes -z "summarize this repo" --usage-file /tmp/usage.json

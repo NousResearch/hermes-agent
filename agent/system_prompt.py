@@ -36,6 +36,7 @@ from agent.prompt_builder import (
     EXECUTION_GUIDANCE_MODELS,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    INTAKE_HARNESS_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE,
@@ -390,6 +391,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    # Universal intake harness for noisy, duplicated, or compacted user input.
+    # Keep it stable and model-agnostic: this guards against executing stale
+    # commands from quoted logs or context-compaction summaries before finding
+    # the user's active request.
+    stable_parts.append(INTAKE_HARNESS_GUIDANCE)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

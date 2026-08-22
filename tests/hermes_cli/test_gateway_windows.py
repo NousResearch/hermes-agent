@@ -364,6 +364,167 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class _FakeClock:
+    """Deterministic stand-in for the ``time`` module used by the drain loop."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _arrange_stop(monkeypatch, running_pid, scanned_pids, live_pids, honour_marker):
+    """Drive ``stop()`` with a scripted PID topology and record ordered effects.
+
+    Host-agnostic on purpose: all of the Windows-specific dependencies
+    ``stop()`` relies on (``_assert_windows``, ``schtasks``, the process scan,
+    ``terminate_pid``) are mocked, so the ordering invariant under test is
+    exercised on any host.
+
+    ``live_pids`` is the mutable set of PIDs ``_pid_exists`` reports as alive.
+    When ``honour_marker`` is True the fake gateway behaves like a healthy one
+    and exits as soon as the planned-stop marker names it; when False it
+    ignores the marker and has to be force-killed.
+    """
+    import gateway.status as gateway_status
+
+    events = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda *a, **k: running_pid)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: list(scanned_pids))
+    monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 6.0)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+
+    def fake_schtasks(args):
+        events.append(("schtasks", tuple(args)))
+        return (0, "SUCCESS", "")
+
+    def fake_write_marker(target_pid):
+        events.append(("marker", target_pid))
+        if honour_marker:
+            live_pids.discard(target_pid)
+        return True
+
+    def fake_terminate(pid, force=False):
+        events.append(("terminate", pid))
+        live_pids.discard(pid)
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_status, "write_planned_stop_marker", fake_write_marker)
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda pid: pid in live_pids)
+    monkeypatch.setattr(gateway_status, "terminate_pid", fake_terminate)
+    return events
+
+
+def test_stop_drains_scanned_gateway_when_runtime_lock_is_stale(monkeypatch, capsys):
+    """A live gateway the runtime lock can't see must still be asked to drain.
+
+    ``get_running_pid()`` returns None whenever the gateway runtime lock is
+    absent/unheld and the runtime status record is empty, independently of
+    whether a gateway process is alive; the command-line scan behind
+    ``_gateway_pids()`` still finds it. ``stop()`` used to drain only the
+    former while hard-killing the latter, so in that state the planned-stop
+    marker — the only shutdown IPC Windows has — was never written and the
+    in-flight turn was lost.
+    """
+    monkeypatch.setattr(gateway_windows, "time", _FakeClock())
+    events = _arrange_stop(
+        monkeypatch,
+        running_pid=None,
+        scanned_pids=[4242],
+        live_pids={4242},
+        honour_marker=True,
+    )
+
+    gateway_windows.stop()
+
+    assert ("marker", 4242) in events, "no planned-stop marker written for the scanned gateway"
+    marker_at = events.index(("marker", 4242))
+    escalations = [i for i, (kind, _) in enumerate(events) if kind in ("schtasks", "terminate")]
+    assert all(i > marker_at for i in escalations), (
+        f"gateway was terminated before being asked to drain: {events}"
+    )
+    assert ("terminate", 4242) not in events, "a cleanly drained gateway must not be force-killed"
+    assert "drained cleanly" in capsys.readouterr().out
+
+
+def test_stop_drain_shares_one_deadline_across_every_known_pid(monkeypatch):
+    """Every known PID is asked to drain, and the whole drain stays bounded.
+
+    Draining is sequential because the planned-stop marker is a single global
+    file keyed by target PID, so a per-PID timeout would make stop latency
+    grow with the number of PIDs. One wedged gateway must also not consume the
+    entire budget and leave its siblings with no drain request.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(gateway_windows, "time", clock)
+    events = _arrange_stop(
+        monkeypatch,
+        running_pid=None,
+        scanned_pids=[11, 22, 33],
+        live_pids={11, 22, 33},
+        honour_marker=False,
+    )
+
+    gateway_windows.stop()
+
+    drained = [pid for kind, pid in events if kind == "marker"]
+    assert drained == [11, 22, 33], f"not every known gateway PID was asked to drain: {events}"
+    # One shared 6s deadline (plus _drain_gateway_pid's 1s floor), not 3 x 6s.
+    assert clock.now <= 7.0, f"drain ran for {clock.now}s; the deadline is not shared"
+    # None of them honoured the marker, so all three escalate to a hard kill.
+    assert sorted(pid for kind, pid in events if kind == "terminate") == [11, 22, 33]
+
+
+def test_stop_drains_the_lock_tracked_pid_without_rescanning_it(monkeypatch, capsys):
+    """The ordinary path is unchanged: one marker for the one known gateway."""
+    monkeypatch.setattr(gateway_windows, "time", _FakeClock())
+    events = _arrange_stop(
+        monkeypatch,
+        running_pid=777,
+        scanned_pids=[777],
+        live_pids={777},
+        honour_marker=True,
+    )
+
+    gateway_windows.stop()
+
+    assert [pid for kind, pid in events if kind == "marker"] == [777]
+    assert ("terminate", 777) not in events
+    assert "drained cleanly" in capsys.readouterr().out
+
+
+def test_stop_never_drains_the_stopping_process_itself(monkeypatch):
+    """Writing a planned-stop marker for our own PID would wedge stop() itself.
+
+    Reachable on Windows specifically: ``_get_process_start_time`` returns None
+    there, so ``get_running_pid()``'s PID-reuse check degrades to plain PID
+    equality and a stale PID file whose PID has since been recycled onto this
+    CLI process resolves to us. ``_force_terminate_known_gateway_pids`` already
+    skips its own PID; the drain has to as well, and its failure mode is worse
+    — it would block for the whole drain window waiting for itself to exit.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(gateway_windows, "time", clock)
+    own = gateway_windows.os.getpid()
+    events = _arrange_stop(
+        monkeypatch,
+        running_pid=own,
+        scanned_pids=[own],
+        live_pids={own},
+        honour_marker=False,
+    )
+
+    gateway_windows.stop()
+
+    assert not [pid for kind, pid in events if kind == "marker"]
+    assert clock.now == 0.0, "stop() waited on its own PID to exit"
+
+
 
 
 

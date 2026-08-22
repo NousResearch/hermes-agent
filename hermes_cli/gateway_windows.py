@@ -1567,6 +1567,60 @@ def _windows_stop_drain_timeout() -> float:
     return max(1.0, min(configured, 30.0))
 
 
+def _drain_gateway_pids(pids: list[int], drain_timeout: float) -> bool:
+    """Drain each known gateway PID in turn under ONE shared deadline.
+
+    ``write_planned_stop_marker`` stores the target PID *inside* a single
+    global marker file, and the gateway only acts on a marker that names
+    itself. Writing markers for several PIDs up front would therefore make
+    each write clobber the previous one before its target had a chance to
+    consume it, so the drain has to be sequential: write the marker for one
+    PID, wait for that PID to exit, then move to the next.
+
+    Every PID shares one deadline so total stop latency stays bounded by the
+    configured drain timeout rather than growing to ``len(pids) *
+    drain_timeout`` -- ``_windows_stop_drain_timeout()`` exists precisely
+    because "Windows CLI stop must not wedge forever". The budget still left
+    is split across the PIDs still to be drained, so one process that never
+    exits cannot consume the whole window and leave its siblings with no
+    drain request at all; a PID that exits early hands its unused share back
+    to the ones after it.
+
+    Because the marker is sequential and the budget is bounded, a PID reached
+    after the deadline has passed gets no marker at all: it is skipped and the
+    return value drops to False, leaving it to the caller's hard-kill phase.
+    That is the deliberate trade -- pre-writing its marker would overwrite the
+    marker the PID currently being drained has not consumed yet, converting a
+    bounded loss of drain for the tail into a loss of drain for everyone.
+
+    Returns True only when every live PID exited within the shared deadline,
+    so the caller can honestly report a clean drain rather than claiming one
+    while a sibling process is still being hard-killed.
+    """
+    own_pid = os.getpid()
+    seen: set[int] = set()
+    targets: list[int] = []
+    for pid in pids:
+        if pid <= 0 or pid == own_pid or pid in seen:
+            continue
+        seen.add(pid)
+        targets.append(pid)
+    if not targets:
+        return False
+
+    deadline = time.monotonic() + max(drain_timeout, 1.0)
+    all_drained = True
+    for index, pid in enumerate(targets):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Out of budget: the caller still hard-kills this PID below.
+            all_drained = False
+            continue
+        if not _drain_gateway_pid(pid, remaining / (len(targets) - index)):
+            all_drained = False
+    return all_drained
+
+
 def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
     """Force-kill known gateway PIDs without a broad process sweep."""
     try:
@@ -1612,25 +1666,39 @@ def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
 def stop() -> None:
     """Stop the gateway.
 
-    Writes the planned-stop marker first so the gateway can drain
-    in-flight agents and persist ``resume_pending`` before exit (the
-    gateway's marker-watcher thread picks this up — Windows asyncio
-    can't deliver SIGTERM to the loop, so the marker is our only IPC).
-    Then escalates with bounded Windows process termination against the
-    known gateway PID(s).
+    Drains the known gateway PIDs first so each gateway can flush in-flight
+    agents and persist ``resume_pending`` before exit (the gateway's
+    marker-watcher thread picks the marker up — Windows asyncio can't deliver
+    SIGTERM to the loop, so the marker is our only IPC). Concretely,
+    ``_drain_gateway_pids`` writes the planned-stop marker for each *valid,
+    non-self* known PID in turn — invalid PIDs and this process's own PID are
+    never marked — and only for as long as the shared drain budget lasts; see
+    that helper for why the marker cannot be written for several PIDs at once
+    and why the budget is bounded. Then escalates with bounded Windows process
+    termination against the known gateway PID(s), which covers any PID the
+    drain phase did not reach.
     """
     _assert_windows()
     from gateway.status import get_running_pid
 
-    # Phase 1: ask the running gateway (if any) to drain itself by writing
-    # the planned-stop marker, then wait briefly for it to exit cleanly.
-    # On clean exit, sessions land with resume_pending=True and the next
-    # boot will auto-resume them.
+    # Phase 1: ask every running gateway to drain itself by writing the
+    # planned-stop marker, then wait briefly for it to exit cleanly. On clean
+    # exit, sessions land with resume_pending=True and the next boot will
+    # auto-resume them.
+    #
+    # Drain the same PID list Phase 3 hard-kills, not just the lock-tracked
+    # one: get_running_pid() reports None whenever the runtime lock is
+    # missing/unheld, independently of whether a gateway is alive, while
+    # _collect_gateway_stop_pids() also sees the service registry and the
+    # command-line scan. Draining only the former meant that exact state --
+    # no runtime lock, live gateway -- skipped the marker entirely and went
+    # straight to schtasks /End + taskkill /F, abandoning the in-flight turn
+    # that #33778 was fixed to preserve. The POSIX stop path already handles
+    # this case (hermes_cli/gateway.py _reap_unsupervised_gateway_orphans
+    # writes the marker for every scanned PID before signalling it).
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
-    drained = False
-    if pid is not None:
-        drained = _drain_gateway_pid(pid, _windows_stop_drain_timeout())
+    drained = _drain_gateway_pids(stop_pids, _windows_stop_drain_timeout())
 
     stopped_any = drained
     if is_task_registered():

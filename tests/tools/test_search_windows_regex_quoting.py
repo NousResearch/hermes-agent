@@ -50,6 +50,37 @@ def test_search_regex_bypasses_path_normalization(monkeypatch):
     )
 
 
+def test_search_glob_bypasses_path_normalization(monkeypatch):
+    """Glob syntax is shell data, not a filesystem path to rewrite."""
+    import tools.environments.local as local_mod
+
+    commands = []
+    env = MagicMock()
+    env.cwd = "/tmp/test"
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        if command.startswith("command -v rg"):
+            return {"output": "yes", "returncode": 0}
+        return {"output": "", "returncode": 0}
+
+    env.execute.side_effect = execute
+    monkeypatch.setattr(
+        local_mod,
+        "_bash_safe_path",
+        lambda value: value.replace("\\", "/"),
+    )
+
+    result = ShellFileOperations(env).search(
+        "needle",
+        path="/tmp/test",
+        file_glob=r"dir\*.cs",
+    )
+
+    assert result.error is None
+    assert any("'dir\\*.cs'" in command for command in commands)
+
+
 def test_search_pattern_reaches_rg_via_heredoc_transport(tmp_path):
     """SDK backends that embed stdin as a heredoc must feed rg, not head."""
     bash = shutil.which("bash")
@@ -90,22 +121,40 @@ def test_search_pattern_reaches_rg_via_heredoc_transport(tmp_path):
     assert result.total_count == 1
 
 
-def test_grep_fallback_does_not_reinterpret_newline_escape(tmp_path, monkeypatch):
-    """A real newline must not become a grep regex that matches letter n."""
+@pytest.mark.parametrize(
+    ("pattern", "content", "expected_count", "expects_warning"),
+    [
+        ("a\nb", "anb\n", 0, True),
+        ("a\rb", "arb\n", 0, False),
+    ],
+    ids=("newline", "carriage-return-no-false-match"),
+)
+def test_grep_fallback_preserves_control_characters(
+    tmp_path,
+    monkeypatch,
+    pattern,
+    content,
+    expected_count,
+    expects_warning,
+):
+    """grep must not reinterpret CR/LF controls as letters r/n."""
     if shutil.which("grep") is None:
         pytest.skip("grep is required")
 
     source = tmp_path / "sample.txt"
-    source.write_text("anb\n", encoding="utf-8")
+    source.write_text(content, encoding="utf-8")
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
 
-    result = ops.search("a\nb", path=str(tmp_path), file_glob="*.txt")
+    result = ops.search(pattern, path=str(tmp_path), file_glob="*.txt")
 
     assert result.error is None
-    assert result.total_count == 0
-    assert result.warning is not None
-    assert "line-oriented" in result.warning
+    assert result.total_count == expected_count
+    if expects_warning:
+        assert result.warning is not None
+        assert "line-oriented" in result.warning
+    else:
+        assert result.warning is None
 
 
 @pytest.mark.windows_only

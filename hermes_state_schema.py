@@ -1160,7 +1160,10 @@ class SessionSchemaMixin:
             # index against non-empty messages) is NOT stamped either —
             # the marker is the source of truth for "fully optimized", and
             # `fts_optimize_available()` keeps offering the resume until the
-            # transition actually completes.
+            # transition actually completes. A live trigram index still
+            # indexing raw multimodal JSON (#69672, fts_storage_version < 2)
+            # is likewise held back — only `optimize-storage`'s explicit
+            # rebuild advances it, same as every other opt-in FTS transition.
             if (
                 fts5_available
                 and not self._db_has_legacy_inline_fts(cursor)
@@ -1170,10 +1173,15 @@ class SessionSchemaMixin:
                 ).fetchone() is None
                 and not self._has_fts_trash(cursor)
                 and not self._fts_external_index_empty_with_messages(cursor)
+                and not self._fts_trigram_needs_multimodal_projection(cursor)
             ):
                 self.set_meta(
                     "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
                 )
+            elif fts5_available and self._fts_trigram_needs_multimodal_projection(
+                cursor
+            ):
+                self.set_meta("fts_optimize_available", "1", cursor=cursor)
 
             # Advance schema_version to current for ALL non-FTS-layout
             # migrations. This is deliberately NOT gated on the FTS opt-in —

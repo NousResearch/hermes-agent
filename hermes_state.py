@@ -59,6 +59,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
+    _fts_index_content_sql,
     _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -2676,9 +2677,9 @@ def _repair_state_db_schema_locked(
 # an external-content 'delete' op for a rowid the index never held is the
 # canonical FTS5 index-corruption hazard the v23 marker gating exists to
 # prevent.
-FTS_CJK_TABLE_SQL = """
+FTS_CJK_TABLE_SQL = f"""
 CREATE VIEW IF NOT EXISTS messages_fts_cjk_src AS
-    SELECT id, role, content, tool_name, tool_calls
+    SELECT id, role, {_fts_index_content_sql('content', 'fts_content')} AS content, tool_name, tool_calls
     FROM messages
     WHERE role <> 'tool';
 
@@ -2692,7 +2693,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_cjk USING fts5(
 );
 """
 
-FTS_CJK_TRIGGER_SQL = """
+FTS_CJK_TRIGGER_SQL = f"""
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_insert AFTER INSERT ON messages
 WHEN new.role <> 'tool'
    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -2701,7 +2702,7 @@ WHEN new.role <> 'tool'
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+    VALUES (new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_delete AFTER DELETE ON messages
@@ -2712,12 +2713,13 @@ WHEN old.role <> 'tool'
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    VALUES ('delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_update
-AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
+AFTER UPDATE OF content, fts_content, tool_name, tool_calls, role ON messages
 WHEN (old.content IS NOT new.content
+    OR old.fts_content IS NOT new.fts_content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
     OR old.role IS NOT new.role)
@@ -2727,10 +2729,10 @@ WHEN (old.content IS NOT new.content
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+    SELECT 'delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls
     WHERE old.role <> 'tool';
     INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
+    SELECT new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls
     WHERE new.role <> 'tool';
 END;
 """
@@ -4093,6 +4095,60 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "trigram/LIKE", exc_info=True,
             )
             self._fts_cjk_available = False
+
+    def _upgrade_fts_cjk_projection(self) -> bool:
+        """Rebuild the CJK-bigram index against the multimodal text
+        projection (#69672's companion fix — same idea as
+        :meth:`SessionSearchMixin._upgrade_fts_trigram_projection` in
+        hermes_state_search.py, kept here because it needs
+        ``FTS_CJK_TABLE_SQL``/``FTS_CJK_TRIGGER_SQL``, which live in this
+        module).
+
+        No-op when the tokenizer isn't loaded, the table doesn't exist yet,
+        or the view already reads ``fts_content``. Drops the view/triggers,
+        backfills ``fts_content``, then re-ensures the schema and runs the
+        FTS5 ``'rebuild'`` special command so existing rows re-index from
+        the projection. ``_ensure_fts_cjk_schema`` uses ``executescript()``,
+        which implicitly commits — it and the 'rebuild' insert must run
+        outside ``_execute_write()``'s ``BEGIN IMMEDIATE``, same rule as
+        every other CJK schema recreation in this class.
+        """
+        if not self._fts_cjk_loaded:
+            return False
+        with self._lock:
+            cjk_present = bool(self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'messages_fts_cjk'"
+            ).fetchone())
+            if not cjk_present or self._fts_view_uses_multimodal_projection(
+                self._conn, "messages_fts_cjk_src"
+            ):
+                return False
+
+        def _backfill_and_drop(conn):
+            self._backfill_fts_content(conn)
+            for trig in _FTS_CJK_TRIGGERS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            conn.execute("DROP VIEW IF EXISTS messages_fts_cjk_src")
+
+        self._execute_write(_backfill_and_drop)
+
+        with self._lock:
+            self._ensure_fts_cjk_schema(self._conn)
+            if not self._fts_cjk_available:
+                self._conn.commit()
+                raise sqlite3.OperationalError(
+                    "failed to recreate messages_fts_cjk during the "
+                    "multimodal-projection upgrade"
+                )
+            self._conn.execute(
+                "INSERT INTO messages_fts_cjk(messages_fts_cjk) VALUES('rebuild')"
+            )
+            self._conn.commit()
+        logger.info(
+            "Rebuilt messages_fts_cjk onto the multimodal text projection (#69672)."
+        )
+        return True
 
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
@@ -9414,6 +9470,67 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return content
         return content
 
+    @classmethod
+    def _fts_content(cls, stored_content: Any) -> Optional[str]:
+        """Text-only projection of ``stored_content`` for substring indexes.
+
+        Multimodal rows keep their sentinel-prefixed JSON verbatim in
+        ``content`` for replay, but only the explicit ``text`` parts belong
+        in the trigram/CJK substring indexes (#69672): ``image_url`` parts
+        commonly carry multi-megabyte base64 data that is neither a
+        meaningful search target nor safe to trigram-index (the embedded NUL
+        makes SQLite's trigram integrity check version-dependent). Returns
+        ``None`` for plain scalar content — the FTS view/triggers fall back
+        to indexing ``content`` directly in that case (see
+        ``_fts_index_content_sql`` in hermes_state_common.py).
+        """
+        decoded = cls._decode_content(stored_content)
+        if isinstance(decoded, list):
+            text_parts = [
+                part.get("text")
+                for part in decoded
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            return " ".join(text_parts).replace("\x00", " ")
+        if isinstance(decoded, dict):
+            text = decoded.get("text") if decoded.get("type") == "text" else ""
+            return text.replace("\x00", " ") if isinstance(text, str) else ""
+        return None
+
+    def _backfill_fts_content(
+        self, conn, *, lo: Optional[int] = None, hi: Optional[int] = None
+    ) -> None:
+        """Populate ``fts_content`` for multimodal rows that lack it.
+
+        Called before a trigram/CJK backfill INSERT reads through a view
+        sourcing ``fts_content`` (see ``_fts_index_content_sql`` in
+        hermes_state_common.py), so the read never sees a NULL projection for
+        a row the sentinel check identifies as multimodal. Caller holds the
+        write transaction.
+
+        ``lo``/``hi`` scope the scan to one chunk's id range (exclusive
+        lower, inclusive upper — matching the chunk-loop callers) so a
+        per-chunk call stays O(chunk), not O(table); omit both for a one-shot
+        full-table backfill (the ``optimize_fts_storage`` projection-upgrade
+        path, run once).
+        """
+        query = (
+            "SELECT id, content FROM messages WHERE fts_content IS NULL "
+            "AND substr(CAST(content AS BLOB), 1, 6) = X'006A736F6E3A'"
+        )
+        params: tuple = ()
+        if lo is not None and hi is not None:
+            query += " AND id > ? AND id <= ?"
+            params = (lo, hi)
+        rows = conn.execute(query, params)
+        while batch := rows.fetchmany(500):
+            conn.executemany(
+                "UPDATE messages SET fts_content = ? WHERE id = ?",
+                [(self._fts_content(row[1]), row[0]) for row in batch],
+            )
+
     @staticmethod
     def _encode_display_metadata(display_metadata: Any) -> Optional[str]:
         """Serialize ``display_metadata`` for its TEXT column without double-encoding.
@@ -9616,6 +9733,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        fts_content = self._fts_content(stored_content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -9641,15 +9759,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT INTO messages (session_id, role, content, fts_content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
                     stored_content,
+                    fts_content,
                     tool_call_id,
                     tool_calls_json,
                     _scrub_surrogates(tool_name),
@@ -10070,17 +10189,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
             api_content = msg.get("api_content")
+            stored_content = self._encode_content(msg.get("content"))
 
             cur = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT INTO messages (session_id, role, content, fts_content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
-                    self._encode_content(msg.get("content")),
+                    stored_content,
+                    self._fts_content(stored_content),
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),

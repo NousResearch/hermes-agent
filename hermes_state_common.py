@@ -302,7 +302,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -313,7 +313,12 @@ SCHEMA_VERSION = 26
 # layout 0 (marker absent) with a working inline index until the user opts in.
 #   1 = v23 external-content layout (content/tool_name/tool_calls,
 #       tool-row-excluded trigram)
-FTS_STORAGE_VERSION = 1
+#   2 = multimodal text projection for the trigram/CJK indexes (#69672):
+#       sentinel-prefixed multimodal JSON is excluded from the substring
+#       indexes in favour of the ``fts_content`` text-only projection —
+#       removes the embedded NUL that makes trigram integrity checks
+#       SQLite-version-dependent, and stops indexing base64 image payloads.
+FTS_STORAGE_VERSION = 2
 
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
@@ -408,6 +413,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    fts_content TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -625,14 +631,35 @@ END;
 # of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
 # while being almost entirely machine noise (base64 payloads, file dumps,
 # delegation transcripts).  The index therefore reads through
-# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
-# fully stored in ``messages`` and fully searchable via the standard
-# ``messages_fts`` index; they just don't get trigram (CJK substring)
-# treatment.  ``search_messages`` routes CJK queries that filter on
-# ``role='tool'`` to the LIKE fallback for the same reason.
-FTS_TRIGRAM_SQL = """
+# ``messages_fts_trigram_src``, a view that excludes tool rows and, for
+# multimodal rows, substitutes the SessionDB-maintained ``fts_content`` text
+# projection (see ``SessionDB._fts_content``) for the raw sentinel-prefixed
+# JSON — they stay fully stored in ``messages`` and fully searchable via the
+# standard ``messages_fts`` index; they just don't get trigram (CJK
+# substring) treatment on the raw JSON/base64.  ``search_messages`` routes
+# CJK queries that filter on ``role='tool'`` to the LIKE fallback for the
+# same reason.
+def _fts_index_content_sql(content: str, projection: str) -> str:
+    """SQL expression: the substring-index value for a message column pair.
+
+    ``content`` and ``projection`` are trusted SQL expressions (column refs
+    like ``new.content`` / ``new.fts_content``), never user input. Multimodal
+    content is stored JSON-encoded behind a 6-byte NUL ``json:`` sentinel
+    (``SessionDB._CONTENT_JSON_PREFIX``); ``X'006A736F6E3A'`` is that
+    sentinel's byte pattern (NUL + 'json:'). Comparing the raw column as a
+    BLOB avoids any TEXT-affinity/embedded-NUL literal ambiguity. Rows that
+    match get the precomputed text-only projection (never the base64/JSON
+    itself); everything else indexes unchanged, exactly as before.
+    """
+    return (
+        f"CASE WHEN substr(CAST({content} AS BLOB), 1, 6) = X'006A736F6E3A' "
+        f"THEN COALESCE({projection}, '') ELSE {content} END"
+    )
+
+
+FTS_TRIGRAM_SQL = f"""
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
-    SELECT id, role, content, tool_name, tool_calls
+    SELECT id, role, {_fts_index_content_sql('content', 'fts_content')} AS content, tool_name, tool_calls
     FROM messages
     WHERE role <> 'tool';
 
@@ -653,7 +680,7 @@ WHEN new.role <> 'tool'
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+    VALUES (new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
@@ -664,12 +691,13 @@ WHEN old.role <> 'tool'
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    VALUES ('delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
-AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
+AFTER UPDATE OF content, fts_content, tool_name, tool_calls, role ON messages
 WHEN (old.content IS NOT new.content
+    OR old.fts_content IS NOT new.fts_content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
     OR old.role IS NOT new.role)
@@ -679,10 +707,10 @@ WHEN (old.content IS NOT new.content
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+    SELECT 'delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls
     WHERE old.role <> 'tool';
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
+    SELECT new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls
     WHERE new.role <> 'tool';
 END;
 """

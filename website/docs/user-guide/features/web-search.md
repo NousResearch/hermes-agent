@@ -27,8 +27,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **DeepSeek (V4 Flash)** | `DEEPSEEK_API_KEY` | ✔ | — | Paid (per-token) |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, xAI, and DeepSeek are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). DeepSeek (V4 Flash) works the same way on DeepSeek's Responses API (see [trust-model caveat](#deepseek-v4-flash)).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -327,6 +328,42 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 
 ---
 
+### DeepSeek (V4 Flash) {#deepseek-v4-flash}
+
+Routes `web_search` through DeepSeek's server-side [web_search tool](https://api-docs.deepseek.com/guides/responses_api) on the Responses API. DeepSeek runs the searching server-side and returns the top results as structured JSON — cheap per-query, with no per-search surcharge beyond token cost.
+
+```bash
+# ~/.hermes/.env
+DEEPSEEK_API_KEY=...
+```
+
+Then select DeepSeek as the search backend:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "deepseek"
+```
+
+**Optional knobs:**
+
+```yaml
+web:
+  backend: "deepseek"
+  deepseek:
+    model: deepseek-v4-flash       # Responses API currently only supports deepseek-v4-flash (default)
+    base_url: https://api.deepseek.com
+    timeout: 90                    # seconds (default)
+```
+
+**Search-only** — pair with Firecrawl / Tavily / Exa / Parallel if you also need `web_extract`. Reuses the same `DEEPSEEK_API_KEY` already configured for the DeepSeek model provider, so existing users need no new credential.
+
+:::caution Trust model
+Same as xAI: DeepSeek is an LLM choosing which URLs to surface and writing the titles and descriptions itself. Treat returned URLs as model-generated links — validate before fetching, especially when the query came from untrusted input.
+:::
+
+---
+
 ## Configuration
 
 ### Single backend
@@ -336,7 +373,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai | deepseek
 ```
 
 ### Per-capability configuration

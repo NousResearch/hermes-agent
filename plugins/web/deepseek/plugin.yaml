@@ -1,0 +1,7 @@
+name: web-deepseek
+version: 1.0.0
+description: "DeepSeek Web Search — search the web via DeepSeek's server-side web_search tool (Responses API, deepseek-v4-flash). Requires DEEPSEEK_API_KEY (https://platform.deepseek.com)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - deepseek

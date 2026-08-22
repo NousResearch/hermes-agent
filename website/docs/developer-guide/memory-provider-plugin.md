@@ -122,13 +122,66 @@ class MyMemoryProvider(MemoryProvider):
 | Method | When Called | Use Case |
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
-| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
+| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context as `str`, or `MemoryPrefetchResult` with optional observations |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+### Structured prefetch results
+
+Returning a plain `str` remains fully supported and is the compatibility path.
+Providers that have a concrete in-process consumer may instead return the small
+immutable `MemoryPrefetchResult` / `MemoryObservation` pair:
+
+```python
+from agent.memory_provider import MemoryObservation, MemoryPrefetchResult
+
+
+def prefetch(self, query: str, *, session_id: str = ""):
+    context = self._format_context(query)
+    return MemoryPrefetchResult(
+        context=context,
+        observations=(
+            MemoryObservation(
+                source_kind="context_snapshot",
+                schema="my-provider.context_snapshot",
+                version=1,
+                payload={"available": bool(context)},
+            ),
+        ),
+    )
+```
+
+`source_kind`, `schema`, `version`, `provider`, and the opaque JSON-safe
+`payload` are the only core envelope fields. Providers may leave `provider`
+empty; Hermes binds it to the registered provider name and rejects a mismatch.
+Hermes accepts at most `MAX_MEMORY_OBSERVATIONS` envelopes per operation. Each
+payload is recursively limited to JSON values, bounded strings, collection
+sizes, nesting depth, and encoded bytes; malformed or oversized envelopes are
+dropped while that provider's formatted context is retained. A provider
+exception keeps the existing fail-isolated behavior and may omit that
+provider's context, as it did for string prefetch failures.
+
+The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It
+fires synchronously only when a prefetch produced observations and receives
+the exact immutable `MemoryPrefetchResult` for that operation. Hook return
+values cannot transform context, and callback errors are isolated by the
+normal plugin hook registry. The result's context may contain raw recalled
+content: plugins must treat it as sensitive and should not persist or send it
+elsewhere without their own explicit user-facing policy. Hermes provides no
+telemetry, network delivery, or storage for this event. The operation-bound
+result avoids a mutable provider `last_*` getter and therefore does not share
+observations between concurrent sessions.
+
+The current Honcho provider remains on its existing formatted-string path in
+this change. A future Honcho mapping should use only fields actually returned
+by `peer.context` (for example, component availability), should not label the
+data as ranked retrieval, and should not claim a dialectic model identity that
+the provider does not expose. The generic contract is exercised by the test
+fixture provider rather than inventing Honcho provenance here.
 
 ## Config Schema
 

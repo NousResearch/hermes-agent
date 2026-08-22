@@ -169,6 +169,11 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
+    # Observer-only memory-provider prefetch boundary. Fired only when the
+    # operation produced at least one bounded structured observation; the
+    # result is immutable and may contain raw recalled context, so plugins
+    # must opt in deliberately and must not treat this as outbound telemetry.
+    "memory_prefetch",
     # Streaming LLM output observer hooks. Fired asynchronously off the token
     # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
     # text/lifecycle payloads and cannot transform the stream.
@@ -386,14 +391,14 @@ VALID_HOOKS: Set[str] = {
     "pre_command",
 }
 
-# Hooks whose return value carries a directive that the shell-hook response
-# parser (``agent/shell_hooks._parse_response``) has no channel for.
-# ``VALID_HOOKS`` doubles as the shell-hook config allow-list, so without
-# this exclusion a shell hook could register for one of these events and
-# have its output silently ignored — registration is refused loudly instead.
-# Support for a shell response shape can lift an event out of this set.
+# Hooks that the shell-hook bridge cannot safely carry. Most entries have a
+# directive that ``agent/shell_hooks._parse_response`` cannot represent;
+# ``memory_prefetch`` is the in-process Python-plugin event whose result object
+# must not be stringified across a subprocess boundary. ``VALID_HOOKS`` doubles
+# as the shell-hook config allow-list, so registration is refused loudly.
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
     "transform_api_error_classification",
+    "memory_prefetch",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

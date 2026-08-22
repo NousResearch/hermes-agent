@@ -298,8 +298,11 @@ _LEGACY_TOOLSET_MAP = {
 #
 # Invalidation happens transparently via the registry's _generation counter,
 # which bumps on register() / deregister() / register_toolset_alias(). The
-# inner check_fn TTL cache in registry.py handles environment drift (Docker
-# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+# inner check_fn TTL cache in registry.py handles ordinary environment drift
+# (Docker daemon start/stop, env var changes, etc.) on a 30 s horizon. The
+# key intentionally does not include environment state: callers that reload
+# environment files in a long-lived process, such as cron, must explicitly
+# call _clear_tool_defs_cache() after the reload.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 
@@ -313,9 +316,13 @@ _TOOL_DEFS_CACHE_MAX = 8
 
 
 def _clear_tool_defs_cache() -> None:
-    """Drop memoized get_tool_definitions() results. Called when dynamic
-    schema dependencies change (e.g. discord capability cache reset,
-    execute_code sandbox reconfigured)."""
+    """Drop memoized ``get_tool_definitions()`` results.
+
+    This is used when dynamic schema dependencies change (for example, a
+    Discord capability cache reset or execute_code sandbox reconfiguration).
+    Callers that also changed environment-backed availability probes must
+    invalidate the registry's separate check-function cache explicitly.
+    """
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
 

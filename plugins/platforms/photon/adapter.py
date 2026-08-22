@@ -1165,6 +1165,14 @@ class PhotonAdapter(BasePlatformAdapter):
         except json.JSONDecodeError:
             logger.debug("[photon] skipping non-JSON inbound line")
             return
+        if not isinstance(event, dict):
+            # Valid JSON but not an object (null / list / string). Consume it
+            # as a poison LINE: raising here would propagate into
+            # _inbound_loop, tear down the /inbound stream as if the sidecar
+            # had died, and reconnect-churn on every redelivery of the same
+            # line (#55105). The next good line must proceed.
+            logger.debug("[photon] skipping non-object inbound line")
+            return
         msg_id = event.get("messageId")
         if msg_id and self._is_duplicate(msg_id):
             return
@@ -1363,6 +1371,19 @@ class PhotonAdapter(BasePlatformAdapter):
                 "[photon] suppressing rich-link preview attachment: %s",
                 _richlink_preview_label(content),
             )
+            return
+        # A text envelope with a blank body is not user input. The sidecar
+        # normalizes a missing/empty body to "" (partial sends, unsend
+        # rehydrations, provider glitches), and dispatching it would wake —
+        # or post-restart, RESUME — the chat's session with a blank prompt,
+        # burning a full agent turn for nothing (#55105). That phantom turn
+        # is the reported wedge: while it spins, every further inbound lands
+        # on the busy guard and interrupts-and-requeues forever. Skip before
+        # _record_last_inbound so it never becomes the reaction target,
+        # mirroring the U+FFFC placeholder above; same bug class as Signal's
+        # contentless-envelope skip.
+        if ctype == "text" and not (content.get("text") or "").strip():
+            logger.debug("[photon] ignoring empty text event")
             return
         # Anything past here is a real (reactable) message — remember it as
         # the chat's latest inbound so `add_reaction` can target it when the

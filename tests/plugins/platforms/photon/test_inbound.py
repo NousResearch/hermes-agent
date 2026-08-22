@@ -221,3 +221,91 @@ async def test_disconnect_cancels_pending_fffc_tasks(
     await adapter.disconnect()
 
     assert len(adapter._pending_fffc) == 0
+
+
+# ---------------------------------------------------------------------------
+# Empty-text + poison-line guards (#55105)
+#
+# A blank text envelope (the sidecar normalizes a missing body to "") used to
+# dispatch as a real user turn: it woke — or post-restart, resumed — the
+# chat's session with a blank prompt and burned a full agent turn for nothing.
+# While that phantom turn spun, every further inbound interrupted-and-requeued
+# behind it (the reported "stuck after restart / typing dots forever"). Same
+# bug class as Signal's contentless-envelope skip.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_text_event_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty/whitespace text events dispatch nothing and are not recorded as
+    the chat's reactable last-inbound."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("", msg_id="spc-msg-empty"))
+    await adapter._dispatch_inbound(_dm_event("   ", msg_id="spc-msg-blank"))
+
+    assert captured == []
+    assert adapter._last_inbound_by_chat == {}
+
+
+@pytest.mark.asyncio
+async def test_resume_proceeds_past_previously_in_flight_empty_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a restart the fresh adapter's loop must get PAST the item that
+    was in flight when the old process died: blank items are consumed without
+    producing a turn, and the next real message dispatches normally."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    # The previously-in-flight blank item (redelivered or replayed).
+    await adapter._on_inbound_line(json.dumps(_dm_event("", msg_id="stuck-1")))
+    await adapter._on_inbound_line(json.dumps(_dm_event("   ", msg_id="stuck-2")))
+    # Life goes on.
+    await adapter._on_inbound_line(json.dumps(_dm_event("ahoj", msg_id="real-1")))
+
+    assert [e.text for e in captured] == ["ahoj"]
+    assert captured[0].message_id == "real-1"
+
+
+@pytest.mark.asyncio
+async def test_poison_line_skipped_without_requeue_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid-JSON non-object line is poison-consumed, not raised: it must
+    not tear down the inbound stream (reconnect-churn forever on a repeated
+    bad line). Subsequent good lines proceed."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._on_inbound_line("null")
+    await adapter._on_inbound_line('["not","an","object"]')
+    await adapter._on_inbound_line('"bare string"')
+    # A repeat of the same poison line must also be harmless (no requeue).
+    await adapter._on_inbound_line("null")
+    await adapter._on_inbound_line(json.dumps(_dm_event("still here")))
+
+    assert [e.text for e in captured] == ["still here"]
+
+
+@pytest.mark.asyncio
+async def test_fffc_placeholder_still_dispatches_after_empty_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-text guard must not swallow the U+FFFC placeholder path:
+    \\ufffc is not whitespace and still arms the attachment wait."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("", msg_id="spc-msg-empty")
+    chat_key = event["space"]["id"]
+    await adapter._dispatch_inbound(event)
+    fffc = dict(event, messageId="spc-msg-fffc")
+    fffc["content"] = {"type": "text", "text": "\ufffc"}
+    await adapter._dispatch_inbound(fffc)
+
+    assert captured == []
+    assert chat_key in adapter._pending_fffc

@@ -154,3 +154,22 @@ def test_figma_remote_mcp_host_anchored():
     # Name fallback still host-checks the URL when one is present.
     assert _is_figma_remote_mcp(server_name="figma", server_url="https://phish.example/figma") is False
     assert _is_figma_remote_mcp(server_name="figma") is True
+
+
+def test_anthropic_adapter_azure_predicates_host_anchored():
+    """agent/anthropic_adapter.py's Azure detection missed the #74312 sweep:
+    _requires_bearer_auth and _base_url_needs_context_1m_beta both used a raw
+    'azure.com' in normalized substring check, unlike the host-anchored
+    palantirfoundry.com check two lines below in the same function."""
+    from agent.anthropic_adapter import (
+        _requires_bearer_auth,
+        _base_url_needs_context_1m_beta,
+    )
+
+    assert _requires_bearer_auth("https://myres.openai.azure.com/anthropic") is True
+    assert _requires_bearer_auth("https://proxy.corp/azure.com-compat/anthropic") is False
+    assert _requires_bearer_auth("https://azure.com.evil.net/anthropic") is False
+
+    assert _base_url_needs_context_1m_beta("https://myres.openai.azure.com/anthropic") is True
+    assert _base_url_needs_context_1m_beta("https://proxy.corp/azure.com-compat/anthropic") is False
+    assert _base_url_needs_context_1m_beta("https://azure.com.evil.net/anthropic") is False

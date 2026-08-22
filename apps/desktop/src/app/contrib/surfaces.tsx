@@ -21,7 +21,7 @@ import { $freshDraftReady, $gatewayState } from '@/store/session'
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
-import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
+import { contributedRoutes, NEW_CHAT_ROUTE, OVERLAY_ROUTE_PATHS, ROUTES_AREA, sessionRoute } from '../routes'
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from '../shell/hooks/use-statusbar-items'
 import { ModelMenuPanel } from '../shell/model-menu-panel'
@@ -165,13 +165,18 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={page(<SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="skills" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
-      <Route element={null} path="agents" />
-      <Route element={null} path="command-center" />
-      <Route element={null} path="cron" />
-      <Route element={null} path="profiles" />
-      <Route element={null} path="settings" />
-      <Route element={null} path="starmap" />
-      <Route element={null} path="webhooks" />
+      {/* OVERLAY views render on their own layer ON TOP of the workspace (see
+          `isWorkspacePageRoute`) — they float over whatever the workspace is
+          already showing. Rendering `null` here left nothing to float over, so
+          opening Settings/Agents/… mid-turn unmounted ChatView and tore down
+          the live transcript, scroll position and composer state; closing the
+          overlay remounted a fresh one. `chatView` is the same element the
+          index and `:sessionId` routes use, so React reconciles it across the
+          route change instead of remounting. Driven off OVERLAY_ROUTE_PATHS so
+          a newly declared overlay cannot reintroduce the detachment. */}
+      {OVERLAY_ROUTE_PATHS.map(path => (
+        <Route element={chatView} key={path} path={path} />
+      ))}
       {/* Registry-contributed pages (core features + plugins) render in the
           workspace pane like any built-in view — behind the same blast wall
           as every other contribution mount. */}

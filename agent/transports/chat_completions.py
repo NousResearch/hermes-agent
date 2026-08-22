@@ -28,6 +28,142 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _extract_xml_wrapped_json(text: str):
+    """Locate the first balanced JSON object/array inside ``text`` and return
+    it parsed, or ``None`` if no such JSON is present.
+
+    Used for models that emit tool calls as bare JSON wrapped in XML-style
+    tags (``<tool_call>...</tool_call>``, ``<tools>...</tools>``) with or
+    without a one-line prose prefix.  Conservative: the JSON must be the
+    only non-whitespace, non-tag payload in the content — trailing prose
+    after the closing tag disqualifies the promotion, so plain-text
+    answers are never misrouted.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    # Find the first JSON value start ({ or [), scanning with a
+    # brace/bracket-depth counter so nested strings are respected.
+    start = -1
+    for i, ch in enumerate(text):
+        if ch in "[{":
+            start = i
+            break
+    if start < 0:
+        return None
+    depth_sq = depth_dq = 0
+    depth_brace = depth_bracket = 0
+    in_string = False
+    str_quote = None
+    escaped = False
+    end = None
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == str_quote:
+                in_string = False
+            i += 1
+            continue
+        if ch in "\"'":
+            in_string = True
+            str_quote = ch
+        elif ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket -= 1
+        if depth_brace == 0 and depth_bracket == 0:
+            end = i
+            break
+        i += 1
+    else:
+        return None
+    candidate = text[start : end + 1]
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    # The residue *after* the JSON (the tail) must be only whitespace
+    # and/or angle-bracket tags — prose after the payload disqualifies
+    # the promotion, so plain-text answers are never misrouted.  A
+    # prose prefix before the JSON is allowed (models commonly write
+    # "I'll check that." then the wrapped call); the caller's strict
+    # name/arguments validation still guards the extracted payload.
+    tail = text[end + 1 :]
+    tail = tail.replace("&quot;", '"').replace("&apos;", "'") if tail else tail
+    tail = re.sub(r"<[^>]+>", "", tail).strip()
+    # Tolerate stray trailing closers (models sometimes emit an extra
+    # ``}``/``]`` after the payload, or the JSON object is nested inside
+    # the model's own wrapping).  Anything else — real prose — rejects.
+    _tail_remaining = re.sub(r"[}\]]", "", tail).strip()
+    if _tail_remaining:
+        return None
+    return parsed
+
+
+def _extract_claude_xml_toolcall(text: str):
+    """Parse Claude-style XML tool-call emission: ``<function=terminal>``
+    blocks with ``<parameter=command>value</parameter>`` pairs inside
+    (variants: ``<function name=..>``/``<invoke name=..>`` headers,
+    ``<parameter name=..>`` headers).  Some local models (Qwen3-Coder Q3 at
+    large prompts) degrade to this shape instead of JSON tool_calls; it
+    contains no JSON at all, so the wrapped-JSON extractor misses it.
+
+    Conservative like ``_extract_xml_wrapped_json``: any residue outside the
+    recognized tags (except a short prose intent line before the first block
+    and stray ``</tool_call>``/``</tools>`` closers after the last) rejects,
+    so plain-text answers are never misrouted.  Returns a dict or list of
+    dicts with ``name`` + ``arguments`` keys, or ``None``.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    hdr = re.compile(
+        r"<(?:function|invoke)\s*(?:=\s*|\s+name\s*=\s*[\"']?)"
+        r"([A-Za-z_][A-Za-z0-9_-]*)[\"']?\s*>"
+    )
+    blocks = list(hdr.finditer(text))
+    if not blocks:
+        return None
+    calls: list[dict] = []
+    consumed_end = blocks[0].start()
+    for bi, bm in enumerate(blocks):
+        name = bm.group(1)
+        seg_start = bm.end()
+        seg_end = blocks[bi + 1].start() if bi + 1 < len(blocks) else len(text)
+        seg = text[seg_start:seg_end]
+        close = re.search(r"</(?:function|invoke)\s*>", seg)
+        if close:
+            seg = seg[: close.start()]
+            consumed_end = seg_start + close.end()
+        else:
+            consumed_end = seg_end
+        args: dict = {}
+        for pm in re.finditer(
+            r"<parameter\s*(?:=\s*|\s+name\s*=\s*[\"']?)"
+            r"([A-Za-z_][A-Za-z0-9_-]*)[\"']?\s*>(.*?)</parameter\s*>",
+            seg,
+            re.S,
+        ):
+            args[pm.group(1)] = pm.group(2).strip()
+        if not args:
+            return None
+        calls.append({"name": name, "arguments": args})
+    prefix = text[: blocks[0].start()].strip()
+    tail = text[consumed_end:]
+    tail = re.sub(r"</?(?:tool_call|tools|function_calls)\s*>", "", tail).strip()
+    if tail:
+        return None
+    if prefix and len(prefix) > 200:
+        return None
+    return calls[0] if len(calls) == 1 else calls
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -998,6 +1134,78 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+        # Some models (e.g. Ollama Qwen3-Coder via local Ollama/llama-server)
+        # emit tool calls as a bare JSON object inside ``content`` instead of
+        # the structured ``tool_calls`` array — see #5867. Without promotion
+        # the agent loop sees no tool_calls and treats the JSON as a plain
+        # text reply, so the requested tool never executes. If content is a
+        # JSON object matching the tool-call shape ``{"name": ...,
+        # "arguments": {...}}`` (or an array of such objects), promote it to
+        # real ToolCalls so the normal execution path handles it. Exact
+        # name/arguments keys only — no fuzzy matching, no partial extraction
+        # — so ordinary JSON prose in content is never misrouted.
+        if not tool_calls and isinstance(content, str) and content.strip():
+            _stripped = content.strip()
+            _parsed = None
+            if _stripped.startswith("[") and _stripped.endswith("]"):
+                try:
+                    _parsed = json.loads(_stripped)
+                except (json.JSONDecodeError, ValueError):
+                    _parsed = None
+                if not isinstance(_parsed, list):
+                    _parsed = None
+            elif _stripped.startswith("{") and _stripped.endswith("}"):
+                try:
+                    _parsed = json.loads(_stripped)
+                except (json.JSONDecodeError, ValueError):
+                    _parsed = None
+                if isinstance(_parsed, dict):
+                    _parsed = [_parsed]
+            else:
+                # Some local models wrap the bare JSON in <tool_call>/<tools>
+                # tags or prefix it with a one-line intent and append the
+                # closing tag. Find the first balanced JSON object/array and
+                # promote it if the non-JSON residue is only whitespace and
+                # angle-bracket tags (so plain prose is never misrouted).
+                _parsed = _extract_xml_wrapped_json(_stripped)
+                if _parsed is None:
+                    # Q3 Qwen3-Coder at large prompts degrades to Claude-style
+                    # XML with NO JSON inside (<function=NAME> blocks with
+                    # <parameter=KEY>value</parameter> pairs). Parse that shape
+                    # and promote it through the same validation.
+                    _parsed = _extract_claude_xml_toolcall(_stripped)
+                if isinstance(_parsed, dict):
+                    _parsed = [_parsed]
+            _promoted_calls: list[ToolCall] = []
+            if isinstance(_parsed, list):
+                for _tc_entry in _parsed:
+                    if not isinstance(_tc_entry, dict) or "name" not in _tc_entry or "arguments" not in _tc_entry:
+                        _promoted_calls = []
+                        break
+                    _tc_name = _tc_entry.get("name")
+                    _tc_args = _tc_entry.get("arguments")
+                    if not (isinstance(_tc_name, str) and _tc_name.strip()):
+                        _promoted_calls = []
+                        break
+                    if isinstance(_tc_args, dict):
+                        _tc_args = json.dumps(_tc_args)
+                    if not isinstance(_tc_args, str):
+                        _tc_args = json.dumps(_tc_args)
+                    _promoted_calls.append(
+                        ToolCall(
+                            id=f"call_{abs(hash(json.dumps(_tc_entry))) % (10**10)}",
+                            name=_tc_name,
+                            arguments=_tc_args,
+                            provider_data=None,
+                        )
+                    )
+            if _promoted_calls:
+                tool_calls = _promoted_calls
+                # Tool-call payload consumed — don't also surface the raw
+                # JSON as visible assistant text.
+                content = None
+                if finish_reason in (None, "stop"):
+                    finish_reason = "tool_calls"
 
         return NormalizedResponse(
             content=content,

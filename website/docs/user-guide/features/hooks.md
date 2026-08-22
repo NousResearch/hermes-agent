@@ -444,6 +444,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `memory_prefetch` | Observer (Python plugins only) | Synchronous, after one memory-manager prefetch operation has produced at least one valid structured observation; return ignored and context cannot be transformed. | `query`, `session_id`, `task_id`, `turn_id`, `observations` (immutable `tuple[MemoryObservation, ...]`, provider-bound/frozen), `context_sha256`, `context_byte_length` | `query` is sensitive and may contain raw user input. Hermes does not pass merged context or a result object; raw recalled/source content may appear only in a provider-authored observation payload. Legacy/string-only provider context never reaches the hook. No outbound telemetry or storage; shell hooks cannot carry the immutable tuple. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -474,6 +475,84 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+
+---
+
+### `memory_prefetch`
+
+Memory providers may keep their existing `str` return forever. A provider that
+has a concrete consumer can return `MemoryPrefetchResult(context=...,
+observations=(...))`; Hermes keeps the formatted context bytes unchanged and
+validates/freezes each `MemoryObservation` before it can reach this hook.
+
+Register the observer from an enabled Python plugin:
+
+```python
+def observe_memory_prefetch(
+    observations,
+    query,
+    session_id,
+    task_id,
+    turn_id,
+    context_sha256,
+    context_byte_length,
+    **kwargs,
+):
+    for observation in observations:
+        handle_in_process(observation.provider, observation.payload)
+    record_binding(
+        query=query,
+        session_id=session_id,
+        task_id=task_id,
+        turn_id=turn_id,
+        context_sha256=context_sha256,
+        context_byte_length=context_byte_length,
+    )
+
+
+def register(ctx):
+    ctx.register_hook("memory_prefetch", observe_memory_prefetch)
+```
+
+The callback receives exactly these event-specific fields: `observations` (an
+immutable tuple of provider-bound, recursively frozen `MemoryObservation`
+envelopes), `query` (the exact clean query), `session_id`, `task_id`, `turn_id`,
+`context_sha256` (the lowercase hexadecimal SHA-256 digest over the final
+merged context's exact UTF-8 bytes), and `context_byte_length` (that byte
+length). On the canonical agent turn path, `task_id` and `turn_id` are the
+same immutable values passed to that turn's `pre_llm_call`, `post_llm_call`,
+and every API hook. A prefetch is turn-scoped and intentionally has no
+`api_request_id`, `api_call_count`, or `retry_count`: tool loops and retries can
+produce multiple requests for one turn, and prefetch runs before a single
+final request can be selected. Direct manager callers that do not provide
+correlation receive explicit `None` values for `task_id` and `turn_id`; Hermes
+does not invent IDs in the memory subsystem. The query is sensitive and may
+contain raw user input; it is retained because an exact-operation consumer
+needs it. The callback receives no
+`MemoryPrefetchResult`, merged context, or other object from which context can
+be read. Raw recalled/source content may appear only when a provider explicitly
+authors it inside that provider's observation payload. Legacy/string-only
+provider context never reaches the hook.
+
+The public `prefetch_all_result()` method remains available to trusted direct
+callers that need the merged context; that does not widen the hook payload.
+The hook fires once per operation only when at least one envelope survives
+validation, so string-only providers and structured results with no valid
+observation do not create events. It is observer-only: return values are
+ignored, and the normal hook registry isolates callback errors so memory
+injection continues.
+
+Hermes does not itself redact, persist, export, or send this event anywhere;
+an enabled plugin is responsible for its own privacy policy and any user
+consent needed for processing the sensitive query or any provider-authored
+payload. There is no built-in telemetry or storage. The operation-bound tuple and explicit IDs prevent a callback from using query,
+hash, call order, mutable provider-global `last_*` state, or session caches and
+keep observations bound to concurrent turns.
+
+The built-in Honcho provider is not mapped to this event yet. A future mapping
+must use only actual `peer.context` fields (for example, component
+availability), must not call the result ranked retrieval, and must not claim a
+dialectic model identity that Honcho does not expose.
 
 ---
 

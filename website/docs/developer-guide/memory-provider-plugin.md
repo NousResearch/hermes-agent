@@ -122,13 +122,119 @@ class MyMemoryProvider(MemoryProvider):
 | Method | When Called | Use Case |
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
-| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
+| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context as `str`, or `MemoryPrefetchResult` with optional observations |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+### Structured prefetch results
+
+Returning a plain `str` remains fully supported and is the compatibility path.
+Providers that have a concrete in-process consumer may instead return the small
+immutable `MemoryPrefetchResult` / `MemoryObservation` pair:
+
+```python
+from agent.memory_provider import MemoryObservation, MemoryPrefetchResult
+
+
+def prefetch(self, query: str, *, session_id: str = ""):
+    context = self._format_context(query)
+    return MemoryPrefetchResult(
+        context=context,
+        observations=(
+            MemoryObservation(
+                source_kind="context_snapshot",
+                schema="my-provider.context_snapshot",
+                version=1,
+                payload={"available": bool(context)},
+            ),
+        ),
+    )
+```
+
+`source_kind`, `schema`, `version`, `provider`, and the opaque JSON-safe
+`payload` are the only core envelope fields. Providers may leave `provider`
+empty; Hermes binds it to the registered provider name and rejects a mismatch.
+Hermes accepts at most `MAX_MEMORY_OBSERVATIONS` envelopes per operation. Each
+payload is recursively limited to JSON values, bounded strings, collection
+sizes, nesting depth, and encoded bytes; malformed or oversized envelopes are
+dropped while that provider's formatted context is retained. A provider
+exception keeps the existing fail-isolated behavior and may omit that
+provider's context, as it did for string prefetch failures.
+
+The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It
+fires synchronously only when a prefetch produced at least one valid structured
+observation and receives exactly these keyword fields:
+
+- `observations`: the immutable tuple of validated `MemoryObservation` envelopes;
+  each envelope is provider-bound and its JSON payload is recursively frozen.
+- `query`: the exact clean prefetch query for this operation. This is sensitive
+  and may contain raw user input; it is retained because an exact-operation
+  consumer needs it.
+- `session_id`: the operation's session identifier.
+- `task_id`: the canonical task identifier for the owning turn, or `None` when
+  a trusted direct caller did not provide one.
+- `turn_id`: the canonical immutable turn identifier for the owning turn, or
+  `None` when a trusted direct caller did not provide one.
+- `context_sha256`: the lowercase hexadecimal SHA-256 digest of the final
+  merged context's exact UTF-8 bytes.
+- `context_byte_length`: the byte length of those exact UTF-8 bytes.
+
+The hook never receives `MemoryPrefetchResult` or any other object from which
+merged context can be read. Raw recalled/source content may therefore reach the
+hook only when the provider explicitly authors it into that provider's
+observation payload. Legacy/string-only provider context never reaches this
+hook. Hook return values cannot transform context, and callback errors are
+isolated by the normal plugin hook registry. Hermes provides no telemetry,
+network delivery, or storage for this event. The operation-bound observation
+tuple and explicit `task_id`/`turn_id` avoid query, hash, call-order, mutable
+provider `last_*`, or session-cache inference and therefore do not share
+observations between concurrent turns. `memory_prefetch` binds to the owning
+turn only: it intentionally has no `api_request_id`, `api_call_count`, or
+`retry_count`, because one turn may issue several provider requests and the
+prefetch occurs before a single final request can be known. Direct callers may
+still use `prefetch_all()` / `prefetch_all_result()` without correlation; their
+structured event is explicit about unavailable task/turn IDs (`None`) and does
+not invent IDs in the memory subsystem.
+
+### Correlation ownership matrix
+
+The canonical owner is the agent turn prologue in
+`agent/turn_context.py`. It creates `effective_task_id` (the caller-supplied
+`task_id`, or the core's normal task ID) and the immutable `turn_id` before
+`pre_llm_call`, before synchronous memory prefetch, and before the first API
+request. The values are locals returned in `TurnContext`; memory receives them
+as explicit arguments rather than reading agent/provider mutable state.
+
+| Boundary | Owner and timing | Canonical correlation |
+|---|---|---|
+| `pre_llm_call` | `agent/turn_context.py`, once after turn IDs are created | `session_id`, `task_id`, `turn_id` |
+| `memory_prefetch` | Same prologue, synchronous `prefetch_all()` for the current turn | Same `session_id`, `task_id`, `turn_id`; no request ID |
+| `pre_api_request`, `post_api_request`, `api_request_error` | `agent/conversation_loop.py`, around each provider attempt | Same `task_id`/`turn_id` plus the outer model-call `api_request_id`/`api_call_count`; retries of that request retain those IDs and are distinguished by `retry_count` |
+| `post_llm_call` | `agent/turn_finalizer.py`, successful final-answer ownership | Same `session_id`, `task_id`, `turn_id` |
+| canonical `on_session_end` | `agent/turn_finalizer.py`, every `run_conversation()` finalization | Same turn IDs and outcome; it is not a session teardown ID |
+| interruption fallback | CLI `_emit_interrupted_session_end()` may emit a reduced safety payload from the active agent slots; TUI teardown emits session-only legacy fields | Not a memory-correlation owner; no new IDs are inferred |
+| `on_session_finalize` / provider shutdown | CLI, gateway, or TUI session teardown | Session lifecycle only; not a substitute for a turn correlation ID |
+
+All product surfaces (CLI, gateway, TUI gateway, desktop's gateway client,
+cron, and delegated/background agents) converge on `AIAgent.run_conversation()`
+and this prologue. The only other `prefetch_all*` callers are the public
+manager compatibility tests/direct callers; those have no final-answer owner
+and therefore receive explicit unavailable (`None`) task/turn fields. The
+post-turn `queue_prefetch_all()` path only warms the next provider turn and
+does not emit a structured `memory_prefetch` event. No correlation is inferred
+from query text, context hashes, call order, session caches, `last_*` state, or
+ambient context variables.
+
+The current Honcho provider remains on its existing formatted-string path in
+this change. A future Honcho mapping should use only fields actually returned
+by `peer.context` (for example, component availability), should not label the
+data as ranked retrieval, and should not claim a dialectic model identity that
+the provider does not expose. The generic contract is exercised by the test
+fixture provider rather than inventing Honcho provenance here.
 
 ## Config Schema
 

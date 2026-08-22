@@ -271,6 +271,16 @@ _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
 
+# The post-response outer handler is deliberately independent from the useful
+# tool-iteration budget. Successful turns may be unlimited, but retrying the
+# same unclassified processing failure forever is never useful (#92450).
+_MAX_CONSECUTIVE_OUTER_LOOP_ERRORS = 3
+
+
+def _sleep_outer_loop_error_backoff(seconds: int) -> None:
+    """Pause between outer-loop retries without exposing global sleep to tests."""
+    time.sleep(seconds)
+
 
 def _moa_client_consumes_prepared_request(client: Any) -> bool:
     """True when ``client`` is the in-process MoA facade.
@@ -1899,6 +1909,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    consecutive_outer_loop_errors = 0
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -6636,6 +6647,7 @@ def run_conversation(
             agent._persist_session(messages, conversation_history)
             break
 
+        _outer_loop_failed = False
         try:
             _transport = agent._get_transport()
             _normalize_kwargs = {}
@@ -8298,9 +8310,11 @@ def run_conversation(
                 break
             
         except Exception as e:
-            # Phase-aware error classification. The huge outer try/except spans
-            # both the actual API request and all local post-processing of the
-            # returned assistant message. Deterministic local bugs (e.g.
+            _outer_loop_failed = True
+            consecutive_outer_loop_errors += 1
+            # Phase-aware error classification. This outer try/except starts
+            # after a provider response and spans response normalization plus
+            # local post-processing. Deterministic local bugs (e.g.
             # passing a multimodal content list into a regex helper after a
             # vision turn or context compaction) should not be retried: they
             # will fail identically on every iteration and only burn the
@@ -8374,16 +8388,29 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops.
-            # Local processing errors are deterministic — stop immediately
-            # rather than retrying until the budget is exhausted.
+            # Local processing errors are deterministic, so stop immediately.
+            # Unclassified errors get a separate consecutive-failure ceiling:
+            # max_iterations may be sys.maxsize for unlimited useful turns and
+            # must not license an infinite traceback-writing error loop.
             if (
                 _is_local_processing_error
+                or consecutive_outer_loop_errors
+                >= _MAX_CONSECUTIVE_OUTER_LOOP_ERRORS
                 or api_call_count >= agent.max_iterations - 1
             ):
+                failed = True
                 if _is_local_processing_error:
                     _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                elif (
+                    consecutive_outer_loop_errors
+                    >= _MAX_CONSECUTIVE_OUTER_LOOP_ERRORS
+                ):
+                    _turn_exit_reason = (
+                        "outer_loop_error_retry_exhausted"
+                        f"({error_msg[:80]})"
+                    )
+                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 else:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
@@ -8391,6 +8418,18 @@ def run_conversation(
                 # session resume (avoids consecutive user messages).
                 append_message(messages, {"role": "assistant", "content": final_response})
                 break
+            _outer_error_delay = 2 ** (consecutive_outer_loop_errors - 1)
+            logger.warning(
+                "Retrying outer loop after post-response error in %ss "
+                "(failure %d/%d)",
+                _outer_error_delay,
+                consecutive_outer_loop_errors,
+                _MAX_CONSECUTIVE_OUTER_LOOP_ERRORS,
+            )
+            _sleep_outer_loop_error_backoff(_outer_error_delay)
+        finally:
+            if not _outer_loop_failed:
+                consecutive_outer_loop_errors = 0
     
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled

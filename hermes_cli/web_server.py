@@ -8510,7 +8510,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "whatsapp": {
         "name": "WhatsApp",
         "description": "Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
-        "docs_url": "https://github.com/tulir/whatsmeow",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp",
         "env_vars": (
             "WHATSAPP_ENABLED",
             "WHATSAPP_MODE",

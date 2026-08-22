@@ -724,7 +724,7 @@ def _continuous_on_silence() -> None:
     wav_path = rec.stop()
     # Peak RMS is the critical diagnostic when stop() returns None despite
     # the VAD firing — tells us at a glance whether the mic was too quiet
-    # for SILENCE_RMS_THRESHOLD (200) or the VAD + peak checks disagree.
+    # for the configured silence threshold or another capture issue.
     peak_rms = getattr(rec, "_peak_rms", -1)
     _debug(
         f"_continuous_on_silence: rec.stop -> {wav_path!r} (peak_rms={peak_rms})"

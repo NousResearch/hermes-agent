@@ -473,6 +473,41 @@ class TestAudioRecorderStop:
         wav_path = recorder.stop()
         assert wav_path is None
 
+    @pytest.mark.parametrize(
+        ("silence_threshold", "peak_rms", "should_write"),
+        ((80, 160, True), (500, 300, False)),
+    )
+    def test_stop_uses_configured_silence_threshold(
+        self, mock_sd, monkeypatch, silence_threshold, peak_rms, should_write
+    ):
+        mock_sd.InputStream.return_value = MagicMock()
+
+        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+
+        recorder = AudioRecorder()
+        recorder._silence_threshold = silence_threshold
+        recorder.start()
+
+        audio_data = [peak_rms] * SAMPLE_RATE
+        fake_np = MagicMock()
+        fake_np.concatenate.return_value = audio_data
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio", lambda: (mock_sd, fake_np)
+        )
+        write_wav = MagicMock(return_value="recording.wav")
+        monkeypatch.setattr(recorder, "_write_wav", write_wav)
+        recorder._frames = [object()]
+        recorder._peak_rms = peak_rms
+
+        wav_path = recorder.stop()
+
+        if should_write:
+            assert wav_path == "recording.wav"
+            write_wav.assert_called_once_with(audio_data, sample_rate=SAMPLE_RATE)
+        else:
+            assert wav_path is None
+            write_wav.assert_not_called()
+
 
 class TestAudioRecorderCancel:
     def test_cancel_discards_frames(self, mock_sd):

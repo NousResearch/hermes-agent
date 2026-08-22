@@ -1146,9 +1146,9 @@ class AudioRecorder:
 
             # Skip silent recordings using peak RMS (not overall average, which
             # gets diluted by silence at the end of the recording).
-            if self._peak_rms < SILENCE_RMS_THRESHOLD:
+            if self._peak_rms < self._silence_threshold:
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
-                            self._peak_rms, SILENCE_RMS_THRESHOLD)
+                            self._peak_rms, self._silence_threshold)
                 return None
 
             return self._write_wav(audio_data, sample_rate=self._sample_rate)

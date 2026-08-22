@@ -2749,7 +2749,21 @@ def _send_media_via_adapter(
                 msg = f"cannot send media {media_path}: gateway loop unavailable"
                 logger.warning("Job '%s': %s", job.get("id", "?"), msg)
                 errors.append(msg)
-                return errors
+                # Per-file loop: an unavailable loop must not abort the whole
+                # batch — keep trying the remaining attachments and report
+                # every file, matching the documented per-file error contract.
+                #
+                # The coroutine was never scheduled, so nothing will ever
+                # await it. safe_schedule_threadsafe closes it on its own
+                # failure paths today, but close it here too so the caller
+                # does not depend on that internal behavior (and so alternate
+                # schedulers cannot leak an unawaited coroutine per file).
+                # close() is a no-op on an already-closed coroutine and
+                # getattr() guards non-coroutine awaitables.
+                _close = getattr(coro, "close", None)
+                if callable(_close):
+                    _close()
+                continue
             try:
                 # Large attachments (long TTS audio, concatenated recordings,
                 # big exports) can legitimately exceed a fixed 30s upload

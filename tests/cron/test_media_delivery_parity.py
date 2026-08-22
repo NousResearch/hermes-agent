@@ -220,8 +220,32 @@ class TestLiveAdapterMediaFailuresSurfaced:
             loop.close()
 
 
+# Env vars written by gateway.media_policy.apply_media_policy_env(). They
+# bypass monkeypatch (which records no undo for a var deleted while absent),
+# so they must be restored explicitly or they leak into every later test in
+# the process — e.g. test_media_send_timeout.py's policy-drop assertions
+# break under leaked strict mode with recency trust disabled (observed as 2
+# failures in ``pytest tests/cron`` at HEAD).
+_MEDIA_POLICY_ENV_VARS = (
+    "HERMES_MEDIA_DELIVERY_STRICT",
+    "HERMES_MEDIA_ALLOW_DIRS",
+    "HERMES_MEDIA_TRUST_RECENT_FILES",
+)
+
+
 class TestMediaPolicyEnvBridge:
     """Defect 3: media-policy config must apply outside the gateway process."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_media_policy_env(self):
+        """Restore the bridged media-policy env vars after each test."""
+        saved = {var: os.environ.get(var) for var in _MEDIA_POLICY_ENV_VARS}
+        yield
+        for var, value in saved.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
 
     def test_bridge_helper_exists_and_applies_config(self, monkeypatch, tmp_path):
         home = tmp_path / "hermes-home"

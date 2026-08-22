@@ -168,7 +168,39 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model.
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model — unless the task names a wired sub-agent (next section). For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
+### Named sub-agents: a fixed model per agent, wired by you
+
+`delegation.agent_models` maps a name of your choosing to a fixed model. The parent agent then selects *which named agent* handles a task via `delegate_task`'s `agent` parameter — it never selects, or even sees, a model. The wiring is yours alone:
+
+```yaml
+# ~/.hermes/config.yaml
+delegation:
+  agent_models:
+    research: "anthropic/claude-opus-4-5"   # string form: pin the model only
+    coder:                                  # mapping form: full provider:model pair
+      provider: "deepseek"
+      model: "deepseek-chat"
+    local-scout:                            # direct-endpoint form also works
+      base_url: "http://localhost:11434/v1"
+      model: "qwen3:14b"
+```
+
+```
+delegate_task(agent="research", goal="...", context="...")        # single
+delegate_task(tasks=[                                            # batch — per-task names
+  {"agent": "research", "goal": "..."},
+  {"agent": "coder", "goal": "..."},
+])
+```
+
+Semantics:
+
+- **Resolution order for a named child:** its `agent_models` entry (base_url → provider → model, same rules as the global keys) beats the global `delegation.*` pin, which beats parent inheritance. A string entry pins only the model and otherwise follows the global credentials (or the parent's).
+- **Fail-loud:** an `agent` name with no matching `agent_models` entry is a hard error listing the wired names — a typo never silently runs on the wrong model, and names cannot be invented on the fly to bypass your wiring.
+- **Visibility:** the tool schema lists only the wired *names*. The mapped models never appear in the model-facing schema.
+- Tasks without an `agent` name behave exactly as before (global pin or parent inheritance). The wired name is recorded on the subagent registry record (`agent_name`), so `delegate_task(action="list")` and `/agents` show which named agent each child is.
 
 ## Inherited Tool Access
 

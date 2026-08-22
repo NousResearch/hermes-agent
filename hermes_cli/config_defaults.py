@@ -1911,6 +1911,17 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Named sub-agents, each hard-wired by the USER to a fixed model.
+        # delegate_task(agent="research") runs that child on the wired model —
+        # the LLM selects WHICH named agent, never a model, and unknown names
+        # fail loudly. Entry forms: "model-id" string (pins model only), or a
+        # mapping with any of provider/model/base_url/api_key/api_mode
+        # (same semantics as the global keys above; wins over them for that
+        # child). Unwired children keep the global/inherited behavior.
+        #   agent_models:
+        #     research: "anthropic/claude-opus-4-5"
+        #     coder: {provider: "deepseek", model: "deepseek-chat"}
+        "agent_models": {},
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

@@ -2605,6 +2605,13 @@ def _run_single_child(
                     if isinstance(getattr(child, "model", None), str)
                     else None
                 ),
+                # Named sub-agent wiring (delegation.agent_models) — which
+                # user-wired name this child was spawned as, if any.
+                "agent_name": (
+                    getattr(child, "_delegate_agent_name", None)
+                    if isinstance(getattr(child, "_delegate_agent_name", None), str)
+                    else None
+                ),
                 "started_at": time.time(),
                 "status": "running",
                 "tool_count": 0,
@@ -3605,6 +3612,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    agent: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3733,6 +3741,8 @@ def delegate_task(
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
         if output_schema is not None:
             single_task["output_schema"] = output_schema
+        if agent and str(agent).strip():
+            single_task["agent"] = str(agent).strip()
         task_list = [single_task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -3829,6 +3839,24 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        # Named sub-agent wiring: a per-task (or top-level) 'agent' name is
+        # resolved against delegation.agent_models and its provider/model
+        # overlay is FORCED for this child — the caller picks the name, the
+        # user's config picks the model. Unknown names are a hard error so a
+        # typo never silently runs on the wrong model.
+        agent_name = str(t.get("agent") or agent or "").strip()
+        task_creds = creds
+        if agent_name:
+            overlay, overlay_err = _get_agent_model_overlay(cfg, agent_name)
+            if overlay_err:
+                return tool_error(overlay_err)
+            task_cfg = dict(cfg)
+            if overlay:
+                task_cfg.update(overlay)
+            try:
+                task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -3845,18 +3873,18 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
@@ -3870,6 +3898,13 @@ def delegate_task(
                 child._delegate_output_schema = _task_schema
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
+        # Stamp the wired sub-agent name for attribution (registry record,
+        # action='list' output).
+        if agent_name:
+            try:
+                setattr(child, "_delegate_agent_name", agent_name)
+            except Exception:
+                logger.debug("Could not stamp agent name on child %d", i)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
@@ -4414,6 +4449,77 @@ def _resolve_child_credential_pool(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Named sub-agent model wiring (delegation.agent_models)
+# ---------------------------------------------------------------------------
+
+_AGENT_MODEL_ENTRY_KEYS = ("provider", "model", "base_url", "api_key", "api_mode")
+
+
+def _get_agent_model_overlay(cfg: dict, agent_name: Optional[str]):
+    """Resolve a named sub-agent's pinned model wiring to a config overlay.
+
+    ``delegation.agent_models`` maps a user-chosen agent name to a fixed
+    model spec::
+
+        delegation:
+          agent_models:
+            research: anthropic/claude-opus-4.5   # string: pin model only
+            coder:                                  # mapping: full override
+              provider: deepseek
+              model: deepseek-chat
+
+    Returns ``(overlay, error)``. ``overlay`` holds only the recognized
+    ``delegation.*`` keys the entry sets; callers merge it over the global
+    delegation config before ``_resolve_delegation_credentials``. ``error``
+    is a user-facing message when the name is not wired — a wiring miss is
+    loud on purpose: a typo must not silently run on the parent model, and
+    the model cannot invent names that bypass the user's fixed wiring.
+    """
+    name = (agent_name or "").strip()
+    if not name:
+        return None, None
+    wiring = cfg.get("agent_models")
+    if not isinstance(wiring, dict) or not wiring:
+        return None, (
+            f"delegate_task got agent={name!r}, but no named sub-agents are "
+            f"wired: delegation.agent_models is empty or missing in "
+            f"config.yaml. Wire '{name}' there (name -> model) or omit the "
+            f"agent parameter."
+        )
+    entry = wiring.get(name)
+    if entry is None:
+        lowered = name.casefold()
+        for wired_name, wired_entry in wiring.items():
+            if isinstance(wired_name, str) and wired_name.casefold() == lowered:
+                entry = wired_entry
+                break
+    if entry is None:
+        available = ", ".join(sorted(str(k) for k in wiring))
+        return None, (
+            f"Unknown sub-agent name {name!r}. Named sub-agents are wired "
+            f"by the user in config.yaml under delegation.agent_models — "
+            f"they cannot be invented on the fly. Wired names: {available}."
+        )
+    if isinstance(entry, str):
+        model = entry.strip()
+        if not model:
+            return None, f"delegation.agent_models.{name} is an empty string."
+        return {"model": model}, None
+    if isinstance(entry, dict):
+        overlay = {k: entry[k] for k in _AGENT_MODEL_ENTRY_KEYS if entry.get(k)}
+        if not overlay:
+            return None, (
+                f"delegation.agent_models.{name} sets none of "
+                f"{list(_AGENT_MODEL_ENTRY_KEYS)}."
+            )
+        return overlay, None
+    return None, (
+        f"delegation.agent_models.{name} must be a model string or a mapping "
+        f"of {list(_AGENT_MODEL_ENTRY_KEYS)}; got {type(entry).__name__}."
+    )
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4617,8 +4723,8 @@ def _build_top_level_description() -> str:
         "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
         "(limits and nesting rules are in the parameter descriptions).\n\n"
         "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
+        "transcript paths, and the result (one consolidated message per "
+        "batch) re-enters the conversation on its own. Do NOT wait or "
         "poll; continue other work.\n\n"
         "LIVE ORCHESTRATION: while children run, this tool also controls "
         "them — action='list' (live children + ids), action='steer' "
@@ -4626,7 +4732,7 @@ def _build_top_level_description() -> str:
         "(subagent_id, end early; partial result still returns). Steer when "
         "a live transcript shows a child drifting.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
-        "with intermediate data, or independent parallel workstreams.\n"
+        "with intermediate data, or parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
         "- A single tool call -> call the tool directly\n"
@@ -4648,7 +4754,8 @@ def _build_top_level_description() -> str:
         "memory, send_message, or cronjob; orchestrators regain only "
         "delegate_task.\n"
         "- Children inherit the parent model and fallback chain unless pinned "
-        "globally via delegation.provider / delegation.model in config.yaml. "
+        "via delegation.provider / delegation.model or delegation.agent_models "
+        "('agent' param). "
         "Results are returned as an array, one entry per task."
     )
 
@@ -4704,6 +4811,31 @@ def _build_role_param_description() -> str:
     )
 
 
+def _build_agent_param_description() -> str:
+    """Compose the 'agent' parameter description with the user's wired names.
+
+    Rebuilt per get_definitions() call so the model sees the actual names
+    wired under delegation.agent_models — and only the names. The mapped
+    models are deliberately NOT shown: the caller picks WHICH named agent,
+    never a model.
+    """
+    try:
+        wiring = _load_config().get("agent_models")
+    except Exception:
+        wiring = None
+    base = (
+        "Named sub-agent to run this task as. Names are hard-wired by the "
+        "user in config.yaml (delegation.agent_models), each pinned to a "
+        "fixed model the user chose. You select WHICH named agent handles "
+        "the task — you never choose a model. Unknown names fail loudly; "
+        "omit this parameter for a generic subagent."
+    )
+    names = [str(k) for k in wiring] if isinstance(wiring, dict) else []
+    if names:
+        return base + " Wired names: " + ", ".join(sorted(names)) + "."
+    return base + " No names are currently wired — omit this parameter."
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -4720,6 +4852,7 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    overrides_params["properties"]["agent"]["description"] = _build_agent_param_description()
 
     return {
         "description": _build_top_level_description(),
@@ -4776,6 +4909,13 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "agent": {
+                            "type": "string",
+                            "description": (
+                                "Per-task named sub-agent override. See "
+                                "top-level 'agent' for semantics."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -4800,6 +4940,10 @@ DELEGATE_TASK_SCHEMA = {
             "role": {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
+                "description": "(rebuilt at get_definitions() time)",
+            },
+            "agent": {
+                "type": "string",
                 "description": "(rebuilt at get_definitions() time)",
             },
             "output_schema": {
@@ -4918,6 +5062,7 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        agent=args.get("agent"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

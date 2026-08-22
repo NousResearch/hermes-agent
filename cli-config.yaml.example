@@ -1497,6 +1497,19 @@ delegation:
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while
   #                                           # planning quality stays with the frontier parent.
+  # agent_models:                             # Named sub-agents, each hard-wired to a fixed model BY YOU.
+  #                                           # delegate_task(agent: "research") runs that child on the wired
+  #                                           # model — the LLM picks WHICH named agent, never a model, and
+  #                                           # unknown names fail loudly. Beats delegation.model/provider
+  #                                           # for that child; unwired children keep the global behavior.
+  #   research: "anthropic/claude-opus-4-5"   # String form: pin model only (uses delegation.provider
+  #                                           # credentials if set, else inherits the parent's).
+  #   coder:                                  # Mapping form: full provider:model override for this agent.
+  #     provider: "deepseek"
+  #     model: "deepseek-chat"
+  #   local-scout:                            # Direct-endpoint form also works (base_url/api_key/api_mode).
+  #     base_url: "http://localhost:11434/v1"
+  #     model: "qwen3:14b"
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

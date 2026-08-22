@@ -1949,5 +1949,275 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
 
+class TestAgentModelWiring(unittest.TestCase):
+    """Tests for delegation.agent_models — user-wired, per-named-sub-agent
+    fixed models selected via delegate_task's `agent` parameter."""
+
+    # -- _get_agent_model_overlay unit tests --------------------------------
+
+    def test_no_name_is_passthrough(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay({"agent_models": {"a": "m"}}, None)
+        self.assertIsNone(overlay)
+        self.assertIsNone(err)
+        overlay, err = _get_agent_model_overlay({"agent_models": {"a": "m"}}, "  ")
+        self.assertIsNone(overlay)
+        self.assertIsNone(err)
+
+    def test_string_entry_pins_model_only(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay(
+            {"agent_models": {"research": "anthropic/claude-opus-4-5"}}, "research"
+        )
+        self.assertIsNone(err)
+        self.assertEqual(overlay, {"model": "anthropic/claude-opus-4-5"})
+
+    def test_mapping_entry_full_override(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay(
+            {
+                "agent_models": {
+                    "coder": {
+                        "provider": "deepseek",
+                        "model": "deepseek-chat",
+                        "unknown_key": "ignored",
+                    }
+                }
+            },
+            "coder",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(overlay, {"provider": "deepseek", "model": "deepseek-chat"})
+
+    def test_case_insensitive_name_match(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay(
+            {"agent_models": {"Research": "x/y"}}, "research"
+        )
+        self.assertIsNone(err)
+        self.assertEqual(overlay, {"model": "x/y"})
+
+    def test_unknown_name_fails_loudly_with_wired_names(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay(
+            {"agent_models": {"research": "x/y", "coder": {"model": "z"}}}, "reserch"
+        )
+        self.assertIsNone(overlay)
+        self.assertIn("Unknown sub-agent name", err)
+        self.assertIn("'reserch'", err)
+        self.assertIn("coder", err)
+        self.assertIn("research", err)
+
+    def test_name_without_any_wiring_errors(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        for cfg in ({}, {"agent_models": {}}, {"agent_models": None}):
+            overlay, err = _get_agent_model_overlay(cfg, "research")
+            self.assertIsNone(overlay)
+            self.assertIn("agent_models", err)
+
+    def test_invalid_entry_types_error(self):
+        from tools.delegate_tool import _get_agent_model_overlay
+
+        overlay, err = _get_agent_model_overlay({"agent_models": {"a": ""}}, "a")
+        self.assertIsNone(overlay)
+        self.assertIn("empty string", err)
+
+        overlay, err = _get_agent_model_overlay({"agent_models": {"a": 42}}, "a")
+        self.assertIsNone(overlay)
+        self.assertIn("int", err)
+
+        overlay, err = _get_agent_model_overlay(
+            {"agent_models": {"a": {"unrelated": True}}}, "a"
+        )
+        self.assertIsNone(overlay)
+        self.assertIn("sets none of", err)
+
+    # -- schema surface ------------------------------------------------------
+
+    def test_agent_param_exposed_but_model_is_not(self):
+        """The model may pick WHICH wired agent — never a model. `agent` is in
+        the schema; no `model`/`provider` parameter may ever appear."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("agent", props)
+        self.assertIn("agent", props["tasks"]["items"]["properties"])
+        for forbidden in ("model", "provider", "base_url", "api_key"):
+            self.assertNotIn(forbidden, props)
+            self.assertNotIn(forbidden, props["tasks"]["items"]["properties"])
+
+    def test_agent_description_lists_names_not_models(self):
+        from tools.delegate_tool import (
+            _build_agent_param_description,
+            _build_dynamic_schema_overrides,
+        )
+
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={
+                "agent_models": {
+                    "research": "anthropic/claude-opus-4-5",
+                    "coder": {"provider": "deepseek", "model": "deepseek-chat"},
+                }
+            },
+        ):
+            desc = _build_agent_param_description()
+            self.assertIn("research", desc)
+            self.assertIn("coder", desc)
+            # Wired models must not leak into the model-facing schema.
+            self.assertNotIn("claude-opus", desc)
+            self.assertNotIn("deepseek-chat", desc)
+            overrides = _build_dynamic_schema_overrides()
+            self.assertEqual(
+                overrides["parameters"]["properties"]["agent"]["description"], desc
+            )
+
+    def test_agent_description_without_wiring_says_omit(self):
+        from tools.delegate_tool import _build_agent_param_description
+
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            desc = _build_agent_param_description()
+            self.assertIn("omit this parameter", desc)
+
+    # -- end-to-end: wiring reaches the built child ---------------------------
+
+    @patch("tools.delegate_tool._load_config")
+    def test_named_agent_model_reaches_child(self, mock_cfg):
+        """A wired name forces its provider:model on the child, overriding
+        parent inheritance (direct-endpoint form — no network resolution)."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "agent_models": {
+                "local-scout": {
+                    "base_url": "http://localhost:9999/v1",
+                    "model": "qwen3:14b",
+                    "api_key": "scout-key",
+                }
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Scout the local model", agent="local-scout", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "qwen3:14b")
+            self.assertEqual(kwargs["base_url"], "http://localhost:9999/v1")
+            self.assertEqual(kwargs["api_key"], "scout-key")
+            self.assertEqual(kwargs["provider"], "custom")
+            self.assertNotEqual(kwargs["base_url"], parent.base_url)
+            # Attribution: the wired name is stamped on the child.
+            self.assertEqual(mock_child._delegate_agent_name, "local-scout")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_batch_mixed_named_and_unnamed_tasks(self, mock_cfg):
+        """Each task in a batch resolves independently: named tasks run on
+        their wired model, unnamed tasks keep the global/inherited behavior."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "agent_models": {
+                "local-scout": {
+                    "base_url": "http://localhost:9999/v1",
+                    "model": "qwen3:14b",
+                    "api_key": "scout-key",
+                }
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "Scout the local model for capability boundaries",
+                        "agent": "local-scout",
+                    },
+                    {
+                        "goal": "Summarize the findings into a short briefing note",
+                    },
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertEqual(MockAgent.call_count, 2)
+            named_kwargs = MockAgent.call_args_list[0][1]
+            plain_kwargs = MockAgent.call_args_list[1][1]
+            self.assertEqual(named_kwargs["model"], "qwen3:14b")
+            self.assertEqual(named_kwargs["base_url"], "http://localhost:9999/v1")
+            # Unnamed task: no global pin configured → inherits the parent.
+            self.assertEqual(plain_kwargs["model"], parent.model)
+            self.assertEqual(plain_kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_unknown_agent_name_refuses_spawn(self, mock_cfg):
+        """A typo'd agent name must fail loudly BEFORE any child is built —
+        never silently run on the parent/global model."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "agent_models": {"research": "x/y"},
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            result = delegate_task(
+                goal="Research something", agent="reserch", parent_agent=parent
+            )
+            MockAgent.assert_not_called()
+        self.assertIn("Unknown sub-agent name", result)
+        self.assertIn("research", result)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_top_level_agent_applies_to_batch_default(self, mock_cfg):
+        """Top-level agent= is the default for batch tasks that don't set
+        their own (mirrors top-level role semantics)."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "agent_models": {
+                "local-scout": {
+                    "base_url": "http://localhost:9999/v1",
+                    "model": "qwen3:14b",
+                    "api_key": "scout-key",
+                }
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                agent="local-scout",
+                tasks=[
+                    {"goal": "First scouting task with enough detail to pass"},
+                    {"goal": "Second scouting task with enough detail to pass"},
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertEqual(MockAgent.call_count, 2)
+            for call in MockAgent.call_args_list:
+                self.assertEqual(call[1]["model"], "qwen3:14b")
+
+
 if __name__ == "__main__":
     unittest.main()

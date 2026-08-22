@@ -1,0 +1,76 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-numbers
+description: Read, write, search, and format Apple Numbers (.numbers) spreadsheets on macOS.
+source: https://github.com/sweetrb/apple-numbers-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
+#
+# How this pin was validated (catalog policy: "version validated on macOS").
+# On macOS, `npx -y apple-numbers-mcp@1.2.1`:
+#   - completes an MCP `initialize` handshake reporting serverInfo.version
+#     1.2.1 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 26 tools, every one carrying a description;
+#   - resolves all 6 `tools.default_enabled` entries below against that
+#     list, so no allow-listed name went stale across the bump.
+# Tools added since the previous pin are deliberately left OUT of
+# default_enabled — widening the default surface is the maintainers' call.
+# Re-run all three checks before moving this pin.
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-numbers-mcp@1.2.1"
+
+# Reads/writes .numbers files via a numbers-parser Python sidecar plus
+# AppleScript for formatting/formulas; no credentials.
+auth:
+  type: none
+
+# Read-only by default: file inspection, table/cell reads, search, and
+# diagnostics. Cell/row/sheet mutation, formatting, formula, CSV-import, and
+# document-creation tools stay disabled unless the user enables them at
+# install time — so a failed tool probe or a non-TTY install still yields a
+# safe, non-mutating surface.
+#
+# `export-table` is NOT default-enabled even though it only reads the
+# spreadsheet: it writes a file to outputPath and OVERWRITES whatever is
+# already there, so it is a disk-write tool in the same class as
+# apple-photos' `export` and is gated the same way. (The server does confine
+# outputPath to $HOME, /tmp, /private/tmp and /Volumes, but that bounds the
+# blast radius rather than removing it.) The line this catalog draws is
+# writes-to-disk, not reads-vs-mutates-the-source.
+#
+# As of the 1.2.1 pin that path boundary is TWO-sided. Through 1.1.19 only the
+# output side was bounded; the `.numbers` file being opened was not, so the
+# four read tools default-enabled below (`get-file-info`, `read-table`,
+# `get-cell`, `search`) could read a spreadsheet anywhere on disk. 1.2.0 puts
+# the input path through the same resolver — canonicalized, symlinks resolved
+# before the comparison. Operator-visible consequence: a spreadsheet outside
+# those roots is now REFUSED rather than read, and widening the boundary is
+# environment-only (`APPLE_NUMBERS_MCP_EXTRA_ROOTS`), never a tool argument.
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - get-file-info
+    - read-table
+    - get-cell
+    - search
+
+post_install: |
+  Requires macOS and Python 3.11+ — the server uses a numbers-parser Python
+  sidecar and bootstraps a local venv on first run (this can take ~a minute).
+  The formatting/formula tools also drive Numbers via AppleScript and will
+  prompt for Automation access. It ships read-only by default; enable the
+  write/formatting tools in the install-time checklist if you want them.
+
+  Start a new Hermes session to load the Apple Numbers tools.

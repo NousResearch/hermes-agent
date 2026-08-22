@@ -9438,9 +9438,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 id_params.append(_like_pattern(id_needle))
             if search_needle:
-                # Same chain-membership trick as id_query, but matching either
-                # the title or the id of any session in the chain. The compact
-                # (punctuation-stripped) variant lets `an94` match `AN-94`.
+                # Same chain-membership trick as id_query, but matching the
+                # title, the id, or the gateway display name of any session in
+                # the chain. The compact (punctuation-stripped) variant lets
+                # `an94` match `AN-94`.
+                #
+                # display_name is the gateway's presentation string for a
+                # messaging origin — "Server / #channel / thread". Without it,
+                # a conversation that lives in a named channel is unfindable by
+                # that channel's name unless the words also happen to appear in
+                # its title, which is how users actually remember gateway
+                # sessions. It is a plain column on the same row the clause
+                # already joins, so matching it costs no extra join.
                 compact_needle = re.sub(r"[\W_]+", "", search_needle)
                 compact_sql = (
                     "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
@@ -9451,14 +9460,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     " JOIN sessions cs ON cs.id = cq.cur_id"
                     " WHERE cq.root_id = s.id"
                     " AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+                    " OR LOWER(COALESCE(cs.display_name, '')) LIKE ? ESCAPE '\\'"
                     " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
                 )
-                id_params.extend([_like_pattern(search_needle)] * 2)
+                id_params.extend([_like_pattern(search_needle)] * 3)
                 if compact_needle:
                     search_clause += (
                         f" OR {compact_sql.format('cs.title')} LIKE ? ESCAPE '\\'"
+                        f" OR {compact_sql.format('cs.display_name')} LIKE ? ESCAPE '\\'"
                     )
-                    id_params.append(_like_pattern(compact_needle))
+                    id_params.extend([_like_pattern(compact_needle)] * 2)
                 filter_clauses.append(search_clause + "))")
             if filter_clauses:
                 combined = " AND ".join(filter_clauses)

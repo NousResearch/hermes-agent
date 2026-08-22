@@ -239,6 +239,33 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied(spec) is True
         assert ld.feature_missing("tool.trace_upload") == ()
 
+    def test_newer_than_exact_pin_counts_as_satisfied(self, monkeypatch):
+        """#80390: a newer installed build must not be downgraded.
+
+        The Hindsight embedded stack migrates its Postgres data directory
+        forward with each release, so an operator who installed hindsight-all
+        0.8.x (pulling hindsight-client 0.8.6) cannot be rolled back to the
+        pinned 0.6.1 without stranding the database at a newer schema. The pin
+        is a floor for upgrades, not a ceiling against newer installs.
+        """
+        self._fake_version(monkeypatch, {"hindsight-client": "0.8.6"})
+        assert ld._is_satisfied("hindsight-client==0.6.1") is True
+        assert ld.feature_missing("memory.hindsight") == ()
+
+    def test_newer_than_upper_bounded_range_counts_as_satisfied(self, monkeypatch):
+        """A version above an upper-bounded range is treated as current."""
+        self._fake_version(monkeypatch, {"slack-bolt": "2.5.0"})
+        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is True
+
+    def test_wildcard_pin_newer_than_prefix_counts_as_satisfied(self, monkeypatch):
+        self._fake_version(monkeypatch, {"demo-pkg": "1.5.0"})
+        assert ld._is_satisfied("demo-pkg==1.4.*") is True
+
+    def test_older_than_pin_still_requires_upgrade(self, monkeypatch):
+        """The never-downgrade rule must not block propagating pin bumps up."""
+        self._fake_version(monkeypatch, {"hindsight-client": "0.5.9"})
+        assert ld._is_satisfied("hindsight-client==0.6.1") is False
+
     @pytest.mark.parametrize(
         ("feature", "installed_versions", "expected_repairs"),
         [

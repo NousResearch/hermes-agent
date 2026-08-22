@@ -596,6 +596,14 @@ def _is_satisfied(spec: str) -> bool:
     ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
     installed backends instead of silently leaving stale versions in place.
 
+    Downgrades are deliberately excluded: when the installed version is
+    strictly newer than everything the spec permits (e.g. ``==0.6.1`` with
+    0.8.6 installed), the spec counts as satisfied. A pin is a floor for
+    propagating upgrades, not a ceiling for rolling back a newer operator-
+    installed build — some lazy backends migrate their data forward with
+    each release, and an automatic downgrade can strand that data at a
+    schema the pinned client no longer understands (#80390).
+
     If ``packaging`` is unavailable for any reason (it's a transitive of
     pip so this should never happen), we fall back to a presence-only check
     so we err on the side of "don't churn".
@@ -624,8 +632,47 @@ def _is_satisfied(spec: str) -> bool:
         # packaging unavailable — fall back to "installed counts as satisfied".
         return True
 
+    def _spec_bound_version(spec_version: str) -> "Version | None":
+        """Parse a specifier operand, tolerating ``X.Y.*`` wildcards.
+
+        ``==1.4.*`` yields ``spec.version == "1.4.*"`` which ``Version`` cannot
+        parse; strip the wildcard so the prefix still gives a usable bound for
+        the "never downgrade" comparison.
+        """
+        candidate = spec_version
+        if candidate.endswith(".*"):
+            candidate = candidate[:-2]
+        try:
+            return Version(candidate)
+        except InvalidVersion:
+            return None
+
+    def _installed_is_newer_than_spec() -> bool:
+        """True when installed is strictly newer than the spec's ceiling.
+
+        Only upper-bounded specifiers (``<``, ``<=``, ``==``, ``~=``)
+        contribute a ceiling; ``>``/``>=`` have no ceiling and ``===`` is an
+        exact-string legacy match with no ordering we can rely on. Returns
+        False when the spec has no usable ceiling, so the caller keeps the
+        existing upgrade path for versions merely below the floor.
+        """
+        upper: "Version | None" = None
+        for spec in specset:
+            if spec.operator not in ("<", "<=", "==", "~="):
+                continue
+            ver = _spec_bound_version(spec.version)
+            if ver is None:
+                continue
+            if upper is None or ver < upper:
+                upper = ver
+        return upper is not None and installed_v > upper
+
     try:
-        return Version(installed) in SpecifierSet(spec_tail)
+        installed_v = Version(installed)
+        specset = SpecifierSet(spec_tail)
+        if installed_v in specset:
+            return True
+        return _installed_is_newer_than_spec()
     except (InvalidSpecifier, InvalidVersion, Exception):
         # Malformed spec or installed version we can't parse — don't churn.
         return True

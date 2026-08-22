@@ -35,6 +35,7 @@ import time so the Electron main process can shell out to
 ``hermes uninstall --gui`` (and friends) without paying for the full CLI.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -67,24 +68,47 @@ def _agent_root(hermes_home: Path) -> Path:
     return hermes_home / "hermes-agent"
 
 
+def _desktop_product_name() -> str:
+    """The product name the installed desktop build packs and stores under.
+
+    electron-builder names the app bundle, the NSIS install directory and
+    Electron's own ``userData`` directory after ``build.productName`` in
+    ``apps/desktop/package.json``. Reading it back from the checkout keeps
+    uninstall honest for a build that sets it; a packaged-only install with no
+    checkout falls back to the stock name, which is what that install has.
+    """
+    try:
+        pkg_path = _agent_root(get_hermes_home()) / "apps" / "desktop" / "package.json"
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+        build = pkg.get("build") if isinstance(pkg, dict) else None
+        name = (build or {}).get("productName") or (pkg or {}).get("productName")
+        if isinstance(name, str) and name:
+            return name
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return "Hermes"
+
+
 def desktop_userdata_dir() -> Path:
     """Return the Electron ``userData`` directory for the desktop app.
 
-    Mirrors Electron's ``app.getPath('userData')`` for an app named "Hermes"
-    on each platform. This is GUI-only state (connection.json, updates.json,
-    Chromium cache) and never holds agent config or sessions.
+    Mirrors Electron's ``app.getPath('userData')``, which is keyed on the
+    packed product name, on each platform. This is GUI-only state
+    (connection.json, updates.json, Chromium cache) and never holds agent
+    config or sessions.
     """
     home = Path.home()
+    product = _desktop_product_name()
     if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "Hermes"
+        return home / "Library" / "Application Support" / product
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
         base = Path(appdata) if appdata else (home / "AppData" / "Roaming")
-        return base / "Hermes"
+        return base / product
     # Linux / other POSIX — XDG config home.
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else (home / ".config")
-    return base / "Hermes"
+    return base / product
 
 
 def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
@@ -113,28 +137,29 @@ def packaged_gui_app_paths() -> "list[Path]":
 
     Returns every candidate for the current OS; the caller filters to those
     that actually exist. We never glob system-wide — only the well-known
-    electron-builder output locations for the "Hermes" product.
+    electron-builder output locations for the configured product name.
     """
     home = Path.home()
+    product = _desktop_product_name()
     paths: list[Path] = []
     if sys.platform == "darwin":
         paths += [
-            Path("/Applications/Hermes.app"),
-            home / "Applications" / "Hermes.app",
+            Path("/Applications") / f"{product}.app",
+            home / "Applications" / f"{product}.app",
         ]
     elif sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         local_base = Path(local) if local else (home / "AppData" / "Local")
         paths += [
-            # NSIS per-user install (perMachine=false → Programs\Hermes).
-            local_base / "Programs" / "Hermes",
+            # NSIS per-user install (perMachine=false → Programs\<Product>).
+            local_base / "Programs" / product,
             # Older / alternate layout some builds used.
             local_base / "hermes-desktop",
         ]
         program_files = os.environ.get("ProgramFiles")
         if program_files:
             # NSIS per-machine fallback (needs admin to remove).
-            paths.append(Path(program_files) / "Hermes")
+            paths.append(Path(program_files) / product)
     else:
         # Linux: AppImage is a single file the user placed somewhere; we can
         # only reliably clean the desktop entry + icon we know the name of.

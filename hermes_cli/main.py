@@ -6691,23 +6691,54 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
         logger.debug("Failed to write desktop build stamp: %s", exc)
 
 
+def _desktop_product_names(desktop_dir: Path) -> "tuple[str, str]":
+    """Return ``(product_name, executable_name)`` electron-builder packs under.
+
+    electron-builder derives every packed path from ``build.productName`` /
+    ``build.executableName`` in ``apps/desktop/package.json`` — the same keys
+    ``scripts/before-pack.mjs`` reads back off the packager context. A build
+    that sets either one writes ``<productName>.app`` / ``<executableName>.exe``
+    and nothing named "Hermes", so the update chain has to read them too or it
+    concludes the rebuild produced no app. Stock names on any read failure.
+    """
+    try:
+        pkg = json.loads((desktop_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pkg = {}
+    if not isinstance(pkg, dict):
+        pkg = {}
+    build = pkg.get("build")
+    if not isinstance(build, dict):
+        build = {}
+    product = build.get("productName") or pkg.get("productName") or "Hermes"
+    executable = build.get("executableName") or product
+    return str(product), str(executable)
+
+
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     release_dir = desktop_dir / "release"
+    product, executable = _desktop_product_names(desktop_dir)
     if sys.platform == "darwin":
-        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+        candidates = [
+            mac_dir / f"{product}.app" / "Contents" / "MacOS" / executable
+            for mac_dir in sorted(release_dir.glob("mac*"))
+        ]
     elif sys.platform == "win32":
         candidates = [
-            release_dir / "win-unpacked" / "Hermes.exe",
-            release_dir / "win-ia32-unpacked" / "Hermes.exe",
-            release_dir / "win-arm64-unpacked" / "Hermes.exe",
+            release_dir / tree / f"{executable}.exe"
+            for tree in ("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked")
         ]
     else:
+        # electron-builder's Linux executable name comes from
+        # build.executableName, and older/default builds used the lowercase
+        # package name — probe both spellings, as this has always done for the
+        # stock pair.
+        names = list(dict.fromkeys([executable, executable.lower(), product, product.lower()]))
         candidates = [
-            release_dir / "linux-unpacked" / "hermes",
-            release_dir / "linux-unpacked" / "Hermes",
-            release_dir / "linux-arm64-unpacked" / "hermes",
-            release_dir / "linux-arm64-unpacked" / "Hermes",
+            release_dir / tree / name
+            for tree in ("linux-unpacked", "linux-arm64-unpacked")
+            for name in names
         ]
 
     existing = [p for p in candidates if p.exists()]
@@ -7038,7 +7069,7 @@ def _ensure_desktop_exe_launchable(
     if error is None:
         return packaged_executable, False
 
-    print(f"✗ The built Hermes.exe failed its integrity check: {error}")
+    print(f"✗ The built {packaged_executable.name} failed its integrity check: {error}")
     print(f"    at: {packaged_executable}")
 
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
@@ -7052,7 +7083,7 @@ def _ensure_desktop_exe_launchable(
 
     restored = _rollback_desktop_from_backup(packaged_executable)
     if restored is not None:
-        print("  ↩ Update aborted — restored the previous working Hermes.exe from backup.")
+        print(f"  ↩ Update aborted — restored the previous working {restored.name} from backup.")
         print("    Your existing version was kept and still works. Run `hermes desktop`")
         print("    (or the in-app update) again to retry with a fresh Electron download.")
         return restored, True
@@ -7560,7 +7591,7 @@ def _desktop_macos_relaunchable_fixup(
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
         return True
-    # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
+    # exe = .../<Product>.app/Contents/MacOS/<Exe>  ->  app bundle = .../<Product>.app
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
         return True

@@ -268,10 +268,24 @@ linux_gate() {
   GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
 }
 
+# The name electron-builder packed the app under (build.productName in
+# apps/desktop/package.json, electron-builder's own precedence). node produced
+# the tree we're looking for, so it is present wherever there is one to find;
+# the stock name is the fallback.
+desktop_product_name() {
+  local pkg="$INSTALL_ROOT/apps/desktop/package.json" name=""
+  if [ -f "$pkg" ] && command -v node >/dev/null 2>&1; then
+    name="$(node -p 'const p=require(process.argv[1]);(p.build&&p.build.productName)||p.productName||""' "$pkg" 2>/dev/null)"
+  fi
+  [ -n "$name" ] || name="Hermes"
+  printf '%s' "$name"
+}
+
 mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
+  local rebuilt="" c product
+  product="$(desktop_product_name)"
+  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/$product.app" \
+           "$INSTALL_ROOT/apps/desktop/release/mac/$product.app"; do
     [ -d "$c" ] && { rebuilt="$c"; break; }
   done
 

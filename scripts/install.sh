@@ -3240,18 +3240,30 @@ install_desktop() {
         return 1
     fi
 
+    # The names electron-builder packed under (build.productName /
+    # build.executableName). node just built the tree, so it is on PATH here.
+    local product="Hermes" exe_name=""
+    if [ -f "$desktop_dir/package.json" ] && command -v node >/dev/null 2>&1; then
+        product="$(node -p 'const p=require(process.argv[1]);(p.build&&p.build.productName)||p.productName||"Hermes"' "$desktop_dir/package.json" 2>/dev/null || echo Hermes)"
+        exe_name="$(node -p 'const p=require(process.argv[1]);(p.build&&p.build.executableName)||""' "$desktop_dir/package.json" 2>/dev/null)"
+    fi
+    [ -n "$product" ] || product="Hermes"
+    [ -n "$exe_name" ] || exe_name="$product"
+
     local app=""
     if [ "$OS" = "linux" ]; then
-        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/Hermes"
-        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/hermes"
-        fi
+        local lcand
+        for lcand in "$exe_name" "$(printf '%s' "$exe_name" | tr '[:upper:]' '[:lower:]')"; do
+            if [ -x "$desktop_dir/release/linux-unpacked/$lcand" ]; then
+                app="$desktop_dir/release/linux-unpacked/$lcand"
+                break
+            fi
+        done
     else
         local cand
         for cand in \
-            "$desktop_dir/release/mac-arm64/Hermes.app" \
-            "$desktop_dir/release/mac/Hermes.app"; do
+            "$desktop_dir/release/mac-arm64/$product.app" \
+            "$desktop_dir/release/mac/$product.app"; do
             if [ -d "$cand" ]; then
                 app="$cand"
                 break

@@ -167,3 +167,19 @@ def test_uninstall_args_namespace_mode_mapping():
     full = uninstall._UninstallArgs(mode="full")
     assert full.gui is False and full.full is True and full.yes is True
 
+
+def test_packaged_paths_and_userdata_follow_the_build_product_name(tmp_path, monkeypatch):
+    """Uninstall has to find a renamed install: the bundle, the NSIS directory
+    and Electron's userData are all keyed on the packed product name."""
+    hermes_home = tmp_path / ".hermes"
+    desktop = hermes_home / "hermes-agent" / "apps" / "desktop"
+    desktop.mkdir(parents=True)
+    (desktop / "package.json").write_text('{"build": {"productName": "Aurora"}}', encoding="utf-8")
+
+    monkeypatch.setattr(gu, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gu.sys, "platform", "darwin")
+    monkeypatch.setattr(gu.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+    assert Path("/Applications/Aurora.app") in gu.packaged_gui_app_paths()
+    assert gu.desktop_userdata_dir().name == "Aurora"
+

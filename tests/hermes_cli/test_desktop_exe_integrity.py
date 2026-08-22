@@ -15,6 +15,7 @@ verdicts/rollbacks come out.
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 import subprocess
 import sys
@@ -195,6 +196,74 @@ def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch)
 # ─── _desktop_packaged_executable arch preference (win32) ───────────────────
 
 
+def _packed(desktop_dir: Path, rel: str) -> Path:
+    """Create a fake packed executable at ``release/<rel>``."""
+    exe = desktop_dir / "release" / rel
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"\x00")
+    return exe
+
+
+def _build_config(desktop_dir: Path, **build) -> None:
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    (desktop_dir / "package.json").write_text(json.dumps({"build": build}), encoding="utf-8")
+
+
+def test_mac_bundle_resolves_from_the_configured_product_name(tmp_path, monkeypatch):
+    """A renamed build packs <productName>.app; the checker has to find it or
+    `--build-only` reports a successful pack as "no app built" and rolls back."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    _build_config(desktop_dir, productName="Aurora", executableName="Aurora")
+    exe = _packed(desktop_dir, "mac-arm64/Aurora.app/Contents/MacOS/Aurora")
+
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+
+    assert cli_main._desktop_packaged_executable(desktop_dir) == exe
+
+
+def test_windows_exe_resolves_from_the_configured_executable_name(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    _build_config(desktop_dir, productName="Aurora", executableName="Aurora")
+    exe = _packed(desktop_dir, "win-unpacked/Aurora.exe")
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setattr(cli_main, "_expected_windows_pe_machines", lambda: set())
+
+    assert cli_main._desktop_packaged_executable(desktop_dir) == exe
+
+
+def test_linux_binary_resolves_from_either_spelling(tmp_path, monkeypatch):
+    """electron-builder writes the lowercase spelling on Linux; the probe has to
+    find it from the configured product name.
+
+    Compared by file identity, not by string: on a case-insensitive filesystem
+    (macOS APFS, NTFS) the "Aurora" probe opens the same file as "aurora", so
+    which spelling comes back is a property of the host filesystem, not of the
+    resolution being tested.
+    """
+    desktop_dir = tmp_path / "apps" / "desktop"
+    _build_config(desktop_dir, productName="Aurora")
+    exe = _packed(desktop_dir, "linux-unpacked/aurora")
+
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    resolved = cli_main._desktop_packaged_executable(desktop_dir)
+
+    assert resolved is not None
+    assert resolved.samefile(exe)
+    assert resolved.parent == exe.parent
+    assert resolved.name.lower() == "aurora"
+
+
+def test_stock_names_still_resolve_without_a_build_config(tmp_path, monkeypatch):
+    """The stock tree keeps working when package.json is absent/unreadable —
+    the fallback every existing install depends on."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    exe = _packed(desktop_dir, "mac-arm64/Hermes.app/Contents/MacOS/Hermes")
+
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+
+    assert cli_main._desktop_packaged_executable(desktop_dir) == exe
 
 
 

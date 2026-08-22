@@ -3819,6 +3819,24 @@ function Install-DesktopVoiceDeps {
     }
 }
 
+function Get-DesktopExecutableName {
+    param([Parameter(Mandatory = $true)][string]$DesktopDir)
+
+    # electron-builder names the packed exe after build.executableName (falling
+    # back to the product name). Read it back so a build that renames the
+    # product is still found here; stock name on any read failure. Windows
+    # PowerShell 5.1-safe: ConvertFrom-Json ships in 5.1.
+    try {
+        $pkg = Get-Content -LiteralPath "$DesktopDir\package.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+        foreach ($candidate in @($pkg.build.executableName, $pkg.build.productName, $pkg.productName)) {
+            if ($candidate) { return [string]$candidate }
+        }
+    } catch {
+        # fall through to the stock name
+    }
+    return 'Hermes'
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -4068,9 +4086,10 @@ function Install-Desktop {
 
     # 3. Sanity-check the produced binary. Probe both arches so this works
     # on x64 and arm64 build machines.
+    $exeName = Get-DesktopExecutableName -DesktopDir $desktopDir
     $exeCandidates = @(
-        "$desktopDir\release\win-unpacked\Hermes.exe",
-        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
+        "$desktopDir\release\win-unpacked\$exeName.exe",
+        "$desktopDir\release\win-arm64-unpacked\$exeName.exe"
     )
     $found = $false
     $desktopExe = $null
@@ -4083,7 +4102,7 @@ function Install-Desktop {
         }
     }
     if (-not $found) {
-        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
+        throw "Desktop build completed but no $exeName.exe was found under $desktopDir\release\*-unpacked\"
     }
 
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the

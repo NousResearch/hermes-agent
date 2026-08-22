@@ -250,6 +250,40 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
 
+    # ── the mention gate requires an '@' (issue #78798) ──────────────────
+    #
+    # With an optional '@', `require_mention: true` behaved as "respond when
+    # named" rather than "respond when addressed": talking ABOUT the agent in
+    # a shared channel woke a full turn. A single third-person status post
+    # was measured burning 21+ API calls and ~148k tokens of context.
+
+    @pytest.mark.parametrize("content", [
+        "waiting on Chip",                        # bare name
+        "the Chip migration is done",             # third person
+        "Chip's config looks off",                # possessive
+        "did chip finish that?",                  # lowercase
+        "Today: shipped it, Chip handled retries",  # status post
+        "ping bob@Chip for access",               # '@' preceded by a word char
+        "@Chipmunk is a different bot",           # trailing word char
+    ])
+    @pytest.mark.asyncio
+    async def test_unaddressed_name_does_not_wake(self, adapter, content):
+        await self._poll_with(adapter, _event("e1", content=content, created_at=10))
+        assert adapter._dispatched == [], f"woke on unaddressed text: {content!r}"
+
+    @pytest.mark.parametrize("content", [
+        "@Chip can you check this?",              # typed mention
+        "@chip status?",                          # lowercase mention
+        "hey @Chip what's up",                    # mid-sentence
+        "**@Chip** ping",                         # markdown-wrapped
+        f"{SELF_PUBKEY} please respond",          # raw hex pubkey
+        f"{SELF_NPUB} please respond",            # npub
+    ])
+    @pytest.mark.asyncio
+    async def test_addressed_message_still_wakes(self, adapter, content):
+        await self._poll_with(adapter, _event("e1", content=content, created_at=10))
+        assert len(adapter._dispatched) == 1, f"missed a real address: {content!r}"
+
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
 #
@@ -322,6 +356,35 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
+    @pytest.mark.asyncio
+    async def test_dm_shaped_ptagged_bare_name_still_delivers(self, adapter):
+        """Leaked-DM opener with a bare name must latch and dispatch (#78798).
+
+        After the wake gate started requiring a literal ``@``, a p-tagged
+        ``Chip /whoami`` on an unlatched DM-shaped conversation would both
+        fail to latch (bare name "explained" the p-tag under the meta-less
+        discriminator) and fail the gate (no ``@``) — silent drop.  DM-shaped
+        metadata must treat any self p-tag as structural addressing.
+        """
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="Chip /whoami", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+        # Leading bare name is stripped so slash commands still fire.
+        assert adapter._dispatched[0]["text"] == "/whoami"
+
+        # Follow-up with no name at all still dispatches once latched.
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event(
+                "e2", DM_CHANNEL, content="and also this", p=SELF_PUBKEY, created_at=1001,
+            ),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1", "e2"]
+        assert adapter._dispatched[1]["chat_type"] == "dm"
 
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):
@@ -358,6 +421,48 @@ class TestDmClassification:
         assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
         assert adapter._dispatched == []
 
+    @pytest.mark.asyncio
+    async def test_ptagged_bare_name_post_does_not_latch_channel_as_dm(self):
+        """The trap in tightening the mention gate (issue #78798).
+
+        DM classification asks whether a ``p`` tag is *explained* by something
+        visible in the text, so it must keep matching a bare name. Had the
+        gate's stricter ``@``-required rule been shared with this path, a
+        p-tagged "waiting on Chip" would read as structural DM addressing,
+        latch the conversation to chat_type="dm", and from then on every
+        message in it would dispatch with no mention gate at all — a strictly
+        worse failure than the one the gate change fixes.
+
+        Uses a metadata-less conversation so the ``_may_reclassify_as_dm``
+        guard is open and only the content check is under test.
+        """
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_meta = {}          # no metadata -> latch is permitted
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _tagged_event("e1", CHANNEL, content="waiting on Chip", p=SELF_PUBKEY),
+        ])
+        a._run_cli = cli
+        await a._poll_channel(CHANNEL)
+
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
+        assert a._dispatched == []
+
+        # ...and the gate is still armed for the next message.
+        cli.script("messages", "get", [
+            _tagged_event("e2", CHANNEL, content="anyone around?", created_at=1001),
+        ])
+        await a._poll_channel(CHANNEL)
+        assert a._dispatched == []
 
     @pytest.mark.asyncio
     async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):

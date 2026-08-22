@@ -5152,6 +5152,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # through MoA instead of hitting the real provider with an unknown
         # model (#56828). A ``moa:`` prefix wins over an explicit ``--provider``.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
+        # Direct aliases from config.yaml ``model_aliases:`` map a short name to
+        # an exact (model, provider, base_url) triple.  ``hermes_cli/oneshot.py``
+        # resolves these; the interactive/``chat`` path did not, so ``-m opus-5``
+        # was sent verbatim as the model id, 404'd ("model: opus-5"), and silently
+        # fell back to the configured fallback model.  Resolve here — before
+        # ``requested_provider``/``base_url`` are built below — so both entry
+        # points agree.  Only for an explicit ``-m``: a config default is already
+        # a real model id, and the alias table is keyed lowercase.
+        _alias_provider: Optional[str] = None
+        _alias_base_url: Optional[str] = None
+        if model and not _moa_provider_override:
+            try:
+                from hermes_cli import model_switch as _ms
+
+                _ms._ensure_direct_aliases()
+                _direct = _ms.DIRECT_ALIASES.get(str(self.model).strip().lower())
+            except Exception:
+                logger.debug("Direct-alias lookup failed for %s", self.model, exc_info=True)
+                _direct = None
+            if _direct is not None and _direct.model:
+                self.model = _direct.model
+                # An explicit --provider still wins (matches oneshot, which only
+                # consults the alias table when no provider was passed).
+                if not provider:
+                    _alias_provider = (_direct.provider or "").strip() or None
+                    _alias_base_url = (_direct.base_url or "").strip().rstrip("/") or None
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -5183,12 +5209,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
 
         self._explicit_api_key = api_key
-        self._explicit_base_url = base_url
+        self._explicit_base_url = base_url or _alias_base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             _moa_provider_override
             or provider
+            or _alias_provider
             or _nested_provider
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
@@ -5222,6 +5249,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
+            or _alias_base_url
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None

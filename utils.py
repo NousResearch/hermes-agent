@@ -1,5 +1,7 @@
 """Shared utility functions for hermes-agent."""
 
+from __future__ import annotations
+
 import errno
 import json
 import logging

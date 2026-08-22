@@ -1,0 +1,105 @@
+name: Materialize PR 91906 dependency security closure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/materialize_pr91906_dependency_security.py
+      - .github/workflows/materialize-pr91906-dependency-security.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-pr91906-dependency-security
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact main object
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node 22.22.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+
+      - name: Use repository-authorized npm
+        run: npm install --global npm@11.17.0
+
+      - name: Set up uv 0.12.5
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.12.5"
+
+      - name: Generate exact current-main dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/materialize_pr91906_dependency_security.py apply
+          npm install --package-lock-only --ignore-scripts --include=optional
+          npm update nanoid --package-lock-only --ignore-scripts --include=optional
+          uv lock --upgrade-package 'h2==4.4.1'
+
+      - name: Verify semantic closure and focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/materialize_pr91906_dependency_security.py verify
+          node --test apps/desktop/scripts/packaged-app-layout.test.mjs
+          uv lock --check
+          git diff --check
+          npm audit --workspaces=false --audit-level=high
+          npm audit --workspace web --audit-level=high
+          npm audit --workspace ui-tui --audit-level=high
+          npm audit --workspace apps/desktop --audit-level=high
+
+      - name: Prove exact eight-file publication set
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- \
+            .npmrc \
+            package.json \
+            package-lock.json \
+            uv.lock \
+            apps/desktop/package.json \
+            apps/desktop/scripts/packaged-app-layout.mjs \
+            apps/desktop/scripts/packaged-app-layout.test.mjs \
+            apps/desktop/scripts/test-desktop.mjs
+          cat > /tmp/expected-files <<'FILES'
+          .npmrc
+          apps/desktop/package.json
+          apps/desktop/scripts/packaged-app-layout.mjs
+          apps/desktop/scripts/packaged-app-layout.test.mjs
+          apps/desktop/scripts/test-desktop.mjs
+          package-lock.json
+          package.json
+          uv.lock
+          FILES
+          git diff --cached --name-only | sort > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          git diff --cached --check
+
+      - name: Publish exact current-main child commit to upstream staging branch
+        shell: bash
+        env:
+          MATERIALIZED_BRANCH: automation/pr91906-materialized
+        run: |
+          set -euo pipefail
+          git config user.name "Axl Ibiza"
+          git config user.email "andrexibiza@gmail.com"
+          git commit -m "fix(deps): close current advisory graph on current main" -m "Consolidate the live Electron, Nano ID, and h2 advisory closure on the exact current-main dependency graph while preserving React Compiler movement, Nano ID v6 isolation, packaged Desktop architecture, and source provenance.\n\nRefs #89479\nRefs #90486\nRefs #91042\n\nCo-authored-by: schmitzi8 <schmitzi8@users.noreply.github.com>\nCo-authored-by: orcaspainting-dev <264355715+orcaspainting-dev@users.noreply.github.com>\nSigned-off-by: Axl Ibiza <andrexibiza@gmail.com>"
+          FINAL_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${{ github.sha }}"
+          test "$(git rev-list --count '${{ github.sha }}..HEAD')" = '1'
+          test "$(git diff --name-only '${{ github.sha }}..HEAD' | wc -l | tr -d ' ')" = '8'
+          git push --force origin "HEAD:refs/heads/$MATERIALIZED_BRANCH"
+          echo "Materialized exact closure at $FINAL_SHA"

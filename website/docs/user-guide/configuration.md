@@ -1055,6 +1055,17 @@ When a budget is set, two things happen:
 
 The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
 
+### Cron jobs
+
+Cron agent runs can opt in to the same wall-clock budget. Set it fleet-wide under `cron:`, or per job with a `run_budget_seconds` field in `jobs.json` (the per-job value wins):
+
+```yaml
+cron:
+  run_budget_seconds: null    # Optional; null/unset = off (default)
+```
+
+A budgeted cron run gets the two agent-side behaviors above **plus a hard ceiling at 100%**: `run_job`'s poll loop hard-interrupts the agent at budget expiry and fails the fire (the run is recorded as failed, not `ok`, with a diagnostic including the last activity). This closes a real gap — the cron inactivity watchdog only catches *fully silent* stalls, because a slow provider stream marks activity on every chunk, so a hung-but-trickling call could otherwise consume an entire fire window and overlap the next scheduled fire. Choose a value comfortably below the job's cadence.
+
 ## Verify-on-Stop (coding verification)
 
 When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.

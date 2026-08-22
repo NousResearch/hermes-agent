@@ -1330,6 +1330,53 @@ def _cron_inactivity_seconds() -> float:
         return 600.0
 
 
+def _normalize_cron_run_budget(value) -> Optional[float]:
+    """Normalize a cron wall-clock run-budget value (seconds).
+
+    None / empty / invalid / non-positive all mean "off" (returns None),
+    matching the agent-side ``agent.run_budget_seconds`` semantics — a broken
+    config must leave the feature dormant, never crash a fire.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        logger.warning("Invalid cron run_budget_seconds=%r (bool); ignoring", value)
+        return None
+    try:
+        parsed = float(value)
+    except (ValueError, TypeError):
+        logger.warning("Invalid cron run_budget_seconds=%r; ignoring", value)
+        return None
+    if parsed <= 0:
+        logger.warning(
+            "Invalid cron run_budget_seconds=%r (non-positive); ignoring", value
+        )
+        return None
+    return parsed
+
+
+def _cron_run_budget_seconds(job: Any, cfg: Any) -> Optional[float]:
+    """Wall-clock budget for one cron agent run, in seconds.
+
+    Resolution: per-job ``run_budget_seconds`` (jobs.json) wins over the
+    ``cron.run_budget_seconds`` config default; both absent = off. The
+    inactivity watchdog (``_cron_inactivity_seconds``) only catches fully
+    silent stalls — a trickling stream updates activity on every chunk, so a
+    slow-but-alive provider call can consume an entire fire window. The wall
+    budget closes that gap: the agent-side budget machinery (80% wrap-up
+    notice + per-call stale-timeout capping) plus ``run_job``'s hard
+    interrupt at 100% (see the poll loop below).
+    """
+    raw = None
+    if isinstance(job, dict):
+        raw = job.get("run_budget_seconds")
+    if raw is None and isinstance(cfg, dict):
+        cron_cfg = cfg.get("cron")
+        if isinstance(cron_cfg, dict):
+            raw = cron_cfg.get("run_budget_seconds")
+    return _normalize_cron_run_budget(raw)
+
+
 def _cwd_lock_timeout_seconds() -> float:
     """Bound for the TERMINAL_CWD lock wait: inactivity limit + margin."""
     inactivity = _cron_inactivity_seconds()
@@ -6007,6 +6054,12 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        # Wall-clock run budget for this fire (seconds; None = off). Resolved
+        # BEFORE the AIAgent is built so the agent-side budget machinery (80%
+        # wrap-up notice + per-call stale-timeout capping) is active for the
+        # whole run; the poll loop below hard-interrupts at 100%.
+        _cron_budget = _cron_run_budget_seconds(job, _cfg)
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -6017,6 +6070,7 @@ def run_job(
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
+            run_budget_seconds=_cron_budget,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
@@ -6108,11 +6162,19 @@ def run_job(
         _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _wall_budget_exhausted = False
+
+        def _wall_budget_exceeded() -> bool:
+            """True once the fire has run past its wall-clock budget (if any)."""
+            if _cron_budget is None:
+                return False
+            return (time.monotonic() - _audit_t_start) >= float(_cron_budget)
+
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — no inactivity watchdog, but a one-shot still
-                # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot or cancel_event is not None:
+                # Unlimited inactivity — but a wall-clock budget still needs
+                # polling to enforce, as does a one-shot claim heartbeat.
+                if _is_oneshot or cancel_event is not None or _cron_budget is not None:
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
@@ -6124,6 +6186,9 @@ def run_job(
                             break
                         _abort_if_fire_claim_lost()
                         _heartbeat_run_claim_if_due()
+                        if _wall_budget_exceeded():
+                            _wall_budget_exhausted = True
+                            break
                 else:
                     result = _cron_future.result()
             else:
@@ -6138,6 +6203,12 @@ def run_job(
                         break
                     _abort_if_fire_claim_lost()
                     _heartbeat_run_claim_if_due()
+                    # Agent still running — check the wall-clock budget first:
+                    # a trickling stream keeps activity fresh, so inactivity
+                    # alone cannot bound a fire window.
+                    if _wall_budget_exceeded():
+                        _wall_budget_exhausted = True
+                        break
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -6155,7 +6226,7 @@ def run_job(
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
 
-        if _inactivity_timeout:
+        if _inactivity_timeout or _wall_budget_exhausted:
             # Build diagnostic summary from the agent's activity tracker.
             _activity = {}
             if hasattr(agent, "get_activity_summary"):
@@ -6168,6 +6239,28 @@ def run_job(
             _cur_tool = _activity.get("current_tool")
             _iter_n = _activity.get("api_call_count", 0)
             _iter_max = _activity.get("max_iterations", 0)
+
+            if _wall_budget_exhausted:
+                # _wall_budget_exceeded() only returns True with a non-None
+                # budget; bind a narrowed local for the diagnostics below.
+                _budget_secs = float(_cron_budget) if _cron_budget is not None else 0.0
+                _elapsed = time.monotonic() - _audit_t_start
+                logger.error(
+                    "Job '%s' exceeded its wall-clock budget (%.0fs elapsed, "
+                    "limit %.0fs) | last_activity=%s | iteration=%s/%s | tool=%s",
+                    job_name, _elapsed, _budget_secs,
+                    _last_desc, _iter_n, _iter_max,
+                    _cur_tool or "none",
+                )
+                request_hard_interrupt(
+                    agent,
+                    f"Cron job exceeded wall-clock budget ({int(_budget_secs)}s)",
+                )
+                raise TimeoutError(
+                    f"Cron job '{job_name}' exceeded its wall-clock budget of "
+                    f"{int(_budget_secs)}s (elapsed {int(_elapsed)}s) "
+                    f"— last activity: {_last_desc}"
+                )
 
             logger.error(
                 "Job '%s' idle for %.0fs (inactivity limit %.0fs) "

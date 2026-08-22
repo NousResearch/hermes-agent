@@ -2588,6 +2588,17 @@ DEFAULT_CONFIG = {
         # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
         # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
         "media_send_timeout_seconds": 300,
+        # Wall-clock budget (seconds) for cron AGENT runs. None = off. When
+        # set (or a job carries its own run_budget_seconds in jobs.json), the
+        # run gets the agent-side wall-clock budget: an 80% wrap-up notice is
+        # injected, per-call stale timeouts are capped at half the remaining
+        # budget (so one hung-but-active provider stream cannot eat the whole
+        # fire window — the inactivity watchdog only catches fully silent
+        # stalls), and the scheduler hard-interrupts at 100%. Jobs that need
+        # to run indefinitely leave this unset. Interaction: choose a value
+        # comfortably below the job's cadence so a fire never overlaps the
+        # next one.
+        "run_budget_seconds": None,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

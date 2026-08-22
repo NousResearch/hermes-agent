@@ -393,6 +393,42 @@ class TestAgentExecution:
         )
 
     @pytest.mark.asyncio
+    async def test_run_agent_closes_explicit_one_off_session(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="one off",
+                conversation_history=[],
+                session_id="run-one-off",
+                close_session_on_finish=True,
+            )
+
+        mock_agent.close.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_keeps_persistent_session_open(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="persistent",
+                conversation_history=[],
+                session_id="api-persistent",
+                close_session_on_finish=False,
+            )
+
+        mock_agent.close.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_run_agent_sets_and_clears_process_ownership_markers(self, adapter):
         """#76188 review: this surface runs its own agent lifecycle outside
         TurnRunner, so it needs its own baseline snapshot/clear — verify the

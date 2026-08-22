@@ -229,6 +229,7 @@ def _get_backend() -> str:
     selection is broken. The credential/entitlement autodetect ladder runs
     ONLY when no web selection has ever been stored.
     """
+    _ensure_web_plugins_loaded()
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured:
         # Strict: the stored selection is final, known name or not — an
@@ -379,6 +380,7 @@ def _is_backend_available(backend: str) -> bool:
     (issues #28651, #31873, #32698). Built-in backends keep their cheap
     hardcoded probes below.
     """
+    _ensure_web_plugins_loaded()
     backend = (backend or "").lower().strip()
     if backend not in _LEGACY_WEB_BACKENDS:
         registered = _registered_web_provider_available(backend)

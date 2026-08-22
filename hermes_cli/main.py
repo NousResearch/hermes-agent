@@ -4899,6 +4899,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_manifests_digest",
         "_orphaned_desktop_backend_pids",
         "_pause_windows_gateways_for_update",
+        "_pids_still_running",
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",

@@ -5044,7 +5044,36 @@ def _surviving_gateway_pids_after_failed_restart():
         logger.debug("Could not probe for surviving gateways after update: %s", exc)
         return None
 
-def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
+def _pids_still_running(pids):
+    """Filter ``pids`` to those that still exist, or ``None`` if unprobeable.
+
+    Delegates to :func:`gateway.status._pid_exists`, the project's no-kill
+    probe, for the reason spelled out in :func:`hermes_cli.update_lock._pid_alive`:
+    on Windows ``os.kill(pid, 0)`` is not a no-op -- CPython routes ``sig=0``
+    to ``GenerateConsoleCtrlEvent`` and Ctrl+C's the target's whole console
+    process group (bpo-14484). A liveness check must never be able to kill the
+    gateway it is asking about.
+
+    ``None`` means "could not determine", and is returned rather than ``[]``
+    because this runs on the aborted-restart path, where an unimportable
+    checkout is the norm rather than the exception. The caller must be able to
+    tell "nothing is left running" from "we could not look" -- the same
+    distinction :func:`_surviving_gateway_pids_after_failed_restart` draws.
+    """
+    if not pids:
+        return []
+    try:
+        from gateway.status import _pid_exists
+
+        return [pid for pid in pids if _pid_exists(pid)]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not probe pre-restart gateway pids: %s", exc)
+        return None
+
+
+def _warn_gateway_restart_phase_aborted(
+    exc: BaseException, pids, pre_restart_pids=None
+) -> None:
     """Print a recovery warning when the whole restart phase raised.
 
     Issue #78574: the gateway auto-restart phase was wrapped in a blanket
@@ -5054,12 +5083,43 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     printed "Update complete!" and exited 0 while the running gateway kept
     serving pre-update modules against replaced source files — the next turn
     died with an ImportError.
+
+    Issue #92145 is the follow-on: the warning fires, but with no PIDs in it.
+    ``pids`` comes from :func:`_surviving_gateway_pids_after_failed_restart`,
+    which re-imports ``hermes_cli.gateway`` from the checkout that just broke,
+    so on exactly the runs this warning exists for it answers ``None``. The
+    operator is then told that some gateway somewhere is stale and left to find
+    it, even though the update recorded the running PIDs at
+    ``_pre_restart_gateway_pids`` before it touched anything. Fall back to that
+    snapshot, liveness-filtered so a gateway that DID exit is not named as a
+    survivor.
+
+    Deliberately NOT done here: killing what we name. Whether the update may
+    SIGKILL a surviving gateway depends on whether anything will bring it back
+    (systemd ``Restart=``, launchd ``KeepAlive``, the detached profile watcher)
+    and killing an unsupervised ``hermes gateway run`` trades a stale gateway
+    for no gateway. That is a blast-radius policy decision, and it is separable
+    from making this message actionable.
     """
     print()
     print(f"⚠ Update incomplete — gateway auto-restart failed: {exc}")
-    if pids:
-        listed = ", ".join(str(pid) for pid in pids)
+    listed_pids = list(pids) if pids else []
+    from_snapshot = False
+
+    if not listed_pids and pre_restart_pids:
+        still_running = _pids_still_running(pre_restart_pids)
+        if still_running:
+            listed_pids = still_running
+            from_snapshot = True
+
+    if listed_pids:
+        listed = ", ".join(str(pid) for pid in listed_pids)
         print(f"  Gateway process(es) still running pre-update code: {listed}")
+        if from_snapshot:
+            # Say where the list came from. It is a pre-restart snapshot that
+            # is still alive now, not a fresh enumeration, and an operator
+            # reading it should know the difference before acting on it.
+            print("  (seen before the restart phase, still running now)")
     else:
         print("  Any gateway still running is serving pre-update code")
         print("  (mixed sys.modules) against the updated checkout.")
@@ -7883,7 +7943,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _surviving, _pre_restart_gateway_pids
             ):
                 gateway_fleet_restart_incomplete = True
-                _warn_gateway_restart_phase_aborted(e, _surviving)
+                _warn_gateway_restart_phase_aborted(
+                    e, _surviving, _pre_restart_gateway_pids
+                )
                 if gateway_mode:
                     _exit_code_path = get_hermes_home() / ".update_exit_code"
                     try:

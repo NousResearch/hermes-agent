@@ -456,6 +456,48 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         server._sessions.pop("iso-sid", None)
 
 
+@pytest.mark.parametrize(
+    "frozen, session_yolo, approval_mode, expected_yolo",
+    [
+        # A global `approvals.mode: off` auto-approves every dangerous command
+        # (tools/approval.py is_approval_bypass_active_for_session ORs it in), so
+        # the badge MUST report a bypass even when /yolo was never toggled.
+        (False, False, "off", True),
+        # A real process-start --yolo / HERMES_YOLO_MODE (frozen at import).
+        (True, False, "manual", True),
+        # An explicit per-session `/yolo on` toggle.
+        (False, True, "manual", True),
+        # Normal approvals: no bypass anywhere -> badge stays off.
+        (False, False, "manual", False),
+        (False, False, "smart", False),
+    ],
+)
+def test_session_info_yolo_reflects_effective_bypass(
+    monkeypatch, frozen, session_yolo, approval_mode, expected_yolo
+):
+    """_session_info().yolo mirrors the canonical three-source bypass check.
+
+    The TUI YOLO badge surfaces the *effective* approval-bypass state, the same
+    three sources tools.approval.is_approval_bypass_active_for_session() ORs
+    together: the frozen process --yolo flag, the per-session /yolo toggle, and
+    `approvals.mode: off`. Regression guard: `approvals.mode: off` must keep
+    lighting the badge (it silently auto-approves dangerous commands), so it may
+    NOT be dropped from the yolo calc.
+    """
+    import tools.approval as approval
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", frozen)
+    monkeypatch.setattr(
+        approval, "is_session_yolo_enabled", lambda _key: session_yolo
+    )
+    monkeypatch.setattr(approval, "_get_approval_mode", lambda: approval_mode)
+
+    info = server._session_info(None, _session(session_key="yolo-sid"))
+
+    assert info["yolo"] is expected_yolo
+    assert info["approval_mode"] == approval_mode
+
+
 def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):

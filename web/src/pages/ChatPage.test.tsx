@@ -11,15 +11,28 @@ class FakeFitAddon {
 }
 
 class FakeWebglAddon {
-  onContextLoss() {
+  static instances: FakeWebglAddon[] = [];
+
+  contextLossHandler: (() => void) | null = null;
+  dispose = vi.fn();
+
+  constructor() {
+    FakeWebglAddon.instances.push(this);
+  }
+
+  onContextLoss(handler: () => void) {
+    this.contextLossHandler = handler;
     return { dispose() {} };
   }
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
+  scrollToBottom = vi.fn();
   parser = {
     registerOscHandler: vi.fn(),
   };
@@ -27,6 +40,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -73,7 +87,7 @@ class FakeTerminal {
 
   paste() {}
 
-  refresh() {}
+  refresh = vi.fn();
 
   write() {}
 }
@@ -190,6 +204,8 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
+  FakeWebglAddon.instances = [];
   FakeWebSocket.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -226,6 +242,10 @@ beforeEach(() => {
     configurable: true,
     value: { addEventListener() {}, removeEventListener() {}, width: 1280 },
   });
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
   Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
     configurable: true,
     value: "stale-token",
@@ -255,6 +275,73 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("restores the live terminal viewport when returning to Chat", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    const page = (isActive: boolean) => (
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive={isActive} />
+      </MemoryRouter>
+    );
+
+    await render(page(true));
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const terminal = FakeTerminal.instances[0];
+    terminal.scrollToBottom.mockClear();
+
+    await act(async () => root.render(page(false)));
+    expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+
+    await act(async () => root.render(page(true)));
+    expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the live terminal viewport when the browser tab becomes visible", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const terminal = FakeTerminal.instances[0];
+    terminal.scrollToBottom.mockClear();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
+  });
+
+  it("repaints with the fallback renderer after WebGL context loss", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebglAddon.instances).toHaveLength(1));
+    const terminal = FakeTerminal.instances[0];
+    const webgl = FakeWebglAddon.instances[0];
+    terminal.refresh.mockClear();
+
+    webgl.contextLossHandler?.();
+
+    expect(webgl.dispose).toHaveBeenCalledTimes(1);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

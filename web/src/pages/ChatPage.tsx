@@ -890,7 +890,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
+        webgl.onContextLoss(() => {
+          // Disposing returns xterm to its built-in renderer, but that renderer
+          // does not necessarily repaint the existing buffer until another
+          // dirty region arrives. Force a full repaint so a suspended tab or
+          // GPU reset cannot leave the fallback showing a black pane.
+          webgl.dispose();
+          try {
+            term.refresh(0, term.rows - 1);
+          } catch {
+            /* terminal teardown raced the context-loss callback */
+          }
+        });
         term.loadAddon(webgl);
       } catch (err) {
         console.warn(
@@ -1576,6 +1587,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
+        // Inline-mode output lives in xterm's primary-buffer scrollback. After
+        // Chat was display:none, xterm can resume with the viewport parked
+        // above the live tail, presenting an entirely black pane even though
+        // new input/output is being rendered correctly. Re-anchor only on the
+        // explicit inactive → active path so ordinary resizes preserve a
+        // user's intentional history position.
+        termRef.current?.scrollToBottom();
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
@@ -1632,14 +1650,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     const onResume = () => maybeReconnectOnPageResume();
+    const onVisibilityChange = () => {
+      maybeReconnectOnPageResume();
+      if (document.visibilityState !== "visible") return;
+      // Browser tab suspension can leave xterm's primary-buffer viewport
+      // above the live tail even while the PTY keeps rendering. Restore the
+      // viewport only on a real visible-resume event; focus/pageshow/online
+      // still handle transport recovery without disturbing scroll history.
+      syncMetricsRef.current?.();
+      termRef.current?.scrollToBottom();
+    };
 
-    document.addEventListener("visibilitychange", onResume);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onResume);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
 
     return () => {
-      document.removeEventListener("visibilitychange", onResume);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onResume);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);

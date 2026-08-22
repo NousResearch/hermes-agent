@@ -12389,7 +12389,7 @@ def cmd_plugins(args):
 def cmd_mcp(args):
     from hermes_cli.mcp_config import mcp_command
 
-    mcp_command(args)
+    return mcp_command(args)
 
 
 def cmd_claw(args):

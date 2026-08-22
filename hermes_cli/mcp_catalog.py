@@ -841,7 +841,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     if not _save_mcp_server(entry.name, server_cfg):
         raise CatalogError(
-            f"catalog entry '{entry.name}' rejected: suspicious command/args configuration"
+            f"catalog entry '{entry.name}' could not be saved; see diagnostics above"
         )
 
     # ── Probe + tool selection ──────────────────────────────────────────

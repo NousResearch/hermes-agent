@@ -12,12 +12,14 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
     cfg_get,
     load_config,
+    read_user_config_raw,
     save_config,
     get_env_value,
     save_env_value,
@@ -89,8 +91,9 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
-    rejected. MCP stdio servers are user-chosen local commands, so this blocks
-    shell+egress payloads rather than whitelisting command families.
+    rejected or when the exact entry cannot be verified after saving. MCP stdio
+    servers are user-chosen local commands, so validation blocks shell+egress
+    payloads rather than whitelisting command families.
     """
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
@@ -98,9 +101,24 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
             _warning(issue)
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
-    config = load_config()
+    # This is a read-modify-write of the user's document, so do not start from
+    # load_config(): that includes defaults, managed overlays, and expanded env
+    # references that do not belong in config.yaml.
+    config = read_user_config_raw()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
+
+    # save_config() intentionally has no return value and may refuse a write
+    # (for example in package-manager-managed mode). Never turn that into a
+    # false success: verify the exact entry from an uncached disk read before
+    # the caller prints "Saved".
+    persisted = read_user_config_raw().get("mcp_servers")
+    if not isinstance(persisted, dict) or persisted.get(name) != server_config:
+        print(
+            f"Server '{name}' was not persisted to {display_hermes_home()}/config.yaml.",
+            file=sys.stderr,
+        )
+        return False
     return True
 
 
@@ -566,19 +584,23 @@ def cmd_mcp_add(args):
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
         _error(f"Failed to connect: {exc}")
-        if _confirm("Save config anyway (you can test later)?", default=False):
-            server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
-                _success(f"Saved '{name}' to config (disabled)")
-                _info("Fix the issue, then: hermes mcp test " + name)
-        return
+        if not _confirm("Save config anyway (you can test later)?", default=False):
+            return 1
+        server_config["enabled"] = False
+        if _save_mcp_server(name, server_config):
+            _success(f"Saved '{name}' to config (disabled)")
+            _info("Fix the issue, then: hermes mcp test " + name)
+            return 0
+        return 1
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True):
-            if _save_mcp_server(name, server_config):
-                _success(f"Saved '{name}' to config")
-        return
+        if not _confirm("Save config anyway?", default=True):
+            return 1
+        if _save_mcp_server(name, server_config):
+            _success(f"Saved '{name}' to config")
+            return 0
+        return 1
 
     # ── Tool selection ────────────────────────────────────────────────
 
@@ -638,6 +660,8 @@ def cmd_mcp_add(args):
         print()
         _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
         _info("Start a new session to use these tools.")
+        return 0
+    return 1
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
@@ -1135,7 +1159,7 @@ def mcp_command(args):
 
     handler = handlers.get(action)
     if handler:
-        handler(args)
+        return handler(args)
     else:
         # No subcommand — drop the user into the catalog picker. This is the
         # "try enabling and it flows you into setup" UX matching `hermes plugin`.

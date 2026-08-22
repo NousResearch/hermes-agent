@@ -174,7 +174,10 @@ def _worker(session_id: str, hermes_home: str, server_name: str, cfg: dict, reco
                             "The server responded, but no OAuth token was obtained — "
                             "this provider may require a manually-registered OAuth client."
                         )
-                    _save_mcp_server(server_name, cfg)
+                    if not _save_mcp_server(server_name, cfg):
+                        raise RuntimeError(
+                            f"Server '{server_name}' could not be persisted after OAuth approval."
+                        )
                     if flow is not None:
                         flow.tools = [{"name": t, "description": d} for t, d in tools]
                         flow.mark_approved()

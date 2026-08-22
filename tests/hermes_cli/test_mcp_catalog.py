@@ -248,6 +248,19 @@ class TestInstall:
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
 
+    def test_install_reports_generic_save_failure(self, catalog_dir, monkeypatch):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._save_mcp_server", lambda name, config: False
+        )
+
+        from hermes_cli.mcp_catalog import CatalogError, install_entry
+
+        with pytest.raises(CatalogError, match="could not be saved") as exc_info:
+            install_entry(_entry("demo"), enable=True)
+
+        assert "suspicious" not in str(exc_info.value)
+
 
 
     def test_install_with_api_key_prompts_and_saves(self, catalog_dir, monkeypatch):

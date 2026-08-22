@@ -2081,7 +2081,7 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid,
                 4001,
-                f"server '{name}' rejected: suspicious command/args configuration",
+                f"server '{name}' could not be saved; see server diagnostics",
             )
         saved = _get_mcp_servers().get(name, server_config)
         return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})

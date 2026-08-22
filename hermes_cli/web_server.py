@@ -13447,7 +13447,10 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                             "The server responded, but no OAuth token was obtained — "
                             "this provider may require a manually-registered OAuth client."
                         )
-                    _save_mcp_server(flow.server_name, cfg)
+                    if not _save_mcp_server(flow.server_name, cfg):
+                        raise RuntimeError(
+                            f"Server '{flow.server_name}' could not be persisted after OAuth approval."
+                        )
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
                     if flow.reconnect_live:

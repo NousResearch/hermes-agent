@@ -103,7 +103,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                 if not _save_mcp_server(name, server_config):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Server '{name}' rejected: suspicious command/args configuration",
+                        detail=f"Server '{name}' could not be saved; see server diagnostics",
                     )
 
     try:

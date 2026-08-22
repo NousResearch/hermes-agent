@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
 
@@ -88,6 +89,52 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+
+_CONTEXT_PRUNED_ARG_MARKER = (
+    "...[context-pruned middle; reread the durable source before reuse]..."
+)
+_LEGACY_PRUNED_ARG_TAILS = ("...[truncated]", "…[truncated]")
+
+
+def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
+    """Return model-visible argument paths that contain compressor sentinels.
+
+    Historical context pruning deliberately rewrites old tool-call string
+    values.  Those placeholders are safe in replayed history but must never be
+    copied into a fresh effect-capable call: doing so turns a compact preview
+    into durable content.  Unknown/plugin/MCP tools are effect-capable by
+    default; known read-only tools remain free to search for or quote markers.
+    """
+    if not tool_may_have_side_effect(tool_name):
+        return []
+
+    found: list[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            stripped = value.rstrip()
+            if (
+                _CONTEXT_PRUNED_ARG_MARKER in value
+                or stripped.endswith(_LEGACY_PRUNED_ARG_TAILS)
+            ):
+                found.append(path)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = (
+                    f"{path}.{key_text}"
+                    if key_text.isidentifier()
+                    else f"{path}[{key_text!r}]"
+                )
+                _walk(child, child_path)
+            return
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                _walk(child, f"{path}[{index}]")
+
+    _walk(args, "$")
+    return found
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -783,6 +830,7 @@ __all__ = [
     "_PATH_SCOPED_WRITERS",
     "_DESTRUCTIVE_PATTERNS",
     "_REDIRECT_OVERWRITE",
+    "_context_pruned_argument_paths",
     "_is_destructive_command",
     "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",

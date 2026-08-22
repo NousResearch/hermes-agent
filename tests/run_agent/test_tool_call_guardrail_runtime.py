@@ -344,6 +344,93 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
+def test_sequential_effectful_call_rejects_legacy_pruned_sms_before_plugins_or_dispatch():
+    agent = _make_agent("mcp__messaging__send")
+    args = {
+        "method": "POST",
+        "endpoint": "/messages",
+        "query": {
+            "text": (
+                "Here is the complete customer reply with the requested "
+                "schedule, pricing details, reservation instructions, and "
+                "contact information. The final scheduling detail is "
+                "tomorrow between seven and eight, and we can st...[truncated]"
+            )
+        },
+    }
+    tc = _mock_tool_call(
+        "mcp__messaging__send",
+        json.dumps(args, ensure_ascii=False),
+        "c-pruned-sms",
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks") as plugin,
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    plugin.assert_not_called()
+    dispatch.assert_not_called()
+    content = messages[0]["content"]
+    assert '"error": "suspected_pruned_tool_arguments"' in content
+    assert "Recover the exact content from its durable source" in content
+    assert '"argument_paths": ["$.query.text"]' in content
+
+
+def test_sequential_effectful_call_allows_complete_long_sms():
+    agent = _make_agent("mcp__messaging__send")
+    text = (
+        "Here is the complete customer reply. "
+        + "All requested details are included. " * 40
+        + "Please reply with your preferred time."
+    )
+    args = {
+        "method": "POST",
+        "endpoint": "/messages",
+        "query": {"text": text},
+    }
+    tc = _mock_tool_call(
+        "mcp__messaging__send",
+        json.dumps(args, ensure_ascii=False),
+        "c-complete-sms",
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"result": "Message Processed Successfully"}),
+    ) as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_called_once()
+    assert '"result": "Message Processed Successfully"' in messages[0]["content"]
+
+
+def test_concurrent_effectful_call_rejects_current_middle_marker():
+    agent = _make_agent("mcp_write")
+    args = {
+        "body": (
+            "head\n...[context-pruned middle; reread the durable source before "
+            "reuse]...\ntail"
+        )
+    }
+    tc = _mock_tool_call("mcp_write", json.dumps(args), "c-pruned-middle")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch:
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    content = messages[0]["content"]
+    assert '"error": "suspected_pruned_tool_arguments"' in content
+    assert '"argument_paths": ["$.body"]' in content
+
+
 def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}

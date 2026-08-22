@@ -11,6 +11,7 @@ from a known-untrusted source.
 import pytest
 
 from agent.tool_dispatch_helpers import (
+    _context_pruned_argument_paths,
     _extract_file_mutation_targets,
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
@@ -46,6 +47,45 @@ class TestUntrustedToolClassification:
     def test_empty_name_is_not_untrusted(self):
         assert not _is_untrusted_tool("")
         assert not _is_untrusted_tool(None)
+
+
+class TestContextPrunedArgumentPaths:
+    def test_finds_legacy_marker_tail_in_nested_effectful_arguments(self):
+        paths = _context_pruned_argument_paths(
+            "mcp_send",
+            {"query": {"text": "Bonjour, nous po...[truncated]"}},
+        )
+
+        assert paths == ["$.query.text"]
+
+    def test_finds_current_middle_marker_in_effectful_arguments(self):
+        paths = _context_pruned_argument_paths(
+            "write_file",
+            {
+                "content": (
+                    "head\n...[context-pruned middle; reread the durable source "
+                    "before reuse]...\ntail"
+                )
+            },
+        )
+
+        assert paths == ["$.content"]
+
+    def test_allows_marker_in_middle_and_long_complete_content(self):
+        assert _context_pruned_argument_paths(
+            "mcp_send",
+            {"text": "literal ...[truncated] quote followed by complete content"},
+        ) == []
+        assert _context_pruned_argument_paths(
+            "mcp_send",
+            {"text": "complete " * 200},
+        ) == []
+
+    def test_known_read_only_tool_can_search_for_marker(self):
+        assert _context_pruned_argument_paths(
+            "web_search",
+            {"query": "Hermes ...[truncated]"},
+        ) == []
 
 
 # =========================================================================

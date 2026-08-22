@@ -2188,6 +2188,10 @@ class _AnthropicCompletionsAdapter:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
             )
 
         choice = SimpleNamespace(
@@ -3309,12 +3313,15 @@ def _set_relay_auxiliary_route(
     provider: str | None,
     model: str | None,
     api_mode: str | None,
+    base_url: str | None = None,
 ) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
     context["provider"] = str(provider or "auxiliary")
     context["model"] = str(model or "unknown")
+    if base_url is not None:
+        context["base_url"] = str(base_url)
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
 
@@ -8811,6 +8818,12 @@ def _validate_llm_response(
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is not None:
+        if not provider or provider == "auto":
+            provider = context.get("provider")
+        if not base_url:
+            base_url = context.get("base_url")
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
@@ -9500,18 +9513,19 @@ def _call_llm_impl(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
         request_provider,
         final_model,
         resolved_api_mode,
+        base_url=_base_info,
     )
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
 
     # Log what we're about to do — makes auxiliary operations visible
-    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, request_provider or "auto", final_model or "default",

@@ -113,7 +113,8 @@ _BILLING_ERROR_CODES = frozenset({
 # contains an overflow phrase; rate limit is matched first so throttle wins.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
-    "tokens per minute", "requests per day", "try again in", "please retry after", "resource_exhausted",
+    "tokens per minute", "requests per day", "try again in", "please retry after",
+    "resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "rate increased too quickly", "throttlingexception", "too many concurrent requests",
     "servicequotaexceededexception", "throttling",
 )

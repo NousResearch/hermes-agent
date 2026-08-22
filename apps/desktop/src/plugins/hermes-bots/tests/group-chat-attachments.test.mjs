@@ -16,6 +16,8 @@ function load(turnScript) {
   }
   const calls = []
   const attaches = []
+  const savedBuffers = []
+  const revealedPaths = []
   const sessions = new Map()
   const runtimeToStored = new Map()
   const titleToStored = new Map()
@@ -34,7 +36,19 @@ function load(turnScript) {
     clearTimeout: () => undefined,
     PALETTE_AREA: 'palette',
     COMPOSER_AREAS: { middleware: 'middleware' },
+    performance: { now: () => Date.now() },
+    atob: s => Buffer.from(s, 'base64').toString('binary'),
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
+    window: {
+      requestAnimationFrame: fn => setTimeout(() => fn(Date.now()), 0),
+      cancelAnimationFrame: id => clearTimeout(id),
+      hermesDesktop: {
+        saveImageBuffer: async (data, ext) => {
+          savedBuffers.push({ bytes: data.length, ext })
+          return `C:/temp/attachment${ext}`
+        }
+      }
+    },
     host: {
       request: async (method, params) => {
         if (method === 'session.create') {
@@ -102,14 +116,20 @@ function load(turnScript) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gca = { sendToGroupChat, formatGroupChatLine, $groupChats };\n'
+      '\nglobalThis.__gca = { sendToGroupChat, formatGroupChatLine, $groupChats, revealGroupAttachment };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   context.plugin.register({
     storage: { get: () => null, set: () => undefined },
+    os: {
+      revealPath: async path => {
+        revealedPaths.push(path)
+        return true
+      }
+    },
     register: () => undefined
   })
-  return { ...context.__gca, calls, attaches, sessions }
+  return { ...context.__gca, calls, attaches, savedBuffers, revealedPaths, sessions, window: context.window }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }]
@@ -257,4 +277,35 @@ test('formatGroupChatLine labels PDFs and files distinctly', () => {
     line,
     'You (user): here [attached PDF: spec.pdf] [attached file: notes.txt] [attached image: screenshot.png]'
   )
+})
+
+test('revealGroupAttachment materializes the data URL and reveals the saved path', async () => {
+  const gc = load(() => '(pass)')
+
+  const ok = await gc.revealGroupAttachment(IMG)
+  assert.equal(ok, true)
+  assert.equal(gc.savedBuffers.length, 1)
+  assert.equal(gc.savedBuffers[0].ext, '.png')
+  assert.ok(gc.savedBuffers[0].bytes > 0, 'decoded bytes are non-empty')
+  assert.deepEqual(gc.revealedPaths, ['C:/temp/attachment.png'])
+})
+
+test('revealGroupAttachment keeps the original extension for PDFs and files', async () => {
+  const gc = load(() => '(pass)')
+
+  await gc.revealGroupAttachment(PDF)
+  await gc.revealGroupAttachment(DOC)
+  assert.deepEqual(
+    gc.savedBuffers.map(b => b.ext),
+    ['.pdf', '.txt']
+  )
+})
+
+test('revealGroupAttachment resolves false when the bridge is missing', async () => {
+  const gc = load(() => '(pass)')
+  delete gc.window?.hermesDesktop
+
+  const ok = await gc.revealGroupAttachment(IMG)
+  assert.equal(ok, false)
+  assert.equal(gc.savedBuffers.length, 0)
 })

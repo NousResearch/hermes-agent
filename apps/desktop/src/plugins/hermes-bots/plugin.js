@@ -2977,6 +2977,145 @@ function normalizeGroupAttachment(dataUrl, maxEdge = 1568) {
   })
 }
 
+/** Materialize a staged group attachment (data URL) into a temp file and
+ *  reveal it in the OS file manager. The merged attachment pipeline keeps
+ *  only data URLs in the room log, so the chip's click-to-open rehydrates
+ *  the bytes through the desktop bridge (saveImageBuffer) and hands the
+ *  resulting path to the plugin OS door (revealPath). Resolves false when
+ *  the shell can't (older desktop build, missing bridge). */
+async function revealGroupAttachment(img) {
+  const bridge = typeof window !== 'undefined' ? window.hermesDesktop : null
+
+  if (!bridge?.saveImageBuffer) {
+    return false
+  }
+
+  const dataUrl = String(img?.data || '')
+  const comma = dataUrl.indexOf(',')
+
+  if (comma < 0) {
+    return false
+  }
+
+  const mime = /^data:([^;,]+)/.exec(dataUrl.slice(0, comma))?.[1] || ''
+  const name = String(img?.name || '')
+  const dot = name.lastIndexOf('.')
+  const ext =
+    dot >= 0
+      ? name.slice(dot)
+      : mime === 'application/pdf'
+        ? '.pdf'
+        : mime === 'image/png'
+          ? '.png'
+          : mime === 'image/jpeg'
+            ? '.jpg'
+            : mime === 'image/gif'
+              ? '.gif'
+              : mime === 'image/webp'
+                ? '.webp'
+                : '.bin'
+
+  let bytes
+
+  try {
+    bytes = Uint8Array.from(atob(dataUrl.slice(comma + 1)), c => c.charCodeAt(0))
+  } catch {
+    return false
+  }
+
+  const path = await bridge.saveImageBuffer(bytes, ext)
+
+  if (!path) {
+    return false
+  }
+
+  const os = pluginCtx?.os
+
+  if (os?.revealPath) {
+    return os.revealPath(path)
+  }
+
+  if (os?.openExternal) {
+    return os.openExternal(`file://${path}`)
+  }
+
+  return false
+}
+
+/** One staged attachment in the room log: images render an inline preview,
+ *  PDFs/files render a named chip. The whole chip is a button — click
+ *  materializes the staged bytes into a temp file and reveals it in the OS
+ *  file manager, with a busy label while the async handoff runs. */
+function GroupAttachmentChip({ img, entryKey, imgIndex }) {
+  const [busy, setBusy] = useState(false)
+  const isFile = img.kind === 'pdf' || img.kind === 'file'
+  const label = img.name || (isFile ? 'attached file' : 'attached image')
+
+  const open = async () => {
+    if (busy) {
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      const ok = await revealGroupAttachment(img)
+
+      if (!ok) {
+        host.notify({ kind: 'error', message: 'Could not open this attachment in this build.' })
+      }
+    } catch {
+      host.notify({ kind: 'error', message: 'Could not open this attachment.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return jsxs(
+    'button',
+    {
+      type: 'button',
+      className: cn(
+        'group/chip relative cursor-pointer rounded-md border border-(--ui-stroke-secondary) text-left transition-colors hover:bg-(--chrome-action-hover)',
+        isFile ? 'flex items-center gap-1 px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)' : 'p-0'
+      ),
+      title: `Open ${label} in file manager`,
+      'aria-label': `Open ${label} in file manager`,
+      'aria-busy': busy || undefined,
+      onClick: () => void open(),
+      children: isFile
+        ? [
+            jsx(Codicon, { name: img.kind === 'pdf' ? 'file-pdf' : 'file', className: 'text-[0.8rem]' }, 'icon'),
+            jsx('span', { className: 'max-w-48 truncate', children: label }, 'name'),
+            jsx('span', { className: 'text-(--ui-text-quaternary)', children: busy ? '준비 중…' : '열기 ↗' }, 'action')
+          ]
+        : [
+            jsx(
+              'img',
+              {
+                src: img.data,
+                alt: label,
+                className: 'max-h-40 max-w-60 rounded-md object-contain'
+              },
+              'preview'
+            ),
+            busy
+              ? jsx(
+                  'span',
+                  {
+                    className:
+                      'absolute inset-0 grid place-items-center rounded-md bg-(--ui-bg-primary)/60 text-[0.65rem] text-(--ui-text-secondary)',
+                    children: '준비 중…'
+                  },
+                  'busy'
+                )
+              : null
+          ]
+    },
+    `${entryKey}:img:${imgIndex}`
+  )
+}
+
 /** Cached probe: does the gateway have an image backend? A `false` answer
  *  is re-checked on every dialog open — the gateway may have been restarted
  *  (picking up image.generate) or a backend enabled since the last probe.
@@ -10327,23 +10466,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
                             ? jsx('div', {
                                 className: 'mt-1 flex flex-wrap items-center gap-1.5',
                                 children: entry.images.map((img, imgIndex) =>
-                                  img.kind === 'pdf' || img.kind === 'file'
-                                    ? jsxs('div', {
-                                        className:
-                                          'flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)',
-                                        title: img.name || 'attached file',
-                                        children: [
-                                          jsx(Codicon, { name: img.kind === 'pdf' ? 'file-pdf' : 'file', className: 'text-[0.8rem]' }),
-                                          jsx('span', { className: 'max-w-48 truncate', children: img.name || 'attached file' })
-                                        ]
-                                      }, `${entryKey}:img:${imgIndex}`)
-                                    : jsx('img', {
-                                        src: img.data,
-                                        alt: img.name || 'attached image',
-                                        title: img.name || 'attached image',
-                                        className:
-                                          'max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain'
-                                      }, `${entryKey}:img:${imgIndex}`)
+                                  jsx(GroupAttachmentChip, { img, entryKey, imgIndex })
                                 )
                               })
                             : null
@@ -10559,7 +10682,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
               children: [
                 jsx(GroupMentionInput, {
                   'aria-label': `Message ${group}`,
-                  placeholder: `New thread in ${group}… (@name to direct, @everyone for all)`,
+                  placeholder: `New thread in ${group}… (@name to direct, @everyone for all — Ctrl+V pastes images)`,
                   members,
                   value: draft,
                   onChange: setDraft,

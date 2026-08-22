@@ -7,7 +7,7 @@ const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 // The activeBots helper must stay a self-contained slice between the
 // liveness-window constant and the BotRow section so tests can extract it.
-function loadActiveBots() {
+function loadActiveBotsSlice() {
   const start = source.indexOf('const ACTIVE_WINDOW_S')
   const end = source.indexOf('// ── bot row ─')
 
@@ -15,11 +15,19 @@ function loadActiveBots() {
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nglobalThis.__activeBots = activeBots;`,
+    `${source.slice(start, end)}\nglobalThis.__activeBots = activeBots;\nglobalThis.__botActivitySession = botActivitySession;`,
     context
   )
 
-  return context.__activeBots
+  return context
+}
+
+function loadActiveBots() {
+  return loadActiveBotsSlice().__activeBots
+}
+
+function loadBotActivitySession() {
+  return loadActiveBotsSlice().__botActivitySession
 }
 
 // Fixed clock so "inside the window" vs "stale" is deterministic.
@@ -74,6 +82,85 @@ test('roster without profiles never throws', () => {
   assert.equal(activeBots([], 'default', 'open', NOW).length, 0)
 })
 
+// ── botActivitySession: canonical Bot Chat activity counts (hermes-agent "6d ago" bug) ──
+
+test('botActivitySession picks the fresher preferred_session over a stale last_session', () => {
+  const botActivitySession = loadBotActivitySession()
+  const bot = {
+    // Canonical Bot Chat (hidden from session lists): messaged seconds ago.
+    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 5, preview: 'fresh DM' },
+    // Newest VISIBLE session: 6 days old — what last_session alone reports.
+    last_session: { id: 'old-scratch', last_active: NOW / 1000 - 6 * 86400, preview: 'ancient' }
+  }
+  assert.equal(botActivitySession(bot).id, 'bot-chat')
+})
+
+test('botActivitySession keeps last_session when it is the fresher one', () => {
+  const botActivitySession = loadBotActivitySession()
+  const bot = {
+    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 3600 },
+    last_session: { id: 'scratch', last_active: NOW / 1000 - 10 }
+  }
+  assert.equal(botActivitySession(bot).id, 'scratch')
+})
+
+test('botActivitySession degrades to whichever side exists (older gateways / no pin)', () => {
+  const botActivitySession = loadBotActivitySession()
+  assert.equal(botActivitySession({ last_session: { id: 'only', last_active: 1 } }).id, 'only')
+  assert.equal(botActivitySession({ preferred_session: { id: 'pin', last_active: 1 } }).id, 'pin')
+  assert.equal(botActivitySession({}), null)
+  assert.equal(botActivitySession(null), null)
+})
+
+test('activeBots counts Bot Chat activity that last_session cannot see', () => {
+  const activeBots = loadActiveBots()
+  const bots = [
+    {
+      name: 'default',
+      preferred_session: { last_active: NOW / 1000 - 5 },
+      last_session: { last_active: NOW / 1000 - 6 * 86400 }
+    }
+  ]
+  const names = activeBots(bots, 'other', 'open', NOW).map(bot => bot.name)
+  assert.ok(names.includes('default'), 'fresh canonical-chat activity must light the pulse dot')
+})
+
+test('row age label and recency sort key off botActivitySession, not last_session', () => {
+  // The "6d ago" regression: the timestamp/sort sites must not read
+  // bot.last_session directly anymore.
+  assert.match(source, /relativeTime\(rowAgeTs \* 1000\)/)
+  assert.match(source, /const lastMsg = \(botActivitySession\(bot\)\?\.last_active \|\| 0\) \* 1000/)
+  assert.doesNotMatch(source, /relativeTime\(last\.last_active \* 1000\)/)
+})
+
+// ── worker liveness: kanban/tool workers count as activity (#90268) ─────────
+
+test('activeBots includes a bot whose kanban worker heartbeat is fresh', () => {
+  const activeBots = loadActiveBots()
+  const bots = [
+    {
+      name: 'coding',
+      // Last chat hours ago — the reported "3 hr ago while working" shape.
+      last_session: { last_active: NOW / 1000 - 3 * 3600 },
+      worker_session: { id: 'w1', source: 'kanban', last_active: NOW / 1000 - 30 }
+    }
+  ]
+  const names = activeBots(bots, 'other', 'open', NOW).map(bot => bot.name)
+  assert.ok(names.includes('coding'), 'live worker heartbeat must light ACTIVE NOW')
+})
+
+test('activeBots ignores a finished worker outside the liveness window', () => {
+  const activeBots = loadActiveBots()
+  const bots = [
+    {
+      name: 'coding',
+      last_session: { last_active: NOW / 1000 - 3 * 3600 },
+      worker_session: { id: 'w1', source: 'kanban', last_active: NOW / 1000 - 3600 }
+    }
+  ]
+  assert.deepEqual(activeBots(bots, 'other', 'open', NOW), [])
+})
+
 test('ActiveNowStrip renders above the roster, is a live region, and is click-accessible', () => {
   // Strip is placed between the pane header and the search field.
   const headerEnd = source.indexOf("children: 'Bots'")
@@ -94,5 +181,5 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
   assert.match(source, /let pinnedChat = botRosterMeta\(bot, allMeta\)\?\.chat/)
   assert.match(source, /await prepareBotSource\(bot, pinnedChat\)/)
-  assert.match(source, /openBotCanonicalChat\(bot\.name, pinnedChat, bot\.last_session\)/)
+  assert.match(source, /bot\.preferred_session \|\| bot\.last_session/)
 })

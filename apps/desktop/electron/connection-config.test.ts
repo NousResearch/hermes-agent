@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -455,10 +456,13 @@ test('apiRequestRegistryConnectionId extracts a genuinely non-local connection i
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
 })
 
-test('apiRequestRegistryConnectionId resolves null for the legacy/local routes', () => {
+test('apiRequestRegistryConnectionId preserves an explicit local registry route', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), 'local')
+})
+
+test('apiRequestRegistryConnectionId resolves null for unscoped legacy routes', () => {
   assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
-  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId(null), null)
   assert.equal(apiRequestRegistryConnectionId(undefined), null)
@@ -712,6 +716,37 @@ test('resolveProfileApiRequest scopes complete safe families according to their 
       backendProfile: null,
       requestPath: '/api/profiles/worker'
     }
+  )
+})
+
+test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
+  // /api/actions/{name}/status must land on the SAME backend as the endpoints
+  // that spawn actions (skills hub install/uninstall/update, mcp catalog
+  // install): _spawn_hermes_action registers the dynamic action name only in
+  // the spawning process. Splitting the pair 404s the poll with
+  // "Unknown action: skills-install-<slug>-<hash>".
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200&profile=iris'
+    }
+  )
+  // The spawn side (hub install) and the poll side must agree on the backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills/hub/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/skills/hub/install?profile=iris' }
+  )
+  // MCP catalog installs spawn background actions too — same pairing rule.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/mcp/catalog/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/mcp/catalog/install?profile=iris' }
   )
 })
 
@@ -1132,4 +1167,84 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
     () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
     /mintTicket function is required/
   )
+})
+
+test('gatewayTicketFailure preserves a structured 503 statusCode as a transport failure', () => {
+  const source = new Error('upstream unavailable') as any
+  source.statusCode = 503
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'transport message')
+  assert.equal((wrapped as any).statusCode, 503)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+  assert.equal((wrapped as any).cause, source)
+})
+
+test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
+  for (const code of [401, 403]) {
+    const source = new Error(`HTTP ${code}`) as any
+    source.statusCode = code
+
+    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+    assert.equal(wrapped.message, 'auth message')
+    assert.equal((wrapped as any).needsOauthLogin, true)
+    assert.equal((wrapped as any).statusCode, code)
+    assert.equal((wrapped as any).cause, source)
+  }
+})
+
+test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
+  // A legacy "503: ..." message carries no structured statusCode; the Cloud
+  // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
+  // boundary. The wrapper must not invent an integer from the message.
+  const source = new Error('503: Service Unavailable') as any
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal((wrapped as any).statusCode, undefined)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+})
+
+// OAuth integration regression (#85373): the WS-ticket mint boundary runs
+// BEFORE waitForHermesReady. This mirrors main.ts buildRemoteConnection's
+// catch — classify a Nous Cloud server fault via the shared factory, else
+// fall through to gatewayTicketFailure. Proves the production composition:
+//   1. Cloud + OAuth ticket mint + 503  -> actionable Cloud-down error
+//   2. Cloud + OAuth ticket mint + 401  -> reauth (never Cloud-down)
+test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('upstream unavailable') as any
+  ticketErr.statusCode = 503
+
+  // The exact production sequence from main.ts.
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+
+  if (cloudError !== null) {
+    assert.equal((cloudError as any).isCloudBackendDown, true)
+    assert.equal((cloudError as any).statusCode, 503)
+    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
+
+    return
+  }
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth', 'transport')
+
+  assert.fail(`expected Cloud-down classification, got wrapper: ${wrapped.message}`)
+})
+
+test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('Unauthorized') as any
+  ticketErr.statusCode = 401
+
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+  assert.equal(cloudError, null, 'a 401 must not become a Cloud-down error')
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'auth message')
+  assert.equal((wrapped as any).needsOauthLogin, true)
+  assert.equal((wrapped as any).statusCode, 401)
 })

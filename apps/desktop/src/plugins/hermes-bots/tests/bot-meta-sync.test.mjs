@@ -31,6 +31,8 @@ globalThis.__botMetaSync = {
   get: () => $botMeta.get(),
   set: value => $botMeta.set(value),
   mergeServerMeta,
+  noteBotMetaWrite,
+  saveBotMeta,
   setPluginCtx: value => { pluginCtx = value }
 };
 `)
@@ -68,6 +70,25 @@ test('regression: authoritative server metadata removes stale local canonical ch
   assert.equal(Object.hasOwn(writes.at(-1).value.default, 'chat'), false)
 })
 
+test('regression: authoritative groups remove a stale local legacy group projection', () => {
+  const writes = []
+  const sync = load()
+  sync.set({ researcher: { groups: ['Old'], group: 'Old', title: 'Researcher' } })
+  sync.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
+
+  sync.mergeServerMeta([
+    {
+      name: 'researcher',
+      ui_meta: { 'hermes-bots': { groups: [], title: 'Researcher' } }
+    }
+  ])
+
+  const current = sync.get().researcher
+  assert.deepEqual(current.groups, [])
+  assert.equal(Object.hasOwn(current, 'group'), false)
+  assert.equal(Object.hasOwn(writes.at(-1).value.researcher, 'group'), false)
+})
+
 test('compatibility: local canonical chat survives when gateway has no server bot metadata', () => {
   const writes = []
   const sync = load()
@@ -78,4 +99,41 @@ test('compatibility: local canonical chat survives when gateway has no server bo
 
   assert.equal(sync.get().default.chat, 'local-chat')
   assert.equal(writes.length, 0)
+})
+
+test('regression (#disband-resurrection): a roster snapshot fetched BEFORE a local write cannot overlay it back', async () => {
+  const writes = []
+  const sync = load()
+  sync.set({ builder: { groups: ['Team'], group: 'Team', title: 'Builder' } })
+  sync.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
+
+  // Snapshot fetched now — its ui_meta still names the group.
+  const staleFetchedAt = Date.now()
+  const staleRow = { name: 'builder', ui_meta: { 'hermes-bots': { groups: ['Team'], group: 'Team', title: 'Builder' } } }
+
+  // Disband path: saveBotMeta removes the membership AFTER the fetch.
+  await new Promise(resolve => setTimeout(resolve, 5))
+  await sync.saveBotMeta('builder', { groups: [], group: null })
+  assert.deepEqual(sync.get().builder.groups, [])
+
+  // The stale snapshot must NOT resurrect the membership...
+  sync.mergeServerMeta([staleRow], staleFetchedAt)
+  assert.deepEqual(sync.get().builder.groups, [])
+  assert.deepEqual(writes.at(-1).value.builder.groups, [])
+
+  // ...but a FRESH snapshot (fetched after the write) still gets the last
+  // word — server truth wins once it actually post-dates the local change.
+  sync.mergeServerMeta([staleRow], Date.now() + 5)
+  assert.deepEqual(sync.get().builder.groups, ['Team'])
+})
+
+test('compatibility: mergeServerMeta without fetchedAt overlays as before (no fence)', async () => {
+  const sync = load()
+  sync.set({})
+  sync.setPluginCtx({ storage: { set: () => undefined } })
+
+  await sync.saveBotMeta('builder', { groups: [], group: null })
+  sync.mergeServerMeta([{ name: 'builder', ui_meta: { 'hermes-bots': { groups: ['Team'] } } }])
+
+  assert.deepEqual(sync.get().builder.groups, ['Team'])
 })

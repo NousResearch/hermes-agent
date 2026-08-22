@@ -52,6 +52,7 @@ import {
   $attentionSessionIds,
   $workingSessionIds,
   liveSessionScopes,
+  reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
@@ -252,6 +253,12 @@ export function useGatewayBoot({
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         resetTileRuntimeBindings()
+        // Same staleness, other half: pre-reconnect busy flags are keyed by
+        // those dead runtime ids and would never receive their terminal
+        // busy:false — clear them or the sidebar running arc lies forever
+        // (#53902/#73082). A genuinely live turn re-asserts busy on its next
+        // post-reconnect event.
+        reconcileBusyStatesOnReconnect()
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -472,6 +479,23 @@ export function useGatewayBoot({
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
       onActiveConnectionChanged: publish,
+      // Keep $activeGatewayProfile in lockstep with the registry's OWN record
+      // of which profile the active socket serves. The registry is the only
+      // party that sees eviction fallbacks (idle reap, connection removal,
+      // profile delete → primary); before this mirror those fallbacks moved
+      // the SOCKET back to the primary while the profile atom kept naming the
+      // evicted bot. ensureGatewayProfile's "already active" fast path then
+      // trusted the stale atom and skipped the re-swap, so every
+      // session-scoped RPC for that bot went out on the primary socket — the
+      // #89206 "Waking up… → retries gave up" wake failure, while the bot's
+      // own backend sat healthy and idle.
+      onActiveRouteChanged: profile => {
+        const key = normalizeProfileKey(profile)
+
+        if (normalizeProfileKey($activeGatewayProfile.get()) !== key) {
+          $activeGatewayProfile.set(key)
+        }
+      },
       onEvent: event => {
         recordSessionEventScope(event)
         callbacksRef.current.handleGatewayEvent(event)

@@ -8,7 +8,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 // picking a profile on one page carries to the next instead of resetting per
 // page. `null` means "follow the app's active profile" — the default, which
 // keeps single-profile users on the exact pre-existing code path (requests
-// fall back to the app-wide active profile in hermes.ts `profileScoped`).
+// fall back to the app-wide active profile in api/client.ts `profileScoped`).
 export const $settingsScopeOverride = atom<null | string>(null)
 
 // The profile the settings pages are currently editing (a concrete key).

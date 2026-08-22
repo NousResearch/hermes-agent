@@ -31,11 +31,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
-use tokio::io::BufReader;
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
-use crate::powershell::read_decoded_line;
+use crate::powershell::{pump_child, DRAIN_GRACE};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -134,17 +133,13 @@ struct MarkerOwner {
     age_secs: u64,
 }
 
-/// Read the marker and report a live *foreign* owner, if any. `None` for every
-/// "no live update" case — absent, unreadable, malformed, dead pid, past the
-/// ceiling, or a marker whose pid is **this** process — matching
-/// `readLiveUpdateMarker` in the Electron gate. Never panics.
+/// Read the marker and report a live owner, if any. `None` for every "no live
+/// update" case — absent, unreadable, malformed, dead pid, or past the ceiling
+/// — matching `readLiveUpdateMarker` in the Electron gate. Never panics.
 ///
-/// Self-PID is treated as non-ownership on purpose (#74761): since #50238 the
-/// desktop pre-writes this marker with the spawned updater's pid before the
-/// updater reaches `acquire`. Without the exclusion, `acquire` sees a live
-/// owner that is itself and aborts ("Another Hermes update is already
-/// running"), then the desktop relaunches and retries forever. A foreign live
-/// pid (e.g. a dashboard-spawned `hermes update`) still blocks.
+/// Self-PID is returned so `acquire` can adopt the desktop's pre-written claim
+/// without refreshing its acquisition time (#74761). A foreign live pid (e.g.
+/// a dashboard-spawned `hermes update`) still blocks.
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
@@ -156,11 +151,6 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
         .unwrap_or(0);
     let age_secs = now.saturating_sub(started_at);
     if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
-        return None;
-    }
-    // Desktop `writeUpdateMarker(hermesHome, child.pid)` races ahead of us;
-    // adopt that pre-claim rather than refusing our own marker.
-    if pid == std::process::id() {
         return None;
     }
     Some(MarkerOwner { pid, age_secs })
@@ -208,10 +198,18 @@ impl UpdateMarkerGuard {
     /// behavior), so we log and carry on with a guard that still attempts
     /// cleanup of whatever may exist at the path.
     fn acquire(path: PathBuf) -> Result<Self, MarkerOwner> {
+        let pid = std::process::id();
         if let Some(owner) = live_marker_owner(&path) {
+            if owner.pid == pid {
+                // Repeated acquisition in this process is intentionally
+                // re-entrant because the desktop may have pre-written our pid.
+                // The desktop races ahead and pre-writes our pid. Adopt that
+                // claim verbatim: rewriting started_at here lets retries reset
+                // a wedged updater's age before the stale ceiling can clear it.
+                return Ok(Self { path, owned: true });
+            }
             return Err(owner);
         }
-        let pid = std::process::id();
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -825,39 +823,34 @@ async fn run_streamed(
         .spawn()
         .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
 
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
-    let mut out = BufReader::new(stdout);
-    let mut err = BufReader::new(stderr);
-    let mut out_buf = Vec::new();
-    let mut err_buf = Vec::new();
-
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193), and
+    // the same rule about pipe EOF: `hermes update` is precisely the shape that
+    // leaves resident descendants holding an inherited stdout handle, and every
+    // stage this drives sits downstream of the read.
     let stage_owned = stage.map(|s| s.to_string());
-    loop {
-        tokio::select! {
-            line = read_decoded_line(&mut out, &mut out_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
-                Ok(None) => break,
-                Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
-            },
-            line = read_decoded_line(&mut err, &mut err_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
-                Ok(None) => {}
-                Err(e) => { tracing::warn!("stderr read error: {e}"); }
-            },
-        }
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+    let outcome = pump_child(
+        &mut child,
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l),
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
+        &mut None,
+        DRAIN_GRACE,
+    )
+    .await
+    .map_err(|e| anyhow!("streaming {} {:?}: {e}", program.display(), args))?;
+
+    if outcome.abandoned {
+        let note = format!(
+            "{} exited but a surviving descendant still holds its stdout/stderr; \
+             gave up on the last {}s of output (#90455)",
+            program.display(),
+            DRAIN_GRACE.as_secs()
+        );
+        tracing::warn!("{note}");
+        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &note);
     }
 
-    let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
     Ok(CmdResult {
-        exit_code: status.code(),
+        exit_code: outcome.exit_code,
     })
 }
 
@@ -1327,8 +1320,8 @@ mod tests {
 
     /// Spawn a short-lived sibling process whose pid stands in for a foreign
     /// updater. Same-process double-acquire no longer models contention: since
-    /// #74761 `live_marker_owner` treats our own pid as adoptable (desktop
-    /// pre-writes it), so a second acquire in *this* process would succeed.
+    /// #74761 `acquire` treats our own pid as adoptable (desktop pre-writes it),
+    /// so a second acquire in *this* process would succeed.
     fn spawn_foreign_holder() -> std::process::Child {
         #[cfg(windows)]
         {
@@ -1385,7 +1378,8 @@ mod tests {
     fn acquire_adopts_a_marker_prewritten_with_our_own_pid() {
         // #74761: desktop writeUpdateMarker(hermesHome, child.pid) races ahead
         // of UpdateMarkerGuard::acquire. The marker names US; refusing it made
-        // every in-app desktop update loop forever. Adopt and rewrite.
+        // every in-app desktop update loop forever. Adopt it without resetting
+        // the holder age, so a wedged updater still reaches the stale ceiling.
         let dir = unique_tmp_dir("marker-own-pid");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
@@ -1408,7 +1402,12 @@ mod tests {
         assert_eq!(
             body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
             std::process::id(),
-            "acquire rewrites the marker with our pid + fresh started_at"
+            "acquire keeps the adopted marker owner"
+        );
+        assert_eq!(
+            body.lines().nth(1).unwrap().trim().parse::<u64>().unwrap(),
+            started_at,
+            "adopting an own-pid marker must preserve its original holder age"
         );
         drop(guard);
         assert!(

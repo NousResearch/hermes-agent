@@ -139,7 +139,7 @@ def test_detect_concurrent_parents_call_robust_to_one_bad_hop(_winp, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _quarantine_running_hermes_exe — retry + reboot-deferred fallback
+# _quarantine_running_hermes_exe — retry, then report
 # ---------------------------------------------------------------------------
 
 
@@ -160,36 +160,26 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monkeypatch):
-    """When every retry fails, we schedule via MoveFileEx and warn helpfully."""
+def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monkeypatch):
+    """Every retry failed: name the likely culprits, queue nothing for reboot."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
     def always_fails(self, target):
         raise OSError(32, "The process cannot access the file (simulated lock)")
 
-    scheduled_calls: list[tuple[Path, Path]] = []
-
-    def fake_schedule(s: Path, q: Path) -> bool:
-        scheduled_calls.append((s, q))
-        return True
-
     monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
-    with patch.object(Path, "rename", always_fails), patch.object(
-        cli_main, "_schedule_replace_on_reboot", fake_schedule
-    ), patch("time.sleep", lambda *_a, **_k: None):
+    with patch.object(Path, "rename", always_fails), patch(
+        "time.sleep", lambda *_a, **_k: None
+    ):
         pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
 
-    captured = capsys.readouterr().out
+    captured = capsys.readouterr().out.lower()
 
-    # The reboot-deferred path was used.
-    assert scheduled_calls and scheduled_calls[0][0] == shim
-    # It is NOT added to the returned roll-back list (the issue calls this
-    # out — don't undo a deferred operation).
     assert pairs == []
-    # The user got a clear message, not raw [WinError 32].
-    assert "scheduled" in captured.lower()
-    assert "reboot" in captured.lower()
+    # A clear message, not raw [WinError 32], and no reboot promise we can't keep.
+    assert "could not quarantine" in captured
+    assert "reboot" not in captured
 
 
 
@@ -258,7 +248,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     assert waited_for == [101]
     assert terminated == [(202, True)]
 
-    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    marker = json.loads(
+        (profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8")
+    )
     assert marker["target_pid"] == 101
     assert marker["stopper_pid"] == os.getpid()
 

@@ -1,57 +1,18 @@
-import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ClientSessionState } from '@/app/types'
-import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
-
-import { useMessageStream } from './index'
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'timeline-session'
 
-let handleEvent: ((event: RpcEvent) => void) | null = null
-let states: Map<string, ClientSessionState>
-
-function Harness() {
-  const activeSessionIdRef = useRef<string | null>(SID)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
-  const queryClientRef = useRef(new QueryClient())
-
-  const stream = useMessageStream({
-    activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
-    queryClient: queryClientRef.current,
-    refreshHermesConfig: vi.fn(async () => undefined),
-    refreshSessions: vi.fn(async () => undefined),
-    sessionStateByRuntimeIdRef,
-    updateSessionState: (sessionId, updater) => {
-      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
-      const next = updater(current)
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
-      states.set(sessionId, next)
-
-      return next
-    }
-  })
-
-  useEffect(() => {
-    handleEvent = stream.handleGatewayEvent
-  }, [stream.handleGatewayEvent])
-
-  return null
-}
+let stream: MessageStreamHarness
 
 const event = (type: string, timestamp: number, payload: Record<string, unknown> = {}) =>
-  act(() => handleEvent?.({ payload: { ...payload, timestamp }, session_id: SID, type }))
+  act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
 
 describe('live transcript timeline events', () => {
   beforeEach(async () => {
-    handleEvent = null
-    states = new Map()
-    render(<Harness />)
-    await waitFor(() => expect(handleEvent).not.toBeNull())
+    stream = renderMessageStream(SID)
   })
 
   afterEach(() => {
@@ -68,7 +29,7 @@ describe('live transcript timeline events', () => {
     event('message.delta', 105.625, { text: 'The file looks good.' })
     event('message.complete', 106.875, { text: 'The file looks good.' })
 
-    const assistants = states.get(SID)?.messages.filter(message => message.role === 'assistant') ?? []
+    const assistants = stream.state(SID).messages.filter(message => message.role === 'assistant') ?? []
 
     expect(assistants).toHaveLength(2)
     expect([assistants[0].timestamp, assistants[0].completedAt]).toEqual([101.125, 101.75])
@@ -88,7 +49,7 @@ describe('live transcript timeline events', () => {
     event('message.delta', 202.25, { text: 'Then speaking.' })
     event('tool.start', 203.5, { args: {}, name: 'terminal', tool_id: 'call-2' })
 
-    const assistant = states.get(SID)?.messages.find(message => message.role === 'assistant')
+    const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 
     expect(assistant?.parts.map(part => part.type)).toEqual(['reasoning', 'text', 'tool-call'])
     expect(assistant?.parts.map(part => part.timestamp)).toEqual([201.125, 202.25, 203.5])
@@ -98,7 +59,7 @@ describe('live transcript timeline events', () => {
     event('message.start', 300)
     event('error', 301.875, { error: 'provider failed' })
 
-    const assistant = states.get(SID)?.messages.find(message => message.role === 'assistant')
+    const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 
     expect(assistant?.error).toBeTruthy()
     expect([assistant?.timestamp, assistant?.completedAt]).toEqual([301.875, 301.875])
@@ -107,7 +68,7 @@ describe('live transcript timeline events', () => {
   it('uses the gateway event time for a review summary system row', () => {
     event('review.summary', 401.625, { text: 'Review saved.' })
 
-    const system = states.get(SID)?.messages.find(message => message.role === 'system')
+    const system = stream.state(SID).messages.find(message => message.role === 'system')
 
     expect(system?.timestamp).toBe(401.625)
     expect(system?.parts[0].timestamp).toBe(401.625)
@@ -118,7 +79,7 @@ describe('live transcript timeline events', () => {
     event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-3' })
     event('session.info', 502.75, { running: false })
 
-    const assistant = states.get(SID)?.messages.find(message => message.role === 'assistant')
+    const assistant = stream.state(SID).messages.find(message => message.role === 'assistant')
 
     expect(assistant?.completedAt).toBe(502.75)
     expect(assistant?.parts[0].completedAt).toBe(502.75)

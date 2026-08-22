@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -10,11 +11,17 @@ import type {
   DesktopRegistryConnectionInput
 } from '@/global'
 import { useI18n } from '@/i18n'
+import {
+  CONNECTION_SEARCH_THRESHOLD,
+  connectionMatchesQuery,
+  sortConnectionsForDisplay
+} from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
+import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
+import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -161,6 +168,51 @@ export function findDuplicateConnection(
 }
 
 /**
+ * Display-only same-backend hint: when two registered connections report the
+ * same /api/status install_id, they are one physical backend registered under
+ * two addresses (hostname + Tailscale IP). Returns the label of the FIRST
+ * earlier sibling sharing this connection's id, or null. Never blocks or
+ * deletes — dual routes are legitimate failover config; the roster already
+ * collapses the duplicate bot rows.
+ */
+export function sameBackendPeerLabel(
+  conn: Pick<DesktopRegistryConnection, 'id' | 'installId'>,
+  connections: Pick<DesktopRegistryConnection, 'id' | 'installId' | 'label'>[]
+): null | string {
+  if (!conn.installId) {
+    return null
+  }
+
+  for (const other of connections) {
+    if (other.id === conn.id) {
+      // Only rows AFTER the first occurrence carry the hint, so exactly one
+      // of a same-backend pair is annotated (the later-listed one).
+      return null
+    }
+
+    if (other.installId === conn.installId) {
+      return other.label
+    }
+  }
+
+  return null
+}
+
+function scrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let parent = element.parentElement
+
+  while (parent) {
+    if (/(auto|scroll)/.test(window.getComputedStyle(parent).overflowY)) {
+      return parent
+    }
+
+    parent = parent.parentElement
+  }
+
+  return null
+}
+
+/**
  * The connections registry section of Settings → Gateways: manage the named
  * agent sources (local runtime + any number of remote gateways / Hermes Cloud
  * instances / SSH hosts). Storage-level management — the active/primary
@@ -169,6 +221,7 @@ export function findDuplicateConnection(
 export function ConnectionsRegistrySection() {
   const { t } = useI18n()
   const s = t.settings.connections
+  const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -177,7 +230,11 @@ export function ConnectionsRegistrySection() {
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
+  const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingSearchTopRef = useRef<null | number>(null)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
@@ -185,6 +242,11 @@ export function ConnectionsRegistrySection() {
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+
+  const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
+    setRegistry(next)
+    setConnectionsRegistry(next)
+  }, [])
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -196,13 +258,13 @@ export function ConnectionsRegistrySection() {
     setLoading(true)
 
     try {
-      setRegistry(await bridge.list())
+      publishRegistry(await bridge.list())
     } catch (err) {
       notifyError(err, s.loadFailed)
     } finally {
       setLoading(false)
     }
-  }, [bridge, s.loadFailed])
+  }, [bridge, publishRegistry, s.loadFailed])
 
   useEffect(() => {
     void load()
@@ -281,7 +343,7 @@ export function ConnectionsRegistrySection() {
         }
 
         const result = await bridge.save(payload)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
         setEditor(null)
         setPlainTextConfirm(false)
       } catch (err) {
@@ -305,7 +367,7 @@ export function ConnectionsRegistrySection() {
         setSaving(false)
       }
     },
-    [bridge, editor, registry?.connections, registry?.secureTokenStorage, s]
+    [bridge, editor, publishRegistry, registry?.connections, registry?.secureTokenStorage, s]
   )
 
   const remove = useCallback(async () => {
@@ -317,14 +379,14 @@ export function ConnectionsRegistrySection() {
 
     try {
       const result = await bridge.remove(removeTarget.id)
-      setRegistry(result.registry)
+      publishRegistry(result.registry)
     } catch (err) {
       notifyError(err, s.removeFailed)
     } finally {
       setBusyId(null)
       setRemoveTarget(null)
     }
-  }, [bridge, removeTarget, s.removeFailed])
+  }, [bridge, publishRegistry, removeTarget, s.removeFailed])
 
   const makePrimary = useCallback(
     async (id: string) => {
@@ -336,14 +398,34 @@ export function ConnectionsRegistrySection() {
 
       try {
         const result = await bridge.setPrimary(id)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
       } catch (err) {
         notifyError(err, s.saveFailed)
       } finally {
         setBusyId(null)
       }
     },
-    [bridge, s.saveFailed]
+    [bridge, publishRegistry, s.saveFailed]
+  )
+
+  const setLaunchMode = useCallback(
+    async (mode: 'last-used' | 'primary') => {
+      if (!bridge?.setLaunchMode) {
+        return
+      }
+
+      setLaunchModeBusy(true)
+
+      try {
+        const result = await bridge.setLaunchMode(mode)
+        publishRegistry(result.registry)
+      } catch (err) {
+        notifyError(err, s.saveFailed)
+      } finally {
+        setLaunchModeBusy(false)
+      }
+    },
+    [bridge, publishRegistry, s.saveFailed]
   )
 
   const test = useCallback(
@@ -407,6 +489,46 @@ export function ConnectionsRegistrySection() {
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
   }
 
+  const sortedConnections = useMemo(
+    () => sortConnectionsForDisplay(registry?.connections ?? []),
+    [registry?.connections]
+  )
+
+  const showSearch = sortedConnections.length >= CONNECTION_SEARCH_THRESHOLD
+  const effectiveSearchQuery = showSearch ? searchQuery : ''
+
+  const displayedConnections = sortedConnections.filter(connection =>
+    connectionMatchesQuery(connection, effectiveSearchQuery, [kindMeta[connection.kind].label])
+  )
+
+  useLayoutEffect(() => {
+    const previousTop = pendingSearchTopRef.current
+    const input = searchInputRef.current
+
+    pendingSearchTopRef.current = null
+
+    if (previousTop == null || !input) {
+      return
+    }
+
+    const scroller = scrollableAncestor(input)
+
+    if (!scroller) {
+      return
+    }
+
+    const delta = input.getBoundingClientRect().top - previousTop
+
+    if (Math.abs(delta) > 0.5) {
+      scroller.scrollTop += delta
+    }
+  }, [displayedConnections.length, effectiveSearchQuery])
+
+  const updateSearchQuery = (nextQuery: string) => {
+    pendingSearchTopRef.current = searchInputRef.current?.getBoundingClientRect().top ?? null
+    setSearchQuery(nextQuery)
+  }
+
   if (!bridge) {
     return null
   }
@@ -415,11 +537,25 @@ export function ConnectionsRegistrySection() {
     <div className="mt-8 border-t border-border/60 pt-6">
       <SectionHeading icon={Globe} title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
-      {/* Storage-only slice: be explicit that routing consumption is staged so
-          "Make primary" isn't read as an immediate connection switch. */}
+      {/* Source selection lives in Sessions. Primary is the registry fallback,
+          not an immediate workspace switch. */}
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.stagedNote}
       </p>
+
+      {!loading && showSearch && (
+        <Input
+          aria-label={s.searchPlaceholder}
+          containerClassName="mt-3 mb-0 w-full max-w-sm"
+          onChange={event => updateSearchQuery(event.target.value)}
+          placeholder={s.searchPlaceholder}
+          prefix={<SearchIcon className="size-3.5" />}
+          ref={searchInputRef}
+          size="sm"
+          type="search"
+          value={searchQuery}
+        />
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -427,11 +563,24 @@ export function ConnectionsRegistrySection() {
         </div>
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
+      ) : displayedConnections.length === 0 ? (
+        <EmptyState title={s.noSearchResults} />
       ) : (
-        registry.connections.map(conn => {
+        displayedConnections.map(conn => {
           const Icon = KIND_ICONS[conn.kind]
+          const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
+          // Display-only: this connection is a second address for a backend
+          // already registered under another entry (same install_id).
+          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
+
+          const baseDescription =
+            conn.kind === 'ssh'
+              ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
+              : conn.url
+                ? `${kindMeta[conn.kind].label} · ${conn.url}`
+                : kindMeta[conn.kind].desc
 
           return (
             <ListRow
@@ -477,18 +626,15 @@ export function ConnectionsRegistrySection() {
                 </div>
               }
               description={
-                conn.kind === 'ssh'
-                  ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
-                  : conn.url
-                    ? `${kindMeta[conn.kind].label} · ${conn.url}`
-                    : kindMeta[conn.kind].desc
+                sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription
               }
               key={conn.id}
               title={
                 <span className="flex items-center gap-2">
                   <Icon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate">{conn.label}</span>
-                  {isPrimary && <Pill tone="primary">{s.primaryPill}</Pill>}
+                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
                 </span>
               }
@@ -702,6 +848,18 @@ export function ConnectionsRegistrySection() {
               )}
             </Button>
           )}
+        </div>
+      )}
+
+      {!loading && registry && registry.connections.length > 1 && (
+        <div className="mt-6 border-t border-border/60 pt-4">
+          <ToggleRow
+            checked={registry.launchMode === 'last-used'}
+            description={s.launchModeDesc}
+            disabled={launchModeBusy || !bridge?.setLaunchMode}
+            label={s.launchModeTitle}
+            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
+          />
         </div>
       )}
 

@@ -4891,7 +4891,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "command": _disp_command,
                 "description": _disp_combined_desc,
                 "message": (
-                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
+                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
+                    "STOP: do NOT re-run, rephrase, or re-issue this command — each "
+                    "variant sends the user ANOTHER approval card. Wait for the "
+                    "user's decision; if this turn must end, report that approval "
+                    "is pending."
                 ),
             }
             if smart_denied_for_owner:
@@ -5025,6 +5029,8 @@ def check_execute_code_guard(code: str, env_type: str,
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cli = _is_interactive_cli()
+    approval_callback = _resolve_cli_approval_callback()
 
     # Single-query (-q): no user is present to approve arbitrary code. Mirrors
     # the cron branch below so the -q escape-hatch no longer auto-approves.
@@ -5074,8 +5080,13 @@ def check_execute_code_guard(code: str, env_type: str,
     #   * Local non-interactive non-gateway: documented limitation above.
     # Ask-mode (HERMES_EXEC_ASK) still takes this path even when INTERACTIVE
     # is also set — that combination is how gateway/smart tests and messaging
-    # ask-mode drive whole-script approval. Terminal-command CLI leaks are
-    # handled in check_all_command_guards via the CLI callback fall-through.
+    # ask-mode drive whole-script approval. When that combination leaks into
+    # an interactive CLI with no gateway notify callback registered, the
+    # notify_cb-less branch below falls through to the same CLI Dangerous
+    # Command panel check_all_command_guards uses, instead of a silent
+    # pending_approval. Terminal-command (not whole-script) CLI leaks from
+    # the script's own per-call terminal() guards are handled separately in
+    # check_all_command_guards.
     if not is_gateway and not is_ask:
         return {"approved": True, "message": None}
 
@@ -5203,6 +5214,96 @@ def check_execute_code_guard(code: str, env_type: str,
         notify_cb = _gateway_notify_cbs.get(session_key)
 
     if notify_cb is None:
+        # HERMES_EXEC_ASK (and sometimes a session platform marker) can leak
+        # into an interactive CLI process — most commonly via `import
+        # gateway.run`. Without this, that combination silently queued a
+        # pending approval nobody could see instead of showing the CLI panel
+        # the user can actually answer, even though a callback was
+        # registered (same class as check_all_command_guards / #85865-
+        # adjacent leak this fixes for the whole-script gate specifically).
+        if _should_fall_through_to_cli_approval(
+            is_cli=is_cli,
+            approval_callback=approval_callback,
+            notify_cb=notify_cb,
+        ):
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="cli",
+            )
+            choice = prompt_dangerous_approval(
+                display_command,
+                display_description,
+                allow_permanent=not smart_denied_for_owner,
+                approval_callback=approval_callback,
+                smart_denied=smart_denied_for_owner,
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="cli",
+                choice=choice,
+            )
+
+            if choice == "timeout":
+                breaker_addendum = _denial_breaker_addendum(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Action timed out without user response. The "
+                        "user has NOT consented to this action. Do NOT retry "
+                        "it, do NOT rephrase it, and do NOT attempt the same "
+                        "outcome via a different path. Silence is not "
+                        f"consent.{breaker_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "outcome": "timeout",
+                    "user_consent": False,
+                }
+            if choice == "deny":
+                # No _record_denial() here: the breaker counts consecutive
+                # *guardian LLM* DENY verdicts (see _record_denial), not
+                # deliberate human denials. Both sibling CLI tails
+                # (check_all_command_guards, _run_approval_gate) read the
+                # tally without incrementing it on a human deny; this arm
+                # matches them.
+                breaker_addendum = _denial_breaker_addendum(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: User denied execute_code script execution "
+                        f"(matched '{description}'). Do NOT retry — the user "
+                        f"has explicitly rejected it.{breaker_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "outcome": "denied",
+                    "user_consent": False,
+                }
+            if not smart_denied_for_owner:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
+            _reset_denials(session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
+
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
         pending_data = {
@@ -5223,7 +5324,11 @@ def check_execute_code_guard(code: str, env_type: str,
             "description": display_description,
             "message": (
                 f"⚠️ {display_description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{display_code}\n```"
+                f"**Code:**\n```python\n{display_code}\n```\n\n"
+                "STOP: do NOT re-run, rephrase, or re-issue this code — each "
+                "variant sends the user ANOTHER approval card. Wait for the "
+                "user's decision; if this turn must end, report that approval "
+                "is pending."
             ),
         }
         if smart_denied_for_owner:

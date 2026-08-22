@@ -3,6 +3,7 @@ import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -16,6 +17,7 @@ import {
 import { isTermuxTuiMode } from '../lib/termux.js'
 
 type InkExt = typeof Ink & {
+  colorize: (str: string, color: string | undefined, type: 'foreground' | 'background') => string
   stringWidth: (s: string) => number
   useCursorAdvance: () => (dx: number, dy?: number) => void
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
@@ -25,8 +27,18 @@ type InkExt = typeof Ink & {
 
 const ink = Ink as unknown as InkExt
 
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } =
-  ink
+const {
+  Box,
+  Text,
+  useStdin,
+  useInput,
+  useStdout,
+  stringWidth,
+  colorize,
+  useCursorAdvance,
+  useDeclaredCursor,
+  useTerminalFocus
+} = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -40,7 +52,7 @@ type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 
-// Placeholder styling is EXPLICIT truecolor only — never SGR dim/inverse:
+// Placeholder styling is EXPLICIT color only — never SGR dim/inverse:
 // both are terminal-interpreted relative to the default fg/bg, and on
 // transparent profiles (terminal.background #00000000) they composite
 // against a black RGB the user never sees — the hint rendered as a slab.
@@ -52,10 +64,42 @@ const hintRgb = (hex?: string): [number, number, number] => {
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
 
-const colorizeHint = (s: string, hex?: string) => {
-  const [r, g, b] = hintRgb(hex)
+const hintHex = (hex?: string): string => (/^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex! : HINT_FALLBACK)
 
-  return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
+// Through Ink's own `colorize` (see fgSeq below): a hand-rolled 38;2;r;g;b
+// is worse than unparseable on a non-truecolor terminal — legacy
+// Terminal.app consumes the params one by one, and the `2` in `38;2;…`
+// lands as SGR 2 (dim ON) with no `22m` ever emitted. Every subsequent
+// frame's unstyled cells then paint dim until an unrelated bold span's
+// `22m` clears it: text randomly dims after the placeholder renders.
+export const colorizeHint = (s: string, hex?: string) => colorize(s, hintHex(hex), 'foreground')
+
+/**
+ * The SGR foreground-open sequence for a theme tone, or '' when it has none.
+ *
+ * Goes through Ink's own `colorize` rather than hand-rolling `38;2;r;g;b`.
+ * These bytes are written raw, past Ink — but Ink's `<Text color>` renders
+ * through chalk, which downgrades to the terminal's real depth (Apple Terminal
+ * is 256-color, and takes a bespoke rich-8-bit path). A hand-rolled truecolor
+ * escape is unparseable there, so the glyph falls back to the default fg and
+ * the accent reads GRAY. Sharing the renderer's own function is the only way
+ * the bypass and the Ink path can't drift.
+ *
+ * Handles `ansi256(N)` for free — the shape the palette quantizer rewrites
+ * theme foregrounds to on exactly those limited-palette terminals.
+ */
+const fgSeq = (tone?: string): string => {
+  const value = (tone ?? '').trim()
+
+  if (!value) {
+    return ''
+  }
+
+  // Colorize a sentinel and keep the OPEN half, so the depth decision stays
+  // Ink's rather than being re-derived here.
+  const [open = ''] = colorize('\u0000', value, 'foreground').split('\u0000')
+
+  return open
 }
 
 // Typed-text fast-echo must carry the SAME explicit fg the Ink render uses:
@@ -63,16 +107,21 @@ const colorizeHint = (s: string, hex?: string) => {
 // moment a skin repaints the background to the opposite polarity (a dark
 // skin on a light terminal ⇒ black-on-black). No color ⇒ passthrough, so
 // unthemed inputs keep the terminal default.
-export const colorizeEcho = (s: string, hex?: string) =>
-  /^#[0-9a-f]{6}$/i.test(hex ?? '') ? `${ESC}[38;2;${hintRgb(hex).join(';')}m${s}${ESC}[39m` : s
+export const colorizeEcho = (s: string, hex?: string) => {
+  const open = fgSeq(hex)
+
+  return open ? `${open}${s}${ESC}[39m` : s
+}
 
 /** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
- *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
-const hintCursorCell = (ch: string, hex?: string) => {
+ *  ink, standing in for the hidden hardware cursor (bubbles pattern).
+ *  Both halves go through `colorize` so the escapes match the terminal's
+ *  real color depth (same hazard as colorizeHint above). */
+export const hintCursorCell = (ch: string, hex?: string) => {
   const [r, g, b] = hintRgb(hex)
-  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
+  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '#000000' : '#ffffff'
 
-  return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`
+  return colorize(colorize(ch, ink, 'foreground'), hintHex(hex), 'background')
 }
 
 let _seg: Intl.Segmenter | null = null
@@ -634,34 +683,66 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   return true
 }
 
-function renderWithCursor(value: string, cursor: number) {
-  const pos = Math.max(0, Math.min(cursor, value.length))
+/**
+ * `value` with the accent opened and closed around each highlighted run.
+ *
+ * `mask` is indexed against the WHOLE composer string, so a slice passes its
+ * `offset` to stay aligned. `[39m` closes back to the outer `<Text color>`
+ * (chalk re-opens it), leaving prose on the theme's text tone.
+ */
+function paintHighlights(value: string, accentOpen: string, mask: boolean[] | null, offset = 0) {
+  if (!accentOpen || !mask) {
+    return value
+  }
 
-  let out = '',
-    done = false
+  let out = ''
+  let on = false
 
   for (const { segment, index } of seg().segment(value)) {
-    if (!done && index >= pos) {
-      out += invert(index === pos && segment !== '\n' ? segment : ' ')
-      done = true
+    const want = !!mask[offset + index]
 
-      if (index === pos && segment !== '\n') {
-        continue
-      }
+    if (want !== on) {
+      out += want ? accentOpen : `${ESC}[39m`
+      on = want
     }
 
     out += segment
   }
 
-  return done ? out : out + invert(' ')
+  return on ? `${out}${ESC}[39m` : out
 }
 
-function renderWithSelection(value: string, start: number, end: number) {
+function renderWithCursor(value: string, cursor: number, accentOpen = '', mask: boolean[] | null = null) {
+  const pos = Math.max(0, Math.min(cursor, value.length))
+  const under = [...seg().segment(value.slice(pos))][0]?.segment
+  // The cursor cell is inverted, not accented: inverse swaps fg/bg, so an
+  // accent under the block would fight it rather than show through.
+  const cell = under && under !== '\n' ? under : ' '
+  const tail = under && under !== '\n' ? pos + under.length : pos
+
+  return (
+    paintHighlights(value.slice(0, pos), accentOpen, mask) +
+    invert(cell) +
+    paintHighlights(value.slice(tail), accentOpen, mask, tail)
+  )
+}
+
+function renderWithSelection(
+  value: string,
+  start: number,
+  end: number,
+  accentOpen = '',
+  mask: boolean[] | null = null
+) {
   if (start >= end) {
-    return value
+    return paintHighlights(value, accentOpen, mask)
   }
 
-  return value.slice(0, start) + invert(value.slice(start, end) || ' ') + value.slice(end)
+  return (
+    paintHighlights(value.slice(0, start), accentOpen, mask) +
+    invert(paintHighlights(value.slice(start, end), accentOpen, mask, start) || ' ') +
+    paintHighlights(value.slice(end), accentOpen, mask, end)
+  )
 }
 
 function useFwdDelete(active: boolean) {
@@ -704,6 +785,7 @@ export function TextInput({
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
+  accentColor,
   color,
   focus = true
 }: TextInputProps) {
@@ -810,9 +892,15 @@ export function TextInput({
   // character rendered inverse-muted, so the glyph stays legible under the
   // "cursor" and the block never renders as a host-colored solid slab. The
   // hardware cursor is hidden for this state (see hideHardwareCursor).
+  // `/work`, `@file:src/a.ts`, and `[[ Image 1 ]]` wear in the composer the
+  // accent they wear once sent. A masked input is a password, never a
+  // reference, so it never highlights.
+  const accentOpen = mask ? '' : fgSeq(accentColor)
+  const highlights = useMemo(() => (accentOpen ? highlightMask(display) : null), [accentOpen, display])
+
   const rendered = useMemo(() => {
     if (!focus) {
-      return display || colorizeHint(placeholder, placeholderColor)
+      return display ? paintHighlights(display, accentOpen, highlights) : colorizeHint(placeholder, placeholderColor)
     }
 
     if (!display && placeholder) {
@@ -822,11 +910,13 @@ export function TextInput({
     }
 
     if (selected) {
-      return renderWithSelection(display, selected.start, selected.end)
+      return renderWithSelection(display, selected.start, selected.end, accentOpen, highlights)
     }
 
-    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, placeholderColor, selected])
+    return nativeCursor
+      ? paintHighlights(display, accentOpen, highlights) || ' '
+      : renderWithCursor(display, cur, accentOpen, highlights)
+  }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
     const ownEcho = self.current && value === vRef.current
@@ -976,10 +1066,19 @@ export function TextInput({
     supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
-    canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
+    canFastEchoBase() &&
+    canFastAppendShape(current, cursor, text, columns, lineWidthRef.current) &&
+    // Typing can RE-COLOR cells already on screen: `]` closing a `[[ token ]]`,
+    // or a second `/` demoting `/usr` to a path. The bypass only writes the new
+    // cells, so anything that repaints old ones must take the Ink path.
+    (!accentOpen || highlightsStable(current, current.slice(0, cursor) + text + current.slice(cursor)))
 
   const canFastBackspace = (current: string, cursor: number) =>
-    !inkRepaintedRef.current && canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
+    !inkRepaintedRef.current &&
+    canFastEchoBase() &&
+    canFastBackspaceShape(current, cursor, columns) &&
+    // Deleting can re-color survivors too (erasing `]` re-opens the token).
+    (!accentOpen || highlightsStable(current, current.slice(0, prevPos(current, cursor)) + current.slice(cursor)))
 
   const commit = (
     next: string,
@@ -1546,8 +1645,10 @@ export function TextInput({
             if (simpleAppend) {
               const effect = fastAppendEffect(preInsertValue, preInsertCursor, text)
               // Same explicit fg as the Ink render (see the <Text color>) —
-              // the bypass cell must not flash the terminal-default color.
-              stdout!.write(colorizeEcho(effect.write, color))
+              // the bypass cell must not flash the terminal-default color. A
+              // character landing inside a `/skill` / `@ref` / `[[ token ]]`
+              // takes the accent, matching what Ink would have painted.
+              stdout!.write(colorizeEcho(effect.write, highlightMask(v)[preInsertCursor] ? accentColor : color))
               // A real character was just fast-echoed to the screen, so the
               // terminal baseline is synced again — clear any pending Ink-repaint
               // fast-echo suppression so normal backspace fast-echo resumes.
@@ -1674,6 +1775,8 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  /** Hex/ansi256 tone for `/skill`, `@ref`, and `[[ token ]]` spans. */
+  accentColor?: string
   /** Hex color for typed text (theme text); terminal default when omitted. */
   color?: string
   columns?: number

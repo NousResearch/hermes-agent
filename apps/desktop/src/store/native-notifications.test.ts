@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $gateway } from './gateway'
 import {
+  clearPluginNotifyHandlers,
   dispatchNativeNotification,
   dispatchPluginNativeNotification,
+  invokePluginNotifyAction,
+  invokePluginNotifyActivate,
   NATIVE_NOTIFICATION_KINDS,
   respondToApprovalAction,
   sendTestNativeNotification,
@@ -49,6 +52,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  clearPluginNotifyHandlers()
+
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
@@ -196,6 +201,78 @@ describe('dispatchPluginNativeNotification', () => {
     dispatchPluginNativeNotification('plugin-a', { title: 'a again' })
     dispatchPluginNativeNotification('plugin-b', { title: 'b' })
     expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not register handlers for throttled or suppressed notifications', () => {
+    const onActivate = vi.fn()
+
+    // First fires and registers; the immediate repeat is throttled per plugin id.
+    dispatchPluginNativeNotification('leak-plugin', { onActivate: () => undefined, title: 'first' })
+    dispatchPluginNativeNotification('leak-plugin', { onActivate, title: 'throttled' })
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    // The throttled call must not have registered anything: no notifyId ever
+    // reached the OS, so its handlers would leak. Invoking with the only
+    // minted id (from the first call) must not hit the throttled callback.
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    // Fully suppressed (kind disabled): nothing registered either.
+    setNativeNotifyKind('plugin', false)
+    const suppressed = vi.fn()
+    dispatchPluginNativeNotification('other-plugin', { onActivate: suppressed, title: 'muted' })
+    expect(notify).toHaveBeenCalledTimes(1)
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(suppressed).not.toHaveBeenCalled()
+  })
+
+  it('forwards icon, resolved activate path, and action buttons (deeplink-compatible)', () => {
+    // Unique tag (throttle is per plugin id); activate still uses the plugin deep link.
+    dispatchPluginNativeNotification('index-network-alerts', {
+      actions: [
+        { id: 'open', label: 'Open', activate: 'hermes://index-network/intent/1' },
+        { id: 'dismiss', label: 'Dismiss', onAction: () => undefined }
+      ],
+      activate: 'hermes://index-network/intent/1',
+      body: 'New match',
+      icon: '/tmp/index-network.png',
+      title: 'Opportunity'
+    })
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activate: '/index-network/intent/1',
+        actions: [
+          { activate: '/index-network/intent/1', id: 'open', text: 'Open' },
+          { activate: undefined, id: 'dismiss', text: 'Dismiss' }
+        ],
+        icon: '/tmp/index-network.png',
+        kind: 'plugin',
+        notifyId: expect.stringMatching(/^index-network-alerts:/),
+        tag: 'index-network-alerts',
+        title: 'Opportunity'
+      })
+    )
+  })
+
+  it('registers onActivate / onAction handlers keyed by notifyId', () => {
+    const onActivate = vi.fn()
+    const onAction = vi.fn()
+
+    dispatchPluginNativeNotification('handlers-plugin', {
+      activate: 'hermes://index-network/intent/1',
+      onActivate,
+      actions: [{ id: 'dismiss', label: 'Dismiss', onAction }],
+      title: 'Opportunity'
+    })
+
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    expect(payload.notifyId).toBeTruthy()
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(invokePluginNotifyAction(payload.notifyId, 'dismiss')).toBe(true)
+    expect(onAction).toHaveBeenCalledTimes(1)
   })
 })
 

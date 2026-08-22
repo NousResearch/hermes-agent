@@ -130,6 +130,149 @@ export async function fetchPrimaryProfileSessions(
   }
 }
 
+/** One CONNECTED (already-pooled) registry gateway whose sessions belong in the
+ *  unified list. `backends` carries the resolved descriptors: one per pooled
+ *  (connection, profile) pair for ssh-scoped sources, a single shared host for
+ *  remote/cloud. The caller resolves descriptors — this module only fetches,
+ *  tags, and dedupes, so it stays unit-testable. */
+export interface RegistrySessionSource {
+  connectionId: string
+  /** 'ssh' backends each run AS one remote profile; anything else is a shared
+   *  host serving every profile via ?profile=. */
+  kind: string
+  backends: Array<{ descriptor: unknown; profileLabel: null | string }>
+}
+
+type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
+
+/**
+ * Every connected registry gateway's session rows for the unified Sessions
+ * list (#88880), tagged with the owning `connection_id` + remote `profile` so
+ * the renderer can route an open through the connection-scoped gateway.
+ *
+ * Hidden rows stay hidden: these reads NEVER pass `include_hidden`, so the
+ * backend's default `hidden = 0` filter applies — Bot Mode canonical chats
+ * (persisted hidden) are excluded from the global list exactly as local ones
+ * are. Do not add include_hidden here; the Bots view has its own scoped
+ * browser for those.
+ *
+ * A dead or erroring gateway contributes nothing rather than breaking the
+ * sidebar.
+ */
+export async function fetchRegistrySessionRows(
+  sources: RegistrySessionSource[],
+  searchParams: URLSearchParams,
+  getJson: GetJsonForDescriptor
+): Promise<unknown[]> {
+  const rows: unknown[] = []
+
+  const tag = (data: unknown, connectionId: string, profileLabel: null | string) => {
+    for (const row of rowsOf(data)) {
+      if (!row || typeof row !== 'object') {
+        continue
+      }
+
+      const session = row as Record<string, unknown>
+
+      if (profileLabel !== null) {
+        session.profile = profileLabel
+      } else if (typeof session.profile !== 'string' || !session.profile) {
+        session.profile = 'default'
+      }
+
+      session.is_default_profile = false
+      session.connection_id = connectionId
+      rows.push(session)
+    }
+  }
+
+  await Promise.all(
+    sources.map(async source => {
+      if (source.kind === 'ssh') {
+        // Each ssh-scoped backend serves its own state.db natively.
+        await Promise.all(
+          source.backends.map(async ({ descriptor, profileLabel }) => {
+            const params = new URLSearchParams(searchParams)
+            params.delete('profile')
+
+            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+
+            if (data) {
+              tag(data, source.connectionId, profileLabel || 'default')
+            }
+          })
+        )
+
+        return
+      }
+
+      // Shared remote/cloud host: one cross-profile read returns every
+      // profile's rows, each tagged with its owning remote profile.
+      const shared = source.backends[0]
+
+      if (!shared) {
+        return
+      }
+
+      const params = new URLSearchParams(searchParams)
+      params.set('profile', 'all')
+
+      let data = await getJson(shared.descriptor, `/api/profiles/sessions?${params}`).catch(() => null)
+
+      if (!data) {
+        // Older remote without the aggregator: its own default-profile list.
+        const flat = new URLSearchParams(searchParams)
+        flat.delete('profile')
+        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
+      }
+
+      if (data) {
+        tag(data, source.connectionId, null)
+      }
+    })
+  )
+
+  return rows
+}
+
+/** Splice registry-gateway rows into an already-merged unified list: dedupe by
+ *  session id (a v1 remote-override splice may already carry a row), keep the
+ *  recency sort, and extend the per-profile totals so truncation flags stay
+ *  honest. Mutates and returns `merged`/`profileTotals` the way the v1 splice
+ *  does. */
+export function spliceRegistrySessionRows(
+  merged: unknown[],
+  registryRows: unknown[],
+  profileTotals: Record<string, number>
+): { added: number } {
+  const seen = new Set(merged.map(sessionId).filter((id): id is string => id !== null))
+  let added = 0
+
+  for (const row of registryRows) {
+    const id = sessionId(row)
+
+    if (id && seen.has(id)) {
+      continue
+    }
+
+    if (id) {
+      seen.add(id)
+    }
+
+    merged.push(row)
+    added += 1
+
+    const profile =
+      row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' && row.profile
+        ? row.profile
+        : 'default'
+
+    profileTotals[profile] = (profileTotals[profile] || 0) + 1
+  }
+
+  return { added }
+}
+
 export async function fetchRemoteProfileSessions(
   profile: string,
   searchParams: URLSearchParams,

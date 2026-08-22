@@ -1,5 +1,17 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+
+/** React Compiler preset scoped to modules that can actually contain
+ *  components/hooks (JSX syntax or a react-ish import). The preset's default
+ *  code filter matches any PascalCase/use* declaration — effectively every TS
+ *  module — which made the babel pass parse all ~1.5k source files when only
+ *  ~750 are React-bearing. */
+function compilerPreset() {
+  const preset = reactCompilerPreset()
+  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+  return preset
+}
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
@@ -91,7 +103,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -155,6 +167,22 @@ export default defineConfig(({ command }) => ({
       }
     }
   },
+  // driver.js only enters the graph through the tour's DYNAMIC import chain
+  // (lib/tour/run-tour.ts), so the dep scanner never sees it at startup. Left
+  // alone, first use registers it as a missing dep at runtime — which (a)
+  // esbuild-prebundles the `?raw` IIFE import as a JS module, breaking the
+  // raw-text transform ("does not provide an export named 'default'"), and
+  // (b) triggers Vite's "new dependencies optimized" full page reload mid-
+  // session. It's pure ESM with no CJS deps, so serving it unoptimized is
+  // free. Query and bare forms all listed — exclusion matches exact ids.
+  optimizeDeps: {
+    exclude: [
+      'driver.js',
+      'driver.js/dist/driver.js.iife.js',
+      'driver.js/dist/driver.js.iife.js?raw',
+      'driver.js/dist/driver.css?raw'
+    ]
+  },
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
@@ -162,6 +190,20 @@ export default defineConfig(({ command }) => ({
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
+      // The tour tool's preview surface injects driver.js's prebuilt IIFE into
+      // the pane's guest page as raw source; the package's exports map doesn't
+      // expose that dist file (nor ./package.json), so resolve the main entry
+      // (dist/driver.js.cjs) and point at its sibling. Both keys on purpose:
+      // alias matching is exact, and the id reaches it with the `?raw` query
+      // still attached in dev but stripped in some build paths.
+      'driver.js/dist/driver.js.iife.js?raw': `${path.join(
+        path.dirname(requireFromApp.resolve('driver.js')),
+        'driver.js.iife.js'
+      )}?raw`,
+      'driver.js/dist/driver.js.iife.js': path.join(
+        path.dirname(requireFromApp.resolve('driver.js')),
+        'driver.js.iife.js'
+      ),
       react: reactDir,
       'react-dom': reactDomDir,
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),

@@ -150,6 +150,7 @@ export async function setMainModelAssignment(
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
+
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
   const result =

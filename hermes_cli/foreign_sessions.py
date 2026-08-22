@@ -456,6 +456,11 @@ def run_sessions_import(args, db=None) -> Optional[str]:
     path = getattr(args, "path", None)
 
     if path:
+        # Report a missing file distinctly instead of the misleading
+        # "cannot infer source" (SES-10).
+        if not Path(path).exists():
+            print(f"Error: file not found: {path}")
+            return None
         if not source:
             # Guess from the path shape.
             p = str(path)

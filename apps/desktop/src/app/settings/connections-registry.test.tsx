@@ -2,17 +2,20 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { $connection } from '@/store/session'
 
 import {
   ConnectionsRegistrySection,
   findDuplicateConnection,
   normalizeGatewayUrl,
+  sameBackendPeerLabel,
   sshCompositeKey
 } from './connections-registry'
 
 const list = vi.fn()
 const save = vi.fn()
 const remove = vi.fn()
+const setLaunchMode = vi.fn()
 const setPrimary = vi.fn()
 const test = vi.fn()
 
@@ -35,30 +38,44 @@ const registry: DesktopConnectionsRegistry = {
 }
 
 beforeEach(() => {
+  $connection.set({
+    baseUrl: 'http://homelab.lan:9119',
+    connectionId: 'homelab',
+    isFullscreen: false,
+    logs: [],
+    mode: 'remote',
+    nativeOverlayWidth: 0,
+    token: 'test-token',
+    windowButtonPosition: null,
+    wsUrl: 'ws://homelab.lan:9119/ws'
+  })
   list.mockResolvedValue(registry)
   save.mockResolvedValue({ connection: registry.connections[1], ok: true, registry })
   remove.mockResolvedValue({ ok: true, registry: { ...registry, connections: [registry.connections[0]] } })
+  setLaunchMode.mockResolvedValue({ ok: true, registry: { ...registry, launchMode: 'last-used' } })
   setPrimary.mockResolvedValue({ ok: true, registry: { ...registry, primary: 'homelab' } })
   test.mockResolvedValue({ ok: true, reachable: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { connections: { list, remove, save, setPrimary, test } }
+    value: { connections: { list, remove, save, setLaunchMode, setPrimary, test } }
   })
 })
 
 afterEach(() => {
+  $connection.set(null)
   cleanup()
   vi.clearAllMocks()
 })
 
 describe('ConnectionsRegistrySection', () => {
-  it('lists registered connections with primary + local pills', async () => {
+  it('distinguishes the current connection from the registry primary', async () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
     // Label and the managed pill share the copy, so expect both instances.
     expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
-    expect(screen.getByText('Primary')).toBeTruthy()
+    expect(screen.getByText('Current')).toBeTruthy()
+    expect(screen.getAllByText('Primary').length).toBeGreaterThan(0)
     expect(list).toHaveBeenCalledTimes(1)
   })
 
@@ -119,13 +136,154 @@ describe('ConnectionsRegistrySection', () => {
     expect(save).not.toHaveBeenCalled()
   })
 
-  it('makes a non-primary connection primary', async () => {
+  it('keeps the primary fallback configurable while last-used restore is enabled', async () => {
+    list.mockResolvedValueOnce({ ...registry, launchMode: 'last-used' })
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    fireEvent.click(screen.getByText('Make primary'))
+    const makePrimary = screen.getByText('Make primary').closest('button')!
+
+    expect(makePrimary.disabled).toBe(false)
+    fireEvent.click(makePrimary)
 
     await waitFor(() => expect(setPrimary).toHaveBeenCalledWith('homelab'))
+  })
+
+  it('lets users opt into restoring the last-used source', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    const launchSetting = await screen.findByText('At startup, return to Sessions on the last-used gateway')
+    const addConnection = screen.getByText('Add connection')
+
+    expect(addConnection.compareDocumentPosition(launchSetting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(screen.getByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' }))
+
+    await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
+  })
+
+  it('keeps the launch preference out of the way for a single source', async () => {
+    list.mockResolvedValueOnce({ ...registry, connections: [registry.connections[0]] })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('At startup, return to Sessions on the last-used gateway')).toBeNull()
+  })
+
+  it('keeps search out of the way for a small registry', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.queryByRole('searchbox', { name: 'Search gateways…' })).toBeNull()
+  })
+
+  it('sorts a large registry and searches names and endpoints', async () => {
+    const largeRegistry: DesktopConnectionsRegistry = {
+      ...registry,
+      connections: [
+        {
+          authMode: 'token',
+          id: 'zulu',
+          kind: 'remote',
+          label: 'Zulu',
+          tokenPreview: null,
+          tokenSet: false,
+          url: 'https://zulu.example.test'
+        },
+        registry.connections[0],
+        ...Array.from({ length: 6 }, (_, index) => ({
+          authMode: 'token' as const,
+          id: `gateway-${index}`,
+          kind: 'remote' as const,
+          label: index === 0 ? 'Alpha' : `Gateway ${index}`,
+          tokenPreview: null,
+          tokenSet: false,
+          url:
+            index === 4
+              ? 'https://studio.example.test'
+              : index === 5
+                ? 'https://studio-archive.example.test'
+                : `https://gateway-${index}.example.test`
+        }))
+      ]
+    }
+
+    list.mockResolvedValueOnce(largeRegistry)
+    render(
+      <div data-testid="settings-scroller" style={{ height: 400, overflowY: 'auto' }}>
+        <ConnectionsRegistrySection />
+      </div>
+    )
+
+    const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
+    expect(search.parentElement?.className).toContain('mt-3')
+    expect(search.parentElement?.className).toContain('mb-0')
+    const settingsScroller = screen.getByTestId('settings-scroller')
+    settingsScroller.scrollTop = 200
+    vi.spyOn(search, 'getBoundingClientRect')
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValue({
+        bottom: 182,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 150,
+        width: 0,
+        x: 0,
+        y: 150,
+        toJSON: () => ({})
+      })
+    const alpha = screen.getByText('Alpha')
+    const zulu = screen.getByText('Zulu')
+    expect(alpha.compareDocumentPosition(zulu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.change(search, { target: { value: 'studio' } })
+
+    expect(settingsScroller.scrollTop).toBe(200)
+    expect(screen.getByText('Gateway 4')).toBeTruthy()
+    expect(screen.getByText('Gateway 5')).toBeTruthy()
+    expect(screen.queryByText('Alpha')).toBeNull()
+
+    settingsScroller.scrollTop = 260
+    fireEvent.change(search, { target: { value: 'studio.example' } })
+    expect(settingsScroller.scrollTop).toBe(290)
+    expect(screen.getByText('Gateway 4')).toBeTruthy()
+    expect(screen.queryByText('Gateway 5')).toBeNull()
+
+    fireEvent.change(search, { target: { value: '' } })
+    expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
   })
 
   it('tests a connection through the bridge', async () => {
@@ -214,5 +372,20 @@ describe('dedupe helpers', () => {
         connections
       )
     ).toBeNull()
+  })
+
+  it('hints "Same backend as" only on later rows sharing an install_id', () => {
+    const spark = { id: 'spark', installId: 'aaa', label: 'Spark' }
+    const sparkTs = { id: 'spark-ts', installId: 'aaa', label: 'Spark TS' }
+    const mini = { id: 'mini', installId: 'bbb', label: 'Mini' }
+    const legacy = { id: 'old', label: 'Old box' }
+    const connections = [spark, sparkTs, mini, legacy]
+
+    // The first occurrence carries no hint; the later duplicate points back.
+    expect(sameBackendPeerLabel(spark, connections)).toBeNull()
+    expect(sameBackendPeerLabel(sparkTs, connections)).toBe('Spark')
+    // Unique ids and id-less (older backend) rows never hint.
+    expect(sameBackendPeerLabel(mini, connections)).toBeNull()
+    expect(sameBackendPeerLabel(legacy, connections)).toBeNull()
   })
 })

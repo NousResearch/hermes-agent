@@ -484,6 +484,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
+        // Structured failure layer for the error card (see lib/error-surface).
+        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         ...reactionMeta
       }
     }

@@ -805,6 +805,122 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
+class TestOpencodeReservedToolAliases:
+    """OpenCode /v1/responses reserves web_search / search_files as function
+    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
+    transport aliases them on the wire and maps them back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_builtin_opencode_go_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_custom_opencode_family_provider_aliases_reserved_names(self, transport):
+        """Custom opencode-go-* providers get the same aliasing (#85589)."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go-bridge",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_opencode_host_match_without_family_provider(self, transport):
+        """An arbitrary custom provider pointing at opencode.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-oc-proxy",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+
+    def test_non_opencode_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "web_search" in names
+        assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+                SimpleNamespace(
+                    id="call_2", call_id="call_2", response_item_id="fc_2",
+                    function=SimpleNamespace(
+                        name="hermes_web_search",
+                        arguments='{"query":"hermes"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files", "web_search"]
+
+
 class TestXaiWebSearchBackendPreference:
     """``_xai_prefers_native_web_search`` must honor web backend config."""
 

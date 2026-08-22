@@ -9,6 +9,11 @@ for the full rationale):
 
 * Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
+* Session-gated GUI toolsets (``desktop_ui``, ``project``) are also never
+  deferred. They stay off the core list so CLI and messaging never pay for
+  their schemas, but once a session enables them they stay in the
+  model-facing array. Tool Search is for MCP/plugin catalog bloat, not for
+  hiding the tools that define this session's surface.
 * Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
   tools are present, they hide behind the bridge. What scales with catalog
   size is the *listing*, not the activation decision:
@@ -201,12 +206,18 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+# Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
+# never pay their schema; once a session enables them they stay direct.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
+    OR it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI
+    surface toolset. Core and direct surface tools are never deferred even
+    when their toolset is technically plugin-provided (this protects
     against accidental shadowing).
     """
     if name in BRIDGE_TOOL_NAMES:
@@ -221,6 +232,8 @@ def is_deferrable_tool_name(name: str) -> bool:
             return False
         if entry.toolset.startswith("mcp-"):
             return True
+        if entry.toolset in _DIRECT_SURFACE_TOOLSETS:
+            return False
         # Non-MCP, non-core → plugin tool, eligible.
         return True
     except Exception:
@@ -231,8 +244,8 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every core tool, every session-gated GUI surface tool, plus any tool we
+    can't classify. ``deferrable`` is the candidate set for catalog entry.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []

@@ -215,3 +215,93 @@ class TestFileMutationTargets:
             },
         )
         assert targets == ["old/name.py", "new/name.py"]
+
+
+class TestUpstreamElisionDetection:
+    """Provider-side elision markers get a one-line incompleteness notice."""
+
+    def _payload(self, marker: str) -> str:
+        return '{"items": ["' + "x" * 1_200 + '"], ' + marker + "}"
+
+    def test_more_items_marker_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert _detect_upstream_elision(self._payload('"note": "... 13 more items"'))
+
+    def test_has_more_true_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert _detect_upstream_elision(self._payload('"has_more": true'))
+
+    def test_saved_to_sandbox_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert _detect_upstream_elision(
+            "y" * 1_100 + " Complete response was large. Full data saved to sandbox in /mnt/files/x.json"
+        )
+
+    def test_data_preview_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert _detect_upstream_elision(self._payload('"data_preview": {}'))
+
+    def test_has_more_false_not_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert not _detect_upstream_elision(self._payload('"has_more": false'))
+
+    def test_plain_large_result_not_detected(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert not _detect_upstream_elision("z" * 5_000)
+
+    def test_non_string_content_skipped(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        assert not _detect_upstream_elision(None)
+        assert not _detect_upstream_elision({"has_more": True})
+        assert not _detect_upstream_elision([{"type": "text", "text": "... 5 more items"}])
+
+    def test_short_results_short_circuit(self):
+        from agent.tool_dispatch_helpers import _detect_upstream_elision
+        # Marker present but under the 1K scan floor -> skipped.
+        assert not _detect_upstream_elision('"has_more": true')
+
+    def test_marker_beyond_scan_cap_not_matched(self):
+        from agent.tool_dispatch_helpers import (
+            _ELISION_SCAN_MAX_CHARS,
+            _detect_upstream_elision,
+        )
+        content = "a" * (_ELISION_SCAN_MAX_CHARS + 10) + '"has_more": true'
+        assert not _detect_upstream_elision(content)
+
+
+class TestElisionNoticeWiring:
+    """Notice appended once at construction time, before untrusted wrapping."""
+
+    def _elided(self) -> str:
+        return '{"items": ["' + "x" * 1_200 + '"], "has_more": true}'
+
+    def test_notice_appended_for_mcp_tool(self):
+        from agent.tool_dispatch_helpers import (
+            _UPSTREAM_ELISION_NOTICE,
+            _maybe_append_elision_notice,
+        )
+        out = _maybe_append_elision_notice("mcp_composio_search", self._elided())
+        assert out.endswith(_UPSTREAM_ELISION_NOTICE)
+
+    def test_trusted_tool_never_annotated(self):
+        from agent.tool_dispatch_helpers import _maybe_append_elision_notice
+        content = self._elided()
+        assert _maybe_append_elision_notice("terminal", content) is content
+
+    def test_untrusted_without_markers_unchanged(self):
+        from agent.tool_dispatch_helpers import _maybe_append_elision_notice
+        content = "y" * 2_000
+        assert _maybe_append_elision_notice("mcp_x", content) is content
+
+    def test_notice_inside_untrusted_wrapper(self):
+        """Order: detect on raw -> append notice -> wrap. The notice must sit
+        INSIDE the untrusted block, and the message is built once (cache-safe)."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        msg = make_tool_result_message("mcp_composio_search", self._elided(), "call_1")
+        content = msg["content"]
+        assert content.startswith("<untrusted_tool_result")
+        assert content.rstrip().endswith("</untrusted_tool_result>")
+        assert "INCOMPLETE" in content
+        assert content.index("hermes note") < content.index("</untrusted_tool_result>")
+        # Exactly one notice.
+        assert content.count("hermes note") == 1

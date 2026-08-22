@@ -73,7 +73,11 @@ test('unit: older desktop without host.deleteProfile falls back to the non-inter
 
   await context.__delete.deleteBot({ name: 'researcher' })
 
-  assert.deepEqual(JSON.parse(JSON.stringify(requests[0])), {
+  // The load-time hide sweep (hideOwnedBotSessions/sweepBotProfileSessions)
+  // may interleave its own profiles.list / session.* traffic — filter to the
+  // delete path's request.
+  const exec = requests.filter(r => r.method === 'cli.exec')
+  assert.deepEqual(JSON.parse(JSON.stringify(exec[0])), {
     method: 'cli.exec',
     params: { argv: ['profile', 'delete', 'researcher', '--yes'] }
   })

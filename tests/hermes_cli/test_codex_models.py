@@ -1,7 +1,38 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _FORWARD_COMPAT_TEMPLATE_MODELS,
+    get_codex_model_ids,
+)
+
+
+CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna-pro",
+}
+
+
+def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch):
+    """OAuth fallback retains real models but never synthesizes rejected ones."""
+    retained_models = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+    template_models = {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
+
+    assert retained_models.issubset(DEFAULT_CODEX_MODELS)
+    assert retained_models.issubset(template_models)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
+    )
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
+
+    assert retained_models.issubset(model_ids)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
 

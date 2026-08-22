@@ -3,6 +3,7 @@
 import asyncio
 import os
 import json
+import re
 import shutil
 import sys
 import threading
@@ -2670,9 +2671,12 @@ class TestNewEndpoints:
         assert data["needs_nous_auth"] is True
         assert data["feature"] == "browser"
         # The selection is still persisted — activation is what's gated.
+        # Managed rows store the single 'nous' provider string (the runtime
+        # maps it to the Browser Use cloud through the Nous Tool Gateway).
         from hermes_cli.config import load_config
         cfg = load_config()
-        assert cfg["browser"]["cloud_provider"] == "browser-use"
+        assert cfg["browser"]["cloud_provider"] == "nous"
+        assert "use_gateway" not in cfg["browser"]
 
 
     # -- Web capability split (search vs extract backends) ------------------
@@ -3141,6 +3145,98 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+
+class TestStatusInstallId:
+    """Stable per-install identity on /api/status.
+
+    Behaviour contracts: the id is minted once, persisted under the ROOT
+    Hermes home (not the profile home), survives a fresh process-cache read,
+    and is byte-identical for every profile served by the same install — the
+    desktop uses it to collapse duplicate roster rows when one backend is
+    registered under two addresses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        # Fresh process cache per test: the cache is process-global by design
+        # (stability), so tests must not observe a previous test's id.
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_status_reports_persistent_install_id(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_constants import get_default_hermes_root
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+
+        first = self.client.get("/api/status")
+        assert first.status_code == 200
+        install_id = first.json().get("install_id")
+        assert isinstance(install_id, str)
+        # Opaque random hex only — no hardware/user-derived material.
+        assert re.fullmatch(r"[0-9a-f]{32}", install_id)
+
+        # Persisted under the ROOT home, and stable across calls.
+        id_file = get_default_hermes_root() / "install_id"
+        assert id_file.is_file()
+        assert id_file.read_text(encoding="utf-8").strip() == install_id
+
+        second = self.client.get("/api/status")
+        assert second.json().get("install_id") == install_id
+
+    def test_install_id_survives_process_cache_reset(self, monkeypatch):
+        """A restart (fresh cache) re-reads the SAME persisted id."""
+        import hermes_cli.web_server as ws
+
+        first = ws.get_install_id()
+        assert first
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        assert ws.get_install_id() == first
+
+    def test_all_profiles_of_one_install_share_the_id(self, monkeypatch, tmp_path):
+        """HERMES_HOME=<root> and HERMES_HOME=<root>/profiles/<name> resolve to
+        the same id file — profiles share one physical install identity."""
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "research"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        root_id = ws.get_install_id()
+        assert root_id
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+        assert ws.get_install_id() == root_id
+        # Exactly one id file exists — under the root, not the profile home.
+        assert (root / "install_id").is_file()
+        assert not (profile_home / "install_id").exists()
+
+    def test_corrupt_id_file_is_replaced_not_propagated(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        root = tmp_path / "hermes-root"
+        root.mkdir()
+        (root / "install_id").write_text("not-a-valid-id\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(ws, "_INSTALL_ID_CACHE", {"value": None})
+
+        value = ws.get_install_id()
+        assert value and re.fullmatch(r"[0-9a-f]{32}", value)
+        assert (root / "install_id").read_text(encoding="utf-8").strip() == value
 
 
 class TestGatewayBusyReadout:

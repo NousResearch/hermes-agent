@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,
@@ -37,7 +38,8 @@ import {
   getNested,
   isExternalMemoryProvider,
   sectionFieldEntries,
-  setNested
+  setNested,
+  voiceFieldVisible
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
@@ -45,26 +47,6 @@ import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
-
-// On the Voice page, only surface the sub-fields of the *selected* TTS/STT
-// provider — otherwise every provider's options render at once (the "totally
-// crazy" wall of ~30 fields). Top-level keys (tts.provider, stt.enabled,
-// voice.*) always show; STT provider fields hide entirely when STT is off.
-export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
-  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
-
-  if (!match) {
-    return true
-  }
-
-  const [, domain, provider] = match
-
-  if (domain === 'stt' && !getNested(config, 'stt.enabled')) {
-    return false
-  }
-
-  return provider === String(getNested(config, `${domain}.provider`) ?? '')
-}
 
 export function ConfigSettings({
   activeSectionId,
@@ -232,19 +214,29 @@ function ConfigSettingsInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
   }, [config, onConfigSaved, saveVersion])
 
+  const applyConfig = (next: HermesConfigRecord) => {
+    saveVersionRef.current += 1
+    setConfig(next)
+    setSaveVersion(saveVersionRef.current)
+  }
+
   const updateConfig = (next: HermesConfigRecord) => {
     // Guard the single most destructive config edit: clearing the entire
     // "Enabled Toolsets" list silently disables memory, terminal, web search,
     // delegation, and most tools, and a stray select-all + Backspace can do it.
     // Auto-save is debounced with no undo, so confirm a non-empty → empty
     // transition before applying it. Every other edit passes through untouched.
-    if (config && clearsEnabledToolsets(config, next) && !window.confirm(c.toolsetsWipeConfirm)) {
+    if (config && clearsEnabledToolsets(config, next)) {
+      void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
+        if (ok) {
+          applyConfig(next)
+        }
+      })
+
       return
     }
 
-    saveVersionRef.current += 1
-    setConfig(next)
-    setSaveVersion(saveVersionRef.current)
+    applyConfig(next)
   }
 
   const sectionFields = useMemo(() => {
@@ -274,6 +266,12 @@ function ConfigSettingsInner({
     }
 
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+    if (!element.hasAttribute('tabindex')) {
+      element.tabIndex = -1
+    }
+
+    element.focus({ preventScroll: true })
     element.classList.add('setting-field-highlight')
 
     const timeout = window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)

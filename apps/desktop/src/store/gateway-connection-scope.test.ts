@@ -42,6 +42,7 @@ vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() })
 const {
   closeSecondaryGateways,
   configureGatewayRegistry,
+  ensureGatewayForAgent,
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway
@@ -84,6 +85,15 @@ afterEach(() => {
 })
 
 describe('pruneSecondaryGateways with registry-scoped entries', () => {
+  it('keeps the previous source socket open when Sessions switches backends', async () => {
+    await ensureGatewayForAgent('work', 'default')
+    await ensureGatewayForAgent('homelab', 'default')
+
+    // Source switching only changes the foreground route. Retaining the first
+    // socket lets its live turn continue and keeps receiving completion events.
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
   it("does not keep a registry socket alive off another source's same-named profile", async () => {
     // Gateway B's 'default' — the roster row (connectionId 'homelab', profile
     // 'default'). The keep-set carries the bare 'default' profile because the

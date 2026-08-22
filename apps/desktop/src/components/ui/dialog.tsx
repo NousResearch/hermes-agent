@@ -55,7 +55,9 @@ const DIALOG_BANNER_TONES: Record<DialogBannerTone, string> = {
 // element ends up being the close button, and since Tip shows on focus as well
 // as hover, that autofocus makes the "Close" tip appear immediately with no
 // pointer ever near the button. Dialogs like that should pass this in
-// explicitly as `onOpenAutoFocus={preventCloseButtonAutoFocus}`.
+// explicitly as `onOpenAutoFocus={preventCloseButtonAutoFocus}`. Note it leaves
+// focus wherever it was — outside the dialog — so a dialog that answers keys
+// (Enter to confirm) must focus something of its own instead.
 export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }

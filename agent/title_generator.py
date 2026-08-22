@@ -410,6 +410,11 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # Explicitly disable thinking/reasoning so models that bill
+            # thought tokens against max_tokens (e.g. Gemini) don't consume
+            # the entire 64-token budget on internal reasoning and truncate
+            # the JSON title response. (#91927)
+            reasoning_config={"enabled": False},
         )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))

@@ -87,7 +87,16 @@ export const PendingApprovalFallback: FC = () => {
       data-slot="tool-approval-fallback"
       style={{ bottom: 'calc(var(--composer-measured-height) + 0.875rem)' }}
     >
-      <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
+      <div
+        className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]"
+        // Marks the card as a RAISED surface for window glass: while the field
+        // behind it thins to show the desktop, this card stays near-opaque
+        // (see the [data-glass-raised] rules in styles.css). Without it, the
+        // approval prompt — the one dialog a user must read correctly before
+        // granting a command — inherits the thinned field background and its
+        // text/controls wash out over whatever is behind the window.
+        data-glass-raised=""
+      >
         <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
           <AlertCircle className="size-4 shrink-0" />
           <span className="shrink-0 font-medium">{t.assistant.approval.jumpToApproval}</span>

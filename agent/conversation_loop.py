@@ -58,7 +58,23 @@ from agent.message_sanitization import (
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _strip_non_ascii,
+    strip_oversized_image_parts,
 )
+
+# 413 image-payload recovery thresholds.
+#
+# A 413 is a byte-size error, but the context estimator prices images at a
+# flat per-image token cost (see estimate_messages_tokens_rough) so that a
+# screenshot doesn't trigger premature compaction.  That leaves text
+# compression structurally unable to clear an image-dominated 413, so the
+# recovery path measures actual payload bytes instead.
+#
+# 256KB: comfortably above a normal screenshot's base64 size, low enough that
+# a couple of full-resolution captures are caught before they dominate a
+# request.  Recent messages are protected so an image the user just attached
+# isn't removed out from under the current turn.
+_MAX_INLINE_IMAGE_BYTES_ON_413 = 256 * 1024
+_PROTECT_RECENT_IMAGES_ON_413 = 4
 # Must mirror _STALE_TOOL_CALL_MARKER_RE in hermes_state.py — kept local
 # to avoid importing hermes_state at module load time (its module-level
 # DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
@@ -5600,6 +5616,52 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
+                        # Compression scored "no progress".  Before declaring
+                        # the turn dead, check whether the payload is actually
+                        # dominated by inline base64 images rather than text.
+                        #
+                        # A 413 is a BYTE-size error, but the estimator above
+                        # prices each image at a flat per-image token cost so
+                        # screenshots don't trigger premature compaction.  That
+                        # makes text compression structurally incapable of
+                        # clearing an image-heavy 413: two ~3MB screenshots can
+                        # be >95% of the request while contributing ~3K to the
+                        # estimate, so every attempt reports "no progress" and
+                        # the session wedges permanently — /compress and /retry
+                        # can't help either, because the images are re-sent from
+                        # stored history every turn.
+                        #
+                        # Strip oversized image parts from ``messages`` (the
+                        # persisted history), not just ``api_messages``, so the
+                        # reduction survives into subsequent turns.  Recent
+                        # messages are protected so an image the user just
+                        # attached isn't removed out from under this turn.
+                        _stripped, _reclaimed = strip_oversized_image_parts(
+                            messages,
+                            max_image_bytes=_MAX_INLINE_IMAGE_BYTES_ON_413,
+                            protect_last_n=_PROTECT_RECENT_IMAGES_ON_413,
+                        )
+                        if _stripped:
+                            agent._buffer_status(
+                                f"🖼️  Request payload is image-dominated — removed "
+                                f"{_reclaimed // 1024}KB of oversized inline images "
+                                f"from history and retrying..."
+                            )
+                            logger.warning(
+                                "%s413 recovery: stripped %d bytes of oversized inline "
+                                "image payloads from history (text compression reported "
+                                "no progress because images are excluded from the token "
+                                "estimate).",
+                                agent.log_prefix,
+                                _reclaimed,
+                            )
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages, conversation_history
+                            )
+                            agent._persist_session(messages, conversation_history)
+                            _retry.restart_with_compressed_messages = True
+                            break
+
                         if agent._try_strip_image_parts_from_tool_messages(
                             api_messages,
                             remember_model=False,

@@ -400,6 +400,102 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+def _image_part_payload_bytes(part: Any) -> int:
+    """Serialized byte cost of a single image content part.
+
+    Inline ``data:`` URLs carry the entire base64 image in the request body,
+    so their real wire cost is the URL length — not the flat per-image token
+    estimate used for context budgeting.  Remote (http/https) image URLs cost
+    only their reference length.
+    """
+    if not isinstance(part, dict):
+        return 0
+    if part.get("type") not in {"image_url", "image", "input_image"}:
+        return 0
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str):
+        url = part.get("data") if isinstance(part.get("data"), str) else ""
+    return len(url or "")
+
+
+def strip_oversized_image_parts(
+    messages: list,
+    *,
+    max_image_bytes: int,
+    protect_last_n: int = 0,
+) -> "tuple[bool, int]":
+    """Drop inline image parts whose payload exceeds ``max_image_bytes``.
+
+    Recovery path for HTTP 413 (payload too large).  A 413 is a *byte*-size
+    error, but Hermes' context estimator deliberately prices an image at a
+    flat per-image token cost so that a screenshot does not trigger premature
+    compaction (see ``estimate_messages_tokens_rough``).  That makes text
+    compression structurally unable to fix a 413 whose payload is dominated by
+    base64 images: summarizing every text turn cannot move an estimate that
+    never counted the megabytes in the first place, so compression reports
+    "no progress" and the turn dies permanently.
+
+    This walks history and removes only the oversized *image* parts, leaving
+    all text intact.  Alternation invariants are preserved exactly as in
+    ``_strip_images_from_messages``: a ``tool``-role message stripped to
+    nothing becomes a plaintext placeholder rather than being deleted, so the
+    paired ``tool_call_id`` on the prior assistant message stays matched.
+
+    ``protect_last_n`` shields the most recent N messages, so an image the
+    user just attached is not silently removed out from under the current
+    turn; recovery reaches for older history first.
+
+    Returns ``(changed, bytes_reclaimed)``.
+    """
+    if not isinstance(messages, list) or max_image_bytes <= 0:
+        return False, 0
+
+    cutoff = len(messages) - protect_last_n if protect_last_n > 0 else len(messages)
+    changed = False
+    reclaimed = 0
+    to_delete = []
+
+    for i, msg in enumerate(messages):
+        if i >= cutoff:
+            break
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        new_parts = []
+        for part in content:
+            size = _image_part_payload_bytes(part)
+            if size > max_image_bytes:
+                reclaimed += size
+                changed = True
+            else:
+                new_parts.append(part)
+
+        if len(new_parts) == len(content):
+            continue
+
+        if new_parts:
+            msg["content"] = new_parts
+        elif msg.get("role") == "tool":
+            # Preserve tool_call_id linkage — providers require every
+            # assistant tool_call to have a matching tool response.
+            msg["content"] = (
+                "[image content removed — payload exceeded the provider's "
+                "request size limit]"
+            )
+        else:
+            to_delete.append(i)
+
+    for i in reversed(to_delete):
+        del messages[i]
+
+    return changed, reclaimed
+
+
 def _strip_images_from_messages(messages: list) -> bool:
     """Remove image_url content parts from all messages in-place.
 

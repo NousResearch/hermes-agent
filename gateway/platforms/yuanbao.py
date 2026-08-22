@@ -2990,7 +2990,17 @@ class DispatchMiddleware(InboundMiddleware):
                         del cache[k]
             await adapter.handle_message(event)
 
-        if ctx.chat_type == "group":
+        # Addressed group messages must reach BasePlatformAdapter immediately so
+        # its busy-input policy can interrupt or steer an active turn.  The
+        # default pipeline stops unaddressed group traffic in GroupAtGuard, but
+        # keep the queue fallback for custom pipelines that call dispatch
+        # directly.
+        direct_group_input = ctx.chat_type == "group" and (
+            bool(ctx.owner_command)
+            or GroupAtGuardMiddleware._is_at_bot(ctx.msg_body, adapter._bot_id)
+        )
+
+        if ctx.chat_type == "group" and not direct_group_input:
             is_new = _sk not in adapter._group_queues
             queue = adapter._group_queues.setdefault(_sk, asyncio.Queue())
             queue.put_nowait(_dispatch_inbound_event)

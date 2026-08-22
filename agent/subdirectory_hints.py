@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _scan_context_content
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,20 @@ _EXCLUDED_DIR_NAMES = frozenset({
     "site-packages", "dist-packages",
     "backups", "backup", ".backups",
     "vendor", "third_party",
+    # Agent/tooling home dirs: their AGENTS.md files are tool docs (e.g. the
+    # Hermes dev guide), not user-project context. Sessions rooted at $HOME
+    # would otherwise walk up into ~/.hermes/ and inject them. Sessions whose
+    # working_dir IS inside .hermes/ still load hints normally (the
+    # relative_to() check in _is_excluded only screens segments below
+    # working_dir).
+    ".hermes",
 })
+
+# Case-insensitive matching set: macOS/Windows filesystems are not
+# case-sensitive, so ".Hermes" / ".HERMES" would otherwise slip past the
+# literal-name check on those platforms.  Keep the readable original above
+# as the source of truth.
+_EXCLUDED_DIR_NAMES_CASEFOLD = frozenset(name.casefold() for name in _EXCLUDED_DIR_NAMES)
 
 
 def _is_ancestor_or_same(a: Path, b: Path) -> bool:
@@ -251,7 +265,27 @@ class SubdirectoryHintTracker:
             # Paths outside the working dir are already rejected by
             # _is_valid_subdir before this runs; treat as excluded defensively.
             return True
-        return any(part in _EXCLUDED_DIR_NAMES for part in rel_parts)
+        if any(part.casefold() in _EXCLUDED_DIR_NAMES_CASEFOLD for part in rel_parts):
+            return True
+        # HERMES_HOME is configurable, so a home not literally named ".hermes"
+        # (e.g. /opt/hermes-data) would still leak its AGENTS.md into
+        # home-rooted sessions.  Mirror the name-based carve-out above: the
+        # home counts as tooling only when the working dir is NOT inside it.
+        try:
+            home = get_hermes_home().resolve()
+        except OSError:
+            return False
+        try:
+            working_resolved = self.working_dir.resolve()
+        except OSError:
+            working_resolved = self.working_dir
+        if not _is_ancestor_or_same(home, working_resolved):
+            try:
+                path.resolve().relative_to(home)
+                return True
+            except (ValueError, OSError):
+                pass
+        return False
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load hint files from a directory. Returns formatted text or None.

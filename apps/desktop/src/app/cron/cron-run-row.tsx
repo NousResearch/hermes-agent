@@ -71,6 +71,7 @@ export function CronRunRow({ active = false, onDelete, onDeleted, onOpen, run, t
           )}
         >
           <button
+            aria-label={`${title} — ${time}`}
             className="min-w-0 flex-1 truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none"
             onClick={() => onOpen(run.id)}
             type="button"

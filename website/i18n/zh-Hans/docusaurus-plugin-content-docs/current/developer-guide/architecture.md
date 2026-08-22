@@ -106,7 +106,7 @@ hermes-agent/
 │   ├── credential_files.py   # 基于文件的凭据透传
 │   ├── env_passthrough.py    # 沙箱环境变量透传
 │   ├── ansi_strip.py         # ANSI 转义字符剥离
-│   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
+│   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity、vercel_sandbox）
 │
 ├── gateway/                  # 消息平台 gateway
 │   ├── run.py                # GatewayRunner——消息分发（大文件）

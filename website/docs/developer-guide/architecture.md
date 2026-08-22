@@ -40,7 +40,7 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
            ▼                                    ▼
 ┌───────────────────┐              ┌──────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
-│ (SQLite + FTS5)   │              │ Terminal (6 backends) │
+│ (SQLite + FTS5)   │              │ Terminal (7 backends) │
 │ hermes_state.py   │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
@@ -106,7 +106,7 @@ hermes-agent/
 │   ├── credential_files.py   # File-based credential passthrough
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
 │   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, singularity, vercel_sandbox)
 │
 ├── gateway/                  # Messaging platform gateway
 │   ├── run.py                # GatewayRunner — message dispatch (large file)

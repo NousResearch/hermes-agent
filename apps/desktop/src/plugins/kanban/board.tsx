@@ -1,11 +1,12 @@
 /**
  * The Kanban board page — mounted at `/kanban` (a ROUTES_AREA contribution) in
- * the workspace pane. The desktop port of the dashboard board: one compact
- * header row (count, filter kebab, search, settings, new task — the board
+ * the workspace pane. The desktop port of the dashboard board: a compact
+ * responsive header (count, filter kebab, search, settings, new task — the board
  * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
- * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
- * primary-modifier-click multi-select with a floating bulk bar, right-click
- * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
+ * BOARD_COLUMNS order with touch-friendly narrow-screen snapping,
+ * drag-to-move (optimistic, workflow-checked), primary-modifier-click
+ * multi-select with a floating bulk bar, right-click actions, and the detail
+ * drawer. Dispatch nudges ride every write (see api.ts).
  */
 
 import {
@@ -54,6 +55,7 @@ import {
   type CSSProperties,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  type SyntheticEvent,
   useEffect,
   useMemo,
   useRef,
@@ -75,12 +77,15 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  updateAttention
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { formatLocalDateTime, parseLocalDateTime } from './datetime-local'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { useKanbanViewportGeometry } from './responsive'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -237,6 +242,104 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
+export function AttentionControls({ task }: { task: KanbanTask }) {
+  const qc = useQueryClient()
+  const [custom, setCustom] = useState('')
+  const [announcement, setAnnouncement] = useState('')
+  const receipt = task.attention
+
+  const action = useMutation({
+    mutationFn: ({ kind, wakeAt }: { kind: 'settle' | 'snooze' | 'wake'; wakeAt?: number }) =>
+      updateAttention(task.id, kind, receipt?.revision ?? 0, wakeAt),
+    onError: error => {
+      const message = errText(error)
+      setAnnouncement(message)
+      host.notify({ kind: 'error', message })
+    },
+    onSuccess: result => {
+      host.notify({
+        kind: 'success',
+        message:
+          result.attention.state === 'settled'
+            ? 'Attention settled'
+            : result.attention.state === 'snoozed'
+              ? 'Snoozed'
+              : 'Awake'
+      })
+      setAnnouncement(result.attention.state === 'settled' ? 'Attention settled' : result.attention.state === 'snoozed' ? 'Task snoozed' : 'Task awake')
+      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+      void qc.invalidateQueries({ queryKey: ['kanban', 'task'] })
+    }
+  })
+
+  const stop = (event: SyntheticEvent) => event.stopPropagation()
+  const snooze = (seconds: number) => action.mutate({ kind: 'snooze', wakeAt: Math.floor(Date.now() / 1000) + seconds })
+  const customWake = parseLocalDateTime(custom)
+
+  const tomorrowMorning = () => {
+    const wake = new Date()
+    wake.setDate(wake.getDate() + 1)
+    wake.setHours(9, 0, 0, 0)
+    action.mutate({ kind: 'snooze', wakeAt: Math.floor(wake.getTime() / 1000) })
+  }
+
+  if (!receipt) {
+    return null
+  }
+
+  if (receipt.state === 'settled') {
+    return (
+      <div onClick={stop} onKeyDown={stop}>
+        <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">{announcement}</span>
+        <button
+          className="min-h-7 rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2"
+          disabled={action.isPending}
+          onClick={() => action.mutate({ kind: 'wake' })}
+          type="button"
+        >
+          Wake
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 border-t border-(--ui-stroke-tertiary) pt-1.5" onClick={stop} onKeyDown={stop}>
+      <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">{announcement}</span>
+      <button
+        className="min-h-7 rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2"
+        disabled={action.isPending}
+        onClick={() => action.mutate({ kind: 'settle' })}
+        type="button"
+      >
+        Settle
+      </button>
+      <details className="relative">
+        <summary className="flex min-h-7 cursor-pointer list-none items-center rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2">
+          Snooze…
+        </summary>
+        <div className="absolute bottom-full left-0 z-20 mb-1 grid min-w-48 gap-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-2 shadow-lg">
+          <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(3600)} type="button">1 hour</button>
+          <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={tomorrowMorning} type="button">Tomorrow, 9:00 AM local time</button>
+          <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(7 * 24 * 3600)} type="button">One week</button>
+          <label className="grid gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+            Custom wake time
+            <input className="min-h-9 rounded border border-(--ui-stroke-secondary) bg-transparent px-1 text-xs" min={formatLocalDateTime(new Date())} onChange={event => setCustom(event.target.value)} type="datetime-local" value={custom} />
+          </label>
+          <button
+            className="min-h-8 rounded bg-primary px-2 text-xs text-primary-foreground disabled:opacity-50"
+            disabled={!customWake || customWake.getTime() <= Date.now()}
+            onClick={() => customWake && action.mutate({ kind: 'snooze', wakeAt: Math.floor(customWake.getTime() / 1000) })}
+            type="button"
+          >
+            Snooze until then
+          </button>
+        </div>
+      </details>
+    </div>
+  )
+}
+
 function Card({
   columns,
   onDelete,
@@ -301,6 +404,7 @@ function Card({
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
           )}
           <CardFooter arc={arc} task={task} />
+          <AttentionControls task={task} />
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -337,6 +441,7 @@ function Column({
   collapsed,
   column,
   columns,
+  laneWidth,
   onAdd,
   onDelete,
   onDropTask,
@@ -349,6 +454,7 @@ function Column({
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  laneWidth: number
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -364,23 +470,28 @@ function Column({
   const label = columnLabel(k, column.name)
   const locked = isLockedTarget(column.name)
   const byProfile = useValue($lanesByProfile)
+  const activeTasks = column.tasks.filter(task => (task.attention?.state ?? 'active') === 'active')
+
+  const settledTasks = column.tasks
+    .filter(task => task.attention?.state === 'settled')
+    .toSorted((a, b) => (b.attention?.updated_at ?? 0) - (a.attention?.updated_at ?? 0))
 
   // The dashboard's "lanes by profile": sub-group Running by assignee so a
   // fleet's in-flight work reads per-worker. Null = flat (off, or trivial).
   const lanes = useMemo(() => {
-    if (!byProfile || column.name !== 'running' || column.tasks.length === 0) {
+    if (!byProfile || column.name !== 'running' || activeTasks.length === 0) {
       return null
     }
 
     const groups = new Map<string, KanbanTask[]>()
 
-    for (const task of column.tasks) {
+    for (const task of activeTasks) {
       const key = task.assignee || UNASSIGNED_LANE
       groups.set(key, [...(groups.get(key) ?? []), task])
     }
 
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [byProfile, column])
+  }, [byProfile, column.name, activeTasks])
 
   const dragHandlers = {
     onDragLeave: () => setOver(false),
@@ -432,8 +543,8 @@ function Column({
         <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
           {label}
         </span>
-        {column.tasks.length > 0 && (
-          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
+        {activeTasks.length + settledTasks.length > 0 && (
+          <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{activeTasks.length}</span>
         )}
       </button>
     )
@@ -442,7 +553,11 @@ function Column({
   return (
     <div
       {...dragHandlers}
-      className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
+      className={cn(
+        'group/col flex h-full w-[calc(100vw-2rem)] max-w-full shrink-0 snap-start snap-always flex-col rounded-lg p-2 transition-colors md:w-64 md:[scroll-snap-align:none]',
+        wash
+      )}
+      style={{ width: laneWidth }}
     >
       <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
@@ -451,7 +566,7 @@ function Column({
             {label}
           </span>
         </Tip>
-        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
+        <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{activeTasks.length}</span>
         <button
           aria-label={k.collapse(label)}
           className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
@@ -484,7 +599,7 @@ function Column({
                 ))}
               </div>
             ))
-          : column.tasks.map(task => (
+          : activeTasks.map(task => (
               <Card
                 columns={columns}
                 key={task.id}
@@ -496,6 +611,27 @@ function Column({
                 task={task}
               />
             ))}
+        {settledTasks.length > 0 && (
+          <details className="mt-1 border-t border-(--ui-stroke-tertiary) pt-1">
+            <summary className="min-h-8 cursor-pointer px-1 py-2 text-[0.6875rem] font-medium text-(--ui-text-tertiary) focus-visible:outline focus-visible:outline-2">
+              Settled · {settledTasks.length}
+            </summary>
+            <div className="grid gap-2 opacity-75">
+              {settledTasks.map(task => (
+                <Card
+                  columns={columns}
+                  key={task.id}
+                  onDelete={onDelete}
+                  onMove={onMove}
+                  onOpen={onOpen}
+                  onToggleSelect={onToggleSelect}
+                  selected={selected.has(task.id)}
+                  task={task}
+                />
+              ))}
+            </div>
+          </details>
+        )}
         {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
             display) so it always holds its slot and never thrashes layout.
             Locked lanes get none: you can't create into a system state. */}
@@ -509,7 +645,7 @@ function Column({
             <Codicon name="add" size="0.8rem" />
           </button>
         )}
-        {column.tasks.length === 0 && (
+        {activeTasks.length === 0 && settledTasks.length === 0 && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center text-[0.6875rem] text-(--ui-text-quaternary)">
             {k.empty}
           </div>
@@ -1081,6 +1217,7 @@ function SelectionBar({
 
 export function KanbanBoardPage() {
   const k = useKanban()
+  const viewport = useKanbanViewportGeometry()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
@@ -1101,6 +1238,30 @@ export function KanbanBoardPage() {
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
 
+  // One timer at the nearest wake boundary. Server projection remains truth;
+  // this only repaints promptly while the app stays open (restart/offline is
+  // recovered by the next fetch). It is not a polling loop.
+  useEffect(() => {
+    const now = Math.floor(Date.now() / 1000)
+
+    const nearest = board?.columns
+      .flatMap(column => column.tasks)
+      .map(task => task.attention)
+      .filter(receipt => receipt?.state === 'snoozed' && receipt.wake_at != null && receipt.wake_at > now)
+      .reduce<null | number>((min, receipt) => (min == null || receipt!.wake_at! < min ? receipt!.wake_at! : min), null)
+
+    if (nearest == null) {
+      return
+    }
+
+    const timer = window.setTimeout(
+      () => void qc.invalidateQueries({ queryKey: boardKey(slug, archived) }),
+      Math.min(2_147_000_000, Math.max(0, (nearest - now) * 1000 + 25))
+    )
+
+    return () => window.clearTimeout(timer)
+  }, [archived, board, qc, slug])
+
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
   // arrival — whether it was already mounted or is mounting for the first
@@ -1117,6 +1278,20 @@ export function KanbanBoardPage() {
   }, [requestedLane])
 
   const toggleSelect = (id: string) => {
+    const q = search.trim().toLowerCase()
+
+    const selectable = board?.columns.some(col =>
+      col.tasks.some(task =>
+        task.id === id && (task.attention?.state ?? 'active') === 'active' &&
+        (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
+        (!tenant || task.tenant === tenant) && (!assignee || task.assignee === assignee)
+      )
+    )
+
+    if (!selectable) {
+      return
+    }
+
     setSelected(prev => {
       const next = new Set(prev)
 
@@ -1128,21 +1303,27 @@ export function KanbanBoardPage() {
     })
   }
 
-  // Prune ids that left the board (completed elsewhere, deleted, filtered by
-  // a board switch) so the bar's count never lies about what a bulk op hits.
+  // Selection is exactly the visible workflow-card set. Filtered-out,
+  // settled, and snoozed tasks can never leak into a bulk mutation.
   useEffect(() => {
     if (!board) {
       return
     }
 
-    const alive = new Set(board.columns.flatMap(col => col.tasks.map(task => task.id)))
+    const q = search.trim().toLowerCase()
+
+    const alive = new Set(board.columns.flatMap(col => col.tasks
+      .filter(task => (task.attention?.state ?? 'active') === 'active' &&
+        (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
+        (!tenant || task.tenant === tenant) && (!assignee || task.assignee === assignee))
+      .map(task => task.id)))
 
     setSelected(prev => {
       const kept = [...prev].filter(id => alive.has(id))
 
       return kept.length === prev.size ? prev : new Set(kept)
     })
-  }, [board])
+  }, [assignee, board, search, tenant])
 
   useEffect(() => {
     if (selected.size === 0) {
@@ -1327,24 +1508,17 @@ export function KanbanBoardPage() {
         <BoardSwitcher />
       </Contribute>
 
-      <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
-        {board && (
-          <FilterMenu
-            archived={archived}
-            assignee={assignee}
-            board={board}
-            onArchived={setArchived}
-            onAssignee={setAssignee}
-            onTenant={setTenant}
-            tenant={tenant}
-          />
-        )}
-        <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+      <header
+        className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-2 md:flex md:flex-wrap"
+        data-kanban-layout={viewport.desktop ? 'desktop' : 'mobile'}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="truncate text-sm font-semibold text-foreground">{k.title}</h1>
+          <span className="shrink-0 rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
+            {total}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 md:order-last md:ml-auto">
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1360,6 +1534,26 @@ export function KanbanBoardPage() {
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
+        </div>
+        <div className="col-span-2 flex min-w-0 items-center gap-2 md:col-auto">
+          {board && (
+            <FilterMenu
+              archived={archived}
+              assignee={assignee}
+              board={board}
+              onArchived={setArchived}
+              onAssignee={setAssignee}
+              onTenant={setTenant}
+              tenant={tenant}
+            />
+          )}
+          <SearchField
+            aria-label={k.filterCards}
+            containerClassName="min-w-0 flex-1 md:flex-none"
+            onChange={setSearch}
+            placeholder={k.filterCards}
+            value={search}
+          />
         </div>
       </header>
 
@@ -1388,7 +1582,10 @@ export function KanbanBoardPage() {
         </div>
       ) : (
         <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
+          className={cn(
+            'flex flex-1 snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain px-4 pt-1 pb-3 md:snap-none',
+            grabbing && 'cursor-grabbing'
+          )}
           onMouseDown={onMouseDown}
           ref={lanesRef}
         >
@@ -1401,6 +1598,7 @@ export function KanbanBoardPage() {
                 column={col}
                 columns={columnNames}
                 key={col.name}
+                laneWidth={viewport.laneWidth}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
                 onDropTask={onMove}

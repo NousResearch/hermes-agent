@@ -1,0 +1,81 @@
+{
+  "captures": [
+    {
+      "bytes": 25157,
+      "filename": "dashboard-320.png",
+      "horizontalOverflow": false,
+      "sha256": "862494942749287902ae971eed080315853618450b71c37fb5abb6039d845f05",
+      "surface": "dashboard",
+      "width": 320
+    },
+    {
+      "bytes": 26148,
+      "filename": "dashboard-360.png",
+      "horizontalOverflow": false,
+      "sha256": "2469f1b3da6c811ed950891ef9f09ea29215417c41cd9b3b8e82fbeffc377dcb",
+      "surface": "dashboard",
+      "width": 360
+    },
+    {
+      "bytes": 27105,
+      "filename": "dashboard-390.png",
+      "horizontalOverflow": false,
+      "sha256": "056313aadb66ed4e6d49e07581a2d39136679bd79e70ad542d25caa16ca515e9",
+      "surface": "dashboard",
+      "width": 390
+    },
+    {
+      "bytes": 28325,
+      "filename": "dashboard-430.png",
+      "horizontalOverflow": false,
+      "sha256": "12a4d224accc3bfbabda90d1130d86c131f0e0f2256ae6e8854921179f3b0f41",
+      "surface": "dashboard",
+      "width": 430
+    },
+    {
+      "bytes": 25286,
+      "filename": "desktop-320.png",
+      "horizontalOverflow": false,
+      "sha256": "a34ee200a02fc69160d7b1153ab59832d0b9ba9a48ffdfe69d93777fba071c03",
+      "surface": "desktop",
+      "width": 320
+    },
+    {
+      "bytes": 25650,
+      "filename": "desktop-360.png",
+      "horizontalOverflow": false,
+      "sha256": "53b03be0f14c3f59f94641475f33efd11598591ad78f6ec29fcd6db8376f6245",
+      "surface": "desktop",
+      "width": 360
+    },
+    {
+      "bytes": 25855,
+      "filename": "desktop-390.png",
+      "horizontalOverflow": false,
+      "sha256": "1395ab0690d2ef8bddfa3fc050f1e6b5b1261bbf1d351230adadf70b961d3b9b",
+      "surface": "desktop",
+      "width": 390
+    },
+    {
+      "bytes": 25691,
+      "filename": "desktop-430.png",
+      "horizontalOverflow": false,
+      "sha256": "ed488e365ae9810d36bd430f5a71699381137f3bdbb61f99bf25f1e2364955e6",
+      "surface": "desktop",
+      "width": 430
+    }
+  ],
+  "generatedBy": "Playwright mounting production Desktop source and dashboard/dist",
+  "mutation": null,
+  "privacySafeFixture": true,
+  "productionEntries": {
+    "dashboard": "plugins/kanban/dashboard/dist/index.js",
+    "desktop": "apps/desktop/src/plugins/kanban/board.tsx"
+  },
+  "widths": [
+    320,
+    360,
+    390,
+    430
+  ]
+}

@@ -23,6 +23,17 @@ export interface KanbanTask {
   started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** Backend-owned human receipt overlay. Never changes `status`. */
+  attention?: AttentionReceipt
+}
+
+export interface AttentionReceipt {
+  state: 'active' | 'settled' | 'snoozed'
+  stored_state?: string
+  wake_at: null | number
+  revision: number
+  reason: 'activity' | 'expired' | 'invalid_receipt' | 'receipt' | 'unacknowledged'
+  updated_at?: number
 }
 
 export interface KanbanColumn {

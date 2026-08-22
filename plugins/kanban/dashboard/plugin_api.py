@@ -187,6 +187,21 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
     }
 
 
+def _attention_projection(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    """Thin dashboard adapter over the core attention projection."""
+    return kanban_db.project_task_attention(conn, task_id, now=now)
+
+
+def _with_attention(conn: sqlite3.Connection, task: dict[str, Any]) -> dict[str, Any]:
+    task["attention"] = _attention_projection(conn, str(task["id"]))
+    return task
+
+
 def _comment_dict(c: kanban_db.Comment) -> dict[str, Any]:
     return {
         "id": c.id,
@@ -408,6 +423,8 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
+        with kanban_db.write_txn(conn):
+            kanban_db.reconcile_expired_task_attention(conn, (task.id for task in tasks))
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute(
@@ -466,7 +483,7 @@ def get_board(
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _with_attention(conn, _task_dict(t, latest_summary=preview))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -543,11 +560,13 @@ def get_task(
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        with kanban_db.write_txn(conn):
+            kanban_db.reconcile_expired_task_attention(conn, [task_id])
         # Drawer/detail view returns the FULL summary (no truncation) so
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        task_d = _with_attention(conn, _task_dict(task, latest_summary=full_summary))
         links = _links_for(conn, task_id)
         child_ids = links["children"]
         child_summaries = kanban_db.latest_summaries(conn, child_ids)
@@ -824,6 +843,45 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id  (status / assignee / priority / title / body)
 # ---------------------------------------------------------------------------
+
+class AttentionActionBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    action: str
+    wake_at: Optional[int] = None
+    expected_revision: Optional[int] = Field(default=None, ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+
+@router.post("/tasks/{task_id}/attention")
+def update_attention(
+    task_id: str,
+    payload: AttentionActionBody,
+    board: Optional[str] = Query(None),
+):
+    """Apply one typed human-receipt action without touching task workflow."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        with conn:
+            attention, idempotent = kanban_db.update_task_attention(
+                conn, task_id, action=payload.action, wake_at=payload.wake_at,
+                actor="human", source="dashboard",
+                expected_revision=payload.expected_revision,
+                idempotency_key=payload.idempotency_key,
+            )
+        return {"attention": attention, "idempotent": idempotent}
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except kanban_db.AttentionConflict as exc:
+        detail: Any = str(exc)
+        if exc.current_revision is not None:
+            detail = {"message": str(exc), "current_revision": exc.current_revision}
+        raise HTTPException(status_code=409, detail=detail)
+    finally:
+        conn.close()
 
 class UpdateTaskBody(BaseModel):
     status: Optional[str] = None

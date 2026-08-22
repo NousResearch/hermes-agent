@@ -680,6 +680,24 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    // Exactly one timer at the nearest durable snooze boundary. Server time
+    // projection remains authoritative; this is prompt repaint, not polling.
+    useEffect(function () {
+      if (!boardData) return undefined;
+      const now = Math.floor(Date.now() / 1000);
+      let nearest = null;
+      boardData.columns.forEach(function (column) {
+        column.tasks.forEach(function (task) {
+          const receipt = task.attention;
+          if (receipt && receipt.state === "snoozed" && receipt.wake_at > now &&
+              (nearest == null || receipt.wake_at < nearest)) nearest = receipt.wake_at;
+        });
+      });
+      if (nearest == null) return undefined;
+      const timer = setTimeout(loadBoard, Math.min(2147000000, Math.max(0, (nearest - now) * 1000 + 25)));
+      return function () { clearTimeout(timer); };
+    }, [boardData, loadBoard]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -811,6 +829,24 @@
         }),
       });
     }, [boardData, tenantFilter, assigneeFilter, search]);
+
+    const isAttentionSelectable = function (task) {
+      return !task.attention || task.attention.state === "active";
+    };
+    useEffect(function () {
+      if (!filteredBoard) return;
+      const visible = new Set();
+      filteredBoard.columns.forEach(function (col) {
+        (col.tasks || []).forEach(function (task) {
+          if (isAttentionSelectable(task)) visible.add(task.id);
+        });
+      });
+      setSelectedIds(function (prev) {
+        const kept = new Set(Array.from(prev).filter(function (id) { return visible.has(id); }));
+        return kept.size === prev.size ? prev : kept;
+      });
+      if (lastSelectedId && !visible.has(lastSelectedId)) setLastSelectedId(null);
+    }, [filteredBoard, lastSelectedId]);
 
     // --- actions ------------------------------------------------------------
     // Performs the actual move (optimistic UI + PATCH) once any required
@@ -1024,7 +1060,7 @@
         if (!filteredBoard || !filteredBoard.columns) return next;
         const order = [];
         for (const col of filteredBoard.columns) {
-          for (const t of col.tasks || []) order.push(t.id);
+          for (const t of col.tasks || []) if (isAttentionSelectable(t)) order.push(t.id);
         }
         const anchor = lastSelectedId;
         if (!anchor || anchor === toId) {
@@ -1049,7 +1085,7 @@
       if (!filteredBoard || !filteredBoard.columns) return;
       const next = new Set();
       for (const col of filteredBoard.columns) {
-        for (const t of col.tasks || []) next.add(t.id);
+        for (const t of col.tasks || []) if (isAttentionSelectable(t)) next.add(t.id);
       }
       setSelectedIds(next);
       if (next.size > 0) {
@@ -1062,15 +1098,16 @@
       if (!filteredBoard || !filteredBoard.columns) return;
       const col = filteredBoard.columns.find(function (c) { return c.name === columnName; });
       if (!col) return;
-      const allSelected = col.tasks && col.tasks.length > 0 && col.tasks.every(function (t) { return selectedIds.has(t.id); });
+      const selectable = (col.tasks || []).filter(isAttentionSelectable);
+      const allSelected = selectable.length > 0 && selectable.every(function (t) { return selectedIds.has(t.id); });
       const next = new Set(selectedIds);
       if (allSelected) {
-        for (const t of col.tasks || []) next.delete(t.id);
+        for (const t of selectable) next.delete(t.id);
       } else {
-        for (const t of col.tasks || []) next.add(t.id);
+        for (const t of selectable) next.add(t.id);
       }
       setSelectedIds(next);
-      if (col.tasks && col.tasks.length > 0) setLastSelectedId(col.tasks[0].id);
+      if (selectable.length > 0) setLastSelectedId(selectable[0].id);
     }, [filteredBoard, selectedIds]);
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
@@ -1314,6 +1351,7 @@
         }),
         h(BoardColumns, {
           board: filteredBoard,
+          boardSlug: board,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
@@ -1330,6 +1368,7 @@
           onDeleteSelected: deleteSelected,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
+          onRefresh: loadBoard,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
@@ -2798,6 +2837,7 @@
         return h(Column, {
           key: col.name,
           column: col,
+          boardSlug: props.boardSlug,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -2810,6 +2850,7 @@
           onMoveSelected: props.onMoveSelected,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
+          onRefresh: props.onRefresh,
           allTasks: props.allTasks,
         });
       }),
@@ -2827,6 +2868,14 @@
     const [dragOver, setDragOver] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const colRef = useRef(null);
+    const activeTasks = props.column.tasks.filter(function (task) {
+      return !task.attention || task.attention.state === "active";
+    });
+    const settledTasks = props.column.tasks.filter(function (task) {
+      return task.attention && task.attention.state === "settled";
+    }).sort(function (a, b) {
+      return ((b.attention && b.attention.updated_at) || 0) - ((a.attention && a.attention.updated_at) || 0);
+    });
 
     // Listen for our synthetic touch-drop events from attachTouchDrag().
     useEffect(function () {
@@ -2867,14 +2916,14 @@
     const lanes = useMemo(function () {
       if (!props.laneByProfile || props.column.name !== "running") return null;
       const byProfile = {};
-      for (const tk of props.column.tasks) {
+      for (const tk of activeTasks) {
         const key = tk.assignee || "(unassigned)";
         (byProfile[key] = byProfile[key] || []).push(tk);
       }
       return Object.keys(byProfile).sort().map(function (k) {
         return { assignee: k, tasks: byProfile[k] };
       });
-    }, [props.column, props.laneByProfile]);
+    }, [activeTasks, props.column.name, props.laneByProfile]);
 
     const colHelp = getColumnHelp(t, props.column.name);
     const colLabel = getColumnLabel(t, props.column.name);
@@ -2896,7 +2945,7 @@
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
-          checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
+          checked: activeTasks.length > 0 && activeTasks.every(function (t) { return props.selectedIds.has(t.id); }),
           onCheckedChange: function () {
             if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
           },
@@ -2906,8 +2955,8 @@
         h("span", { className: "hermes-kanban-column-label" },
           colLabel || props.column.name),
         h("span", { className: "hermes-kanban-column-count",
-                    title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
-          props.column.tasks.length),
+                    title: `${activeTasks.length} active task${activeTasks.length === 1 ? "" : "s"} in this column` },
+          activeTasks.length),
         h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
@@ -2928,7 +2977,7 @@
         onCancel: function () { setShowCreate(false); },
       }) : null,
       h("div", { className: "hermes-kanban-column-body" },
-        props.column.tasks.length === 0
+        activeTasks.length === 0 && settledTasks.length === 0
           ? h("div", { className: "hermes-kanban-empty" }, tx(t, "noTasks", "— no tasks —"))
           : lanes
             ? lanes.map(function (lane) {
@@ -2947,11 +2996,13 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      boardSlug: props.boardSlug,
+                      onRefresh: props.onRefresh,
                     });
                   }),
                 );
               })
-            : props.column.tasks.map(function (tk) {
+            : activeTasks.map(function (tk) {
                 return h(TaskCard, {
                   key: tk.id, task: tk,
                   selected: props.selectedIds.has(tk.id),
@@ -2961,8 +3012,18 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  boardSlug: props.boardSlug,
+                  onRefresh: props.onRefresh,
                 });
               }),
+        settledTasks.length ? h("details", { className: "hermes-kanban-settled" },
+          h("summary", null, `Settled · ${settledTasks.length}`),
+          settledTasks.map(function (tk) {
+            return h(TaskCard, { key: tk.id, task: tk, selected: props.selectedIds.has(tk.id),
+              failed: false, draggingTaskId: props.draggingTaskId, draggingSource: false,
+              toggleSelected: props.toggleSelected, toggleRange: props.toggleRange,
+              onOpen: props.onOpen, boardSlug: props.boardSlug, onRefresh: props.onRefresh });
+          })) : null,
       ),
     );
   }
@@ -2990,6 +3051,84 @@
     if (age >= tier.red)   return "hermes-kanban-card--stale-red";
     if (age >= tier.amber) return "hermes-kanban-card--stale-amber";
     return "";
+  }
+
+  function AttentionControls(props) {
+    const task = props.task;
+    const receipt = task.attention;
+    const [custom, setCustom] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [announcement, setAnnouncement] = useState("");
+    const apply = function (action, wakeAt) {
+      setBusy(true);
+      setError("");
+      const body = {
+        action: action,
+        expected_revision: receipt.revision || 0,
+        idempotency_key: Date.now() + "-" + Math.random().toString(36).slice(2),
+      };
+      if (wakeAt != null) body.wake_at = wakeAt;
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/attention`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function () {
+        setAnnouncement(action === "settle" ? "Attention settled" : action === "snooze" ? "Task snoozed" : "Task awake");
+        return props.onRefresh();
+      }).catch(function (err) {
+        const message = err && err.message ? err.message : String(err);
+        setError(message);
+        setAnnouncement(message);
+      })
+        .finally(function () { setBusy(false); });
+    };
+    const stop = function (e) { e.stopPropagation(); };
+    const padLocal = function (value) { return String(value).padStart(2, "0"); };
+    const formatLocal = function (date) {
+      return date.getFullYear() + "-" + padLocal(date.getMonth() + 1) + "-" + padLocal(date.getDate()) +
+        "T" + padLocal(date.getHours()) + ":" + padLocal(date.getMinutes());
+    };
+    const parseLocal = function (value) {
+      const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+      if (!match) return null;
+      const date = new Date(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], 0, 0);
+      return formatLocal(date) === value ? date : null;
+    };
+    const customWake = parseLocal(custom);
+    if (!receipt) return null;
+    if (receipt.state === "settled") {
+      return h("div", { onClick: stop, onKeyDown: stop },
+        h("span", { role: "status", "aria-live": "polite", "aria-atomic": "true", className: "sr-only" }, announcement),
+        h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
+          onClick: function () { apply("wake"); } }, "Wake"),
+        error ? h("span", { role: "alert", className: "hermes-kanban-attention-error" }, error) : null,
+      );
+    }
+    return h("div", { className: "hermes-kanban-attention", onClick: stop, onKeyDown: stop },
+      h("span", { role: "status", "aria-live": "polite", "aria-atomic": "true", className: "sr-only" }, announcement),
+      h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
+        onClick: function () { apply("settle"); } }, "Settle"),
+      h("details", null,
+        h("summary", { className: "hermes-kanban-attention-button" }, "Snooze…"),
+        h("div", { className: "hermes-kanban-snooze-menu" },
+          h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 3600); } }, "1 hour"),
+          h("button", { type: "button", onClick: function () {
+            const wake = new Date();
+            wake.setDate(wake.getDate() + 1);
+            wake.setHours(9, 0, 0, 0);
+            apply("snooze", Math.floor(wake.getTime() / 1000));
+          } }, "Tomorrow, 9:00 AM local time"),
+          h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 604800); } }, "One week"),
+          h("label", null, "Custom wake time",
+            h("input", { type: "datetime-local", value: custom, min: formatLocal(new Date()),
+              onChange: function (e) { setCustom(e.target.value); } })),
+          h("button", { type: "button", disabled: !customWake || customWake.getTime() <= Date.now(),
+            onClick: function () { if (customWake) apply("snooze", Math.floor(customWake.getTime() / 1000)); } }, "Snooze until then"),
+        ),
+      ),
+      error ? h("span", { role: "alert", className: "hermes-kanban-attention-error" }, error) : null,
+    );
   }
 
   function TaskCard(props) {
@@ -3147,6 +3286,7 @@
                         title: t.created_at ? `Created ${t.created_at}` : "" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
+          h(AttentionControls, { task: t, boardSlug: props.boardSlug, onRefresh: props.onRefresh }),
         ),
       ),
     );

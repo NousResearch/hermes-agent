@@ -1591,3 +1591,23 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* Human attention receipt overlay — separate from workflow column/status. */
+.hermes-kanban-attention { position: relative; display: flex; align-items: center; gap: .25rem; margin-top: .4rem; padding-top: .35rem; border-top: 1px solid var(--color-border); }
+.hermes-kanban-attention-button,
+.hermes-kanban-snooze-menu button { min-height: 2.25rem; border: 0; border-radius: .3rem; padding: .3rem .55rem; background: transparent; color: var(--color-muted-foreground); cursor: pointer; font-size: .72rem; }
+.hermes-kanban-attention-button:hover,
+.hermes-kanban-snooze-menu button:hover { background: var(--color-muted); color: var(--color-foreground); }
+.hermes-kanban-attention-button:focus-visible,
+.hermes-kanban-snooze-menu :focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
+.hermes-kanban-attention summary { list-style: none; }
+.hermes-kanban-snooze-menu { position: absolute; z-index: 20; bottom: 2.4rem; left: 2.8rem; display: grid; min-width: 13rem; gap: .25rem; padding: .5rem; border: 1px solid var(--color-border); border-radius: .45rem; background: var(--color-card); box-shadow: 0 10px 24px rgba(0, 0, 0, .25); }
+.hermes-kanban-snooze-menu label { display: grid; gap: .25rem; color: var(--color-muted-foreground); font-size: .7rem; }
+.hermes-kanban-snooze-menu input { min-height: 2.4rem; max-width: 100%; border: 1px solid var(--color-border); border-radius: .3rem; background: transparent; color: var(--color-foreground); }
+.hermes-kanban-attention-error { color: var(--color-destructive); font-size: .68rem; }
+.hermes-kanban-settled { margin-top: .5rem; padding-top: .4rem; border-top: 1px solid var(--color-border); opacity: .78; }
+.hermes-kanban-settled > summary { min-height: 2.75rem; cursor: pointer; padding: .7rem .25rem; color: var(--color-muted-foreground); font-size: .72rem; font-weight: 600; }
+.hermes-kanban-settled[open] { display: grid; gap: .5rem; }
+@media (max-width: 430px) {
+  .hermes-kanban-snooze-menu { position: fixed; inset: auto .75rem 1rem .75rem; min-width: 0; }
+}

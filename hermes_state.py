@@ -5241,6 +5241,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        )""",
                     (session_id,),
                 )
+                # Durable compression-lineage marker (mirrors the ``_reset_from``
+                # pattern used by reopen_session): the parent's mutable
+                # ``end_reason`` is cleared when a row is later reopened after a
+                # mistaken reaper close (``ws_orphan_reap``) or stale-route
+                # recovery, which would silently break every lineage walk that
+                # keys on ``end_reason = 'compression'``. Stamp the child at
+                # creation time so archive/pin/tip walks can still follow the
+                # raw parent edge afterwards.
+                conn.execute(
+                    """UPDATE sessions
+                       SET model_config = json_set(
+                               COALESCE(sessions.model_config, '{}'),
+                               '$._compression_from',
+                               sessions.parent_session_id)
+                     WHERE id = ? AND parent_session_id IS NOT NULL
+                       AND json_extract(COALESCE(sessions.model_config, '{}'),
+                                        '$._compression_from') IS NULL
+                       AND EXISTS (
+                           SELECT 1 FROM sessions p
+                           WHERE p.id = sessions.parent_session_id
+                             AND p.end_reason = 'compression'
+                             AND p.ended_at IS NOT NULL
+                       )""",
+                    (session_id,),
+                )
         # Session-row creation is transcript-critical: if it fails, the
         # first flush of a new session fails and the turn is aborted as
         # session_persistence_failed. Ride out long sibling holds.
@@ -6327,6 +6352,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 raise RuntimeError(
                     f"Compression parent changed during publication: {parent_session_id}"
                 )
+
+            # Belt-and-suspenders marker stamping (mirrors the ``_reset_from``
+            # pattern in reopen_session): the parent's mutable ``end_reason``
+            # is cleared when a row is later reopened after a mistaken reaper
+            # close (``ws_orphan_reap``) or stale-route recovery, which would
+            # silently break every lineage walk keyed on
+            # ``end_reason = 'compression'``. Stamp the continuation child at
+            # rotation time — including the race where the child row was
+            # inserted before the parent's ``ended_at`` landed, which is why
+            # this backfill exists alongside the creation-time stamp in
+            # _insert_session_row.
+            conn.execute(
+                """UPDATE sessions
+                   SET model_config = json_set(
+                           COALESCE(sessions.model_config, '{}'),
+                           '$._compression_from',
+                           parent_session_id)
+                 WHERE id = ?
+                   AND parent_session_id IS NOT NULL
+                   AND json_extract(COALESCE(sessions.model_config, '{}'),
+                                    '$._compression_from') IS NULL""",
+                (child_session_id,),
+            )
 
         self._execute_write(_do)
 
@@ -8792,6 +8840,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = parent.id
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8801,6 +8851,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = d.id
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8844,6 +8896,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = parent.id
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8853,6 +8907,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = d.id
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8898,6 +8954,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = parent.id
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8907,6 +8965,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = d.id
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8958,6 +9018,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = parent.id
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8967,6 +9029,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.end_reason = 'compression'
+                       OR json_extract(COALESCE(child.model_config, '{}'),
+                                       '$._compression_from') = d.id
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors

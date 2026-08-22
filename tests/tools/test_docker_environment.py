@@ -590,6 +590,113 @@ def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     )
 
 
+def _bind_mount_specs(run_args):
+    """Return every spec string passed via ``-v``."""
+    return [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "-v"
+    ]
+
+
+def test_persistent_bind_mounts_survive_a_session_key_task_id(monkeypatch, tmp_path):
+    """A gateway session key reaches the persistent sandbox path as-is, and it
+    carries colons (``session:agent:main:telegram:dm:<chat_id>``). Docker reads
+    every colon in a ``-v`` spec as a field separator, so the raw key made
+    ``docker run`` fail with "invalid spec ... too many colons" (exit 125) and
+    no tool call could run for any Telegram DM session."""
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        task_id="session:agent:main:telegram:dm:8439114563",
+        persistent_filesystem=True,
+    )
+
+    specs = _bind_mount_specs(_run_args_from_calls(calls))
+    mounts = [s for s in specs if s.endswith((":/root", ":/workspace"))]
+    assert len(mounts) == 2, f"expected /root and /workspace binds; got {specs}"
+    for spec in mounts:
+        source, _, target = spec.rpartition(":")
+        assert ":" not in source, (
+            f"bind source still contains a colon, docker run would fail with "
+            f"'too many colons': {spec}"
+        )
+        # Docker splits on ':' — a sane spec has exactly source:target.
+        assert spec.count(":") == 1, f"spec is not a two-field bind: {spec}"
+        assert target in {"/root", "/workspace"}
+
+
+def test_distinct_session_keys_get_distinct_sandbox_dirs(monkeypatch, tmp_path):
+    """Sanitizing colons to underscores is not injective on its own: two
+    different chats must not be collapsed onto one persistent sandbox, or one
+    DM's ``/root`` (shell history, credentials, installed packages) shows up in
+    another's container."""
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    sources = []
+    for task_id in (
+        "session:agent:main:telegram:dm:111",
+        "session:agent:main:telegram:dm:222",
+        # Collides with the first key under a plain ':' -> '_' rewrite.
+        "session_agent_main_telegram_dm_111",
+    ):
+        calls = _mock_subprocess_run(monkeypatch)
+        _make_dummy_env(task_id=task_id, persistent_filesystem=True)
+        specs = _bind_mount_specs(_run_args_from_calls(calls))
+        sources.append(
+            next(s.rpartition(":")[0] for s in specs if s.endswith(":/root"))
+        )
+
+    assert len(set(sources)) == 3, f"sandbox sources collided: {sources}"
+
+
+def test_sandbox_dir_name_keeps_existing_names_verbatim():
+    """The shared container and RL/benchmark rollouts must keep resolving to the
+    directory they already use — renaming those strands a user's installed
+    packages and /root state in an orphaned sandbox."""
+    for value in ("default", "bench-env", "astropy__astropy-12907", "v1.2.3_x"):
+        assert docker_env._sandbox_dir_name(value) == value
+
+
+def test_sandbox_dir_name_drops_separators_docker_and_the_fs_reserve():
+    """':' is what docker's -v parser splits on; '/' and '\\' would place the
+    sandbox outside its root entirely."""
+    for value in (
+        "session:agent:main:telegram:dm:8439114563",
+        "task/with:weird*chars",
+        "..\\..\\escape",
+        "../../etc",
+    ):
+        name = docker_env._sandbox_dir_name(value)
+        assert not (set(name) & set(':/\\')), name
+
+
+def test_sandbox_dir_name_is_stable_across_calls():
+    """Cross-process container reuse resolves the sandbox by name, so the
+    mapping must be a pure function of the id — no randomness, no pid."""
+    value = "session:agent:main:discord:guild:1:2"
+    assert docker_env._sandbox_dir_name(value) == docker_env._sandbox_dir_name(value)
+
+
+def test_sandbox_dir_name_bounds_pathological_ids():
+    """Long keys (a Matrix room plus thread id) must stay inside the
+    per-component filesystem limit."""
+    name = docker_env._sandbox_dir_name("session:" + "x:" * 500)
+    assert 0 < len(name) <= 128
+
+
+def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
+    """'.'/'..' would mount the docker sandbox root, and an empty component
+    would bind every task's state into one container."""
+    for value in ("", ".", "..", "  ", None):
+        name = docker_env._sandbox_dir_name(value)
+        assert name not in {"", ".", ".."}, repr(value)
+        assert not (set(name) & set(':/\\')), name
+
+
 def test_labels_attribute_populated_after_init(monkeypatch):
     """``self._labels`` must be set to the same key/value pairs that went onto
     docker run, so subsequent reuse / reaper paths can match without re-running

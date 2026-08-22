@@ -353,6 +353,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status", "use")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("evolve-cc", "Analyze Claude Code history and draft memory/skill candidates",
+               "Tools & Skills", cli_only=True,
+               args_hint="[--days N] [--scope cwd|repo|all] [--path PATH] [--apply]"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

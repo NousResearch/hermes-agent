@@ -1958,6 +1958,45 @@ class SlackAdapter(BasePlatformAdapter):
             self._app = AsyncApp(token=primary_token, client=primary_client)
             _apply_slack_proxy(self._app.client, proxy_url)
 
+            # Instrument Socket Mode envelope lifecycle for debugging silent drops (#126).
+            # Logs every envelope received (not just ones that reach handlers), tracking
+            # envelope_id, event type, timestamp, channel, user, and processing time.
+            # This provides visibility into silent message drops where events arrive but
+            # never reach handlers.
+            @self._app.use
+            async def _instrument_envelope_lifecycle(ack, body, next_middleware):
+                """Log raw Socket Mode envelope/ack lifecycle for debugging silent drops."""
+                envelope_id = body.get("envelope_id", "no-envelope-id")
+                event_type = body.get("type", "unknown")
+                event = body.get("event", {}) or {}
+                event_ts = event.get("ts", "no-ts")
+                channel = event.get("channel", "no-channel")
+                user = event.get("user", "no-user")
+
+                logger.debug(
+                    "[Slack Instrumentation] Envelope received: envelope_id=%s type=%s "
+                    "event_ts=%s channel=%s user=%s",
+                    envelope_id, event_type, event_ts, channel, user,
+                )
+
+                start_time = time.time()
+                try:
+                    await next_middleware()
+                    elapsed = time.time() - start_time
+                    logger.debug(
+                        "[Slack Instrumentation] Envelope processed: envelope_id=%s "
+                        "type=%s elapsed=%.3fs status=success",
+                        envelope_id, event_type, elapsed,
+                    )
+                except Exception as e:
+                    elapsed = time.time() - start_time
+                    logger.error(
+                        "[Slack Instrumentation] Envelope failed: envelope_id=%s "
+                        "type=%s elapsed=%.3fs error=%s: %s",
+                        envelope_id, event_type, elapsed, type(e).__name__, e,
+                    )
+                    raise
+
             # Register each bot token and map team_id → client
             for token in bot_tokens:
                 client = AsyncWebClient(

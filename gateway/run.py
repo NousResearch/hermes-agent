@@ -16742,9 +16742,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
+        #   {"action": "authorize"}                  -> skip user auth/pairing
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
+        authorized_by_plugin = False
         if not is_internal:
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
@@ -16779,10 +16781,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event = dataclasses.replace(event, text=_new_text)
                         source = event.source
                     break
+                if _action == "authorize":
+                    source = event.source
+                    authorized_by_plugin = True
+                    logger.info(
+                        "pre_gateway_dispatch authorize: platform=%s user=%s chat=%s",
+                        source.platform.value if source.platform else "unknown",
+                        source.user_id or "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    break
                 if _action == "allow":
                     break
 
-        if is_internal:
+        if is_internal or authorized_by_plugin:
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,

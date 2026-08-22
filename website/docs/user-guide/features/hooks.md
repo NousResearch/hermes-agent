@@ -1186,9 +1186,12 @@ def my_callback(event, gateway, session_store, **kwargs):
 |--------|--------|
 | `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
 | `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
+| `{"action": "authorize"}` | Trust the plugin's resolved `event.source` and continue dispatch without the platform/global user authorization or pairing checks. This is a security-sensitive bypass for trusted in-process identity/access plugins. |
 | `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
 
-**Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.
+**Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); cross-platform identity resolution and authorization; per-profile rate limiting; policy-driven routing.
+
+`authorize` must be returned only after the plugin has authenticated and authorized the resolved identity. Hook errors, unknown actions, `allow`, and `None` all retain the normal fail-closed authorization chain.
 
 **Example — drop unauthorized DMs silently without triggering the pairing code:**
 

@@ -228,6 +228,7 @@ VALID_HOOKS: Set[str] = {
     # dispatch. Plugins may return a dict to influence flow:
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "authorize"}                   -> skip user auth/pairing
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",

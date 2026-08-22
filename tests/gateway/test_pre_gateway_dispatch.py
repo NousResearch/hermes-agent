@@ -2,7 +2,7 @@
 
 The hook allows plugins to intercept incoming messages before auth and
 agent dispatch. It runs in _handle_message and acts on returned action
-dicts: {"action": "skip"|"rewrite"|"allow"}.
+dicts: {"action": "skip"|"rewrite"|"allow"|"authorize"}.
 """
 
 from types import SimpleNamespace
@@ -118,3 +118,64 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hook_authorize_uses_resolved_identity_without_platform_auth(monkeypatch):
+    """An explicit authorize decision bypasses auth for the resolved identity."""
+    _clear_auth_env(monkeypatch)
+    resolved_user_id = "canonical-discord-user"
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            kwargs["event"].source = SessionSource(
+                platform=Platform.WHATSAPP,
+                user_id=resolved_user_id,
+                chat_id="15551234567@s.whatsapp.net",
+                user_name="resolved-user",
+                chat_type="dm",
+            )
+            return [{"action": "authorize"}]
+        return []
+
+    seen_source = {}
+
+    async def _capture(_event, source, _quick_key, _run_generation):
+        seen_source["value"] = source
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._is_user_authorized = MagicMock(return_value=False)  # noqa: SLF001
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("hi"))
+
+    assert result == "ok"
+    assert seen_source["value"].user_id == resolved_user_id
+    runner._is_user_authorized.assert_not_called()
+    runner.pairing_store.generate_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["allow", "unknown"])
+async def test_non_authorize_actions_do_not_bypass_platform_auth(monkeypatch, action):
+    """Only the exact authorize action can bypass the authorization chain."""
+    _clear_auth_env(monkeypatch)
+
+    def _fake_hook(name, **_kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": action}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._is_user_authorized = MagicMock(return_value=False)  # noqa: SLF001
+    runner.pairing_store.generate_code.return_value = None
+
+    result = await runner._handle_message(_make_event("hi"))
+
+    assert result is None
+    runner._is_user_authorized.assert_called_once()

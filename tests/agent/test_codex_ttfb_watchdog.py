@@ -34,6 +34,11 @@ def _make_codex_agent(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
     from run_agent import AIAgent
+    monkeypatch.setattr(
+        AIAgent,
+        "_create_openai_client",
+        lambda self, *args, **kwargs: object(),
+    )
 
     agent = AIAgent(
         model="gpt-5.5",
@@ -54,6 +59,14 @@ def _make_codex_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(
         agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 60.0
     )
+    return agent
+
+
+def _make_local_codex_agent(tmp_path, monkeypatch):
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.model = "qwen3.8:27b"
+    agent.provider = "custom:local-ollama"
+    agent.base_url = "http://127.0.0.1:11434/v1"
     return agent
 
 
@@ -146,6 +159,92 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
+
+
+def test_local_codex_ttfb_uses_local_stale_ceiling_when_not_explicit(
+    tmp_path, monkeypatch
+):
+    """Local Codex-compatible providers get the local prefill ceiling, not 120s."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_local_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(h, "_local_stream_stale_timeout_default", lambda: 2.0)
+    real_env_float = h._env_float
+    monkeypatch.setattr(
+        h,
+        "_env_float",
+        lambda name, default: 0.4
+        if name == "HERMES_CODEX_TTFB_TIMEOUT_SECONDS"
+        else real_env_float(name, default),
+    )
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_local_prefill(api_kwargs, client=None, on_first_delta=None):
+        time.sleep(0.7)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_local_prefill)
+
+    resp = h.interruptible_api_call(agent, {"model": "qwen3.8:27b", "input": "hi"})
+
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+
+
+def test_local_codex_ttfb_honors_explicit_cutoff(tmp_path, monkeypatch):
+    """Explicit TTFB tuning remains an opt-in kill threshold on local endpoints."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_local_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
+    monkeypatch.setattr(h, "_local_stream_stale_timeout_default", lambda: 2.0)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(TimeoutError):
+            h.interruptible_api_call(agent, {"model": "qwen3.8:27b", "input": "hi"})
+        assert "codex_ttfb_kill" in closes
+    finally:
+        stop["flag"] = True
 
 
 

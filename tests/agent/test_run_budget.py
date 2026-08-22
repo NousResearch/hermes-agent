@@ -42,6 +42,11 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     _write_config(tmp_path, config_body)
 
     from run_agent import AIAgent
+    monkeypatch.setattr(
+        AIAgent,
+        "_create_openai_client",
+        lambda self, *args, **kwargs: object(),
+    )
     kwargs = dict(
         model="gpt-5.5",
         provider="openai",
@@ -131,9 +136,10 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
         model="deepseek/deepseek-v4-pro",
         run_budget_seconds=900,
     )
-    # Sanity: implicit reasoning floor is 600s without a running clock.
+    # Sanity: reasoning floor is implicit user config (not explicit), so local
+    # endpoints can still disable the detector unless the user opts in.
     base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 600.0 and implicit is False
+    assert base == 600.0 and implicit is True
 
     agent._run_budget_started_at = time.time() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 60.0
@@ -195,6 +201,22 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     )
     agent._run_budget_started_at = None
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 600.0
+
+
+def test_local_reasoning_model_disables_implicit_stale_timeout(monkeypatch, tmp_path):
+    """Local reasoning-model prefill must not be killed by cloud timeout floors."""
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        model="qwen3.8:27b",
+        provider="custom:local-ollama",
+        base_url="http://127.0.0.1:11434/v1",
+    )
+
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == float("inf")
 
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────

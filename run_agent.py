@@ -1449,14 +1449,14 @@ class AIAgent:
         # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
         # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
         # gateways idle-kill before the model's thinking phase ends.
-        # uses_implicit_default is False here so the local-endpoint
-        # short-circuit in _compute_non_stream_stale_timeout does not
-        # disable stale detection for users running reasoning models on a
-        # local NIM endpoint.
+        # This is still implicit (not user-configured), so local endpoints keep
+        # the local-provider stale detector disable. A local Qwen/DeepSeek
+        # prefill can legitimately run longer than the hosted-cloud floor; only
+        # explicit provider/env stale_timeout_seconds should opt back in.
         from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
         if reasoning_floor is not None:
-            return reasoning_floor, False
+            return reasoning_floor, True
 
         return 90.0, True
 

@@ -629,6 +629,23 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _local_stream_stale_timeout_default() -> float:
+    """Return the configured local-provider stale-stream ceiling."""
+    local_default = 900.0
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()  # read-only consumer — no deepcopy
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        if isinstance(agent_cfg, dict):
+            value = agent_cfg.get("local_stream_stale_timeout")
+            if isinstance(value, (int, float)):
+                local_default = float(value)
+    except Exception:
+        pass
+    return _env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+
+
 def _estimate_chunk_bytes(chunk: Any) -> int:
     """Cheap per-chunk size estimate for the stream diagnostic counters.
 
@@ -1547,9 +1564,27 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # reconnect promptly when the socket is genuinely wedged. Set
     # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
     _ttfb_enabled = _codex_watchdog_enabled
+    _ttfb_timeout_explicit = os.getenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS") is not None
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
+    elif (
+        _codex_watchdog_enabled
+        and not _ttfb_timeout_explicit
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
+        _local_ttfb_timeout = _local_stream_stale_timeout_default()
+        if _local_ttfb_timeout > 0 and _ttfb_timeout < _local_ttfb_timeout:
+            logger.info(
+                "Scaling Codex no-byte TTFB watchdog from %.0fs to %.0fs "
+                "for local provider %s. Set HERMES_CODEX_TTFB_TIMEOUT_SECONDS "
+                "to keep a smaller explicit cutoff.",
+                _ttfb_timeout,
+                _local_ttfb_timeout,
+                agent.base_url,
+            )
+            _ttfb_timeout = _local_ttfb_timeout
     elif _openai_codex_backend:
         _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
@@ -5042,21 +5077,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT (documented in
     # website/docs/reference/environment-variables.md).
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        # Read config.yaml ``agent.local_stream_stale_timeout`` (default 900),
-        # env var ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
-        _local_default = 900.0
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            _cfg = load_config_readonly()  # read-only consumer — no deepcopy
-            _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
-            if isinstance(_agent_cfg, dict):
-                _v = _agent_cfg.get("local_stream_stale_timeout")
-                if isinstance(_v, (int, float)):
-                    _local_default = float(_v)
-        except Exception:
-            pass
-        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
+        _stream_stale_timeout = _local_stream_stale_timeout_default()
         logger.debug(
             "Local provider detected (%s) — stale stream timeout set to %.0fs",
             agent.base_url, _stream_stale_timeout,

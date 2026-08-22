@@ -819,13 +819,27 @@ class TestFTS5Search:
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
+        # Count enrichment queries at the _read_ctx boundary rather than via a
+        # trace callback pinned to specific connections: under WAL the search
+        # path reads through pooled per-thread connections that no fixed
+        # set_trace_callback list can observe (the callback only sees queries
+        # on the connections it is attached to). Patching the context manager
+        # counts every connection it yields, whatever the journal mode.
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        original_read_ctx = type(db)._read_ctx
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def counting_read_ctx(self):
+            with original_read_ctx(self) as conn:
+                conn.set_trace_callback(statements.append)
+                try:
+                    yield conn
+                finally:
+                    conn.set_trace_callback(None)
+
+        type(db)._read_ctx = counting_read_ctx
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -850,8 +864,7 @@ class TestFTS5Search:
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+            type(db)._read_ctx = original_read_ctx
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""

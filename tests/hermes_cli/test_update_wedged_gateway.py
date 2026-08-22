@@ -12,6 +12,7 @@ path — including the in-flight cron drain floor from #86684.
 import asyncio
 import json
 import os
+import shutil
 import socket
 import tempfile
 import threading
@@ -41,7 +42,11 @@ def tmp_path():
     under the system temp root keeps the socket path well under the limit
     on every platform.
     """
-    return Path(tempfile.mkdtemp(prefix="hwg-"))
+    path = Path(tempfile.mkdtemp(prefix="hwg-"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _write_heartbeat(home, pid, age_s=0.0):
@@ -785,6 +790,47 @@ class TestLoopTickWitness:
             )
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
+
+    @pytest.mark.asyncio
+    async def test_producer_rebinds_over_stale_socket_node(self, tmp_path):
+        """A leftover node from a dead process must not disarm the witness.
+
+        os._exit(75) / SIGKILL skip the finally-unlink, and PID reuse then
+        re-lands on the same PID-suffixed path. Without the pre-bind unlink
+        the bind fails EADDRINUSE, the except disarms the witness
+        (loop_tick_socket:false), and a stale heartbeat can never classify
+        WEDGED — precisely on crash-restart loops.
+        """
+        sock_path = get_loop_tick_socket_path(tmp_path)
+        _silent_socket_node(sock_path)  # dead process's leftover node
+        assert sock_path.exists()
+
+        task = asyncio.create_task(
+            loop_heartbeat_forever(interval_s=0.2, home=tmp_path)
+        )
+        try:
+            for _ in range(50):
+                hb = get_loop_heartbeat_path(tmp_path)
+                if hb.exists():
+                    payload = json.loads(hb.read_text(encoding="utf-8"))
+                    if payload.get("loop_tick_socket"):
+                        break
+                await asyncio.sleep(0.05)
+            else:
+                raise AssertionError(
+                    "witness never armed over the stale socket node"
+                )
+            # And it actually answers: the node is live, not the leftover.
+            reader, writer = await asyncio.open_unix_connection(str(sock_path))
+            data = await asyncio.wait_for(reader.read(64), timeout=2)
+            writer.close()
+            assert data, "re-bound tick socket gave no answer"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def test_transient_stall_below_wedge_budget_never_escalates(
         self, tmp_path, monkeypatch

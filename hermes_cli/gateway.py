@@ -501,21 +501,16 @@ def _probe_loop_tick_socket_sustained(
       None  — a probe found no socket node (witness vanished mid-window, or
               legacy producer): not evidence either way.
     """
-    saw_node = False
     total = max(int(strikes), 0)
     for attempt in range(total):
         result = _probe_loop_tick_socket(pid, home, timeout=timeout)
         if result is True:
             return True
         if result is None:
-            # The witness is gone — it is no longer answering, but its
-            # absence is not a miss. Ambiguity, never a wedge.
-            if not saw_node:
-                return None
-            # A node that existed and went silent mid-window: the witness
-            # disappeared. Treat as ambiguity too.
+            # No socket node this attempt — either the witness never
+            # existed (legacy producer) or it vanished mid-window. Both
+            # are ambiguity, never a wedge: absence is not a miss.
             return None
-        saw_node = True
         if attempt < total - 1 and gap_s > 0:
             time.sleep(gap_s)
     return False

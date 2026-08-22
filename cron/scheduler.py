@@ -14,6 +14,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -544,6 +545,7 @@ from cron.jobs import (
     heartbeat_run_claim,
     mark_job_run,
     save_job_output,
+    update_job,
     use_cron_store,
 )
 from cron.executions import create_execution, finish_execution, mark_execution_running
@@ -552,6 +554,111 @@ from cron.executions import create_execution, finish_execution, mark_execution_r
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+_CRON_FAILURE_ALERT_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def _cron_failure_signature(error: str | None) -> str:
+    """Return a stable signature for repeated failures.
+
+    Dynamic ids and numbers are normalized so provider request ids, ports and
+    retry counters do not turn one persistent failure into a new alert.
+    """
+    text = re.sub(r"\b[0-9a-f]{8,}\b", "<id>", (error or "unknown error").lower())
+    text = re.sub(r"\d+", "<n>", text)
+    return hashlib.sha256(text[:2000].encode("utf-8", errors="replace")).hexdigest()
+
+
+def _prepare_cron_failure_alert(job: dict, error: str | None) -> str | None:
+    """Record a failure and suppress repeated alerts for 24 hours.
+
+    The first failure is delivered immediately. Repeated failures with the
+    same normalized signature are persisted but suppressed until the daily
+    reminder interval elapses. A changed failure signature alerts immediately.
+    """
+    now = time.time()
+    signature = _cron_failure_signature(error)
+    previous = job.get("failure_alert")
+    if not isinstance(previous, dict):
+        previous = {}
+    same = previous.get("signature") == signature
+    try:
+        consecutive = int(previous.get("consecutive", 0) or 0) + 1 if same else 1
+    except (TypeError, ValueError):
+        consecutive = 1
+    try:
+        suppressed = int(previous.get("suppressed", 0) or 0) if same else 0
+    except (TypeError, ValueError):
+        suppressed = 0
+    try:
+        last_notified = float(previous.get("last_notified", 0) or 0) if same else 0
+    except (TypeError, ValueError):
+        last_notified = 0
+    should_notify = (
+        not same
+        or bool(previous.get("pending"))
+        or not last_notified
+        or now - last_notified >= _CRON_FAILURE_ALERT_INTERVAL_SECONDS
+    )
+    if not should_notify:
+        suppressed += 1
+    state = {
+        "signature": signature,
+        "consecutive": consecutive,
+        "suppressed": suppressed,
+        "last_notified": now if should_notify else last_notified,
+        "pending": should_notify,
+    }
+    job["failure_alert"] = state
+    try:
+        update_job(job["id"], {"failure_alert": state})
+    except Exception:
+        # Alert bookkeeping must never turn the original cron failure into a
+        # scheduler failure. The next run can retry the state write.
+        logger.debug("Could not persist failure-alert state for %s", job.get("id"), exc_info=True)
+    if not should_notify:
+        return None
+    message = _summarize_cron_failure_for_delivery(job, error)
+    if suppressed:
+        message += f" ({suppressed} repeated failure(s) suppressed.)"
+    return message
+
+
+def _confirm_cron_failure_alert(job: dict) -> None:
+    """Mark a failure alert delivered after the transport confirms success."""
+    state = job.get("failure_alert")
+    if not isinstance(state, dict) or not state.get("pending"):
+        return
+    state = dict(state)
+    state["last_notified"] = time.time()
+    state["pending"] = False
+    job["failure_alert"] = state
+    try:
+        update_job(job["id"], {"failure_alert": state})
+    except Exception:
+        logger.debug("Could not confirm failure-alert state for %s", job.get("id"), exc_info=True)
+
+
+def _cron_recovery_notice(job: dict) -> str | None:
+    """Return a one-time recovery notice when a job becomes healthy again."""
+    state = job.get("failure_alert")
+    if not isinstance(state, dict) or not state.get("consecutive"):
+        return None
+    return (
+        f"✅ Cron '{job.get('name') or job.get('id')}' recovered after "
+        f"{int(state.get('consecutive', 0))} consecutive failure(s)."
+    )
+
+
+def _cron_failure_backoff_enabled() -> bool:
+    """Respect the existing ``cron.preflight: false`` compatibility opt-out."""
+    try:
+        from hermes_cli.config import read_user_config_raw
+        path = _get_hermes_home() / "config.yaml"
+        cfg = read_user_config_raw(path) if path.exists() else {}
+        return _cron_preflight_enabled(cfg)
+    except Exception:
+        return True
 
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
@@ -6848,6 +6955,11 @@ def _run_one_job_body(
             # operator was already told on a previous tick, so re-delivering
             # the same alert every tick would be spam (#73506 alert-once
             # shape).
+            recovery_notice = (
+                _cron_recovery_notice(job)
+                if success and _cron_failure_backoff_enabled()
+                else None
+            )
             blocked_config_silent = (
                 bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
             )
@@ -6879,26 +6991,37 @@ def _run_one_job_body(
                     "the configuration is fixed."
                 )
             else:
-                deliver_content = final_response if success else (
-                    _summarize_cron_failure_for_delivery(job, error)
-                    + _failure_streak_nudge(job)
-                )
-                if drift_skip and not success:
-                    # Drift-skip alert: bypass the generic summarizer's
-                    # 180-char truncation (it would eat the remediation
-                    # command) and strip the internal marker — deliver the
-                    # guard's own actionable message intact.
-                    _drift_text = re.sub(
-                        r"\[drift_skip[^\]]*\]\s*", "", str(error)
-                    ).strip()
-                    deliver_content = (
-                        f"⚠️ Cron '{job.get('name') or job['id']}' skipped: "
-                        f"{_drift_text}"
-                    )
+                if success:
+                    deliver_content = final_response
+                    if recovery_notice:
+                        deliver_content = recovery_notice + (
+                            f"\n\n{final_response}" if final_response and final_response.strip() else ""
+                        )
+                else:
+                    if drift_skip:
+                        # Drift-skip has its own persisted alert-once contract.
+                        _drift_text = re.sub(
+                            r"\[drift_skip[^\]]*\]\s*", "", str(error)
+                        ).strip()
+                        deliver_content = (
+                            f"⚠️ Cron '{job.get('name') or job['id']}' skipped: "
+                            f"{_drift_text}"
+                        )
+                    elif _cron_failure_backoff_enabled():
+                        deliver_content = _prepare_cron_failure_alert(job, error) or ""
+                        if deliver_content:
+                            deliver_content += _failure_streak_nudge(job)
+                    else:
+                        # Preserve the documented preflight opt-out: repeated
+                        # failures continue to alert on every run.
+                        deliver_content = (
+                            _summarize_cron_failure_for_delivery(job, error)
+                            + _failure_streak_nudge(job)
+                        )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
-            should_deliver = bool(deliver_content.strip())
+            should_deliver = bool((deliver_content or "").strip())
             if blocked_config_silent or drift_skip_silent:
                 should_deliver = False
             unresolved_origin = False
@@ -6935,6 +7058,13 @@ def _run_one_job_body(
                             adapters=adapters,
                             loop=loop,
                         )
+                        if (
+                            not delivery_error
+                            and not success
+                            and not drift_skip
+                            and _cron_failure_backoff_enabled()
+                        ):
+                            _confirm_cron_failure_alert(job)
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
                         raise
@@ -6994,7 +7124,6 @@ def _run_one_job_body(
                 # time for one run would skip a fire or auto-delete the job
                 # early.
                 try:
-                    from cron.jobs import update_job
                     update_job(job["id"], {"last_delivery_error": delivery_error})
                 except Exception as _rec_err:
                     logger.debug(
@@ -7014,6 +7143,8 @@ def _run_one_job_body(
         if blocked_config:
             mark_kwargs["status"] = "blocked_config"
         marked = mark_job_run(job["id"], success, error, **mark_kwargs)
+        if success and recovery_notice and not delivery_error:
+            update_job(job["id"], {"failure_alert": None})
         if fire_owner is not None and not marked:
             finish_execution(
                 execution_id,
@@ -7067,29 +7198,45 @@ def _run_one_job_body(
             )
             unresolved_origin = False
             try:
-                delivery_attempted = True
-                delivery_error = _deliver_result(
-                    job,
-                    # Composed exactly like the normal failure delivery above.
-                    # mark_job_run below records THIS run in failure_streak
-                    # whichever layer failed, so a job that fails before the
-                    # run body every tick builds a streak nobody is ever told
-                    # about: its alerts only ever leave through here, and the
-                    # nudge only ever left through there (#88655).
-                    _summarize_cron_failure_for_delivery(job, _err_text)
-                    + _failure_streak_nudge(job),
-                    adapters=adapters,
-                    loop=loop,
-                )
+                drift_skip_error = "[drift_skip" in _err_text.lower()
+                if drift_skip_error:
+                    _drift_text = re.sub(
+                        r"\[drift_skip[^\]]*\]\s*", "", _err_text
+                    ).strip()
+                    failure_alert = (
+                        f"⚠️ Cron '{job.get('name') or job['id']}' skipped: "
+                        f"{_drift_text}"
+                    )
+                elif _cron_failure_backoff_enabled():
+                    failure_alert = _prepare_cron_failure_alert(job, _err_text)
+                else:
+                    failure_alert = _summarize_cron_failure_for_delivery(job, _err_text)
+                if failure_alert:
+                    failure_alert += _failure_streak_nudge(job)
+                    delivery_attempted = True
+                    delivery_error = _deliver_result(
+                        job,
+                        failure_alert,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                    if (
+                        not delivery_error
+                        and not drift_skip_error
+                        and _cron_failure_backoff_enabled()
+                    ):
+                        _confirm_cron_failure_alert(job)
             except Exception as delivery_exc:
                 delivery_error = str(delivery_exc)
                 logger.error(
                     "Delivery failed for job %s: %s", job["id"], delivery_exc
                 )
-            if not delivery_error and normalized_deliver == "origin":
+            if delivery_attempted and not delivery_error and normalized_deliver == "origin":
                 unresolved_origin = not _resolve_delivery_targets(job)
             if delivery_error:
                 delivery_outcome = "failed"
+            elif not delivery_attempted:
+                delivery_outcome = "suppressed"
             elif unresolved_origin:
                 delivery_outcome = "not_configured"
             elif normalized_deliver != "local":

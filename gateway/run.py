@@ -18013,7 +18013,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
-                cmd_key = resolve_skill_command_key(command)
+                # interactive=False keeps resolution inside skill_cmds. The
+                # interactive registry also holds namespaced plugin skills, and
+                # MessageEvent.get_command() permits ':', so an interactive
+                # resolve here could hand back a "/plugin:skill" key that is
+                # absent from skill_cmds and raise KeyError just below.
+                cmd_key = resolve_skill_command_key(command, interactive=False)
                 if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled

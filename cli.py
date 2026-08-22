@@ -4786,9 +4786,9 @@ _skill_bundles = None
 def _ensure_skill_commands() -> dict:
     global _skill_commands
     if _skill_commands is None:
-        from agent.skill_commands import scan_skill_commands
+        from agent.skill_commands import get_interactive_skill_commands
 
-        _skill_commands = scan_skill_commands()
+        _skill_commands = get_interactive_skill_commands()
     return _skill_commands
 
 
@@ -14085,7 +14085,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills, get_skill_commands
+            from agent.skill_commands import get_interactive_skill_commands, reload_skills
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
@@ -14096,7 +14096,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # (help display, command dispatch, Tab-completion lambda) see the
             # updated dict without needing to restart the session.
             global _skill_commands
-            _skill_commands = get_skill_commands()
+            _skill_commands = get_interactive_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)

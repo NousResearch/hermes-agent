@@ -1560,18 +1560,22 @@ class SlashCommandCompleter(Completer):
 
     # -- stacked slash-skill completion helpers ---------------------------
 
-    @staticmethod
-    def _normalize_skill_token(token: str) -> str:
+    def _resolve_skill_token(self, token: str) -> str:
         """Canonicalize a typed skill token to its hyphenated /slug form.
 
         Mirrors resolve_skill_command_key() in agent/skill_commands.py:
-        underscores (Telegram bot-command form) are interchangeable with
-        hyphens.
+        exact qualified plugin names win, while underscores in filesystem
+        skill commands remain interchangeable with hyphens for messaging
+        platform compatibility.
         """
-        return "/" + token.lstrip("/").replace("_", "-").lower()
+        commands = self._iter_skill_commands()
+        exact = "/" + token.lstrip("/").lower()
+        if exact in commands:
+            return exact
+        return exact.replace("_", "-")
 
     def _is_skill_command(self, token: str) -> bool:
-        return self._normalize_skill_token(token) in self._iter_skill_commands()
+        return self._resolve_skill_token(token) in self._iter_skill_commands()
 
     def _stacked_skill_completions(self, text: str):
         """Offer skill-command completions for stacked invocations.
@@ -1600,7 +1604,7 @@ class SlashCommandCompleter(Completer):
         # skill command, and there's room left under the cap.
         seen: set[str] = set()
         for token in completed:
-            key = self._normalize_skill_token(token)
+            key = self._resolve_skill_token(token)
             if key not in self._iter_skill_commands() or key in seen:
                 return
             seen.add(key)
@@ -1612,7 +1616,7 @@ class SlashCommandCompleter(Completer):
         if not current_word.startswith("/"):
             return
 
-        word_key = self._normalize_skill_token(current_word)
+        word_key = self._resolve_skill_token(current_word)
         for cmd, info in self._iter_skill_commands().items():
             if cmd in seen or not cmd.startswith(word_key):
                 continue

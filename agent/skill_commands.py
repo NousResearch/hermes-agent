@@ -574,6 +574,66 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
+def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Return qualified plugin skills as interactive slash commands.
+
+    Plugin skills stay namespaced (``/plugin:skill``) so they cannot collide
+    with flat filesystem skills. They are intentionally kept out of
+    :func:`get_skill_commands`, which also feeds native messaging-platform
+    command menus where ``:`` is not a portable command character.
+    """
+    commands: Dict[str, Dict[str, Any]] = {}
+    try:
+        from agent.skill_utils import get_disabled_skill_names, parse_frontmatter
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from tools.skills_tool import skill_matches_environment, skill_matches_platform
+
+        discover_plugins()
+        manager = get_plugin_manager()
+        disabled = get_disabled_skill_names()
+        for metadata in manager.list_plugin_skill_metadata():
+            qualified = str(metadata.get("name") or "").strip()
+            if not qualified or ":" not in qualified or qualified in disabled:
+                continue
+            skill_md = manager.find_plugin_skill(qualified)
+            if skill_md is None or not skill_md.is_file():
+                continue
+            frontmatter = metadata.get("frontmatter") or {}
+            description = str(metadata.get("description") or "").strip()
+            if not frontmatter or not description:
+                try:
+                    parsed, _ = parse_frontmatter(
+                        skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                    )
+                except Exception:
+                    parsed = {}
+                if not frontmatter:
+                    frontmatter = parsed
+                if not description:
+                    description = str(parsed.get("description") or "").strip()
+            if not skill_matches_platform(frontmatter):
+                continue
+            if not skill_matches_environment(frontmatter):
+                continue
+            commands[f"/{qualified.lower()}"] = {
+                "name": qualified,
+                "description": description
+                or f"Invoke the {qualified} plugin skill",
+                "skill_identifier": qualified,
+                "skill_md_path": str(skill_md),
+                "skill_dir": str(skill_md.parent),
+                "source": "plugin",
+            }
+    except Exception:
+        logger.debug("Plugin skill slash-command discovery failed", exc_info=True)
+    return commands
+
+
+def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Return filesystem and qualified plugin skills for CLI/TUI surfaces."""
+    return {**get_skill_commands(), **get_plugin_skill_commands()}
+
+
 def reload_skills() -> Dict[str, Any]:
     """Re-scan the skills directory and return a diff of what changed.
 
@@ -639,7 +699,9 @@ def reload_skills() -> Dict[str, Any]:
     }
 
 
-def resolve_skill_command_key(command: str) -> Optional[str]:
+def resolve_skill_command_key(
+    command: str, *, interactive: bool = True
+) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 
     Skills are always stored with hyphens — ``scan_skill_commands`` normalizes
@@ -649,13 +711,27 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     (which disallow hyphens, so ``/claude-code`` is registered as
     ``/claude_code`` and comes back in the underscored form).
 
-    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
-    ``None`` if no match.
+    ``interactive`` selects which registry to resolve against. Interactive
+    callers (CLI/TUI) resolve against the union that also holds namespaced
+    plugin skills. Messaging-platform gateways must pass ``interactive=False``:
+    they index ``get_skill_commands()`` with the returned key, so a
+    plugin-qualified key that is absent from that filesystem-only mapping
+    would raise ``KeyError`` — and ``:`` is not a portable character in a
+    native platform command anyway.
+
+    Returns the matching ``/slug`` key from the selected mapping, or ``None``
+    if no match.
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    commands = (
+        get_interactive_skill_commands() if interactive else get_skill_commands()
+    )
+    exact_key = f"/{command.lower()}"
+    if exact_key in commands:
+        return exact_key
+    normalized_key = f"/{command.replace('_', '-').lower()}"
+    return normalized_key if normalized_key in commands else None
 
 
 def build_skill_invocation_message(
@@ -673,12 +749,15 @@ def build_skill_invocation_message(
     Returns:
         The formatted message string, or None if the skill wasn't found.
     """
-    commands = get_skill_commands()
+    commands = get_interactive_skill_commands()
     skill_info = commands.get(cmd_key)
     if not skill_info:
         return None
 
-    loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+    loaded = _load_skill_payload(
+        skill_info.get("skill_identifier") or skill_info["skill_dir"],
+        task_id=task_id,
+    )
     if not loaded:
         return None
 
@@ -769,7 +848,7 @@ def build_stacked_skill_invocation_message(
         ``(message, loaded_skill_names, missing_skill_names)`` or ``None``
         when no skill could be loaded at all.
     """
-    commands = get_skill_commands()
+    commands = get_interactive_skill_commands()
 
     loaded_names: list[str] = []
     missing: list[str] = []
@@ -786,7 +865,10 @@ def build_stacked_skill_invocation_message(
             missing.append(cmd_key.lstrip("/"))
             continue
 
-        loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+        loaded = _load_skill_payload(
+            skill_info.get("skill_identifier") or skill_info["skill_dir"],
+            task_id=task_id,
+        )
         if not loaded:
             missing.append(cmd_key.lstrip("/"))
             continue

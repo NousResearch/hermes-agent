@@ -1045,6 +1045,8 @@ def _serve_plugin_skill(
             "description": description,
             "linked_files": _plugin_skill_linked_files(skill_md.parent),
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+            "skill_dir": str(skill_md.parent),
+            "_source_path": str(skill_md),
         },
         ensure_ascii=False,
     )

@@ -2947,13 +2947,20 @@ def _claim_job_for_fire_locked(
             # claim merely because hostname + PID are unchanged.
             owner = f"{_machine_id()}:{uuid.uuid4().hex}"
             job["fire_claim"] = {"at": now.isoformat(), "by": owner}
+            scheduled_for = job.get("next_run_at")
+            schedule_snapshot = copy.deepcopy(job.get("schedule"))
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
-            return copy.deepcopy(job) if return_job else True
+            if not return_job:
+                return True
+            claimed_job = copy.deepcopy(job)
+            claimed_job["_execution_scheduled_for"] = scheduled_for
+            claimed_job["_execution_schedule"] = schedule_snapshot
+            return claimed_job
         return False
 
 
@@ -3073,6 +3080,49 @@ def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
             claim["at"] = _hermes_now().isoformat()
             save_jobs(jobs)
             return True
+    return False
+
+
+def release_fire_claim_for_retry(
+    job_id: str,
+    *,
+    expected_owner: str,
+    scheduled_for: Optional[str],
+    expected_schedule: Optional[Dict[str, Any]],
+    expected_next_run_at: Optional[str],
+) -> bool:
+    """Owner- and schedule-fenced release of an unstarted external fire.
+
+    Provenance must be durable before dispatch. If that write fails after the
+    store claim advanced a recurring job, restore the claimed occurrence and
+    clear only this acquisition's token so a later callback can retry it. A
+    concurrent schedule edit changes either the schedule or ``next_run_at``;
+    in that case this stale cleanup must leave the replacement state untouched.
+    """
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return False
+        with _jobs_lock():
+            jobs = load_jobs()
+            for job in jobs:
+                if job.get("id") != job_id:
+                    continue
+                claim = job.get("fire_claim")
+                if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                    return False
+                if (
+                    job.get("schedule") != expected_schedule
+                    or job.get("next_run_at") != expected_next_run_at
+                ):
+                    return False
+                if (
+                    job.get("schedule", {}).get("kind") in {"cron", "interval"}
+                    and scheduled_for is not None
+                ):
+                    job["next_run_at"] = scheduled_for
+                job["fire_claim"] = None
+                save_jobs(jobs)
+                return True
     return False
 
 

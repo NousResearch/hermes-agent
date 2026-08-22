@@ -407,6 +407,11 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
         lambda jid, source: events.append("ledger") or {"id": "exec-1"},
     )
     monkeypatch.setattr(
+        executions,
+        "record_execution_schedule",
+        lambda *_args, **_kwargs: {"id": "exec-1"},
+    )
+    monkeypatch.setattr(
         sched,
         "run_one_job",
         lambda job, **kwargs: events.append(("run", job["execution_id"])) or True,
@@ -422,12 +427,283 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     assert events == ["ledger", "claim", ("run", "exec-1")]
 
 
+def test_external_claim_records_exact_pre_advance_slot(monkeypatch):
+    import contextlib
+    import copy
+
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    slot_a = "2026-08-19T10:00:00+00:00"
+    slot_b = "2026-08-19T11:00:00+00:00"
+    schedule = {"kind": "cron", "expr": "0 * * * *"}
+    stored = [{
+        "id": "j1",
+        "enabled": True,
+        "state": "scheduled",
+        "paused_at": None,
+        "next_run_at": slot_a,
+        "schedule": schedule,
+    }]
+    captured = {}
+
+    monkeypatch.setattr(jobs, "_jobs_lock", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(jobs, "load_jobs", lambda: copy.deepcopy(stored))
+    monkeypatch.setattr(
+        jobs,
+        "save_jobs",
+        lambda new_jobs: stored.__setitem__(slice(None), copy.deepcopy(new_jobs)),
+    )
+    monkeypatch.setattr(jobs, "compute_next_run", lambda *_args, **_kwargs: slot_b)
+    monkeypatch.setattr(jobs, "_machine_id", lambda: "test-machine")
+    monkeypatch.setattr(
+        executions,
+        "create_execution", lambda job_id, **kwargs: {"id": "exec-slot"},
+    )
+    monkeypatch.setattr(
+        executions,
+        "record_execution_schedule",
+        lambda execution_id, **kwargs: captured.update(kwargs) or {"id": execution_id},
+        raising=False,
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kwargs: True)
+
+    assert InProcessCronScheduler().fire_due("j1") is True
+    assert stored[0]["next_run_at"] == slot_b
+    assert captured["scheduled_for"] == slot_a
+    assert captured["scheduled_for"] != stored[0]["next_run_at"]
+    assert captured["schedule"] == schedule
+
+
+def test_schedule_snapshot_exception_releases_claim_without_dispatch(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    released = []
+    ran = []
+    finished = []
+    monkeypatch.setattr(executions, "create_execution", lambda *_a, **_kw: {"id": "exec-1"})
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda *_a, **_kw: {
+            "id": "j1",
+            "fire_claim": {"by": "owner-1"},
+            "next_run_at": "2026-08-19T11:00:00+00:00",
+            "schedule": {"kind": "cron", "expr": "0 * * * *"},
+            "_execution_scheduled_for": "2026-08-19T10:00:00+00:00",
+            "_execution_schedule": {"kind": "cron", "expr": "0 * * * *"},
+        },
+    )
+    monkeypatch.setattr(
+        executions,
+        "record_execution_schedule",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("ledger unavailable")),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "release_fire_claim_for_retry",
+        lambda *args, **kwargs: released.append((args, kwargs)) or True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        executions,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job) or True)
+
+    with __import__("pytest").raises(OSError, match="ledger unavailable"):
+        InProcessCronScheduler().fire_due("j1")
+
+    assert released == [(('j1',), {
+        "expected_owner": "owner-1",
+        "scheduled_for": "2026-08-19T10:00:00+00:00",
+        "expected_schedule": {"kind": "cron", "expr": "0 * * * *"},
+        "expected_next_run_at": "2026-08-19T11:00:00+00:00",
+    })]
+    assert ran == []
+    assert finished[-1][1]["success"] is False
+
+
+def test_missing_schedule_snapshot_update_releases_claim_without_dispatch(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    released = []
+    ran = []
+    finished = []
+    monkeypatch.setattr(executions, "create_execution", lambda *_a, **_kw: {"id": "exec-2"})
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda *_a, **_kw: {
+            "id": "j2",
+            "fire_claim": {"by": "owner-2"},
+            "next_run_at": "2026-08-19T12:00:00+00:00",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "_execution_scheduled_for": "2026-08-19T11:00:00+00:00",
+            "_execution_schedule": {"kind": "interval", "minutes": 60},
+        },
+    )
+    monkeypatch.setattr(executions, "record_execution_schedule", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        jobs,
+        "release_fire_claim_for_retry",
+        lambda *args, **kwargs: released.append((args, kwargs)) or True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        executions,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job) or True)
+
+    assert InProcessCronScheduler().fire_due("j2") is False
+    assert released == [(('j2',), {
+        "expected_owner": "owner-2",
+        "scheduled_for": "2026-08-19T11:00:00+00:00",
+        "expected_schedule": {"kind": "interval", "minutes": 60},
+        "expected_next_run_at": "2026-08-19T12:00:00+00:00",
+    })]
+    assert ran == []
+    assert finished[-1][1]["success"] is False
+
+
+def test_retry_release_cannot_clear_replacement_fire_owner(tmp_path):
+    import cron.jobs as jobs
+
+    with jobs.use_cron_store(tmp_path):
+        created = jobs.create_job(prompt="owner fence", schedule="every 5m")
+        claimed = jobs.claim_job_for_fire(created["id"], return_job=True)
+        assert isinstance(claimed, dict)
+        stale_owner = claimed["fire_claim"]["by"]
+        advanced_slot = claimed["next_run_at"]
+
+        stored = jobs.load_jobs()
+        stored[0]["fire_claim"] = {
+            "at": "2026-08-19T12:00:00+00:00",
+            "by": "new-owner",
+        }
+        jobs.save_jobs(stored)
+
+        assert jobs.release_fire_claim_for_retry(
+            created["id"],
+            expected_owner=stale_owner,
+            scheduled_for=created["next_run_at"],
+            expected_schedule=claimed["schedule"],
+            expected_next_run_at=advanced_slot,
+        ) is False
+        current = jobs.get_job(created["id"])
+        assert current["fire_claim"]["by"] == "new-owner"
+        assert current["next_run_at"] == advanced_slot
+
+
+def test_retry_release_cas_preserves_concurrent_hourly_schedule(tmp_path):
+    import cron.jobs as jobs
+
+    with jobs.use_cron_store(tmp_path):
+        created = jobs.create_job(prompt="schedule fence", schedule="every 5m")
+        claimed = jobs.claim_job_for_fire(created["id"], return_job=True)
+        assert isinstance(claimed, dict)
+        old_slot = created["next_run_at"]
+        owner = claimed["fire_claim"]["by"]
+
+        hourly = jobs.update_job(created["id"], {"schedule": "every 1h"})
+        assert hourly is not None
+        hourly_slot = hourly["next_run_at"]
+
+        assert jobs.release_fire_claim_for_retry(
+            created["id"],
+            expected_owner=owner,
+            scheduled_for=old_slot,
+            expected_schedule=claimed["_execution_schedule"],
+            expected_next_run_at=claimed["next_run_at"],
+        ) is False
+        current = jobs.get_job(created["id"])
+        assert current["schedule"]["minutes"] == 60
+        assert current["next_run_at"] == hourly_slot
+        assert current["next_run_at"] != old_slot
+
+
+def test_snapshot_exception_keeps_primary_when_release_and_finish_raise(monkeypatch):
+    import pytest
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    cleanup = []
+    monkeypatch.setattr(executions, "create_execution", lambda *_a, **_kw: {"id": "exec"})
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda *_a, **_kw: {
+        "id": "job", "fire_claim": {"by": "owner"},
+        "next_run_at": "advanced", "schedule": {"kind": "interval", "minutes": 5},
+        "_execution_scheduled_for": "old",
+        "_execution_schedule": {"kind": "interval", "minutes": 5},
+    })
+    monkeypatch.setattr(
+        executions, "record_execution_schedule",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("provenance failed")),
+    )
+    monkeypatch.setattr(
+        jobs, "release_fire_claim_for_retry",
+        lambda *_a, **_kw: cleanup.append("release") or (_ for _ in ()).throw(RuntimeError("release failed")),
+    )
+    monkeypatch.setattr(
+        executions, "finish_execution",
+        lambda *_a, **_kw: cleanup.append("finish") or (_ for _ in ()).throw(RuntimeError("finish failed")),
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: pytest.fail("dispatched"))
+
+    with pytest.raises(OSError, match="provenance failed"):
+        InProcessCronScheduler().fire_due("job")
+    assert cleanup == ["release", "finish"]
+
+
+def test_snapshot_none_terminalizes_when_release_raises(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    finished = []
+    monkeypatch.setattr(executions, "create_execution", lambda *_a, **_kw: {"id": "exec"})
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda *_a, **_kw: {
+        "id": "job", "fire_claim": {"by": "owner"},
+        "next_run_at": "advanced", "schedule": {"kind": "interval", "minutes": 5},
+        "_execution_scheduled_for": "old",
+        "_execution_schedule": {"kind": "interval", "minutes": 5},
+    })
+    monkeypatch.setattr(executions, "record_execution_schedule", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        jobs, "release_fire_claim_for_retry",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("release failed")),
+    )
+    monkeypatch.setattr(
+        executions, "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)) or {"status": "failed"},
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("dispatched")))
+
+    assert InProcessCronScheduler().fire_due("job") is False
+    assert finished and finished[-1][1]["success"] is False
+
+
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
+    import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     claims = []
+    scheduled = []
     monkeypatch.setattr(
         jobs,
         "claim_job_for_fire",
@@ -435,9 +711,15 @@ def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
         or {"id": jid, "name": "t", "fire_claim": {"by": "manual-owner"}},
     )
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
+    monkeypatch.setattr(
+        executions,
+        "record_execution_schedule",
+        lambda *args, **kwargs: scheduled.append((args, kwargs)),
+    )
 
     assert InProcessCronScheduler().fire_due("j1", force=True) is True
     assert claims == [("j1", {"force": True, "return_job": True})]
+    assert scheduled == []
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):

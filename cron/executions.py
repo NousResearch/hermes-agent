@@ -7,11 +7,13 @@ proved gone. Terminal states are immutable.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -40,30 +42,61 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA busy_timeout=5000")
     apply_wal_with_fallback(conn, db_label="cron/executions.db")
     conn.execute("PRAGMA synchronous=FULL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS executions (
-             id TEXT PRIMARY KEY,
-             job_id TEXT NOT NULL,
-             source TEXT NOT NULL,
-             process_id TEXT NOT NULL,
-             pid INTEGER NOT NULL,
-             process_started_at INTEGER,
-             status TEXT NOT NULL CHECK(status IN
-               ('claimed','running','completed','failed','unknown')),
-             claimed_at TEXT NOT NULL,
-             started_at TEXT,
-             finished_at TEXT,
-             error TEXT
-           )"""
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
-        "ON executions(job_id, claimed_at DESC, id DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
-        "ON executions(status, claimed_at DESC, id DESC)"
-    )
+    required_columns = {
+        "scheduled_for",
+        "schedule_json",
+        "output_path",
+        "delivery_outcome",
+        "delivery_error",
+    }
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(executions)")}
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(executions)")}
+    required_indexes = {
+        "idx_executions_job_claimed",
+        "idx_executions_status_claimed",
+    }
+    if required_columns <= columns and required_indexes <= indexes:
+        return
+
+    # Only migration/new-database opens reserve the writer slot. Re-read under
+    # the lock so concurrent legacy openers cannot race the same additive DDL.
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS executions (
+                 id TEXT PRIMARY KEY,
+                 job_id TEXT NOT NULL,
+                 source TEXT NOT NULL,
+                 process_id TEXT NOT NULL,
+                 pid INTEGER NOT NULL,
+                 process_started_at INTEGER,
+                 status TEXT NOT NULL CHECK(status IN
+                   ('claimed','running','completed','failed','unknown')),
+                 claimed_at TEXT NOT NULL,
+                 started_at TEXT,
+                 finished_at TEXT,
+                 error TEXT,
+                 scheduled_for TEXT,
+                 schedule_json TEXT,
+                 output_path TEXT,
+                 delivery_outcome TEXT,
+                 delivery_error TEXT
+               )"""
+        )
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(executions)")
+        }
+        for column in required_columns:
+            if column not in columns:
+                conn.execute(f"ALTER TABLE executions ADD COLUMN {column} TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
+            "ON executions(job_id, claimed_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
+            "ON executions(status, claimed_at DESC, id DESC)"
+        )
 
 
 @contextmanager
@@ -136,7 +169,13 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
+def create_execution(
+    job_id: str,
+    *,
+    source: str,
+    scheduled_for: Optional[str] = None,
+    schedule: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
@@ -145,10 +184,13 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, scheduled_for, schedule_json)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), now,
+             str(scheduled_for) if scheduled_for is not None else None,
+             json.dumps(schedule, sort_keys=True, separators=(",", ":"))
+             if schedule is not None else None),
         )
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
@@ -156,6 +198,37 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     record = _record(row)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def record_execution_schedule(
+    execution_id: str,
+    *,
+    scheduled_for: Optional[str],
+    schedule: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Attach an external claim's atomic pre-advance schedule snapshot."""
+    schedule_json = (
+        json.dumps(schedule, sort_keys=True, separators=(",", ":"))
+        if schedule is not None
+        else None
+    )
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET scheduled_for=?, schedule_json=?
+               WHERE id=? AND status='claimed'""",
+            (
+                str(scheduled_for) if scheduled_for is not None else None,
+                schedule_json,
+                execution_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return None
+        return _record(
+            conn.execute(
+                "SELECT * FROM executions WHERE id=?", (execution_id,)
+            ).fetchone()
+        )
 
 
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -179,16 +252,37 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
     delivery_outcome: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    output_path: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
+    safe_delivery_error = None
+    if delivery_error is not None:
+        try:
+            from agent.redact import redact_sensitive_text
+
+            safe_delivery_error = redact_sensitive_text(
+                str(delivery_error), force=True, redact_url_credentials=True
+            )
+        except Exception:
+            safe_delivery_error = "[REDACTED: delivery error redaction failed]"
     with _transaction() as conn:
         cur = conn.execute(
-            """UPDATE executions SET status=?, finished_at=?, error=?
+            """UPDATE executions SET status=?, finished_at=?, error=?,
+               output_path=?, delivery_outcome=?, delivery_error=?
                WHERE id=? AND status IN ('claimed','running')""",
-            (status, now, detail, execution_id),
+            (
+                status,
+                now,
+                detail,
+                str(output_path) if output_path is not None else None,
+                delivery_outcome,
+                safe_delivery_error,
+                execution_id,
+            ),
         )
         if cur.rowcount != 1:
             return None

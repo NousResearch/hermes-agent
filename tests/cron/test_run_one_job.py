@@ -56,6 +56,44 @@ def test_tick_process_job_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j1", True)
 
 
+def test_builtin_tick_records_exact_slot_before_advance(monkeypatch):
+    slot_a = "2026-08-19T10:00:00+00:00"
+    slot_b = "2026-08-19T11:00:00+00:00"
+    schedule = {"kind": "cron", "expr": "0 * * * *"}
+    due_job = {"id": "slot-job", "next_run_at": slot_a, "schedule": schedule}
+    captured = {}
+
+    monkeypatch.setattr(s, "get_due_jobs", lambda: [due_job])
+
+    def advance(_job_ids):
+        due_job["next_run_at"] = slot_b
+        due_job["schedule"] = {"kind": "cron", "expr": "5 * * * *"}
+        return 1
+
+    monkeypatch.setattr(s, "advance_next_runs", advance)
+    monkeypatch.setattr(
+        s,
+        "create_execution",
+        lambda job_id, **kwargs: captured.update(kwargs) or {"id": "exec-slot"},
+    )
+    monkeypatch.setattr(
+        s,
+        "claim_job_for_fire",
+        lambda job_id, **kwargs: {
+            "id": job_id,
+            "next_run_at": slot_b,
+            "schedule": due_job["schedule"],
+            "fire_claim": {"by": "owner"},
+        },
+    )
+    monkeypatch.setattr(s, "run_one_job", lambda *_args, **_kwargs: True)
+
+    assert s.tick(verbose=False, sync=True) == 1
+    assert captured["scheduled_for"] == slot_a
+    assert captured["scheduled_for"] != slot_b
+    assert captured["schedule"] == schedule
+
+
 def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
     """A manual/external fire that wins the shared CAS must exclude ticker."""
     calls = _patch_pipeline(monkeypatch)
@@ -76,6 +114,206 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+@pytest.mark.parametrize(
+    ("deliver", "final", "delivery_error", "targets", "expected"),
+    [
+        ("telegram:chat", "report", None, True, "delivered"),
+        ("telegram:chat", "[SILENT]", None, True, "suppressed"),
+        ("origin", "report", None, False, "not_configured"),
+        ("telegram:chat", "report", "send failed", True, "failed"),
+        ("local", "report", None, True, "suppressed"),
+    ],
+)
+def test_run_one_job_persists_output_and_delivery_result(
+    monkeypatch, deliver, final, delivery_error, targets, expected
+):
+    finished = []
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "full output", final, None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda *_a: "/tmp/job-output.md")
+    monkeypatch.setattr(s, "_resolve_delivery_targets", lambda _job: [object()] if targets else [])
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: delivery_error)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    assert s.run_one_job(
+        {"id": "delivery-job", "execution_id": "delivery-exec", "deliver": deliver}
+    ) is True
+    assert finished[-1] == (
+        "delivery-exec",
+        {
+            "success": True,
+            "error": None,
+            "delivery_outcome": expected,
+            "delivery_error": delivery_error,
+            "output_path": "/tmp/job-output.md",
+        },
+    )
+
+
+def test_interrupted_run_keeps_saved_output_and_failed_delivery_provenance(monkeypatch):
+    finished = []
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "full output", "report", None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda *_a: "/tmp/exact-output.md")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: "send failed")
+    monkeypatch.setattr(s, "_consume_interrupted_flag", lambda *_a, **_kw: True)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    assert s.run_one_job(
+        {
+            "id": "interrupted-job",
+            "execution_id": "interrupted-exec",
+            "deliver": "telegram:chat",
+        }
+    ) is True
+    assert finished[-1] == (
+        "interrupted-exec",
+        {
+            "success": False,
+            "error": "Interrupted by gateway shutdown before terminal completion.",
+            "delivery_outcome": "failed",
+            "delivery_error": "send failed",
+            "output_path": "/tmp/exact-output.md",
+        },
+    )
+
+
+def test_owner_fence_rejection_keeps_saved_output_and_delivery_provenance(monkeypatch):
+    import contextlib
+
+    finished = []
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "full output", "report", None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda *_a: "/tmp/fenced-output.md")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+    monkeypatch.setattr(s, "fire_claim_fence", lambda *_a, **_kw: contextlib.nullcontext(True))
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    assert s._run_one_job_body(
+        {
+            "id": "fenced-job",
+            "execution_id": "fenced-exec",
+            "deliver": "telegram:chat",
+            "fire_claim": {"by": "owner-1"},
+        }
+    ) is True
+    assert finished[-1] == (
+        "fenced-exec",
+        {
+            "success": False,
+            "error": "Fire claim ownership lost before terminal completion.",
+            "delivery_outcome": "delivered",
+            "delivery_error": None,
+            "output_path": "/tmp/fenced-output.md",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("ownership_retained", "expected_error"),
+    [
+        (False, "Fire claim ownership lost; stale result was discarded."),
+        (True, "Interrupted by shutdown before terminal completion."),
+    ],
+)
+def test_delivery_fence_rejection_after_save_keeps_output_provenance(
+    monkeypatch, ownership_retained, expected_error
+):
+    import contextlib
+
+    finished = []
+    delivered = []
+    marked = []
+    fences = iter((True, False))
+    heartbeats = iter((True, True, ownership_retained))
+
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "full output", "report", None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda *_a: "/tmp/post-save-output.md")
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda *_a, **_kw: delivered.append(True) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "fire_claim_fence",
+        lambda *_a, **_kw: contextlib.nullcontext(next(fences)),
+    )
+    monkeypatch.setattr(
+        s,
+        "heartbeat_fire_claim",
+        lambda *_a, **_kw: next(heartbeats),
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    assert s._run_one_job_body(
+        {
+            "id": "post-save-fenced-job",
+            "execution_id": "post-save-fenced-exec",
+            "deliver": "telegram:chat",
+            "fire_claim": {"by": "owner-1"},
+        }
+    ) is True
+    assert delivered == []
+    assert bool(marked) is ownership_retained
+    assert finished[-1] == (
+        "post-save-fenced-exec",
+        {
+            "success": False,
+            "error": expected_error,
+            "delivery_outcome": "suppressed",
+            "delivery_error": None,
+            "output_path": "/tmp/post-save-output.md",
+        },
+    )
 
 
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
@@ -128,6 +366,8 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
                 "success": False,
                 "error": "Gemini HTTP 503 (UNAVAILABLE)",
                 "delivery_outcome": "delivered",
+                "delivery_error": None,
+                "output_path": None,
             },
         )
     ]
@@ -322,6 +562,8 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
                 "success": False,
                 "error": "KeyboardInterrupt",
                 "delivery_outcome": "suppressed",
+                "delivery_error": None,
+                "output_path": None,
             },
         )
     ]

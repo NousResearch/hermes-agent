@@ -13,6 +13,7 @@ import atexit
 import concurrent.futures
 import contextlib
 import contextvars
+import copy
 import errno
 import json
 import logging
@@ -6704,6 +6705,7 @@ def _run_one_job_body(
         execution_id = create_execution(job["id"], source="direct")["id"]
     delivery_attempted = False
     delivery_error = None
+    output_file = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -6817,6 +6819,8 @@ def _run_one_job_body(
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         blocked_config = False
         side_effect_ownership_lost = False
+        should_deliver = False
+        unresolved_origin = False
         try:
             with _side_effect_fence() as owns_output:
                 if not owns_output:
@@ -6950,6 +6954,18 @@ def _run_one_job_body(
                 _teardown_cron_agent(_deferred_agent, job["id"])
 
         if side_effect_ownership_lost or _fire_claim_ownership_lost():
+            # Preserve the strongest delivery fact known before this terminal
+            # ownership decision. A rejected delivery fence is suppressed, not
+            # delivered; a completed attempt retains its actual outcome.
+            normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+            if delivery_error:
+                delivery_outcome = "failed"
+            elif unresolved_origin:
+                delivery_outcome = "not_configured"
+            elif delivery_attempted and normalized_deliver != "local":
+                delivery_outcome = "delivered"
+            else:
+                delivery_outcome = "suppressed"
             # Same transport-cancel distinction as the pre-side-effect path:
             # if WE still own the claim, record the interruption instead of
             # discarding silently (lingering claim + stale last_status).
@@ -6966,12 +6982,18 @@ def _run_one_job_body(
                     execution_id,
                     success=False,
                     error="Interrupted by shutdown before terminal completion.",
+                    delivery_outcome=delivery_outcome,
+                    delivery_error=delivery_error,
+                    output_path=str(output_file) if output_file is not None else None,
                 )
             else:
                 finish_execution(
                     execution_id,
                     success=False,
                     error="Fire claim ownership lost; stale result was discarded.",
+                    delivery_outcome=delivery_outcome,
+                    delivery_error=delivery_error,
+                    output_path=str(output_file) if output_file is not None else None,
                 )
             return True
 
@@ -6981,6 +7003,16 @@ def _run_one_job_body(
         if success and not final_response.strip():
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if delivery_error:
+            delivery_outcome = "failed"
+        elif should_deliver and unresolved_origin:
+            delivery_outcome = "not_configured"
+        elif should_deliver and normalized_deliver != "local":
+            delivery_outcome = "delivered"
+        else:
+            delivery_outcome = "suppressed"
 
         interrupted = _consume_interrupted_flag(job["id"], execution_token)
         if interrupted:
@@ -7005,6 +7037,9 @@ def _run_one_job_body(
                 execution_id,
                 success=False,
                 error="Interrupted by gateway shutdown before terminal completion.",
+                delivery_outcome=delivery_outcome,
+                delivery_error=delivery_error,
+                output_path=str(output_file) if output_file is not None else None,
             )
             return True
 
@@ -7019,22 +7054,18 @@ def _run_one_job_body(
                 execution_id,
                 success=False,
                 error="Fire claim ownership lost before terminal completion.",
+                delivery_outcome=delivery_outcome,
+                delivery_error=delivery_error,
+                output_path=str(output_file) if output_file is not None else None,
             )
             return True
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
-        if delivery_error:
-            delivery_outcome = "failed"
-        elif should_deliver and unresolved_origin:
-            delivery_outcome = "not_configured"
-        elif should_deliver and normalized_deliver != "local":
-            delivery_outcome = "delivered"
-        else:
-            delivery_outcome = "suppressed"
         finish_execution(
             execution_id,
             success=success,
             error=error,
             delivery_outcome=delivery_outcome,
+            delivery_error=delivery_error,
+            output_path=str(output_file) if output_file is not None else None,
         )
         return True
 
@@ -7114,6 +7145,8 @@ def _run_one_job_body(
                 success=False,
                 error=_err_text,
                 delivery_outcome=delivery_outcome,
+                delivery_error=delivery_error,
+                output_path=str(output_file) if output_file is not None else None,
             )
         except Exception as record_err:
             logger.error(
@@ -7367,6 +7400,9 @@ def tick(
         # cron-kind jobs both compute the same next occurrence; interval jobs
         # re-anchor from their own "now" at claim time (harmless for
         # at-most-once — mark_job_run re-anchors at completion regardless).
+        for job in due_jobs:
+            job["_execution_scheduled_for"] = job.get("next_run_at")
+            job["_execution_schedule"] = copy.deepcopy(job.get("schedule"))
         advance_next_runs([job["id"] for job in due_jobs])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -7416,6 +7452,8 @@ def tick(
             # owner. Bool fallback keeps older test doubles/API overrides
             # compatible; real callers using return_job=True never take it.
             claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
+            claimed_job.pop("_execution_scheduled_for", None)
+            claimed_job.pop("_execution_schedule", None)
             claimed_job["execution_id"] = job["execution_id"]
             return run_one_job(
                 claimed_job,
@@ -7491,7 +7529,12 @@ def tick(
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
             try:
-                execution = create_execution(job_id, source="builtin")
+                execution = create_execution(
+                    job_id,
+                    source="builtin",
+                    scheduled_for=job.get("_execution_scheduled_for"),
+                    schedule=job.get("_execution_schedule"),
+                )
                 dispatched_job = dict(job, execution_id=execution["id"])
                 _ctx = contextvars.copy_context()
             except Exception as execution_err:

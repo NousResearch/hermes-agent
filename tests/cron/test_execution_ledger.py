@@ -39,6 +39,177 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_execution_persists_schedule_output_and_delivery_provenance(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    schedule = {"minutes": 30, "kind": "interval", "z": 1, "a": 2}
+
+    claimed = executions.create_execution(
+        "observed-job",
+        source="builtin",
+        scheduled_for="2026-08-19T10:30:00+00:00",
+        schedule=schedule,
+    )
+    secret = "SyntheticDeliveryPassword123456789"
+    completed = executions.finish_execution(
+        claimed["id"],
+        success=True,
+        output_path="/tmp/observed-job.md",
+        delivery_outcome="failed",
+        delivery_error=f'RuntimeError({{"password": "{secret}"}})',
+    )
+
+    assert claimed["scheduled_for"] == "2026-08-19T10:30:00+00:00"
+    assert claimed["schedule_json"] == '{"a":2,"kind":"interval","minutes":30,"z":1}'
+    assert completed["output_path"] == "/tmp/observed-job.md"
+    assert completed["delivery_outcome"] == "failed"
+    assert "RuntimeError" in completed["delivery_error"]
+    assert secret not in completed["delivery_error"]
+
+
+def test_delivery_error_redacts_url_query_credentials(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("query-secret", source="builtin")
+
+    completed = executions.finish_execution(
+        record["id"],
+        success=True,
+        delivery_outcome="failed",
+        delivery_error="GET https://example.test/send?token=super-secret-token&mode=fast failed",
+    )
+
+    assert "super-secret-token" not in completed["delivery_error"]
+    assert "example.test" in completed["delivery_error"]
+
+
+def test_delivery_error_redacts_url_userinfo(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("userinfo-secret", source="builtin")
+
+    completed = executions.finish_execution(
+        record["id"],
+        success=True,
+        delivery_outcome="failed",
+        delivery_error="POST https://alice:hunter2@example.test/hook failed",
+    )
+
+    assert "alice:hunter2@" not in completed["delivery_error"]
+    assert "hunter2" not in completed["delivery_error"]
+    assert "example.test" in completed["delivery_error"]
+
+
+def test_legacy_execution_schema_is_migrated_in_place(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            """CREATE TABLE executions (
+                 id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
+                 process_id TEXT NOT NULL, pid INTEGER NOT NULL,
+                 process_started_at INTEGER, status TEXT NOT NULL,
+                 claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+                 error TEXT
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO executions
+               (id, job_id, source, process_id, pid, status, claimed_at)
+               VALUES ('legacy', 'old-job', 'builtin', 'old-process', 1,
+                       'completed', '2026-08-18T00:00:00+00:00')"""
+        )
+
+    row = executions.create_execution(
+        "new-job",
+        source="builtin",
+        scheduled_for="2026-08-19T10:30:00+00:00",
+        schedule={"kind": "cron", "expr": "30 10 * * *"},
+    )
+
+    assert row["scheduled_for"] == "2026-08-19T10:30:00+00:00"
+    assert row["schedule_json"] == '{"expr":"30 10 * * *","kind":"cron"}'
+    legacy = executions.latest_execution("old-job")
+    assert legacy["status"] == "completed"
+    assert legacy["delivery_outcome"] is None
+
+
+def test_legacy_execution_schema_migration_is_cross_process_safe(tmp_path):
+    home = tmp_path / "home"
+    db_path = home / "cron" / "executions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """CREATE TABLE executions (
+                 id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
+                 process_id TEXT NOT NULL, pid INTEGER NOT NULL,
+                 process_started_at INTEGER, status TEXT NOT NULL,
+                 claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+                 error TEXT
+               )"""
+        )
+
+    repo = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = str(repo)
+    gate = tmp_path / "start-migration"
+    script = (
+        "import os, time; from pathlib import Path; "
+        "gate=Path(os.environ['MIGRATION_GATE']); "
+        "deadline=time.monotonic()+10; "
+        "\nwhile not gate.exists() and time.monotonic() < deadline: time.sleep(0.001)"
+        "\nfrom cron.executions import create_execution; "
+        "create_execution(os.environ['WORKER_ID'], source='test')"
+    )
+    workers = []
+    for index in range(8):
+        worker_env = env.copy()
+        worker_env["MIGRATION_GATE"] = str(gate)
+        worker_env["WORKER_ID"] = f"worker-{index}"
+        workers.append(
+            subprocess.Popen(
+                [sys.executable, "-c", script],
+                cwd=repo,
+                env=worker_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+
+    gate.touch()
+    results = [worker.communicate(timeout=20) for worker in workers]
+
+    assert [(worker.returncode, stderr) for worker, (_stdout, stderr) in zip(workers, results)] == [
+        (0, "")
+    ] * len(workers)
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(executions)")}
+        count = conn.execute("SELECT COUNT(*) FROM executions").fetchone()[0]
+    assert {
+        "scheduled_for",
+        "schedule_json",
+        "output_path",
+        "delivery_outcome",
+        "delivery_error",
+    } <= columns
+    assert count == len(workers)
+
+
+def test_current_schema_read_does_not_acquire_immediate_writer(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.create_execution("current", source="test")
+    statements = []
+    real_connect = executions._connect
+
+    def traced_connect():
+        conn = real_connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(executions, "_connect", traced_connect)
+    assert executions.latest_execution("current")["status"] == "claimed"
+    assert not any("BEGIN IMMEDIATE" in sql.upper() for sql in statements)
+
+
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
     import cron.executions as executions
 
@@ -67,6 +238,161 @@ def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
         record["id"], success=False, error="late writer"
     ) is None
     assert executions.latest_execution("immutable")["status"] == "completed"
+
+
+def test_later_terminal_success_cannot_erase_delivery_failure(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("immutable-delivery", source="builtin")
+    failed = executions.finish_execution(
+        record["id"],
+        success=False,
+        error="agent failed",
+        output_path="/tmp/first.md",
+        delivery_outcome="failed",
+        delivery_error="first send failed",
+    )
+
+    assert executions.finish_execution(
+        record["id"],
+        success=True,
+        output_path="/tmp/later.md",
+        delivery_outcome="delivered",
+    ) is None
+    persisted = executions.latest_execution("immutable-delivery")
+    assert persisted == failed
+    assert persisted["delivery_outcome"] == "failed"
+    assert persisted["output_path"] == "/tmp/first.md"
+
+
+def test_claimed_execution_can_receive_external_claim_snapshot(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("external-slot", source="chronos")
+
+    updated = executions.record_execution_schedule(
+        record["id"],
+        scheduled_for="2026-08-19T10:00:00+00:00",
+        schedule={"kind": "cron", "expr": "0 * * * *"},
+    )
+
+    assert updated["scheduled_for"] == "2026-08-19T10:00:00+00:00"
+    assert updated["schedule_json"] == '{"expr":"0 * * * *","kind":"cron"}'
+
+
+def test_external_claim_flows_through_sqlite_ledger_to_terminal_state(monkeypatch, tmp_path):
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    profile_home = tmp_path / "profile"
+    with jobs.use_cron_store(profile_home):
+        created = jobs.create_job(
+            prompt="record provenance",
+            schedule="every 5m",
+            name="integrated external fire",
+        )
+        original_slot = created["next_run_at"]
+
+        claimed = InProcessCronScheduler().claim_fire(created["id"])
+
+        assert claimed is not None
+        execution_id = claimed["execution_id"]
+        owner = claimed["fire_claim"]["by"]
+        ledger_claim = executions.latest_execution(created["id"])
+        assert ledger_claim["id"] == execution_id
+        assert ledger_claim["status"] == "claimed"
+        assert ledger_claim["scheduled_for"] == original_slot
+        assert json.loads(ledger_claim["schedule_json"])["kind"] == "interval"
+        stored_claim = jobs.get_job(created["id"])
+        assert stored_claim["next_run_at"] != original_slot
+        assert stored_claim["fire_claim"]["by"] == owner
+
+        executions.mark_execution_running(execution_id)
+        terminal = executions.finish_execution(
+            execution_id,
+            success=True,
+            output_path="/tmp/integrated-output.md",
+            delivery_outcome="delivered",
+        )
+        assert jobs.mark_job_run(
+            created["id"], True, expected_fire_owner=owner
+        ) is True
+
+        assert terminal["status"] == "completed"
+        assert terminal["output_path"] == "/tmp/integrated-output.md"
+        assert terminal["delivery_outcome"] == "delivered"
+        assert jobs.get_job(created["id"])["fire_claim"] is None
+
+
+def test_fire_due_runs_shared_body_and_terminalizes_real_ledger(monkeypatch, tmp_path):
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_args, **_kwargs: (True, "full output", "final response", None),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "save_job_output",
+        lambda job_id, _output: tmp_path / f"{job_id}.md",
+    )
+
+    with jobs.use_cron_store(tmp_path / "profile"):
+        created = jobs.create_job(
+            prompt="run hermetic integration",
+            schedule="every 5m",
+            name="real terminal path",
+            deliver="local",
+        )
+        original_slot = created["next_run_at"]
+
+        assert InProcessCronScheduler().fire_due(created["id"]) is True
+
+        terminal = executions.latest_execution(created["id"])
+        assert terminal["status"] == "completed"
+        assert terminal["scheduled_for"] == original_slot
+        assert terminal["output_path"] == str(tmp_path / f"{created['id']}.md")
+        assert terminal["delivery_outcome"] == "suppressed"
+        stored = jobs.get_job(created["id"])
+        assert stored["fire_claim"] is None
+        assert stored["last_status"] == "ok"
+
+
+def test_external_snapshot_miss_rearms_real_claim_and_fails_ledger(monkeypatch, tmp_path):
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    profile_home = tmp_path / "profile"
+    dispatched = []
+    monkeypatch.setattr(executions, "record_execution_schedule", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        scheduler,
+        "run_one_job",
+        lambda job, **kwargs: dispatched.append(job) or True,
+    )
+
+    with jobs.use_cron_store(profile_home):
+        created = jobs.create_job(
+            prompt="retry only after provenance",
+            schedule="every 5m",
+            name="provenance fail closed",
+        )
+        original_slot = created["next_run_at"]
+
+        assert InProcessCronScheduler().fire_due(created["id"]) is False
+
+        stored = jobs.get_job(created["id"])
+        assert stored["next_run_at"] == original_slot
+        assert stored["fire_claim"] is None
+        assert dispatched == []
+        terminal = executions.latest_execution(created["id"])
+        assert terminal["status"] == "failed"
+        assert "not persisted" in terminal["error"]
 
 
 def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):

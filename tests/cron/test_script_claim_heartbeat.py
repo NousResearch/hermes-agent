@@ -577,4 +577,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
         "execution-cas",
         success=False,
         error="Fire claim ownership lost before terminal completion.",
+        delivery_outcome="suppressed",
+        delivery_error=None,
+        output_path="output.md",
     )

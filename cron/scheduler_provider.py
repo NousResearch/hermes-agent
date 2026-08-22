@@ -20,9 +20,12 @@ selected via the `cron.provider` config key (empty = built-in).
 from __future__ import annotations
 
 import inspect
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail
 # with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
@@ -179,8 +182,12 @@ class CronScheduler(ABC):
         external scheduler, then pass the exact owner-bearing snapshot to
         ``fire_claimed`` in tracked background work.
         """
-        from cron.executions import create_execution, finish_execution
-        from cron.jobs import claim_job_for_fire
+        from cron.executions import (
+            create_execution,
+            finish_execution,
+            record_execution_schedule,
+        )
+        from cron.jobs import claim_job_for_fire, release_fire_claim_for_retry
 
         execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}
@@ -202,6 +209,72 @@ class CronScheduler(ABC):
                 error="Fire claim was not acquired",
             )
             return None
+        scheduled_for = claimed_job.pop("_execution_scheduled_for", None)
+        schedule = claimed_job.pop("_execution_schedule", None)
+        if not force:
+            owner = claimed_job.get("fire_claim", {}).get("by")
+            advanced_next_run_at = claimed_job.get("next_run_at")
+            release_kwargs = {
+                "expected_owner": owner,
+                "scheduled_for": scheduled_for,
+                "expected_schedule": schedule,
+                "expected_next_run_at": advanced_next_run_at,
+            }
+            try:
+                scheduled = record_execution_schedule(
+                    execution["id"],
+                    scheduled_for=scheduled_for,
+                    schedule=schedule,
+                )
+            except BaseException as exc:
+                released = False
+                try:
+                    released = release_fire_claim_for_retry(job_id, **release_kwargs)
+                except BaseException:
+                    logger.exception(
+                        "Cron job %s: retry claim release failed after provenance error",
+                        job_id,
+                    )
+                try:
+                    finish_execution(
+                        execution["id"],
+                        success=False,
+                        error=(
+                            "Execution schedule snapshot failed before dispatch: "
+                            f"{type(exc).__name__}: {exc}"
+                            + ("" if released else "; fenced claim release failed")
+                        ),
+                    )
+                except BaseException:
+                    logger.exception(
+                        "Cron job %s: execution terminalization failed after provenance error",
+                        job_id,
+                    )
+                raise
+            if scheduled is None:
+                released = False
+                try:
+                    released = release_fire_claim_for_retry(job_id, **release_kwargs)
+                except BaseException:
+                    logger.exception(
+                        "Cron job %s: retry claim release failed after missing provenance",
+                        job_id,
+                    )
+                try:
+                    finish_execution(
+                        execution["id"],
+                        success=False,
+                        error=(
+                            "Execution schedule snapshot was not persisted before dispatch"
+                            + ("" if released else "; fenced claim release failed")
+                        ),
+                    )
+                except BaseException:
+                    logger.exception(
+                        "Cron job %s: execution terminalization failed after missing provenance",
+                        job_id,
+                    )
+                return None
         claimed_job["execution_id"] = execution["id"]
         return claimed_job
 

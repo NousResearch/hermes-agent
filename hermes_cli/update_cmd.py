@@ -2169,14 +2169,19 @@ OFFICIAL_REPO_URLS = {
 }
 
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
 
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
-def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    """Get the URL of the origin remote, or None if not set."""
+def _get_remote_url(
+    git_cmd: list[str],
+    cwd: Path,
+    remote: str,
+) -> Optional[str]:
+    """Get a remote URL, or None when the remote is absent."""
     try:
         result = subprocess.run(
-            git_cmd + ["remote", "get-url", "origin"],
+            git_cmd + ["remote", "get-url", remote],
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
@@ -2187,21 +2192,32 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
         pass
     return None
 
+
+def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Get the URL of the origin remote, or None if not set."""
+    return _get_remote_url(git_cmd, cwd, "origin")
+
+
 def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
+
+    normalized = origin_url.strip().lower()
+    if normalized.startswith("git@github.com:"):
+        normalized = "github.com/" + normalized[len("git@github.com:"):]
+    elif normalized.startswith("ssh://git@github.com/"):
+        normalized = "github.com/" + normalized[len("ssh://git@github.com/"):]
+    else:
+        for prefix in ("https://", "http://"):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+
+    normalized = normalized.rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
-    for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
-            return False
-    return True
+    return normalized != _OFFICIAL_REPO_CANONICAL
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Check if an 'upstream' remote already exists."""
@@ -2284,7 +2300,16 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     - If origin/main is strictly behind upstream/main, pull from upstream
     - Try to sync fork back to origin if possible
     """
-    has_upstream = _has_upstream_remote(git_cmd, cwd)
+    upstream_url = _get_remote_url(git_cmd, cwd, "upstream")
+    has_upstream = bool(upstream_url)
+
+    if upstream_url and _is_fork(upstream_url):
+        print()
+        print("⚠ The 'upstream' remote is not the official Hermes repository.")
+        print(f"  {upstream_url}")
+        print("  Skipping upstream sync. To fix it, run:")
+        print(f"    git remote set-url upstream {OFFICIAL_REPO_URL}")
+        return
 
     if not has_upstream:
         # Check if user previously declined
@@ -3209,17 +3234,20 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # before spending a network fetch on it. Non-fork installs have no
         # 'upstream' remote, and the old flow burned a failed network attempt
         # (~0.3-1 s) on every --check before falling back to origin.
-        has_upstream_remote = (
-            subprocess.run(
-                git_cmd + ["remote", "get-url", "upstream"],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            ).returncode
-            == 0
+        upstream_probe = subprocess.run(
+            git_cmd + ["remote", "get-url", "upstream"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
         )
+        upstream_url = (
+            upstream_probe.stdout.strip()
+            if upstream_probe.returncode == 0
+            else ""
+        )
+        has_official_upstream = bool(upstream_url) and not _is_fork(upstream_url)
         fetch_result = None
-        if has_upstream_remote:
+        if has_official_upstream:
             print("→ Fetching from upstream...")
             fetch_result = subprocess.run(
                 git_cmd + ["fetch"] + depth_args + ["upstream", branch],

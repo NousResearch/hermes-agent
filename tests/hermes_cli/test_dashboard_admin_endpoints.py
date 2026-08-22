@@ -851,6 +851,33 @@ class TestUpdateCheckEndpoint:
         assert "managed outside this dashboard" in body["message"]
 
 
+def test_recent_update_commits_uses_banner_compare_ref(monkeypatch):
+    import subprocess
+
+    import hermes_cli.banner as banner
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(
+        banner,
+        "_resolve_local_git_compare_ref",
+        lambda _root: (
+            "upstream",
+            "upstream/main",
+            "https://github.com/NousResearch/hermes-agent.git",
+        ),
+    )
+    captured = {}
+
+    def fake_run(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+
+    assert ws._recent_upstream_commits() == []
+    assert "HEAD..upstream/main" in captured["cmd"]
+
+
 
 
 class TestDebugShareEndpoint:

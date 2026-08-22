@@ -168,8 +168,12 @@ def _is_ssh_remote(url: str | None) -> bool:
     return value.startswith("git@") or value.startswith("ssh://")
 
 
+def _is_official_remote(url: str | None) -> bool:
+    return _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
 def _is_official_ssh_remote(url: str | None) -> bool:
-    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+    return _is_ssh_remote(url) and _is_official_remote(url)
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
@@ -191,6 +195,31 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
     if result.returncode != 0:
         return None
     return (result.stdout or "").strip()
+
+
+def _resolve_local_git_compare_ref(
+    repo_dir: Path,
+    origin_url: str | None = None,
+) -> tuple[str, str, str]:
+    """Return ``(remote, ref, url)`` for a passive main-branch update check.
+
+    Official checkouts keep using ``origin/main``. Fork checkouts prefer an
+    ``upstream`` remote only when its URL resolves to the official Hermes
+    repository. A merely-present or user-defined ``upstream`` remote is not a
+    trustworthy update source.
+    """
+    if origin_url is None:
+        origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+
+    if origin_url and not _is_official_remote(origin_url):
+        upstream_url = _git_stdout(
+            ["remote", "get-url", "upstream"],
+            cwd=repo_dir,
+        )
+        if _is_official_remote(upstream_url):
+            return "upstream", "upstream/main", upstream_url or ""
+
+    return "origin", "origin/main", origin_url or ""
 
 
 def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
@@ -276,9 +305,14 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the canonical main branch in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
+    compare_remote, compare_ref, compare_url = _resolve_local_git_compare_ref(
+        repo_dir,
+        origin_url,
+    )
+
+    if _is_official_ssh_remote(compare_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         if not head_rev:
             return None
@@ -293,7 +327,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if upstream_rev == head_rev:
             return 0
         # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
-        # the FRESH upstream SHA (not the possibly stale origin/main tracking
+        # the FRESH upstream SHA (not a possibly stale remote tracking
         # ref) so a stale ref can't fake an up-to-date report.
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
@@ -329,33 +363,42 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         clear_stale_git_locks(repo_dir)
 
         # Scope the fetch to the one branch the behind-count compares against.
-        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
+        # An unscoped fetch transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
         # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
-        if is_shallow:
-            fetch_args += ["--depth", "1"]
-        fetch_args.append("--quiet")
-        subprocess.run(
-            fetch_args,
-            capture_output=True, timeout=10,
-            cwd=str(repo_dir),
-        )
+        # for the same reason. The shallow path compares against FETCH_HEAD,
+        # which a scoped fetch also updates.
+        def _fetch(remote: str) -> bool:
+            fetch_args = ["git", "fetch", remote, "main"]
+            if is_shallow:
+                fetch_args += ["--depth", "1"]
+            fetch_args.append("--quiet")
+            result = subprocess.run(
+                fetch_args,
+                capture_output=True,
+                timeout=10,
+                cwd=str(repo_dir),
+            )
+            return result.returncode == 0
+
+        fetched = _fetch(compare_remote)
+        if not fetched and compare_remote != "origin":
+            # Preserve the historical fork-origin behavior when the official
+            # upstream is temporarily unavailable.
+            compare_remote = "origin"
+            compare_ref = "origin/main"
+            _fetch(compare_remote)
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
     if is_shallow:
-        # No history to count across the shallow boundary. `origin/main` may not
-        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
+        # No history to count across the shallow boundary. The tracking ref may
+        # not exist in a depth-1 clone, so prefer FETCH_HEAD (just updated by
+        # the fetch above) and fall back to the selected compare ref.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", compare_ref], cwd=repo_dir)
         )
         if not head_rev or not target_rev:
             return None
@@ -370,7 +413,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{compare_ref}"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=5,
             cwd=str(repo_dir),
@@ -387,7 +430,8 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind the official main branch when an
+    official remote is configured.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if

@@ -4873,18 +4873,20 @@ async def update_hermes():
 
 
 def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind ``origin/main`` by, newest first.
+    """Commits the local checkout is behind the update source by, newest first.
 
-    Logs the SAME range the behind-count uses (``HEAD..origin/main`` — see
-    ``banner._check_via_local_git``), NOT the branch's ``@{upstream}``. On a
-    feature-branch checkout ``@{upstream}`` is the branch's own tip (zero
-    commits), which would leave the changelog empty even though the count is
-    non-zero. Pinning to ``origin/main`` keeps count and changelog consistent.
+    Logs the SAME range the banner behind-count uses, NOT the checked-out
+    branch's ``@{upstream}``. Fork installs with an official ``upstream``
+    remote therefore show ``HEAD..upstream/main``; official-origin and
+    fork-only installs keep ``HEAD..origin/main``.
 
-    Best-effort: returns [] if not a git checkout, origin/main is unreachable,
-    or git is unavailable. Never raises into the request path.
+    Best-effort: returns [] if the checkout/ref is unavailable or git is
+    missing. Never raises into the request path.
     """
     try:
+        from hermes_cli.banner import _resolve_local_git_compare_ref
+
+        _, compare_ref, _ = _resolve_local_git_compare_ref(PROJECT_ROOT)
         out = subprocess.run(
             [
                 "git",
@@ -4892,7 +4894,7 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
                 str(PROJECT_ROOT),
                 "log",
                 "--format=%H%x1f%s%x1f%an%x1f%ct",
-                "HEAD..origin/main",
+                f"HEAD..{compare_ref}",
                 f"-n{int(n)}",
             ],
             capture_output=True,

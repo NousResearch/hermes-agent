@@ -58,5 +58,43 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
+def test_compare_ref_prefers_only_official_upstream(tmp_path):
+    import hermes_cli.banner as banner
+
+    origin = "https://github.com/example/hermes-agent.git"
+
+    def official_stdout(args, **_kwargs):
+        if args[-1] == "upstream":
+            return "https://github.com/NousResearch/hermes-agent.git"
+        raise AssertionError(args)
+
+    with patch.object(banner, "_git_stdout", side_effect=official_stdout):
+        assert banner._resolve_local_git_compare_ref(tmp_path, origin) == (
+            "upstream",
+            "upstream/main",
+            "https://github.com/NousResearch/hermes-agent.git",
+        )
+
+    with patch.object(
+        banner,
+        "_git_stdout",
+        return_value="https://github.com/other/hermes-agent.git",
+    ):
+        assert banner._resolve_local_git_compare_ref(tmp_path, origin) == (
+            "origin",
+            "origin/main",
+            origin,
+        )
 
 
+def test_compare_ref_keeps_official_origin(tmp_path):
+    import hermes_cli.banner as banner
+
+    origin = "git@github.com:NousResearch/hermes-agent.git"
+    with patch.object(banner, "_git_stdout") as git_stdout:
+        assert banner._resolve_local_git_compare_ref(tmp_path, origin) == (
+            "origin",
+            "origin/main",
+            origin,
+        )
+    git_stdout.assert_not_called()

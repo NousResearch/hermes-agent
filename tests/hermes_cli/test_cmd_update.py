@@ -10,6 +10,21 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/NousResearch/hermes-agent.git", False),
+        ("git@github.com:nousresearch/hermes-agent.git", False),
+        ("ssh://git@github.com/NousResearch/hermes-agent.git", False),
+        ("https://github.com/example/hermes-agent.git", True),
+    ],
+)
+def test_is_fork_normalizes_official_remote_urls(url, expected):
+    from hermes_cli.update_cmd import _is_fork
+
+    assert _is_fork(url) is expected
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
@@ -619,6 +634,7 @@ class TestCmdUpdateCheckBranchFlag:
         verify_ok: bool = True,
         commit_count: str = "0",
         upstream_fetch_ok: bool = True,
+        upstream_url: str = "https://github.com/NousResearch/hermes-agent.git",
     ):
         """Mock side-effect for the _cmd_update_check git pipeline.
 
@@ -633,6 +649,14 @@ class TestCmdUpdateCheckBranchFlag:
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
+
+            if "remote get-url upstream" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=f"{upstream_url}\n",
+                    stderr="",
+                )
 
             if "fetch" in joined and "upstream" in joined:
                 rc = 0 if upstream_fetch_ok else 128
@@ -726,6 +750,27 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_default_main_ignores_nonofficial_upstream(
+        self, mock_run, _mock_method, capsys
+    ):
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="main",
+            verify_ok=True,
+            commit_count="0",
+            upstream_url="https://github.com/other/hermes-agent.git",
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("fetch" in c and "upstream" in c for c in commands), commands
+        assert any("fetch" in c and "origin" in c for c in commands), commands
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
 
 class TestCmdUpdateZipBranchRefusal:

@@ -58,8 +58,56 @@ function isSshRemote(url) {
   return value.startsWith('git@') || value.startsWith('ssh://')
 }
 
-function isOfficialSshRemote(url) {
-  return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
+function isOfficialRemote(url) {
+  return canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
 }
 
-export { canonicalGitHubRemote, isOfficialSshRemote, isSshRemote, OFFICIAL_REPO_CANONICAL, OFFICIAL_REPO_HTTPS_URL }
+function isOfficialSshRemote(url) {
+  return isSshRemote(url) && isOfficialRemote(url)
+}
+
+function selectUpdateRemote({ branch = 'main', originUrl, upstreamUrl }) {
+  if (isOfficialSshRemote(originUrl)) {
+    return {
+      kind: 'official-ssh',
+      remote: OFFICIAL_REPO_HTTPS_URL,
+      ref: null,
+      url: OFFICIAL_REPO_HTTPS_URL
+    }
+  }
+
+  // Non-main branches may exist only on the fork. Never heal or compare them
+  // against official upstream merely because that remote exists.
+  if (branch !== 'main') {
+    return { kind: 'origin', remote: 'origin', ref: `origin/${branch}`, url: originUrl || '' }
+  }
+
+  if (isOfficialRemote(originUrl)) {
+    return { kind: 'origin', remote: 'origin', ref: 'origin/main', url: originUrl || '' }
+  }
+
+  if (isOfficialSshRemote(upstreamUrl)) {
+    return {
+      kind: 'official-ssh',
+      remote: OFFICIAL_REPO_HTTPS_URL,
+      ref: null,
+      url: OFFICIAL_REPO_HTTPS_URL
+    }
+  }
+
+  if (isOfficialRemote(upstreamUrl)) {
+    return { kind: 'upstream', remote: 'upstream', ref: 'upstream/main', url: upstreamUrl || '' }
+  }
+
+  return { kind: 'origin', remote: 'origin', ref: 'origin/main', url: originUrl || '' }
+}
+
+export {
+  canonicalGitHubRemote,
+  isOfficialRemote,
+  isOfficialSshRemote,
+  isSshRemote,
+  OFFICIAL_REPO_CANONICAL,
+  OFFICIAL_REPO_HTTPS_URL,
+  selectUpdateRemote
+}

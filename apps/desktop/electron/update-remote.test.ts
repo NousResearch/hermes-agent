@@ -21,10 +21,12 @@ import { test } from 'vitest'
 
 import {
   canonicalGitHubRemote,
+  isOfficialRemote,
   isOfficialSshRemote,
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL
+  OFFICIAL_REPO_HTTPS_URL,
+  selectUpdateRemote
 } from './update-remote'
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
@@ -76,4 +78,74 @@ test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {
 test('OFFICIAL_REPO_HTTPS_URL canonicalizes to OFFICIAL_REPO_CANONICAL', () => {
   // Invariant: the URL we substitute in must be the same repo we detect.
   assert.equal(canonicalGitHubRemote(OFFICIAL_REPO_HTTPS_URL), OFFICIAL_REPO_CANONICAL)
+})
+
+test('isOfficialRemote accepts official HTTPS and SSH URLs but rejects forks', () => {
+  assert.equal(isOfficialRemote('https://github.com/NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('git@github.com:NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('https://github.com/example/hermes-agent.git'), false)
+})
+
+test('selectUpdateRemote prefers an official upstream for a fork main branch', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      branch: 'main',
+      originUrl: 'https://github.com/example/hermes-agent.git',
+      upstreamUrl: 'https://github.com/NousResearch/hermes-agent.git'
+    }),
+    {
+      kind: 'upstream',
+      remote: 'upstream',
+      ref: 'upstream/main',
+      url: 'https://github.com/NousResearch/hermes-agent.git'
+    }
+  )
+})
+
+test('selectUpdateRemote ignores a non-official upstream', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      branch: 'main',
+      originUrl: 'https://github.com/example/hermes-agent.git',
+      upstreamUrl: 'https://github.com/other/hermes-agent.git'
+    }),
+    {
+      kind: 'origin',
+      remote: 'origin',
+      ref: 'origin/main',
+      url: 'https://github.com/example/hermes-agent.git'
+    }
+  )
+})
+
+test('selectUpdateRemote keeps fork-only non-main branches on origin', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      branch: 'feature/fork-only',
+      originUrl: 'https://github.com/example/hermes-agent.git',
+      upstreamUrl: 'https://github.com/NousResearch/hermes-agent.git'
+    }),
+    {
+      kind: 'origin',
+      remote: 'origin',
+      ref: 'origin/feature/fork-only',
+      url: 'https://github.com/example/hermes-agent.git'
+    }
+  )
+})
+
+test('selectUpdateRemote converts an official SSH upstream to passive HTTPS', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      branch: 'main',
+      originUrl: 'git@github.com:example/hermes-agent.git',
+      upstreamUrl: 'git@github.com:NousResearch/hermes-agent.git'
+    }),
+    {
+      kind: 'official-ssh',
+      remote: OFFICIAL_REPO_HTTPS_URL,
+      ref: null,
+      url: OFFICIAL_REPO_HTTPS_URL
+    }
+  )
 })

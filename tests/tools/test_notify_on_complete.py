@@ -11,9 +11,12 @@ Covers:
 import json
 import os
 import time
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from tools import process_registry as process_registry_module
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
@@ -368,6 +371,33 @@ def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
         f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
     )
     assert result.get("notify_on_complete") is True
+
+
+def test_background_persistence_is_forwarded_to_the_process_registry(monkeypatch, tmp_path):
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    captured = {}
+
+    def fake_spawn_local(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="proc_persistent_test", pid=4242)
+
+    monkeypatch.setattr(
+        process_registry_module.process_registry, "spawn_local", fake_spawn_local
+    )
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="python long_job.py",
+                background=True,
+                persist_on_turn_abandon=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert captured["persist_on_turn_abandon"] is True
+    assert result["persist_on_turn_abandon"] is True
 
 
 def test_foreground_command_does_not_emit_hint(monkeypatch, tmp_path):

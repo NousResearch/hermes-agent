@@ -80,8 +80,11 @@ def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry
     baseline = registry.snapshot_running_ids("session-a")
 
     new = _make_session(sid="proc_new", task_id="session-a")
+    persistent = _make_session(sid="proc_persistent", task_id="session-a")
+    persistent.persist_on_turn_abandon = True
     foreign = _make_session(sid="proc_foreign", task_id="session-b")
     registry._running[new.id] = new
+    registry._running[persistent.id] = persistent
     registry._running[foreign.id] = foreign
 
     calls = []
@@ -109,10 +112,12 @@ def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry
 
 def test_kill_all_backward_compat_and_exclude_ids(registry):
     """kill_all keeps its historical default behavior (kill everything for
-    the task, consume_output=False, source='kill_all') and honors the new
-    exclude_ids kwarg that kill_started_since delegates through (#76188)."""
+    the task, including turn-persistence opt-ins, consume_output=False,
+    source='kill_all') and honors the new exclude_ids kwarg that
+    kill_started_since delegates through (#76188)."""
     a = _make_session(sid="proc_a", task_id="session-a")
     b = _make_session(sid="proc_b", task_id="session-a")
+    b.persist_on_turn_abandon = True
     registry._running[a.id] = a
     registry._running[b.id] = b
 

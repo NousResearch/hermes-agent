@@ -1090,7 +1090,7 @@ NEVER pipe a build/test command through tail/head/cat to shorten output (e.g. `c
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
-Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
+Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Use persist_on_turn_abandon=true only when a background task must survive an abandoned gateway turn; it still stops on gateway shutdown or explicit process cleanup. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd. When a command changes the session cwd (cd, pushd), the result includes a "cwd" field — trust it instead of prefixing every command with 'cd'.
 PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
 """
@@ -2635,6 +2635,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    persist_on_turn_abandon: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2650,6 +2651,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        persist_on_turn_abandon: If True with background=True, keep the process when its gateway turn is abandoned. It does not bypass explicit process cleanup or gateway shutdown.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -3105,6 +3107,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        persist_on_turn_abandon=persist_on_turn_abandon,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -3113,6 +3116,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        persist_on_turn_abandon=persist_on_turn_abandon,
                     )
 
                 result_data = {
@@ -3122,6 +3126,8 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                if persist_on_turn_abandon:
+                    result_data["persist_on_turn_abandon"] = True
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.
@@ -3899,6 +3905,11 @@ TERMINAL_SCHEMA = {
                 "description": "Run in the background, returning a session_id. Pair with notify_on_complete=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
                 "default": False
             },
+            "persist_on_turn_abandon": {
+                "type": "boolean",
+                "description": "With background=true: keep this explicitly durable process when its gateway turn is abandoned by timeout, stop, reset, or disconnect. It remains manageable with process(action=...) but does not bypass explicit process cleanup or gateway shutdown.",
+                "default": False
+            },
             "timeout": {
                 "type": "integer",
                 "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
@@ -3951,6 +3962,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        persist_on_turn_abandon=args.get("persist_on_turn_abandon", False),
     )
 
 

@@ -679,6 +679,17 @@ def _get_hermes_config_resolved() -> str | None:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    # NT/device-namespace guard fires on the RAW model-supplied string,
+    # BEFORE task-base joining: on POSIX hosts a leading "\??\" reads as a
+    # relative segment and gets anchored under the base dir, hiding the
+    # prefix from downstream resolved-path checks — while the same raw
+    # string relayed to a Windows host (remote backend, desktop bridge)
+    # triggers the NTLM-leak vector. See agent/file_safety.py.
+    from agent.file_safety import get_nt_namespace_error
+
+    nt_err = get_nt_namespace_error(filepath, verb="Write")
+    if nt_err:
+        return nt_err
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
@@ -1625,6 +1636,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        # ── NT/device-namespace guard (raw string, pre-resolution) ────
+        # Must fire before any expanduser()/resolve(): resolving a
+        # \??\UNC\host\share path on Windows already triggers outbound SMB
+        # auth (NTLM leak), and on POSIX the prefix would be silently
+        # anchored under the task base dir, hiding it from resolved-path
+        # checks. See agent/file_safety.py.
+        from agent.file_safety import get_nt_namespace_error
+
+        _nt_err = get_nt_namespace_error(path, verb="Read")
+        if _nt_err:
+            return tool_error(_nt_err)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,

@@ -25,6 +25,81 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+# ---------------------------------------------------------------------------
+# Windows NT-namespace path guard
+#
+# Inspired by Claude Code v2.1.234 (Aug 2026), which made its pre-approval
+# file accesses "reject Windows NT-namespace (`\\??\\`) paths, hardening the
+# remaining pre-approval file accesses against the NTLM credential-leak
+# vector."
+#
+# The vector: on Windows, merely *resolving or touching* a path such as
+# ``\\??\\UNC\\attacker.example\\share\\x`` (or the ``\\\\?\\UNC\\`` /
+# ``GLOBALROOT`` re-entry forms) makes the OS initiate SMB authentication to
+# the remote host, leaking the user's NTLM hash — even when the read itself
+# fails or would later be denied. NT object-namespace paths also bypass
+# normal Win32 path normalization, which lets them dodge deny-prefix checks
+# built on ``realpath()`` string comparison. A model tricked by injected
+# content into "reading" such a path leaks credentials before any denylist
+# built on resolved paths can fire.
+#
+# Consequently this check MUST run on the *raw* path string before any
+# ``Path.resolve()`` / ``os.path.realpath()`` call, and it does — it is the
+# first check in both :func:`get_read_block_error` and the write-denial
+# classifier.
+#
+# Scope (deliberately narrow to avoid false positives):
+#   * ``\\??\\...``            — NT object-namespace paths. Never legitimate
+#                                tool input on any platform.
+#   * ``\\\\.\\...``           — Win32 device namespace (``\\\\.\\pipe\\``,
+#                                ``\\\\.\\PhysicalDrive0``, ...). Not a file
+#                                read/write target for agent tools.
+#   * ``\\\\?\\UNC\\...``      — extended-length UNC form (remote host).
+#   * ``\\\\?\\GLOBALROOT...`` — re-entry into the NT namespace.
+#
+# Plain drive-letter extended-length paths (``\\\\?\\C:\\...``) stay ALLOWED:
+# they are a routine local form (see hermes_cli/windows_ssh_runtime.py) and
+# carry no remote-auth trigger. Plain UNC shares (``\\\\server\\share``) are
+# also unchanged here — blocking ordinary UNC reads is a policy question,
+# not part of this namespace-bypass guard.
+#
+# The guard runs on every platform: these prefixes are never legitimate
+# inputs on POSIX either, and path strings can be relayed toward Windows
+# hosts (remote terminal backends, desktop bridges).
+# ---------------------------------------------------------------------------
+
+def is_nt_namespace_path(path: str) -> bool:
+    """Return True if ``path`` is a Windows NT-/device-namespace path.
+
+    Checks the raw string only — never resolves the path (resolving is the
+    credential-leak trigger this guard exists to prevent).
+    """
+    s = str(path).replace("/", "\\")
+    if s.startswith("\\??\\"):
+        return True
+    if s.startswith("\\\\.\\"):
+        return True
+    if s.startswith("\\\\?\\"):
+        rest = s[4:]
+        upper = rest.upper()
+        if upper.startswith("UNC\\") or upper.startswith("GLOBALROOT"):
+            return True
+    return False
+
+
+def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
+    """Return an error message when ``path`` uses the NT/device namespace."""
+    if not is_nt_namespace_path(path):
+        return None
+    return (
+        f"{verb} denied: '{path}' uses a Windows NT/device namespace prefix "
+        "(\\??\\, \\\\.\\, \\\\?\\UNC\\, or GLOBALROOT). These paths bypass "
+        "normal path normalization and can trigger outbound SMB "
+        "authentication (NTLM credential leak) merely by being resolved. "
+        "Use a normal absolute path instead."
+    )
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -130,7 +205,12 @@ def build_write_approval_paths(home: str) -> set[str]:
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed."""
+    # NT/device-namespace check runs on the RAW string, before realpath():
+    # resolving such a path is itself the NTLM-leak trigger, and namespace
+    # prefixes defeat string-prefix denylist comparison after normalization.
+    if is_nt_namespace_path(path):
+        return "nt_namespace"
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -213,6 +293,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
         )
+    if denial == "nt_namespace":
+        return get_nt_namespace_error(path, verb=verb)
     return f"{verb} denied: '{path}' is a protected system/credential file."
 
 
@@ -289,6 +371,14 @@ def get_read_block_error(path: str) -> Optional[str]:
     ``"auth.json"`` would otherwise miss the denylist when the task's
     terminal cwd differs from the process cwd.
     """
+    # NT/device-namespace check runs on the RAW string, before resolve():
+    # on Windows, resolving \??\UNC\host\share (or \\?\UNC\, GLOBALROOT)
+    # already triggers outbound SMB auth — the NTLM leak happens before any
+    # resolved-path denylist could fire. Namespace prefixes also bypass
+    # normal path normalization, defeating prefix-comparison denylists.
+    nt_error = get_nt_namespace_error(path, verb="Read")
+    if nt_error:
+        return nt_error
     resolved = Path(path).expanduser().resolve()
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global

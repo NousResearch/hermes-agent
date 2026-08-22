@@ -922,3 +922,33 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def is_kimi_coding_base_url(base_url: str | None) -> bool:
+    """Return whether *base_url* is the confirmed Kimi Coding Plan runtime.
+
+    Kimi Code (Coding Plan) lives at ``https://api.kimi.com/coding`` — only
+    that exact scheme/host/path (optionally with the ``/v1`` suffix some
+    resolvers append) gets Coding Plan behavior: the ``/usages`` quota probe
+    and ``subscription_included`` billing. Legacy Moonshot
+    (``api.moonshot.ai/v1``) and custom/proxy routes must NOT match — they
+    keep their unknown/no-snapshot behavior.
+
+    Shared by ``agent.account_usage`` and ``agent.usage_pricing`` so the
+    endpoint check cannot drift between the quota and billing paths.
+    """
+    try:
+        parsed = urlparse((base_url or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "api.kimi.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
+        and not parsed.query
+        and not parsed.fragment
+    )

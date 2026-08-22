@@ -307,3 +307,183 @@ class TestBugReproductionAnchor:
         # main provider in #24015.
         assert "data:image" not in resp
         assert "image_url" not in resp
+
+
+# ---------------------------------------------------------------------------
+# capture(question=...) — issue #87818
+# ---------------------------------------------------------------------------
+
+class TestCaptureQuestion:
+    """A caller-supplied ``question`` directs the aux-vision analysis.
+
+    Before #87818 there was nothing to direct it with: ``question`` was not a
+    declared parameter, so a hand-crafted one rode into ``args`` on the back of
+    a permissive schema and was then dropped on the floor, and the aux model
+    always got the same hardcoded "describe what is visible" prompt no matter
+    what the caller wanted to know.
+
+    The narrow-but-load-bearing part of this contract is that a question
+    replaces the *instruction* only. The AX/SOM index below it is what lets the
+    aux model's answer name element numbers that the main model can click by
+    index, so replacing the whole prompt with the question would trade this bug
+    for a worse one.
+    """
+
+    @staticmethod
+    def _prompt_for(cap, **kwargs) -> str:
+        """Run the routed path and return the prompt handed to the aux model."""
+        from tools.computer_use import tool as cu_tool
+
+        fake_vat = MagicMock(return_value="<coro>")
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("model_tools._run_async",
+                   side_effect=lambda _coro: _stub_aux_analysis("ok")), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            cu_tool._capture_response(cap, **kwargs)
+
+        return fake_vat.call_args[0][1]
+
+    def test_question_reaches_the_aux_vision_prompt(self, tmp_cache_dir):
+        prompt = self._prompt_for(
+            _make_capture(mode="som"),
+            question="Is the Sign in button enabled?",
+        )
+
+        assert "Is the Sign in button enabled?" in prompt
+        # The general-description instruction is what the question replaces.
+        assert "Describe what is visible" not in prompt
+
+    def test_ax_som_index_survives_a_directed_question(self, tmp_cache_dir):
+        """The regression guard for the obvious wrong fix.
+
+        Swapping the whole prompt for the caller's question would read as
+        working — the question reaches the model, the answer comes back — while
+        silently costing ``mode='som'`` the element index its click-by-index
+        contract is built on. Assert the index is still there.
+        """
+        prompt = self._prompt_for(
+            _make_capture(mode="som"),
+            question="What error is in the dialog?",
+        )
+
+        assert "AX/SOM index for cross-reference:" in prompt
+        # …and the actual index content, not just the header.
+        assert "Sign in" in prompt
+        assert "username" in prompt
+
+    def test_directed_question_keeps_the_do_not_invent_clause(
+        self, tmp_cache_dir,
+    ):
+        """A yes/no question invites confabulation more readily than an open
+        describe does, so the anti-invention clause is needed more on this
+        branch, not less."""
+        prompt = self._prompt_for(
+            _make_capture(mode="som"),
+            question="Is there an unsaved-changes indicator?",
+        )
+
+        assert "Do not invent details that are not actually visible." in prompt
+
+    def test_no_question_falls_back_to_the_general_description(
+        self, tmp_cache_dir,
+    ):
+        prompt = self._prompt_for(_make_capture(mode="som"))
+
+        assert "Describe what is visible in this desktop application" in prompt
+        assert "Answer this question" not in prompt
+        # Unchanged from before #87818 on this branch.
+        assert "AX/SOM index for cross-reference:" in prompt
+        assert "Do not invent details that are not actually visible." in prompt
+
+    def test_blank_question_falls_back_rather_than_asking_nothing(
+        self, tmp_cache_dir,
+    ):
+        """``question=""`` must not produce an instruction to answer an empty
+        question — it is indistinguishable from not passing one at all."""
+        prompt = self._prompt_for(_make_capture(mode="som"), question="")
+
+        assert "Describe what is visible in this desktop application" in prompt
+        assert "Answer this question" not in prompt
+
+
+class TestCaptureQuestionPlumbing:
+    """``question`` must be reachable from a real tool call, not just from a
+    direct ``_capture_response`` call in a test."""
+
+    def test_declared_in_the_schema(self):
+        """Threading the value through without declaring it leaves the feature
+        unreachable for any well-behaved client, and stripped outright by a
+        strict-schema one. Both halves are the fix."""
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["question"]
+        assert prop["type"] == "string"
+        assert "capture" in prop["description"]
+
+    def test_dispatch_threads_question_from_tool_args(self):
+        from tools.computer_use import tool as cu_tool
+
+        backend = MagicMock()
+        backend.capture.return_value = _make_capture(mode="som")
+
+        with patch.object(cu_tool, "_capture_response",
+                          return_value="{}") as fake_resp:
+            cu_tool._dispatch(
+                backend,
+                "capture",
+                {"mode": "som", "question": "Is the Save button enabled?"},
+            )
+
+        _args, kwargs = fake_resp.call_args
+        assert kwargs["question"] == "Is the Save button enabled?"
+
+    def test_dispatch_passes_none_when_no_question_given(self):
+        from tools.computer_use import tool as cu_tool
+
+        backend = MagicMock()
+        backend.capture.return_value = _make_capture(mode="som")
+
+        with patch.object(cu_tool, "_capture_response",
+                          return_value="{}") as fake_resp:
+            cu_tool._dispatch(backend, "capture", {"mode": "som"})
+
+        _args, kwargs = fake_resp.call_args
+        assert kwargs["question"] is None
+
+
+class TestCoerceQuestion:
+    """``_coerce_question`` is the same shape as ``_coerce_max_elements``: a
+    malformed tool-call argument degrades to the default behaviour instead of
+    reaching the prompt."""
+
+    @pytest.mark.parametrize("value", [None, 42, 3.5, True, [], {}, object()])
+    def test_non_strings_are_dropped(self, value):
+        from tools.computer_use import tool as cu_tool
+
+        assert cu_tool._coerce_question(value) is None
+
+    @pytest.mark.parametrize("value", ["", "   ", "\n\t "])
+    def test_blank_strings_are_dropped(self, value):
+        from tools.computer_use import tool as cu_tool
+
+        assert cu_tool._coerce_question(value) is None
+
+    def test_surrounding_whitespace_is_stripped(self):
+        from tools.computer_use import tool as cu_tool
+
+        assert cu_tool._coerce_question("  what is on screen?  ") == (
+            "what is on screen?"
+        )
+
+    def test_overlong_question_is_capped(self):
+        """An unbounded question is interpolated ahead of the AX/SOM index and
+        can crowd out the index it is meant to accompany."""
+        from tools.computer_use import tool as cu_tool
+
+        coerced = cu_tool._coerce_question("q" * 5000)
+
+        assert coerced is not None
+        assert len(coerced) == cu_tool._MAX_QUESTION_CHARS

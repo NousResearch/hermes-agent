@@ -708,7 +708,11 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 "window_id": args.get("window_id"),
             })
         cap = backend.capture(**capture_kwargs)
-        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
+        return _capture_response(
+            cap,
+            max_elements=_coerce_max_elements(args.get("max_elements")),
+            question=_coerce_question(args.get("question")),
+        )
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -1087,6 +1091,10 @@ _DEFAULT_MAX_ELEMENTS = 100
 # call passing a very large integer would silently disable the safeguard and
 # reintroduce the original unbounded behavior.
 _MAX_ALLOWED_MAX_ELEMENTS = 1000
+# Cap on the caller-supplied capture `question`. It is interpolated into the
+# auxiliary vision prompt ahead of the AX/SOM index, so an unbounded one can
+# crowd out the index that click-by-index depends on.
+_MAX_QUESTION_CHARS = 2000
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 
 
@@ -1166,7 +1174,30 @@ def _coerce_max_elements(value: Any) -> int:
     return n
 
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _coerce_question(value: Any) -> Optional[str]:
+    """Validate the caller-supplied capture ``question``.
+
+    Returns ``None`` for anything that is not usable as an instruction —
+    missing, non-string, or whitespace-only — so the aux-vision prompt falls
+    back to the general description rather than embedding an empty or
+    ``None``-stringified line. Length is capped for the same reason
+    ``max_elements`` is: the question is interpolated into the auxiliary
+    model's prompt, and an unbounded one lets a single tool-call argument
+    crowd out the AX/SOM index it is meant to accompany.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return text[:_MAX_QUESTION_CHARS]
+
+
+def _capture_response(
+    cap: CaptureResult,
+    max_elements: int = _DEFAULT_MAX_ELEMENTS,
+    question: Optional[str] = None,
+) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
     truncated_elements = max(0, total_elements - len(visible_elements))
@@ -1253,6 +1284,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 truncated_elements=truncated_elements,
                 elements_file=elements_file,
                 screenshot_path=screenshot_path,
+                question=question,
             )
             if routed is not None:
                 return routed
@@ -1460,6 +1492,7 @@ def _route_capture_through_aux_vision(
     truncated_elements: int = 0,
     elements_file: Optional[str] = None,
     screenshot_path: Optional[str] = None,
+    question: Optional[str] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -1510,13 +1543,35 @@ def _route_capture_through_aux_vision(
         raw, scale_note = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
+        # A caller-supplied question replaces the general-description
+        # instruction, but only that. The AX/SOM index below it is what lets
+        # the aux model's answer name element numbers the main model can then
+        # click by index, so it is appended in both branches — swapping the
+        # whole prompt for the question would silently cost `som` mode its
+        # click-by-index contract. The do-not-invent clause is likewise kept
+        # in both: a directed question invites a confabulated yes/no more
+        # readily than an open describe does, not less.
+        if question:
+            instruction = (
+                "Answer this question about the desktop application "
+                f"screenshot:\n{question}\n\n"
+                "Answer directly and specifically, citing the on-screen text "
+                "or control you are reading it from. If the screenshot does "
+                "not show enough to answer, say so plainly instead of "
+                "guessing. Do not invent details that are not actually "
+                "visible."
+            )
+        else:
+            instruction = (
+                "Describe what is visible in this desktop application screenshot in "
+                "concise but specific terms. Mention the app name and window "
+                "title if visible, the overall layout, any labelled buttons, "
+                "menus or text fields, and any prominent text content the user "
+                "would need to know about. Do not invent details that are not "
+                "actually visible."
+            )
         prompt = (
-            "Describe what is visible in this desktop application screenshot in "
-            "concise but specific terms. Mention the app name and window "
-            "title if visible, the overall layout, any labelled buttons, "
-            "menus or text fields, and any prominent text content the user "
-            "would need to know about. Do not invent details that are not "
-            "actually visible.\n\n"
+            f"{instruction}\n\n"
             f"AX/SOM index for cross-reference:\n{summary}"
         )
         if scale_note:

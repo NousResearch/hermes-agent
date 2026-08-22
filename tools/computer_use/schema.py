@@ -132,6 +132,22 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": 1000,
             },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Optional question to direct `action='capture'` at "
+                    "something specific (\"is the Save button enabled?\", "
+                    "\"what error is in the dialog?\") instead of taking a "
+                    "general description. Only takes effect when the "
+                    "screenshot is routed through the auxiliary vision "
+                    "model, which happens when the main model cannot "
+                    "consume images itself; a multimodal main model sees "
+                    "the screenshot directly and needs no relay of what it "
+                    "was already asking. The AX/SOM element index is still "
+                    "returned either way, so click-by-index keeps working. "
+                    "Truncated past 2000 characters."
+                ),
+            },
             # ── click / drag / scroll targeting ────────────────────
             "element": {
                 "type": "integer",

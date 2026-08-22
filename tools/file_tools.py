@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -151,6 +152,30 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     # fd aliases
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
+
+# /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio.
+# The remaining suffixes can expose secrets, process arguments, memory layout,
+# raw memory, stack-canary seeds, or virtual-to-physical address mappings.
+# endswith also covers /proc/<pid>/task/<tid>/<suffix>.
+_BLOCKED_PROC_PATH_SUFFIXES = (
+    "/fd/0",
+    "/fd/1",
+    "/fd/2",
+    "/environ",
+    "/cmdline",
+    "/maps",
+    "/smaps",
+    "/smaps_rollup",
+    "/numa_maps",
+    "/mem",
+    "/auxv",
+    "/pagemap",
+    # /proc/<pid>/exe is a symlink to the process's own executable. Reading
+    # through it shares the same hang/leak surface as the rest of this
+    # family, so it is blocked outright rather than needing cwd-style
+    # resolution (endswith also covers /proc/<pid>/task/<tid>/exe).
+    "/exe",
+)
 
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
@@ -517,40 +542,161 @@ def _rewrite_v4a_patch_paths_for_host(
     return patch
 
 
+def _is_blocked_proc_path(normalized: str) -> bool:
+    """Return True for blocked /proc pseudo-files using the shared policy."""
+    return normalized.startswith("/proc/") and normalized.endswith(
+        _BLOCKED_PROC_PATH_SUFFIXES
+    )
+
+
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
+    expanded = _expand_tilde(path)
+    nt_namespace_path = expanded.replace("\\", "/").lower()
+    if nt_namespace_path.startswith("//./"):
+        return True
+    if nt_namespace_path.startswith("//?/"):
+        namespace_target = nt_namespace_path[4:]
+        is_drive_long_path = (
+            len(namespace_target) >= 3
+            and "a" <= namespace_target[0] <= "z"
+            and namespace_target[1:3] == ":/"
+        )
+        if not is_drive_long_path:
+            return True
+
+    normalized = os.path.normpath(expanded)
+    if os.sep == "\\":
+        # On Windows the read I/O shells through Git Bash, whose MSYS layer
+        # emulates /dev/* and /proc/* as real (often blocking or infinite)
+        # streams, so read_file("/dev/zero") genuinely hangs the agent.
+        # normpath turns "/dev/zero" into "\dev\zero", which would never match
+        # the POSIX strings below, silently disabling this ENTIRE device/fd/proc
+        # read-guard on Windows -- including the /proc/*/environ secret-leak
+        # family from #4427. Fold separators back to "/" so the comparisons
+        # fire. A drive-qualified native path ("C:\dev\zero" -> "C:/dev/zero")
+        # keeps its drive prefix and still falls through unblocked; the only
+        # over-match is a bare root-relative native path like "\dev\zero" on the
+        # current drive, which collapses to "/dev/zero" and is treated as
+        # blocked -- an acceptable conservative call for such an exotic path.
+        # Every caller (literal path, each symlink hop, and the realpath re-check
+        # in _is_blocked_device) routes through here, so this one point fixes
+        # all of them, #10141's realpath guard included. (#69373)
+        normalized = normalized.replace("\\", "/")
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
-    # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
-    if normalized.startswith("/proc/") and normalized.endswith(
-        ("/fd/0", "/fd/1", "/fd/2")
-    ):
-        return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
-    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
-    # memory layout (ASLR bypass) from the host process (issue #4427).
-    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
-    # though it requires address knowledge to exploit usefully.
-    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
-    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
-    # virtual->physical translation. Both are blocked alongside the maps family.
-    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
-    if normalized.startswith("/proc/") and normalized.endswith(
-        (
-            "/environ",
-            "/cmdline",
-            "/maps",
-            "/smaps",
-            "/smaps_rollup",
-            "/numa_maps",
-            "/mem",
-            "/auxv",
-            "/pagemap",
-        )
-    ):
-        return True
-    return False
+    return _is_blocked_proc_path(normalized)
+
+
+def _is_blocked_container_device_path(path: str) -> bool:
+    """Return True for blocked paths under POSIX container semantics."""
+    segments = [s for s in path.split("/") if s and s != "."]
+    stack: list[str] = []
+    for seg in segments:
+        if seg == "..":
+            if stack:
+                stack.pop()
+            continue
+        stack.append(seg)
+        # /proc/<pid|self|thread-self>/root and its task/<tid>/root form are
+        # the container's own root, so everything so far collapses to "/".
+        if (
+            len(stack) in (3, 5)
+            and stack[0] == "proc"
+            and (
+                stack[1] in ("self", "thread-self")
+                or (stack[1].isascii() and stack[1].isdigit())
+            )
+            and (
+                stack[2:] == ["root"]
+                or (
+                    len(stack) == 5
+                    and stack[2] == "task"
+                    and stack[3].isascii()
+                    and stack[3].isdigit()
+                    and stack[4] == "root"
+                )
+            )
+        ):
+            stack.clear()
+    normalized = "/" + "/".join(stack)
+
+    return normalized in _BLOCKED_DEVICE_PATHS or _is_blocked_proc_path(normalized)
+
+
+# Matches /proc/<self|thread-self|pid>/cwd and its per-thread
+# /proc/<...>/task/<tid>/cwd form, at the start of the path, with either a
+# trailing "/" (more segments follow) or end-of-string (bare alias). Applied
+# to a lexically pre-normalized string (see
+# ``_normalize_slashes_and_dots_only``), so "/proc/./self/cwd" and
+# "/proc//self/cwd" match too -- otherwise those spellings would silently
+# skip alias handling and fall through to the literal-path walker, which
+# doesn't know "cwd" is a symlink at all.
+# [0-9]+ only matches ASCII digits, so non-ASCII "digit" pid/tid segments
+# (e.g. Arabic-indic) correctly fail the match, mirroring the ``isascii()``
+# guard the /root walk above uses for the same reason.
+_PROC_CWD_ALIAS_RE = re.compile(
+    r"^/proc/(?P<pid>self|thread-self|[0-9]+)(?:/task/[0-9]+)?/cwd(?:/|$)"
+)
+
+# Sentinel: the path names a /proc/.../cwd alias, but a numeric pid/tid means
+# it may refer to a DIFFERENT process's cwd, which this task cannot verify
+# (there is no task-registry lookup here from pid to the process that
+# actually owns it). Fail closed rather than approximate.
+_UNVERIFIABLE_CWD_ALIAS = object()
+
+
+def _normalize_slashes_and_dots_only(path: str) -> str:
+    """Collapse duplicate "/" and literal "." segments -- lexical noise only.
+
+    Deliberately does NOT touch ".." segments. ".." may need to cross a
+    /proc/.../cwd symlink boundary, and only the resolver (after the alias
+    prefix has been substituted for the real cwd) can account for that
+    correctly. Collapsing ".." here, before substitution, would silently
+    walk it against the wrong base.
+    """
+    segments = [s for s in path.split("/") if s and s != "."]
+    prefix = "/" if path.startswith("/") else ""
+    return prefix + "/".join(segments)
+
+
+def _resolve_container_cwd_alias(path: str, task_id: str = "default"):
+    """Classify a /proc/.../cwd alias prefix, resolving it against the task's
+    own cwd when -- and only when -- the target is unambiguously this task's
+    own process.
+
+    /proc/<pid>/cwd (plain or the per-thread /task/<tid>/cwd form) is a
+    symlink to a process's current working directory -- unlike
+    /proc/.../root, which always collapses to the container root, a cwd
+    alias's target depends on where the named process's cwd actually is. So
+    it can't be canonicalized by string-walking alone.
+
+    Only ``self``/``thread-self`` are resolved: those are unambiguously this
+    task's own process, so its own cwd is authoritative. A numeric pid/tid
+    might name a different process entirely; approximating it as this task's
+    own cwd could bypass the guard (if the real target is deeper than this
+    task's cwd) as easily as it could over-block, so it fails closed instead
+    of guessing -- see ``_UNVERIFIABLE_CWD_ALIAS``.
+
+    Returns:
+      - ``None`` if ``path`` doesn't match a /proc/.../cwd alias at all (the
+        caller should fall through to its normal literal-path handling).
+      - ``_UNVERIFIABLE_CWD_ALIAS`` if it matches but names a target this
+        task cannot verify (numeric pid/tid, or resolution itself failed).
+      - the resolved absolute path (str) otherwise.
+    """
+    normalized = _normalize_slashes_and_dots_only(path)
+    match = _PROC_CWD_ALIAS_RE.match(normalized)
+    if not match:
+        return None
+    if match.group("pid") not in ("self", "thread-self"):
+        return _UNVERIFIABLE_CWD_ALIAS
+    suffix = normalized[match.end():].lstrip("/") or "."
+    try:
+        resolved = _resolve_path_for_task(suffix, task_id)
+    except (OSError, ValueError, RuntimeError):
+        return _UNVERIFIABLE_CWD_ALIAS
+    return str(resolved)
 
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
@@ -561,6 +707,8 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     the final resolved path so aliases to devices cannot bypass the guard.
     """
     expanded = _expand_tilde(filepath)
+    if _is_blocked_device_path(expanded):
+        return True
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
@@ -2580,18 +2728,72 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if block_error:
             return tool_error(block_error)
 
+        # ── Device / container-cwd-alias guard ──────────────────────────
+        # Must run BEFORE the negative-result cache lookup below. The cache
+        # is a raw "not found" memoization keyed by resolved path; if it ran
+        # first, a stale hit for that same resolved path could short-circuit
+        # the request and return before this enforcement ever executes --
+        # normalization, cwd-alias resolution, and the device/proc-suffix
+        # walk all have to happen first so a blocked path can never slip
+        # through via a cache hit (rv-20260804-175517-r69403rr).
+        #
+        # read_file_tool has the same host-symlink behavior on upstream/main; scope this PR's no-host-dereference correction to search.
+        if _uses_container_paths(task_id):
+            cwd_alias = _resolve_container_cwd_alias(path, task_id)
+            if cwd_alias is _UNVERIFIABLE_CWD_ALIAS:
+                # Numeric pid/tid cwd alias: cannot verify the real target
+                # (no task-registry lookup from pid to owning task exists
+                # here), so fail closed rather than approximate.
+                blocked_device = True
+            elif cwd_alias is not None:
+                # self/thread-self alias already resolved against the task's
+                # actual cwd above -- that resolved path is authoritative,
+                # so skip the literal-path recheck below (the raw alias text
+                # itself never matches a blocked suffix/device).
+                blocked_device = _is_blocked_container_device_path(cwd_alias)
+            else:
+                device_path = str(resolved_path) if resolved_path else path
+                blocked_device = _is_blocked_container_device_path(device_path)
+                if not blocked_device and path.startswith("/"):
+                    # The resolver normalizes `..` away before we see it, and for an absolute
+                    # container path the walk below is authoritative about `..` itself.
+                    blocked_device = _is_blocked_container_device_path(path)
+        else:
+            device_path = str(resolved_path) if resolved_path else path
+            device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+            blocked_device = _is_blocked_device(device_path, base_dir=device_base)
+
+        if blocked_device:
+            return json.dumps({
+                "error": (
+                    f"Cannot search '{path}': this is a device file that would "
+                    "block or produce infinite output."
+                ),
+            }, ensure_ascii=False)
+
         # ── Negative-result cache ─────────────────────────────────────
         # Search returns "Path not found: <path>" when the search root
         # doesn't exist. The error path also lists the parent directory
         # (file_operations.py:1402) — expensive to repeat. Cache so the
         # next call to a known-missing root skips both shells.
-        try:
-            resolved_search_path = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError):
-            resolved_search_path = path
-        cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
-        if cached_search_nf is not None:
-            return cached_search_nf
+        #
+        # Only reached once the path has cleared the device/cwd-alias guard
+        # above, and reuses `resolved_path` from the top of this function
+        # instead of resolving a second time -- an independent second call
+        # here previously let RuntimeError escape uncaught (only
+        # OSError/ValueError were caught), crashing the whole request before
+        # the guard above ever ran. Swallowing RuntimeError locally to keep
+        # going was also wrong: it would key the cache off the raw
+        # *unresolved* path. So the cache -- both lookup and record below --
+        # is skipped outright whenever resolution failed; the device-guard
+        # fallback above (test_search_device_guard_falls_back_to_raw_path)
+        # is what's responsible for still blocking against the raw path in
+        # that case.
+        resolved_search_path = str(resolved_path) if resolved_path is not None else None
+        if resolved_search_path is not None:
+            cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
+            if cached_search_nf is not None:
+                return cached_search_nf
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
@@ -2615,7 +2817,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # return — same rationale as the read path: error results keep
         # flowing through the consecutive-search bookkeeping below.
         _search_err = result_dict.get("error") or ""
-        if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
+        if (
+            isinstance(_search_err, str)
+            and _search_err.startswith("Path not found:")
+            and resolved_search_path is not None
+        ):
             _search_nf_json = json.dumps(result_dict, ensure_ascii=False)
             _record_not_found("search", resolved_search_path, task_id, _search_nf_json)
 

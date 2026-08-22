@@ -127,6 +127,17 @@ class TestDevicePathBlocking(unittest.TestCase):
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 
+    def test_proc_exe_blocked(self):
+        """/proc/<pid>/exe is a symlink to the process's own executable --
+        same hang/leak surface as the other /proc suffix family, so it
+        shares the same block semantics (including the per-thread form)."""
+        for path in (
+            "/proc/self/exe",
+            "/proc/12345/exe",
+            "/proc/self/task/1234/exe",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
     def test_proc_legitimate_files_not_blocked(self):
         """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
@@ -135,6 +146,47 @@ class TestDevicePathBlocking(unittest.TestCase):
     def test_normpath_alias_to_blocked_device_is_blocked(self):
         self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
         self.assertTrue(_is_blocked_device("/dev/./urandom"))
+
+    def test_windows_normpath_device_paths_are_blocked(self):
+        """On Windows os.path.normpath turns "/dev/zero" into "\\dev\\zero",
+        which never matches the POSIX strings, silently disabling the whole
+        device/fd/proc guard including the #4427 /proc secret-leak family
+        (#69373). Read I/O shells through Git Bash, whose MSYS layer emulates
+        those paths, so an unblocked read genuinely hangs.
+
+        Simulate the Windows path module on any host by driving the function's
+        normpath through ntpath (which folds "/" to "\\" and collapses
+        redundant/trailing separators exactly like Windows) with os.sep forced
+        to "\\", so this reproduces the reported forward-slash flow on Linux CI
+        too, not only on a real Windows box.
+        """
+        import ntpath
+        import tools.file_tools as ft
+
+        with patch.object(ft.os.path, "normpath", ntpath.normpath), patch.object(
+            ft.os, "sep", "\\"
+        ):
+            # Forward-slash inputs (the reported case), plus mixed and
+            # trailing-separator variants that ntpath.normpath canonicalizes.
+            for path in (
+                "/dev/zero",
+                "/dev/tty",
+                "/proc/self/environ",
+                "/proc/1/maps",
+                "/proc/self/fd/0",
+                "/dev\\zero",
+                "/dev//zero",  # redundant separators collapse
+                "\\dev\\zero",  # documented conservative over-match (root-relative)
+                "/proc/self/environ/",
+            ):
+                self.assertTrue(
+                    ft._is_blocked_device_path(path), f"{path} should be blocked on Windows"
+                )
+            # Drive-qualified and UNC paths keep their prefix and must NOT be
+            # blocked -- the fix does not add those false positives.
+            self.assertFalse(ft._is_blocked_device_path("C:/dev/zero"))
+            self.assertFalse(ft._is_blocked_device_path("C:\\Users\\me\\notes.txt"))
+            self.assertFalse(ft._is_blocked_device_path("//server/share/dev/zero"))
 
     def test_normal_files_not_blocked(self):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))

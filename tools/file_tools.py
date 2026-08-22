@@ -783,6 +783,36 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
     return enabled, [str(p) for p in extra if p]
 
 
+def _qualified_lexical_path(filepath: str, task_id: str = "default") -> str:
+    """Qualify a task path without dereferencing its final symlink."""
+    container_paths = _uses_container_paths(task_id)
+    expanded = _expand_tilde(filepath)
+    if container_paths:
+        return str(_normalize_without_host_deref(
+            expanded if posixpath.isabs(expanded)
+            else posixpath.join(
+                str(_resolve_base_dir(task_id, container_paths=True)), expanded
+            )
+        ))
+    if sys.platform == "win32":
+        from tools.environments.local import _msys_to_windows_path
+        import ntpath
+
+        expanded = _expand_tilde(_msys_to_windows_path(filepath))
+        return ntpath.normpath(
+            expanded if ntpath.isabs(expanded)
+            else ntpath.join(
+                str(_resolve_base_dir(task_id, container_paths=False)), expanded
+            )
+        )
+    return os.path.normpath(
+        expanded if os.path.isabs(expanded)
+        else os.path.join(
+            str(_resolve_base_dir(task_id, container_paths=False)), expanded
+        )
+    )
+
+
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
                                   extra_patterns: list[str] | None = None) -> str | None:
@@ -799,21 +829,21 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     if not enabled:
         return None
 
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    try:
+        normalized = _qualified_lexical_path(filepath, task_id)
+    except (OSError, ValueError, RuntimeError):
+        normalized = os.path.abspath(os.path.normpath(_expand_tilde(filepath)))
     try:
         resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
     except (OSError, ValueError, RuntimeError):
         resolved = os.path.realpath(normalized)
 
-    # The authoritative ~/.hermes home is governed by its own guards
-    # (config.yaml hard-block, cross-profile guard, write_approval); this
-    # gate targets PROJECT-LOCAL instruction files only. Checked before the
-    # ``.hermes`` component rule below, which would otherwise match the
-    # home directory itself.
+    # The authoritative ~/.hermes home is governed by its own guards for
+    # ordinary files. Only exempt it from the broad ``.hermes`` parent rule
+    # below; protected basenames and configured patterns must still apply to
+    # live instruction files and pre-run scripts inside the active home.
     real_home = _get_real_hermes_home()
-    if real_home and (resolved == real_home
-                      or resolved.startswith(real_home + os.sep)):
-        return None
+    real_home_key = os.path.normcase(real_home) if real_home else None
 
     import fnmatch
     for candidate in (normalized, resolved):
@@ -824,6 +854,14 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         for pattern in extra_patterns:
             if fnmatch.fnmatch(base_lower, pattern.lower()):
                 return base
+        candidate_key = os.path.normcase(os.path.abspath(candidate))
+        candidate_in_real_home = bool(
+            real_home_key
+            and (candidate_key == real_home_key
+                 or candidate_key.startswith(real_home_key + os.sep))
+        )
+        if candidate_in_real_home:
+            continue
         # Project-local .hermes config dirs (e.g. <repo>/.hermes/config.yaml)
         # are loaded as project context and steer behavior the same way.
         # Scope: the file's IMMEDIATE parent must be ``.hermes`` — matching
@@ -836,8 +874,25 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     return None
 
 
+def _protected_instruction_approval_target(
+        filepath: str, task_id: str = "default") -> tuple[str, str, bool]:
+    """Return canonical identity, qualified display, and alias status."""
+    try:
+        requested = _qualified_lexical_path(filepath, task_id)
+    except (OSError, ValueError, RuntimeError):
+        requested = os.path.abspath(os.path.normpath(_expand_tilde(filepath)))
+    canonical = os.path.realpath(requested)
+    is_alias = os.path.normcase(requested) != os.path.normcase(canonical)
+    display = f"{requested} -> {canonical}" if is_alias else requested
+    return (
+        os.path.normcase(canonical),
+        json.dumps(display, ensure_ascii=False),
+        is_alias,
+    )
+
+
 def _request_protected_instruction_approval(
-        reasons: list[str], task_id: str = "default") -> str | None:
+        targets: list[str], task_id: str = "default") -> str | None:
     """Ask the human to approve a write to protected instruction file(s).
 
     Returns ``None`` when approved, or a BLOCKED error string. This gate
@@ -846,15 +901,15 @@ def _request_protected_instruction_approval(
     here is one-operation approval EVERY time, with no persistent scope
     and no yolo bypass. Fail-closed when no human channel exists.
     """
-    targets = ", ".join(dict.fromkeys(reasons))
+    target_list = ", ".join(targets)
     description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
+        f"Write to protected agent-instruction file(s): {target_list}. "
         "These files steer future agent behavior; approval is always "
         "required (not bypassed by auto-approve)."
     )
-    display = f"<write to {targets}>"
+    display = f"<write to {target_list}>"
     blocked = (
-        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
+        f"BLOCKED: write to protected agent-instruction file(s) ({target_list}) "
         "{why} The user has NOT consented to this write. Do NOT retry it or "
         "attempt the same edit via another path (terminal, execute_code, "
         "etc.)."
@@ -948,15 +1003,22 @@ def _check_protected_instruction_write(paths: list[str],
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
-    reasons: list[str] = []
+    targets: dict[str, tuple[str, bool]] = {}
     for p in paths:
         reason = _protected_instruction_reason(
             p, task_id, enabled=enabled, extra_patterns=extra)
         if reason:
-            reasons.append(reason)
-    if not reasons:
+            identity, display, is_alias = _protected_instruction_approval_target(
+                p, task_id
+            )
+            previous = targets.get(identity)
+            if previous is None or (is_alias and not previous[1]):
+                targets[identity] = (display, is_alias)
+    if not targets:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    return _request_protected_instruction_approval(
+        [display for display, _is_alias in targets.values()], task_id
+    )
 
 
 def _check_approval_required_write(paths: list[str],

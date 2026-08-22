@@ -3,6 +3,7 @@
 Based on PR #1085 by ismoilh (salvaged).
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -534,6 +535,28 @@ class TestProtectedInstructionFiles:
         res = self._write(proj / "config.yaml")
         assert res.get("error") and "BLOCKED" in res["error"]
 
+    def test_project_local_hermes_symlink_into_real_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools as ft
+        fake_home = tmp_path / "active" / ".hermes"
+        target = fake_home / "notes" / "config.yaml"
+        target.parent.mkdir(parents=True)
+        target.write_text("original", encoding="utf-8")
+        project_home = tmp_path / "project" / ".hermes"
+        project_home.mkdir(parents=True)
+        link = project_home / "config.yaml"
+        link.symlink_to(target)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(link, "injected")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+
     def test_checkout_nested_under_hermes_dir_not_gated(self, tmp_path, approvals):
         """A repo living UNDER a .hermes dir (e.g. ~/.hermes/hermes-agent)
         must not have every write gated — only files directly inside a
@@ -544,10 +567,10 @@ class TestProtectedInstructionFiles:
         assert not res.get("error"), res
         assert approvals["calls"] == []
 
-    def test_real_hermes_home_not_gated_by_this_check(
+    def test_regular_file_in_real_hermes_home_not_gated_by_this_check(
         self, tmp_path, approvals, monkeypatch
     ):
-        """~/.hermes itself is governed by existing guards, not this gate."""
+        """Ordinary ~/.hermes files remain governed by the existing guards."""
         import tools.file_tools as ft
         fake_home = tmp_path / ".hermes"
         (fake_home / "notes").mkdir(parents=True)
@@ -557,6 +580,90 @@ class TestProtectedInstructionFiles:
         res = self._write(fake_home / "notes" / "scratch.txt", "ok")
         assert not res.get("error"), res
         assert approvals["calls"] == []
+
+    def test_relative_regular_file_in_real_hermes_home_not_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        monkeypatch.setattr(
+            ft,
+            "_resolve_base_dir",
+            lambda task_id, container_paths=None: tmp_path,
+        )
+
+        res = self._write(".hermes/scratch.txt", "ok")
+
+        assert not res.get("error"), res
+        assert approvals["calls"] == []
+
+    def test_protected_basename_in_real_hermes_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(fake_home / "SOUL.md")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not (fake_home / "SOUL.md").exists()
+        assert json.dumps(
+            str((fake_home / "SOUL.md").resolve()), ensure_ascii=False
+        ) in approvals["calls"][0]["command"]
+
+    def test_active_home_symlink_approval_names_alias_and_resolved_target(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        target = fake_home / "SOUL.md"
+        target.write_text("original", encoding="utf-8")
+        alias = tmp_path / "innocent.txt"
+        alias.symlink_to(target)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(alias, "injected")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        command = approvals["calls"][0]["command"]
+        displayed = json.dumps(
+            f"{alias} -> {target.resolve()}", ensure_ascii=False
+        )
+        assert displayed in command
+        assert target.read_text(encoding="utf-8") == "original"
+
+    def test_extra_pattern_in_real_hermes_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools as ft
+        fake_home = tmp_path / ".hermes"
+        scripts = fake_home / "scripts"
+        scripts.mkdir(parents=True)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, ["*_prerun.py"])
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(scripts / "nightly_prerun.py")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not (scripts / "nightly_prerun.py").exists()
 
     # ---- patch tool -----------------------------------------------------
 
@@ -620,6 +727,44 @@ class TestProtectedInstructionFiles:
         res = json.loads(patch_tool(mode="patch", patch=patch))
         assert not res.get("error"), res
         assert agents.read_text(encoding="utf-8") == "updated rules\n"
+
+    def test_patch_v4a_names_project_and_active_home_targets(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import json
+        import tools.file_tools as ft
+        from tools.file_tools import patch_tool
+        project_agents = tmp_path / "project" / "AGENTS.md"
+        project_agents.parent.mkdir()
+        project_agents.write_text("project rules\n", encoding="utf-8")
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        home_agents = fake_home / "AGENTS.md"
+        home_agents.write_text("home rules\n", encoding="utf-8")
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {project_agents}\n"
+            "@@\n"
+            "-project rules\n"
+            "+changed project rules\n"
+            f"*** Update File: {home_agents}\n"
+            "@@\n"
+            "-home rules\n"
+            "+changed home rules\n"
+            "*** End Patch"
+        )
+        approvals["answer"] = "deny"
+
+        res = json.loads(patch_tool(mode="patch", patch=patch))
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        command = approvals["calls"][0]["command"]
+        assert json.dumps(str(project_agents.resolve()), ensure_ascii=False) in command
+        assert json.dumps(str(home_agents.resolve()), ensure_ascii=False) in command
+        assert command.count("AGENTS.md") == 2
 
     # ---- gateway round-trip ----------------------------------------------
 

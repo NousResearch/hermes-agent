@@ -2085,14 +2085,16 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         config["enabled"] = enabled
         return True
 
-    monkeypatch.setattr(server, "_persist_wake_enabled", fake_persist)
-    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
-    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
+    check_requirements = Mock(return_value={
         "available": True,
         "phrase": "hey hermes",
         "provider": "test",
         "hint": "",
     })
+
+    monkeypatch.setattr(server, "_persist_wake_enabled", fake_persist)
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
+    monkeypatch.setattr(wake_word, "check_wake_word_requirements", check_requirements)
     listener = {"owner": None}
     monkeypatch.setattr(
         wake_word, "start_listening",
@@ -2118,6 +2120,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         }, transport=transport)
         assert passive["result"] == {"started": False, "reason": "disabled"}
         assert persisted == []
+        check_requirements.assert_not_called()
 
         # Explicit gesture: enables in config AND arms.
         clicked = _dispatch_sync({
@@ -2128,6 +2131,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         assert clicked["result"]["started"] is True
         assert clicked["result"]["enabled_persisted"] is True
         assert persisted == [True]
+        check_requirements.assert_called_once()
 
         # Explicit stop: disables in config.
         stopped = server.dispatch({
@@ -2148,9 +2152,42 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         }, transport=transport)
         assert scoped["result"] == {"started": False, "reason": "disabled_for_surface"}
         assert persisted == [True, False]
+        check_requirements.assert_called_once()
     finally:
         server._wake_owner_transport = None
         server._wake_owner_surface = ""
+
+
+def test_wake_passive_start_reads_disabled_config_before_requirements(monkeypatch):
+    from tools import wake_word
+
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "wake_word:\n  enabled: false\n  phrase: from-test-config\n",
+        encoding="utf-8",
+    )
+    loaded_config = wake_word.load_wake_word_config()
+    assert loaded_config["enabled"] is False
+    assert loaded_config["phrase"] == "from-test-config"
+    resolve_capture = Mock(return_value="local")
+    check_requirements = Mock(return_value={"available": True})
+    monkeypatch.setattr(wake_word, "resolve_capture_mode", resolve_capture)
+    monkeypatch.setattr(
+        wake_word,
+        "check_wake_word_requirements",
+        check_requirements,
+    )
+
+    response = _dispatch_sync({
+        "id": "wake-passive-config",
+        "method": "wake.start",
+        "params": {"surface": "tui"},
+    })
+
+    assert response["result"] == {"started": False, "reason": "disabled"}
+    resolve_capture.assert_not_called()
+    check_requirements.assert_not_called()
 
 
 def test_wake_status_reports_configured_input_device_and_windows_silence_hint(monkeypatch):

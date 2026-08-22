@@ -14792,6 +14792,14 @@ def _persist_wake_enabled(enabled: bool) -> bool:
         return False
 
 
+def _wake_start_disabled_result(rid, surface: str, cfg: dict) -> dict:
+    """Return ``disabled`` for feature-off, else ``disabled_for_surface``."""
+    reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
+    logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
+                surface, reason, cfg.get("enabled"), cfg.get("surface"))
+    return _ok(rid, {"started": False, "reason": reason})
+
+
 @method("wake.start")
 def _(rid, params: dict) -> dict:
     """Arm the wake-word listener for the calling surface ("tui" | "gui").
@@ -14823,6 +14831,11 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, f"wake module unavailable: {e}")
 
     cfg = load_wake_word_config()
+    enable_gesture = persist and not cfg.get("enabled")
+    if not enable_gesture and not wake_surface_enabled(surface, cfg):
+        # Passive auto-arm must stay cheap while wake word is disabled or
+        # scoped to another surface. Requirement checks may install packages.
+        return _wake_start_disabled_result(rid, surface, cfg)
     # Desktop remote (gui) prefers client capture: Mac mic → wake.feed PCM,
     # while the engine still runs on the backend. CLI/TUI stay local.
     prefer_client = surface in ("gui", "desktop") or bool(params.get("client_capture"))
@@ -14844,20 +14857,13 @@ def _(rid, params: dict) -> dict:
             "capture": capture_mode,
         })
     enabled_persisted = False
-    if persist and not cfg.get("enabled"):
+    if enable_gesture:
         enabled_persisted = _persist_wake_enabled(True)
         if enabled_persisted:
             cfg = dict(cfg)
             cfg["enabled"] = True
     if not wake_surface_enabled(surface, cfg):
-        # Distinguish "feature off in config" (reason: disabled — a persist:true
-        # retry can turn it on) from "scoped to a different surface" (reason:
-        # disabled_for_surface — respects an explicit wake_word.surface choice,
-        # which persist does NOT override).
-        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
-        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
-                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
-        return _ok(rid, {"started": False, "reason": reason})
+        return _wake_start_disabled_result(rid, surface, cfg)
 
     existing_owner, existing_surface = _wake_owner_snapshot()
     if existing_owner is not None and (

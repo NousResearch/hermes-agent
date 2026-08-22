@@ -995,7 +995,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # limit (issue #28557). Pass the whole message in one call; media attaches
     # after all text chunks.
     if platform == Platform.TELEGRAM:
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        _tg_extra = getattr(pconfig, "extra", None) or {}
+        disable_link_previews = bool(_tg_extra.get("disable_link_previews"))
         return await _send_telegram(
             pconfig.token,
             chat_id,
@@ -1004,6 +1005,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            media_write_timeout=_tg_extra.get("media_write_timeout"),
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1331,7 +1333,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, media_write_timeout=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1371,20 +1373,43 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
+        # platforms.telegram.extra.media_write_timeout reaches the gateway
+        # adapter's request construction, but this standalone path built an
+        # unconfigured Bot, so its uploads kept PTB's 20 second write default.
+        # A multi-MB voice or video that the gateway uploads fine still timed
+        # out when sent from here. Apply the same value to both the proxy and
+        # the direct path, and leave PTB's defaults untouched when it is unset.
+        _request_kwargs = {}
+        if media_write_timeout is not None:
+            try:
+                _request_kwargs["media_write_timeout"] = float(media_write_timeout)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "send_message: ignoring non-numeric media_write_timeout %r",
+                    media_write_timeout,
+                )
+                _request_kwargs = {}
+
+        def _direct_bot():
+            if not _request_kwargs:
+                return Bot(token=token)
+            from telegram.request import HTTPXRequest
+            return Bot(token=token, request=HTTPXRequest(**_request_kwargs))
+
         if _tg_proxy:
             try:
                 from telegram.request import HTTPXRequest
                 logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
                 bot = Bot(
                     token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                    request=HTTPXRequest(proxy=_tg_proxy, **_request_kwargs),
+                    get_updates_request=HTTPXRequest(proxy=_tg_proxy, **_request_kwargs),
                 )
             except Exception as _proxy_err:
                 logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
+                bot = _direct_bot()
         else:
-            bot = Bot(token=token)
+            bot = _direct_bot()
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,
         )

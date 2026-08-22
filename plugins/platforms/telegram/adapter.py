@@ -4419,6 +4419,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # itself.
                 "media_write_timeout": 60.0,
             }
+            if self.config.extra.get("media_write_timeout") is not None:
+                request_kwargs["media_write_timeout"] = self._coerce_float_extra(
+                    "media_write_timeout",
+                    20.0,
+                )
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
             # HTTPXRequest builds the underlying httpx.AsyncClient with

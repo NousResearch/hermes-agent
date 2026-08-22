@@ -6,15 +6,25 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 /**
- * A bot row must open the conversation the user was LAST having with that bot.
+ * A bot row must open the bot's canonical, pinned Bot Chat.
  *
- * Symptom (2026-08-21): every bot was welded to one session. Start a new chat
- * with 기획총괄, click 시스템총괄, click back — and the new chat was gone,
- * replaced by the pinned transcript. "세션을 다시 만들어도 다른 봇 갔다가 다시
- * 누르면 그 전 세션으로 다시 돌아와."
+ * This file previously asserted the opposite — that a row opens the user's
+ * NEWEST visible conversation — after a report that a freshly started chat
+ * seemed to vanish when clicking away and back. That preference was reverted
+ * (2026-08-22): canonical Bot Chats are ALWAYS hidden from the Sessions
+ * sidebar (see hide-bot-chats.test.mjs), so the bot row is the ONLY door to
+ * the forever-chat. Preferring a newer session made the pinned relationship
+ * unreachable from anywhere in the UI — a user lost an entire bot-building
+ * history behind a row that previewed one session and opened another.
  *
- * The pin still owns plumbing (creation, hide sweep, DM delivery); it just
- * must not override a newer real conversation.
+ * The original complaint has a non-destructive answer: scratch sessions from
+ * "New chat with this agent" are not plumbing-titled, so the hide sweep leaves
+ * them visible in the Sessions sidebar. They are reachable there; they are
+ * simply not what the bot row targets.
+ *
+ * Documented contract (docs/user-guide/bot-mode): "Click a Bot to land in its
+ * chat — every Bot has a canonical, persistent Bot Chat conversation that is
+ * created (and pinned) the moment the Bot is born."
  */
 function loadOpenPath({ openSession, request }) {
   const start = source.indexOf('const canonicalCreations = new Map()')
@@ -68,18 +78,20 @@ const healthyPin =
     return {}
   }
 
-test('bot row opens the NEWER real conversation instead of the pinned chat', async () => {
+test('a healthy pin wins over a newer conversation — the row lands in the Bot Chat', async () => {
   const runtime = loadOpenPath({ openSession: async () => undefined, request: healthyPin() })
 
   // The roster's freshest visible session is a real conversation the user
-  // started after the pin was made.
+  // started after the pin was made. It must NOT displace the forever-chat:
+  // the pinned chat is hidden from Sessions, so the row is its only door,
+  // while this newer session remains reachable in the Sessions sidebar.
   const history = { id: 'new-chat', title: '릴시아 카피 회의', message_count: 12, last_active: 9000 }
 
   const result = await runtime.openBotCanonicalChat('plan', 'pinned-bot-chat', history, history)
 
-  assert.equal(result, 'new-chat', 'should return the newer conversation')
+  assert.equal(result, 'pinned-bot-chat', 'should return the pinned Bot Chat')
   assert.equal(runtime.opened.length, 1)
-  assert.equal(runtime.opened[0].id, 'new-chat', 'must not reopen the pinned transcript')
+  assert.equal(runtime.opened[0].id, 'pinned-bot-chat', 'must open the pinned forever-chat')
   assert.equal(runtime.opened[0].options.profile, 'plan')
   assert.equal(
     runtime.opened[0].options.keepAllProfilesScope,
@@ -89,25 +101,41 @@ test('bot row opens the NEWER real conversation instead of the pinned chat', asy
 })
 
 /**
- * The REAL call shape from the roster row — this is what the first fix got
- * wrong. `previewSession` is `bot.preferred_session || last`, so on a pinned
- * bot it resolves to the PIN (preview identity must match click identity).
- * Feeding that as the "newer" candidate made the whole preference dead code:
- * it always saw the pin and short-circuited on "same id", and the user still
- * got the old session back ("다른 봇 눌렀다가 다시 그 봇 누르면 그 전 세션 열림").
- * The freshest visible session has to arrive as its own argument.
+ * The REAL call shape from the roster row: `previewSession` is
+ * `bot.preferred_session || last`, so on a pinned bot it resolves to the PIN.
+ * Preview identity and click identity are the same session by construction
+ * (#88200) — which is exactly the property the reverted newer-session
+ * preference broke.
  */
-test('real roster call: previewSession is the pin, latest arrives separately', async () => {
+test('real roster call: preview identity and click identity are the same session', async () => {
   const runtime = loadOpenPath({ openSession: async () => undefined, request: healthyPin('pin-1') })
 
   const pinnedPreview = { id: 'pin-1', title: 'Bot Chat', preview: 'plumbing' }
-  const last = { id: 'user-newest', title: '오늘 기획 회의', message_count: 8, last_active: 9999 }
 
-  // Mirrors: openBotCanonicalChat(bot.name, pinnedChat, previewSession, last)
-  const result = await runtime.openBotCanonicalChat('plan', 'pin-1', pinnedPreview, last)
+  // Mirrors: openBotCanonicalChat(bot.name, pinnedChat, previewSession)
+  const result = await runtime.openBotCanonicalChat('plan', 'pin-1', pinnedPreview)
 
-  assert.equal(result, 'user-newest', 'must open the newest real conversation, not the pin')
-  assert.equal(runtime.opened[0].id, 'user-newest')
+  assert.equal(result, 'pin-1', 'must open the pinned Bot Chat the row previewed')
+  assert.equal(runtime.opened[0].id, 'pin-1')
+})
+
+/** Regression guard for the revert: the open path must not consult the
+ *  newer-visible-session predicate while the pin is alive. Bot Chats are
+ *  hidden from Sessions, so a row that prefers a newer session strands the
+ *  forever-chat with no reachable entry point. */
+test('the healthy-pin branch never prefers a newer visible session', () => {
+  const start = source.indexOf('if (preferred && isCanonicalBotChatHistory(preferred)) {')
+  const end = source.indexOf('if (preferred) {', start)
+
+  assert.notEqual(start, -1, 'healthy-pin branch is missing')
+
+  const branch = source.slice(start, end)
+
+  assert.equal(
+    branch.includes('newerVisibleBotChat('),
+    false,
+    'a healthy pin must be opened directly — no newer-session preference'
+  )
 })
 
 test('the canonical Bot Chat itself never counts as "newer" (it IS the pin)', () => {
@@ -203,25 +231,26 @@ test('the post-kickoff retry open also follows the bot', async () => {
   )
 })
 
-test('a failed open of the newer session falls back to the pin (row never dies)', async () => {
+/** With the newer-session preference gone there is no "try the newer chat,
+ *  fall back to the pin" dance: a verified pin is opened directly, and a
+ *  failed open of a JUST-verified session is transient (reconnect, backend
+ *  restart), so it propagates rather than forking the forever-chat. */
+test('a failed open of a verified pin surfaces instead of forking the chat', async () => {
   const runtime = loadOpenPath({
-    openSession: async id => {
-      if (id === 'deleted-chat') {
-        throw new Error('session not found')
-      }
-
-      return undefined
+    openSession: async () => {
+      throw new Error('session not found')
     },
     request: healthyPin('pin-1')
   })
 
-  const history = { id: 'deleted-chat', title: '지워진 대화', message_count: 3 }
+  await assert.rejects(
+    () => runtime.openBotCanonicalChat('ops', 'pin-1', { id: 'pin-1', title: 'Bot Chat' }),
+    /session not found/
+  )
 
-  const result = await runtime.openBotCanonicalChat('ops', 'pin-1', history)
-
-  const ids = runtime.opened.map(entry => entry.id)
-
-  assert.ok(ids.includes('deleted-chat'), 'tries the newer session first')
-  assert.ok(ids.includes('pin-1'), 'falls back to the verified pin')
-  assert.equal(result, 'pin-1', 'row resolves to the pin rather than failing')
+  assert.deepEqual(
+    runtime.saved,
+    [],
+    'a transient failure must not clear the pin or mint a replacement'
+  )
 })

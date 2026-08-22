@@ -4272,9 +4272,17 @@ function isCanonicalBotChatHistory(history) {
 /** The bot's newest VISIBLE conversation when it should win over the pin, else
  *  null.
  *
- *  A bot row is a workspace entry point, so it must land on what the user was
- *  last saying to that bot — not on a pin frozen weeks ago. Guards, all of
- *  which matter:
+ *  RETAINED FOR THE DEAD-PIN RECOVERY PATH ONLY. This is deliberately NOT
+ *  consulted while the pin is alive: Bot Mode's documented contract is "click
+ *  a Bot to land in its chat — every Bot has a canonical, persistent Bot Chat
+ *  conversation that is created (and pinned) the moment the Bot is born", and
+ *  canonical Bot Chats are ALWAYS hidden from the Sessions sidebar
+ *  (session.create passes hidden:true unconditionally — see
+ *  hide-bot-chats.test.mjs). The bot row is therefore the ONLY door to the
+ *  forever-chat; preferring a newer session here walls the relationship off
+ *  behind a door that no longer leads to it.
+ *
+ *  Guards, all of which matter:
  *   - the canonical Bot Chat itself is never "newer" (it IS the pin), so
  *     plumbing can't shadow itself;
  *   - an empty draft is skipped: clicking a bot right after a stray ⌘N would
@@ -4299,7 +4307,7 @@ function newerVisibleBotChat(pinned, history) {
   return id
 }
 
-async function openBotCanonicalChat(name, pinned, history, latestVisible) {
+async function openBotCanonicalChat(name, pinned, history) {
   if (!pinned) {
     // Grandfather only an actual Bot Chat. `last_session` is merely the most
     // recent row for the profile; adopting it blindly can claim an unrelated
@@ -4341,38 +4349,29 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
   }
 
   if (preferred && isCanonicalBotChatHistory(preferred)) {
-    // The pin is alive and healthy — but it is not necessarily where the user
-    // left off. Prefer their MOST RECENT real conversation with this bot.
+    // The pin is alive and healthy — open it. This is the whole contract:
+    // "Click a Bot to land in its chat — every Bot has a canonical,
+    // persistent Bot Chat conversation that is created (and pinned) the
+    // moment the Bot is born."
     //
-    // "One bot = one forever chat" welded each row to a single session: start
-    // a new chat with a bot, click another bot, click back, and the new chat
-    // was stranded behind the pinned transcript ("세션을 다시 만들어도 다른 봇
-    // 갔다가 다시 누르면 그 전 세션으로 돌아와"). A bot row is a workspace
-    // entry point here, so it should land on the live conversation. The pin
-    // keeps owning plumbing — creation, hide sweep, DM delivery — and stays
-    // untouched; it just stops overriding newer work.
+    // A newer-visible-session preference used to sit here, so that a bot row
+    // landed on the user's most recent conversation instead of the pin. It
+    // was reverted (2026-08-22) because it is unsound given how Bot Mode
+    // stores these chats: canonical Bot Chats are ALWAYS hidden from the
+    // Sessions sidebar (session.create passes hidden:true unconditionally,
+    // and hideOwnedBotSessions sweeps any that were born visible). The bot
+    // row is therefore the ONLY door to the forever-chat, so preferring a
+    // newer session did not merely re-order two equal entry points — it made
+    // the pinned relationship unreachable from anywhere in the UI. Reported
+    // symptom: a bot's whole build history became invisible, while the row
+    // previewed one session and opened another.
     //
-    // Deliberately AFTER the verification above: with a dead or unverified
-    // pin, adopting the profile's latest row would claim an unrelated user
-    // conversation as the bot's chat (see the "dead pin" safety tests).
-    //
-    // Uses `latestVisible` (the roster's freshest visible session), NOT
-    // `history` — the caller's `history` prefers the pin so preview identity
-    // matches click identity, which means it can never BE the newer chat.
-    // Falls back to `history` for callers that pass only three arguments.
-    const newer = newerVisibleBotChat(pinned, latestVisible ?? history)
-
-    if (newer) {
-      try {
-        await openStoredBotChat(name, newer, history)
-
-        return newer
-      } catch {
-        // Deleted or unreachable — fall back to the verified pin below so the
-        // row is never dead.
-      }
-    }
-
+    // The bug that motivated the preference — "I start a new chat with a bot,
+    // click another bot, click back, and my new chat is gone" — has a
+    // non-destructive answer: scratch sessions started via "New chat with
+    // this agent" are NOT plumbing-titled, so the hide sweep leaves them in
+    // the Sessions sidebar. They are reachable there; they simply are not the
+    // bot row's target, which is by design.
     try {
       await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
       return pinned
@@ -6265,13 +6264,13 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     }
 
     try {
-      // `previewSession` prefers the PIN (preview identity must match click
-      // identity), so it can never carry the newer conversation. Pass the
-      // roster's freshest VISIBLE session (`last`) separately — that is what
-      // "open where I left off" needs. Without this the newer-chat preference
-      // was dead code: it always received the pin and short-circuited on
-      // "same id".
-      const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession, last)
+      // `previewSession` prefers the PIN, and so does the click — preview
+      // identity and click identity are the same session by construction
+      // (#88200). The roster's freshest visible session is deliberately NOT
+      // passed: the row's job is to land in the bot's forever-chat, which is
+      // the only door to it (canonical Bot Chats are always hidden from the
+      // Sessions sidebar).
+      const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession)
 
       if (generation === botOpenGeneration && id) {
         return

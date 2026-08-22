@@ -90,14 +90,11 @@ logger = logging.getLogger(__name__)
 
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
 # SKILL.md on every call; with hundreds of skills this is wasteful.
-# Cache validation (mirrors hermes_cli/profiles.py::_count_skills, d5eee133e):
-#   - signature = per-dir max mtime of the dir AND its immediate children
-#     (one scandir per dir; catches skill add/remove inside categories,
-#     which does NOT bump the root dir's mtime), plus the disabled-set
-#     (config-driven — changes with no filesystem mtime bump at all)
-#   - a short TTL bounds staleness from in-place SKILL.md edits, which
-#     bump only the file's mtime, invisible to any directory signature.
-# skip_disabled True/False are cached separately.
+# Cache validation uses the same recursive, exclusion-aware SKILL.md path set
+# as discovery, plus the disabled-set and active platform. This detects skill
+# additions/removals at every supported depth without reading file contents.
+# A short TTL bounds staleness from in-place SKILL.md edits, whose path is
+# unchanged. skip_disabled True/False are cached separately.
 _SKILLS_CACHE: dict = {}          # {cache_key: (signature, timestamp, skills_list)}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 _SKILLS_CACHE_KEY_DISABLED = "with_disabled"
@@ -105,35 +102,23 @@ _SKILLS_CACHE_KEY_FILTERED = "filtered"
 
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
-    """Cheap change-signature for the skill scan inputs.
+    """Return a cheap signature of the files considered by skill discovery.
 
-    O(#dirs + #categories) stat calls, not a recursive walk. Includes the
-    platform the scan's ``skill_matches_platform`` filter will use (read
-    from ``agent.skill_utils``'s ``sys`` so test patches of that module
-    are honored) — the scan result is platform-dependent.
+    Use the same recursive, exclusion-aware iterator as ``_find_all_skills`` so
+    additions and removals at any supported depth (including followed category
+    symlinks) invalidate the cache.  Only relative ``SKILL.md`` path names are
+    collected; file contents remain covered by the short TTL.
     """
     from agent import skill_utils as _skill_utils
 
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
     sig = []
     for d in dirs_to_scan:
-        try:
-            m = d.stat().st_mtime
-        except OSError:
-            continue
-        try:
-            with os.scandir(d) as it:
-                for entry in it:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            em = entry.stat(follow_symlinks=False).st_mtime
-                            if em > m:
-                                m = em
-                    except OSError:
-                        continue
-        except OSError:
-            pass
-        sig.append((str(d), m))
+        skill_paths = tuple(
+            os.path.relpath(skill_md, d)
+            for skill_md in _skill_utils.iter_skill_index_files(d, "SKILL.md")
+        )
+        sig.append((str(d), skill_paths))
     return (tuple(sig), frozenset(disabled), platform)
 
 

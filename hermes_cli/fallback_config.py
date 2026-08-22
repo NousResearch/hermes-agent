@@ -11,6 +11,21 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/")
 
 
+def _normalize_provider_id(value: str) -> str:
+    """Collapse provider aliases to the canonical id (lazy to avoid import cycles).
+
+    ``opencode-zen`` is the legacy pre-rename id of ``opencode``; ``zen`` is a
+    short alias. Without normalization, two fallback entries naming the same
+    backend under different ids are kept as separate slots, shifting the chain
+    and letting an alias slip past the same-backend skip (#85235).
+    """
+    try:
+        from hermes_cli.providers import normalize_provider
+    except Exception:  # pragma: no cover - import resilience
+        return value.lower()
+    return normalize_provider(value)
+
+
 def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     """API key for one fallback entry: inline ``api_key``, else ``key_env``.
 
@@ -71,7 +86,7 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        str(entry.get("provider") or "").strip().lower(),
+        _normalize_provider_id(str(entry.get("provider") or "").strip()),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )

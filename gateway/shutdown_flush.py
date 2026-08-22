@@ -397,16 +397,24 @@ def recover_pending_to_db(
             )
             recovered += 1
             path.unlink(missing_ok=True)
-        except BaseException:
-            # Shutdown cancellation/interrupt must not strand an owned DB.
-            _close_owned_db()
-            raise
         except Exception as exc:
+            # Ordinary failures (an unparseable payload, a rejected
+            # append, an unlink error) must only skip THIS file: one
+            # unrecoverable file would otherwise abort the whole pass, and
+            # since it is never unlinked it would strand every remaining
+            # message on every subsequent boot.  This handler must stay
+            # ABOVE the BaseException handler below — Exception is a
+            # BaseException subclass, so the reverse order makes this
+            # branch unreachable.
             logger.warning(
                 "Failed to recover pending message from %s: %s",
                 path, exc,
             )
             # Leave the file for next startup retry.
+        except BaseException:
+            # Shutdown cancellation/interrupt must not strand an owned DB.
+            _close_owned_db()
+            raise
 
     _close_owned_db()
 

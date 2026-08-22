@@ -133,6 +133,115 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     assert db.closed is True
 
 
+def _write_flush_file(flush_dir: Path, name: str, session_id: str, text: str) -> Path:
+    """Write one well-formed pending-message flush file."""
+    path = flush_dir / name
+    path.write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:supergroup:123",
+                "reason": "shutdown",
+                "ts": 1700000000,
+                "data": {"text": text, "session_id": session_id},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
+    """One unrecoverable file must not abort recovery of the others.
+
+    Recovery walks ``sorted(glob("*.json"))``, so a file that raises an
+    ordinary exception used to propagate out of the whole pass.  Because
+    that file is never unlinked it would then re-poison every subsequent
+    boot, stranding a different subset of messages each time.
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    bad = _write_flush_file(flush_dir, "pending-a.json", "sid-bad", "first")
+    good = _write_flush_file(flush_dir, "pending-b.json", "sid-good", "second")
+
+    class PartiallyFailingDB:
+        def __init__(self):
+            self.appended = []
+
+        def append_message(self, **kwargs):
+            if kwargs["session_id"] == "sid-bad":
+                raise RuntimeError("session is closed")
+            self.appended.append(kwargs["session_id"])
+
+    db = PartiallyFailingDB()
+    assert recover_pending_to_db(db) == 1
+    assert db.appended == ["sid-good"]
+    # The good file is consumed; the bad one is preserved for a retry.
+    assert not good.exists()
+    assert bad.exists()
+
+
+def test_recover_survives_unparseable_payload(tmp_path, monkeypatch):
+    """A corrupt flush file must be preserved, not abort the pass."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    corrupt = flush_dir / "pending-a-bad.json"
+    corrupt.write_text("not json", encoding="utf-8")
+    good = _write_flush_file(flush_dir, "pending-b-good.json", "sid-good", "kept")
+
+    mock_db = MagicMock()
+    assert recover_pending_to_db(mock_db) == 1
+    mock_db.append_message.assert_called_once_with(
+        session_id="sid-good",
+        role="user",
+        content="kept",
+        timestamp=1700000000,
+    )
+    assert not good.exists()
+    assert corrupt.exists()
+
+
+def test_recover_closes_owned_db_when_interrupt_follows_tolerated_error(
+    tmp_path, monkeypatch
+):
+    """Tolerating ordinary errors must not weaken the interrupt contract.
+
+    #83226's guarantee is that an interrupt closes an owned SessionDB and
+    propagates.  That must still hold on a pass where an earlier file
+    already failed with an ordinary exception and was skipped.
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    failed = _write_flush_file(flush_dir, "pending-a.json", "sid-bad", "first")
+    _write_flush_file(flush_dir, "pending-b.json", "sid-interrupt", "second")
+
+    class InterruptAfterErrorDB:
+        closed = False
+
+        def append_message(self, **kwargs):
+            if kwargs["session_id"] == "sid-bad":
+                raise RuntimeError("session is closed")
+            raise KeyboardInterrupt
+
+        def close(self):
+            self.closed = True
+
+    db = InterruptAfterErrorDB()
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+
+    with pytest.raises(KeyboardInterrupt):
+        recover_pending_to_db()
+
+    assert db.closed is True
+    # The tolerated failure is still on disk for the next startup.
+    assert failed.exists()
+
+
 def test_serialise_object_with_text():
     obj = MagicMock()
     obj.text = "msg"

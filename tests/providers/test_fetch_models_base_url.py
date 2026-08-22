@@ -42,6 +42,21 @@ def _start_server(models=None):
 class TestFetchModelsBaseUrlOverride:
     """fetch_models() should use caller-provided base_url when given."""
 
+    def test_fetch_model_metadata_preserves_catalog_fields(self):
+        models = [{"id": "model-a", "context_length": 40_960, "custom": True}]
+        server, port = _start_server(models)
+        try:
+            profile = ProviderProfile(
+                name="test",
+                models_url=f"http://127.0.0.1:{port}/models",
+            )
+
+            result = profile.fetch_model_metadata(api_key="test-key")
+
+            assert result == models
+        finally:
+            server.shutdown()
+
     def test_base_url_override_used(self):
         """When base_url is passed, it overrides self.base_url."""
         server, port = _start_server([{"id": "proxy-model-a"}])

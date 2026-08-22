@@ -29,12 +29,27 @@ from gateway.whatsapp_identity import (
 
 
 def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    """Read allowlist/auth env; prefer profile secret_scope under multiplex.
+
+    Under multiplex, when a profile scope is installed but does *not* contain
+    the requested key, return *default* instead of falling through to
+    ``os.environ``.  The process env may hold another profile's
+    first-writer-bridged value, so falling through would leak profile A's
+    allowlist into profile B (issue #80026).  Single-profile deployments
+    (no scope, or multiplex off) keep the legacy ``os.getenv`` fallback.
+    """
     if not name:
         return default
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
 
+        scope = current_secret_scope()
+        if scope is not None and is_multiplex_active():
+            val = scope.get(name)
+            if val is None:
+                return default
+            return str(val).strip()
+        # Single-profile: prefer scope value, fall back to env.
         val = get_secret(name)
         if val is not None and str(val).strip():
             return str(val).strip()

@@ -97,16 +97,6 @@ class TestAuthzAllowAllScope:
         finally:
             ss.reset_secret_scope(tok)
 
-    @pytest.mark.xfail(
-        reason=(
-            "gateway/authz_mixin.py still reads the platform allow-all flag via "
-            "_auth_env, which falls through to os.environ on a scoped miss; the "
-            "scope-authoritative gate (_platform_gate_env semantics) for the "
-            "remaining authz_mixin reads lands in a separate PR. Flips green "
-            "when that PR converts the allow-all read."
-        ),
-        strict=True,
-    )
     def test_scope_does_not_inherit_environ_opt_in(self, monkeypatch):
         # The PRIMARY profile opted in via os.environ; the secondary profile's
         # scope has no opt-in. The secondary must NOT inherit the primary's

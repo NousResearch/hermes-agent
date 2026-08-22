@@ -281,7 +281,7 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
 
     Returns one entry per profile home that has a ``gateway_state.json``
-    with a live PID::
+    whose persisted ``(pid, start_time)`` still identifies the live process::
 
         {"profile": str, "pid": int, "code_sha": str|None,
          "code_version": str|None, "state": "current"|"stale"|"unknown"}
@@ -301,7 +301,7 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
         expected_sha = None
 
     try:
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
         from hermes_cli.profiles import (
             _get_default_hermes_home,
             _get_profiles_root,
@@ -328,7 +328,7 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
                 pid = int(pid)
             except (TypeError, ValueError):
                 continue
-            if not _pid_exists(pid):
+            if not runtime_status_pid_is_live(record):
                 continue
             code_sha = record.get("code_sha")
             if not code_sha or not expected_sha:

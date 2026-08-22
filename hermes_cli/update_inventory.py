@@ -180,7 +180,7 @@ def collect_runtime_inventory() -> UpdatePlan:
     # --- per-profile gateways (PID files + runtime status stamps) ----------
     seen_pids: set[int] = set()
     try:
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
 
         for profile, home in profile_homes:
             record = read_runtime_status(home / "gateway_state.json")
@@ -193,7 +193,7 @@ def collect_runtime_inventory() -> UpdatePlan:
                     pid = None
                 code_sha = record.get("code_sha")
                 code_version = record.get("code_version")
-            if pid is None or not _pid_exists(pid):
+            if pid is None or not runtime_status_pid_is_live(record):
                 continue
             seen_pids.add(pid)
             supervisor = _detect_supervisor_for_pid(pid, service_pids)

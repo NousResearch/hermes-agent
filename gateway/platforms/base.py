@@ -4419,8 +4419,41 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to bundle into a single native API call
         (e.g. Signal's multi-attachment RPC)
         """
+        await self._send_multiple_images_individually(
+            chat_id=chat_id,
+            images=images,
+            metadata=metadata,
+            human_delay=human_delay,
+        )
+
+    async def _send_multiple_images_with_reply_anchor(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        reply_to: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send an image batch while anchoring each default-path upload."""
+        await self._send_multiple_images_individually(
+            chat_id=chat_id,
+            images=images,
+            reply_to=reply_to,
+            metadata=metadata,
+            human_delay=human_delay,
+        )
+
+    async def _send_multiple_images_individually(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+        reply_to: Optional[str] = None,
+    ) -> None:
         from urllib.parse import unquote as _unquote
 
+        reply_kwargs = {"reply_to": reply_to} if reply_to else {}
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -4436,6 +4469,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         image_path=_unquote(image_url[7:]),
                         caption=alt_text if alt_text else None,
+                        **reply_kwargs,
                         metadata=metadata,
                     )
                 elif self._is_animation_url(image_url):
@@ -4443,6 +4477,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         animation_url=image_url,
                         caption=alt_text if alt_text else None,
+                        **reply_kwargs,
                         metadata=metadata,
                     )
                 else:
@@ -4450,6 +4485,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         image_url=image_url,
                         caption=alt_text if alt_text else None,
+                        **reply_kwargs,
                         metadata=metadata,
                     )
                 if not img_result.success:
@@ -6455,6 +6491,12 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _reply_anchor = _reply_anchor_for_event(event)
+                _media_reply_kwargs = (
+                    {"reply_to": _reply_anchor}
+                    if self.platform == Platform.QQBOT and _reply_anchor
+                    else {}
+                )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -6532,6 +6574,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
+                            **_media_reply_kwargs,
                             metadata=_final_thread_metadata,
                         )
                         _record_delivery(tts_result)
@@ -6566,7 +6609,6 @@ class BasePlatformAdapter(ABC):
                         len(text_content),
                         event.source.chat_id,
                     )
-                    _reply_anchor = _reply_anchor_for_event(event)
                     # Delivery-obligation ledger: durably record the final
                     # response BEFORE the send attempt so a gateway crash
                     # between finalize and platform ACK can redeliver it on
@@ -6657,12 +6699,21 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=images,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
+                        if _media_reply_kwargs:
+                            await self._send_multiple_images_with_reply_anchor(
+                                chat_id=event.source.chat_id,
+                                images=images,
+                                **_media_reply_kwargs,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            )
+                        else:
+                            await self.send_multiple_images(
+                                chat_id=event.source.chat_id,
+                                images=images,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -6699,12 +6750,21 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=_batch,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
+                        if _media_reply_kwargs:
+                            await self._send_multiple_images_with_reply_anchor(
+                                chat_id=event.source.chat_id,
+                                images=_batch,
+                                **_media_reply_kwargs,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            )
+                        else:
+                            await self.send_multiple_images(
+                                chat_id=event.source.chat_id,
+                                images=_batch,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -6723,6 +6783,7 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
+                                **_media_reply_kwargs,
                                 metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
@@ -6735,12 +6796,14 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
+                                **_media_reply_kwargs,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
+                                **_media_reply_kwargs,
                                 metadata=_final_thread_metadata,
                             )
 
@@ -6765,12 +6828,14 @@ class BasePlatformAdapter(ABC):
                             file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
+                                **_media_reply_kwargs,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
+                                **_media_reply_kwargs,
                                 metadata=_final_thread_metadata,
                             )
                         if not file_result.success:

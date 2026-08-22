@@ -2179,9 +2179,12 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
     bytes exactly for forensics / manual restore. WAL and SHM sidecars are
     copied too when present. Returns ``(backup_path, None)`` on success or
     ``(None, reason)`` on failure — callers on the repair path treat a
-    refused backup as a HARD STOP (see #69603: proceeding without the
-    pre-repair backup leaves the writable_schema surgery, FTS deletion and
-    VACUUM strategies mutating the only remaining copy of the damaged DB).
+    refused backup as a HARD STOP (see #69603). The repair strategies no
+    longer mutate the original (they run on a scratch copy), but a refusal
+    still means a live connection to this file exists in-process, which makes
+    both staging a raw copy and swapping the file out from under that handle
+    unsafe — and the forensic copy remains the last resort when the
+    corruption defeats every strategy.
 
     Refuses when a connection to this database is still live in the process:
     reading the file would ``close()`` a descriptor for it and cancel that
@@ -2800,10 +2803,12 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         # Persist the outcome AFTER surgery, keyed on the post-attempt
         # fingerprint — that is the file state the NEXT attempt's exhaustion
         # probe will observe. Failures count toward the cross-restart cap;
-        # success clears the ledger. (A failing strategy that mutates the
-        # file re-keys the ledger and restarts the count: that keeps a
-        # genuinely NEW corruption event from inheriting a stale budget,
-        # while the backup dedupe/cap above bounds the disk cost either way.)
+        # success clears the ledger. A FAILED attempt now leaves the file
+        # byte-for-byte unchanged (the strategies run on a scratch copy), so
+        # the fingerprint is stable across attempts and the budget actually
+        # accumulates instead of being re-keyed by the damage each pass did.
+        # A genuinely new corruption event still changes the fingerprint and
+        # gets its own budget.
         _record_repair_outcome(db_path, repaired=bool(result.get("repaired")))
         return result
 
@@ -2814,6 +2819,30 @@ def _repair_state_db_schema_locked(
     """Repair strategies for :func:`repair_state_db_schema`.
 
     Caller must hold the cross-process repair lock for *db_path*.
+
+    The strategies run on a SCRATCH COPY and the result is swapped over
+    *db_path* only once it is proven to open cleanly. A repair that does not
+    succeed therefore leaves the database byte-for-byte unchanged — which is
+    what :func:`repair_state_db_schema`'s docstring already promises
+    ("canonical ``sessions`` / ``messages`` rows are never modified").
+
+    They used to run in place, and Strategy 2 ends in ``VACUUM``. VACUUM does
+    not preserve what it cannot parse: it rebuilds the file from the schema
+    SQLite can still read, so when the damage IS in the schema b-tree — page
+    1's child pointers resolving to data pages, which is exactly the
+    ``malformed database schema ()`` class this function exists to handle —
+    every table hanging off the unreadable part is silently dropped. The probe
+    afterwards then correctly reports the file is STILL malformed, so the
+    function returns ``repaired=False`` and advises a manual restore, having
+    already destroyed the thing it was asked to save. Destroying the data and
+    reporting the repair failed are not mutually exclusive outcomes, and
+    nothing here treated them as a contradiction.
+
+    The pre-repair backup (#69603) does not close this: it is a forensic
+    artefact that nothing reads back, so recovery still depends on a human
+    noticing a ``.malformed-backup-*`` file and knowing what to do with it.
+    Not mutating the original in the first place is the property that holds
+    without a human in the loop.
     """
     # Re-probe under the lock: a process we queued behind may have just
     # repaired the file, in which case redoing the surgery would undo its
@@ -2828,12 +2857,14 @@ def _repair_state_db_schema_locked(
         bpath, backup_error = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
         if bpath is None:
-            # HARD STOP (#69603): every strategy below mutates the damaged
-            # file in place (FTS rebuild, REINDEX, writable_schema surgery,
-            # VACUUM). Without the pre-repair backup, the damaged DB is the
-            # only copy of the user's data — a failed or interrupted repair
-            # would then be unrecoverable. Abort and surface the reason
-            # instead of proceeding fail-open.
+            # HARD STOP (#69603). Kept even though the strategies no longer
+            # mutate the original: `_backup_db_file` refuses when a live
+            # connection to this file exists in-process, and staging a raw
+            # copy would cancel that connection's POSIX advisory locks just
+            # as the backup copy would — while swapping the file out from
+            # under a live handle is its own hazard. The forensic copy is
+            # also still worth having when the corruption defeats every
+            # strategy.
             report["error"] = (
                 "pre-repair backup refused; aborting schema repair to avoid "
                 f"mutating the only copy of the damaged DB: {backup_error}"
@@ -2841,6 +2872,80 @@ def _repair_state_db_schema_locked(
             logger.error("state.db repair aborted: %s", report["error"])
             return report
 
+    import shutil
+
+    scratch = db_path.with_name(f"{db_path.name}.repair-scratch")
+    try:
+        _unlink_db_triple(scratch)
+        shutil.copy2(db_path, scratch)
+    except OSError as exc:
+        report["error"] = f"could not stage a repair copy of {db_path}: {exc}"
+        logger.error("state.db repair aborted: %s", report["error"])
+        _unlink_db_triple(scratch)
+        return report
+
+    try:
+        _run_repair_strategies(scratch, report)
+        if report.get("repaired"):
+            # Proven to open cleanly, so promote it. os.replace is atomic:
+            # a crash here leaves either the original or the repaired file,
+            # never a torn mixture of the two.
+            os.replace(scratch, db_path)
+            # The original's sidecars describe the file we just replaced.
+            # Leaving them would hand the next open a WAL whose frames refer
+            # to pages that no longer exist.
+            for suffix in ("-wal", "-shm"):
+                try:
+                    db_path.with_name(db_path.name + suffix).unlink()
+                except (FileNotFoundError, OSError):
+                    pass
+            logger.warning(
+                "state.db repaired via '%s' and swapped in: %s",
+                report.get("strategy"),
+                db_path,
+            )
+        else:
+            # Logged HERE, not inside the strategies: they run against the
+            # scratch copy, and naming that throwaway path in the one message
+            # a human is meant to act on would send them to a file that no
+            # longer exists by the time they read it.
+            logger.error(
+                "state.db schema repair could not recover %s automatically "
+                "(the original is left byte-for-byte unchanged; backup: %s); "
+                "manual restore from backup may be required.",
+                db_path,
+                report["backup_path"],
+            )
+        return report
+    finally:
+        # Never leave a half-repaired file beside the DB for a later probe —
+        # or a later human — to mistake for the real thing.
+        _unlink_db_triple(scratch)
+
+
+def _unlink_db_triple(path: Path) -> None:
+    """Remove *path* and its ``-wal`` / ``-shm`` sidecars. Best effort."""
+    for victim in (
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ):
+        try:
+            victim.unlink()
+        except (FileNotFoundError, OSError):
+            pass
+
+
+def _run_repair_strategies(
+    db_path: Path, report: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Escalating repair attempts, applied to *db_path* IN PLACE.
+
+    Every strategy here mutates its argument — FTS rebuild, REINDEX,
+    ``writable_schema`` surgery, ``VACUUM``. It is therefore only ever called
+    by :func:`_repair_state_db_schema_locked` on a scratch copy that nothing
+    else holds open, never on the user's database.
+    """
     # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
     # The FTS5 'rebuild' command rewrites the internal index from the canonical
     # content table. This is the recommended, least-destructive recovery for a
@@ -2934,6 +3039,13 @@ def _repair_state_db_schema_locked(
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
     # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    #
+    # The destructive one, and the reason this whole path now runs on a
+    # scratch copy. VACUUM rebuilds the file from the schema SQLite can still
+    # parse, so on a damaged schema b-tree it silently drops every table
+    # hanging off the unreadable part — and the probe below then correctly
+    # reports the result is still malformed. On a scratch copy that is merely
+    # a discarded attempt; on the live file it was data loss.
     try:
         conn = _connect_repair_durable(db_path)
         try:
@@ -2962,12 +3074,8 @@ def _repair_state_db_schema_locked(
     except sqlite3.DatabaseError as exc:
         report["error"] = str(exc)
 
-    if not report["repaired"]:
-        logger.error(
-            "state.db schema repair could not recover %s automatically "
-            "(backup: %s); manual restore from backup may be required.",
-            db_path, report["backup_path"],
-        )
+    # The "could not recover" log lives in the caller: it must name the user's
+    # database, not the scratch copy these strategies were handed.
     return report
 
 

@@ -1377,6 +1377,26 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             print(f"   Tokens saved:       min={min(tokens_saved_list):,}, max={max(tokens_saved_list):,}, median={sorted(tokens_saved_list)[len(tokens_saved_list)//2]:,}")
 
 
+def _reject_in_place_output(input_path: Path, output_path: Path) -> bool:
+    """Return True (and print an error) if *output* aliases *input*.
+
+    Resolving both paths catches hardlinks/symlinks that string comparison
+    would miss, so compressing to the same file can never truncate the source.
+    """
+    try:
+        same = output_path.resolve() == input_path.resolve()
+    except OSError:
+        # Fall back to lexical comparison if resolution fails (e.g. parent
+        # dir missing); a missing output parent can't be the input file.
+        same = output_path == input_path
+    if same:
+        print(
+            f"❌ Output path resolves to the input path ({input_path}); "
+            "refusing to overwrite the source dataset. Choose a different output."
+        )
+    return same
+
+
 def main(
     input: str,
     output: str = None,
@@ -1462,6 +1482,8 @@ def main(
             output_path = Path(output)
         else:
             output_path = input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
+        if _reject_in_place_output(input_path, output_path):
+            return
         
         # Load entries from the single file
         entries = []
@@ -1532,6 +1554,8 @@ def main(
             output_path = Path(output)
         else:
             output_path = input_path.parent / (input_path.name + compression_config.output_suffix)
+        if _reject_in_place_output(input_path, output_path):
+            return
         
         # If sampling is requested for directory mode, we need to handle it differently
         if sample_percent is not None:

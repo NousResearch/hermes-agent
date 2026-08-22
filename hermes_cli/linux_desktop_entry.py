@@ -57,6 +57,25 @@ def icon_path(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "assets" / "icon.png"
 
 
+def _running_interpreter() -> Path:
+    """The interpreter to name in ``Exec=``: absolute, but NOT symlink-resolved.
+
+    ``sys.executable`` inside a venv is normally a *symlink* to the base
+    interpreter -- that is the default for ``python -m venv`` on POSIX and
+    for ``uv venv``.  Following it (``Path(...).resolve()``) lands on the
+    base interpreter, which has none of the venv's site-packages, so a
+    ``.desktop`` entry built from it dies on ``import hermes_cli`` the
+    moment the desktop environment launches it -- silently, because the
+    entry sets ``Terminal=false`` (#92086).
+
+    ``abspath`` gives the absolute path the entry needs without leaving the
+    environment that can actually run Hermes.  The venv's ``bin/python``
+    *is* the right answer here; it is only a symlink in the filesystem
+    sense.
+    """
+    return Path(os.path.abspath(sys.executable))
+
+
 def resolve_exec_command() -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
@@ -78,11 +97,11 @@ def resolve_exec_command() -> str:
             # third-party import (#90292) — silently, since Terminal=false.
             # sys.executable is the interpreter actually running Hermes (the
             # venv one), so prefix it explicitly.
-            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+            argv = [str(_running_interpreter()), str(resolved), "desktop"]
         else:
             argv = [str(resolved), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        argv = [str(_running_interpreter()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
 
 
@@ -106,8 +125,23 @@ def _needs_interpreter(bin_path: Path) -> bool:
     # A python shebang pointing INSIDE the running interpreter's environment
     # already resolves correctly; anything else (``/usr/bin/env python3``,
     # a system path) would escape the venv when spawned by the DE.
-    exe_dir = str(Path(sys.executable).resolve().parent)
-    return exe_dir not in shebang
+    #
+    # Both spellings of "inside" count.  A console script installed into a
+    # venv carries the venv's own ``bin/python`` in its shebang, while a
+    # script installed against the base interpreter carries the resolved
+    # one.  Comparing against only the resolved form -- what this did
+    # before #92086 -- classified a correct venv shebang as foreign,
+    # because ``sys.executable`` resolves out of the venv through its
+    # symlink.  The entry then got an interpreter prefix it did not need,
+    # naming the interpreter that cannot import Hermes.
+    # ``shebang`` was lowercased above, so lowercase this side too. Without
+    # that, an install path carrying any uppercase (``/home/User/...``, or
+    # anything on Windows) never matched and every wrapper was classified as
+    # foreign.
+    for candidate in (_running_interpreter(), Path(sys.executable).resolve()):
+        if str(candidate.parent).lower() in shebang:
+            return False
+    return True
 
 
 def _quote_exec_arg(arg: str) -> str:

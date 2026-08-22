@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 import pytest
+import sys
 
 from hermes_cli import linux_desktop_entry as lde
 
@@ -94,6 +95,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
 # silent (Terminal=false). The Exec line must prefix sys.executable for any
 # resolved bin that is a python script escaping the running venv.
 def test_exec_prefixes_interpreter_for_env_shebang_python_script(tmp_path, xdg_home, monkeypatch):
+    import os
     import sys
 
     root = _make_project(tmp_path)
@@ -107,7 +109,14 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(tmp_path, xdg_h
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    interpreter = str(Path(sys.executable).resolve())
+    # Deliberately NOT ``Path(sys.executable).resolve()``. That was this
+    # assertion before #92086, and it is the bug: on POSIX a venv's
+    # ``bin/python`` is a symlink to the base interpreter, so resolving it
+    # named an interpreter without ``hermes_cli`` and the test agreed with
+    # the code. Written independently of the implementation, from what the
+    # Exec line is FOR -- an absolute path to an interpreter that can import
+    # Hermes -- rather than by calling the helper back.
+    interpreter = os.path.abspath(sys.executable)
     assert exec_line.split(" ")[0].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
@@ -135,6 +144,13 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
+    # Despite this test's name, `.resolve()` is the BASE interpreter on any
+    # POSIX venv -- `bin/python` is a symlink to it (#92086), which is how
+    # this test managed to pass against the bug it looks like it covers.
+    # Kept as-is, because a console script installed against the base
+    # interpreter is a real case that must keep working. The venv spelling
+    # the name promises is covered by
+    # `test_needs_interpreter_accepts_a_shebang_naming_the_venv_python`.
     interpreter = str(Path(sys.executable).resolve())
     hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
@@ -264,3 +280,137 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line == f'"{spaced}" desktop'
+
+# ── #92086: sys.executable is a symlink inside a venv ───────────────────────
+#
+# `python -m venv` on POSIX and `uv venv` both create `bin/python` as a
+# SYMLINK to the base interpreter. Resolving it leaves the venv, and the base
+# interpreter has none of the venv's site-packages -- so a `.desktop` entry
+# built from the resolved path dies on `import hermes_cli`, silently, because
+# the entry sets Terminal=false.
+#
+# These tests drive `resolve_exec_command` / `_needs_interpreter` directly
+# rather than through `install_desktop_entry`, so they assert on the decision
+# instead of on a rendered Exec line with platform-specific quoting.
+
+
+def _symlinked_venv(tmp_path):
+    """A base interpreter plus a venv whose `python` is a symlink to it."""
+    import os
+
+    # Deliberately mixed-case: `_needs_interpreter` lowercases the shebang it
+    # reads, so an install path with any uppercase in it is where a
+    # case-blind comparison stops matching.
+    base_dir = tmp_path / "Uv" / "cpython-3.11" / "bin"
+    base_dir.mkdir(parents=True)
+    base = base_dir / "python3.11"
+    base.write_text("", encoding="utf-8")
+
+    venv_dir = tmp_path / "Projects" / "venv" / "bin"
+    venv_dir.mkdir(parents=True)
+    venv = venv_dir / "python"
+    try:
+        os.symlink(base, venv)
+    except (OSError, NotImplementedError) as exc:  # unprivileged Windows
+        pytest.skip(f"symlinks unavailable: {exc}")
+    return base, venv
+
+
+def test_running_interpreter_keeps_the_venv_python(tmp_path, monkeypatch):
+    """The whole bug in one assertion.
+
+    `Path(sys.executable).resolve()` answers with the base interpreter, which
+    cannot import `hermes_cli`. The venv's own `bin/python` can, and it is
+    what belongs in `Exec=`.
+    """
+    base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+
+    assert lde._running_interpreter() == Path(venv)
+    assert Path(sys.executable).resolve() == Path(base).resolve(), (
+        "precondition: this venv python really does resolve out of the venv"
+    )
+
+
+def test_needs_interpreter_accepts_a_shebang_naming_the_venv_python(
+    tmp_path, monkeypatch
+):
+    """A console script installed INTO the venv is already correct.
+
+    Before #92086 this answered True: the shebang named the venv's `bin`, the
+    comparison used the resolved base `bin`, they did not match, and the entry
+    was prefixed with an interpreter that cannot import Hermes.
+    """
+    _base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+
+    script = tmp_path / "local-bin" / "hermes"
+    script.parent.mkdir()
+    script.write_text(f"#!{venv}\nfrom hermes_cli.main import main\n", encoding="utf-8")
+
+    assert lde._needs_interpreter(script) is False
+
+
+def test_needs_interpreter_accepts_a_shebang_naming_the_resolved_interpreter(
+    tmp_path, monkeypatch
+):
+    """Both spellings of "inside this environment" still count.
+
+    A script installed against the base interpreter carries the resolved path,
+    and that was always accepted. Widening the check must not narrow it.
+    """
+    base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+
+    script = tmp_path / "local-bin" / "hermes"
+    script.parent.mkdir()
+    script.write_text(f"#!{base}\nfrom hermes_cli.main import main\n", encoding="utf-8")
+
+    assert lde._needs_interpreter(script) is False
+
+
+def test_needs_interpreter_still_flags_env_python3(tmp_path, monkeypatch):
+    """#90292 must keep working: a foreign shebang still gets the prefix."""
+    _base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+
+    script = tmp_path / "checkout" / "hermes"
+    script.parent.mkdir()
+    script.write_text(
+        "#!/usr/bin/env python3\nfrom hermes_cli.main import main\n", encoding="utf-8"
+    )
+
+    assert lde._needs_interpreter(script) is True
+
+
+def test_exec_prefix_names_the_venv_python_not_its_target(tmp_path, monkeypatch):
+    """The prefixed form must carry the interpreter that has hermes_cli."""
+    base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+
+    script = tmp_path / "checkout" / "hermes"
+    script.parent.mkdir()
+    script.write_text(
+        "#!/usr/bin/env python3\nfrom hermes_cli.main import main\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(script)
+    )
+
+    exec_command = lde.resolve_exec_command()
+
+    assert lde._quote_exec_arg(str(venv)) in exec_command
+    assert str(base) not in exec_command
+
+
+def test_module_fallback_names_the_venv_python_too(tmp_path, monkeypatch):
+    """The no-launcher branch builds from sys.executable as well."""
+    base, venv = _symlinked_venv(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(venv))
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+
+    exec_command = lde.resolve_exec_command()
+
+    assert lde._quote_exec_arg(str(venv)) in exec_command
+    assert str(base) not in exec_command
+    assert "-m hermes_cli.main" in exec_command

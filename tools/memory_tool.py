@@ -1097,7 +1097,7 @@ def memory_tool(
 
     Two shapes:
       - Single op: action + (content / old_text).
-      - Batch:     operations=[{action, content?, old_text?}, ...] applied
+      - Batch:     operations=[{action, content, old_text}, ...] applied
                    atomically against the final char budget in ONE call.
 
     ``new_text`` is accepted as an alias for ``content`` on both shapes. The
@@ -1129,7 +1129,7 @@ def memory_tool(
     # --- Batch path -------------------------------------------------------
     if operations:
         if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+            return tool_error("operations must be a list of {action, content, old_text} objects.", success=False)
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
@@ -1265,7 +1265,8 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "{action, content, old_text}; use an empty string when a field does not apply). The "
+        "batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
@@ -1313,17 +1314,18 @@ MEMORY_SCHEMA = {
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "or consolidating to make room. Every item must include action, content, "
+                    "and old_text; use an empty string when content or old_text does not apply."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. Alias: 'new_text'."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. Use an empty string for remove. Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
-                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove. Use an empty string for add."},
                     },
-                    "required": ["action"],
+                    "required": ["action", "content", "old_text"],
                 },
             },
         },
@@ -1388,7 +1390,6 @@ registry.register(
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,
 )
-
 
 
 

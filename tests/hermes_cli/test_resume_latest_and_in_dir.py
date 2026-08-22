@@ -229,3 +229,153 @@ def test_in_dir_expands_user_home(main_mod, launched, monkeypatch, tmp_path):
         assert os.getcwd() == str((home / "proj").resolve())
     finally:
         os.chdir(start)
+
+
+def test_in_dir_overrides_inherited_terminal_cwd(
+    main_mod, launched, monkeypatch, tmp_path
+):
+    """A relay's explicit --in must beat its worker parent's TERMINAL_CWD."""
+    import os
+
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    relay_home = tmp_path / "relay-home"
+    worker_workspace = tmp_path / "kanban" / "boards" / "other" / "workspaces" / "t_old"
+    relay_home.mkdir()
+    worker_workspace.mkdir(parents=True)
+    monkeypatch.setenv("TERMINAL_CWD", str(worker_workspace))
+    start = os.getcwd()
+
+    try:
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(in_dir=str(relay_home)))
+        assert os.getcwd() == str(relay_home)
+        assert resolve_agent_cwd() == relay_home
+    finally:
+        os.chdir(start)
+
+
+def test_dispatcher_workspace_overrides_resumed_session_cwd(
+    main_mod, launched, monkeypatch, tmp_path
+):
+    """A dispatcher-owned run stays in its current task workspace on resume."""
+    import os
+
+    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "current-board" / "workspaces" / "t_current"
+    saved = tmp_path / "other-board" / "workspaces" / "t_stale"
+    home.mkdir()
+    workspace.mkdir(parents=True)
+    saved.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_current")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+    db = SessionDB()
+    db.create_session("resume-me", source="cli", cwd=str(saved))
+    db.close()
+    start = os.getcwd()
+
+    try:
+        monkeypatch.chdir(workspace)
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(resume="resume-me"))
+        assert os.getcwd() == str(workspace)
+        assert resolve_agent_cwd() == workspace
+    finally:
+        os.chdir(start)
+
+
+def test_resume_restores_existing_saved_cwd(main_mod, launched, monkeypatch, tmp_path):
+    import os
+
+    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    launch = tmp_path / "launch"
+    saved = tmp_path / "saved"
+    home.mkdir()
+    launch.mkdir()
+    saved.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    db = SessionDB()
+    db.create_session("resume-me", source="cli", cwd=str(saved))
+    db.close()
+    start = os.getcwd()
+
+    try:
+        monkeypatch.chdir(launch)
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(resume="resume-me"))
+        assert os.getcwd() == str(saved)
+        assert resolve_agent_cwd() == saved
+    finally:
+        os.chdir(start)
+
+
+def test_resume_saved_cwd_overrides_inherited_terminal_cwd(
+    main_mod, launched, monkeypatch, tmp_path
+):
+    """Process cwd and the runtime resolver must agree after a normal resume."""
+    import os
+
+    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    launch = tmp_path / "launch"
+    inherited = tmp_path / "inherited"
+    saved = tmp_path / "saved"
+    for directory in (home, launch, inherited, saved):
+        directory.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(inherited))
+    db = SessionDB()
+    db.create_session("resume-me", source="cli", cwd=str(saved))
+    db.close()
+    start = os.getcwd()
+
+    try:
+        monkeypatch.chdir(launch)
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(resume="resume-me"))
+        assert os.getcwd() == str(saved)
+        assert resolve_agent_cwd() == saved
+    finally:
+        os.chdir(start)
+
+
+def test_resume_with_missing_saved_cwd_stays_put_without_creating_it(
+    main_mod, launched, monkeypatch, tmp_path
+):
+    import os
+
+    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_state import SessionDB
+
+    home = tmp_path / "home"
+    launch = tmp_path / "launch"
+    missing = tmp_path / "kanban" / "boards" / "bogus" / "workspaces" / "t_old"
+    home.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    db = SessionDB()
+    db.create_session("resume-me", source="cli", cwd=str(missing))
+    db.close()
+    start = os.getcwd()
+
+    try:
+        monkeypatch.chdir(launch)
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(resume="resume-me"))
+        assert os.getcwd() == str(launch)
+        assert resolve_agent_cwd() == launch
+        assert not missing.exists()
+    finally:
+        os.chdir(start)

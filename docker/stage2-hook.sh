@@ -442,19 +442,75 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # volume), never overwrite an operator-provided value. Loopback-only: the
 # default bind host is 127.0.0.1 and the Fly service only exposes the
 # dashboard's port, so this listener is never publicly reachable.
-if [ -f "$HERMES_HOME/.env" ] && ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
+#
+# CREATE .env when it is missing rather than requiring it to exist (OOF-285):
+# the first-boot seed above depends on /opt/hermes/.env.example being present
+# in the image, and when it isn't (the .dockerignore excluded it for a long
+# stretch of releases) seed_one is a silent no-op, no .env ever exists, this
+# keygen never ran, the api_server never started, and every scheduled cron
+# fire on the instance was silently lost. The key must not depend on the
+# example-file seed having worked.
+#
+# OPERATOR-PROVIDED KEYS WIN: if the container environment already carries
+# API_SERVER_KEY (documented `docker run -e API_SERVER_KEY=...` flow), do
+# not generate one. Hermes loads $HERMES_HOME/.env with override=True, so
+# a generated key written here would silently SHADOW the operator's env
+# key and 401 every client still using the supplied credential.
+if [ -n "${API_SERVER_KEY:-}" ]; then
+    if [ -f "$HERMES_HOME/.env" ] && grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
+        echo "[stage2] Warning: API_SERVER_KEY is set in both the container environment and $HERMES_HOME/.env — the .env value wins at runtime (loaded with override=True)"
+    else
+        # The env key is the effective key on this boot (no .env key wins
+        # over it). The api_server startup guard refuses keys shorter than
+        # 16 chars; since this branch skips generation, a weak operator key
+        # means the server stays DOWN (cron fires lost), not just 401s.
+        # Warn where the operator will look — the boot log. Checked only in
+        # this branch: when a strong .env key wins at runtime, the warning
+        # would be false (the server does start).
+        if [ "${#API_SERVER_KEY}" -lt 16 ]; then
+            echo "[stage2] Warning: container-provided API_SERVER_KEY is shorter than 16 characters — the gateway api_server will refuse to start (cron fires unavailable). Generate a strong secret, e.g. \`openssl rand -hex 32\`."
+        fi
+        # A stale empty `API_SERVER_KEY=` line (left by an old seed) would
+        # clobber the container-provided key at runtime: .env is loaded with
+        # override=True and python-dotenv sets the empty string, which fails
+        # the api_server's startup guard — the exact silent-cron-loss symptom
+        # this hook exists to prevent. Drop it so the operator key wins.
+        if [ -f "$HERMES_HOME/.env" ] && ! refuse_symlinked_path "clean" "$HERMES_HOME/.env"; then
+            sed -i '/^API_SERVER_KEY=$/d' "$HERMES_HOME/.env" 2>/dev/null || true
+        fi
+        echo "[stage2] API_SERVER_KEY provided via container environment — skipping generation"
+    fi
+elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
     if refuse_symlinked_path "append" "$HERMES_HOME/.env"; then
         :
     else
-        _gen_key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
-        if [ -n "$_gen_key" ]; then
-            # Drop an empty assignment line if the seed left one behind, then
-            # append the generated key.
-            sed -i '/^API_SERVER_KEY=$/d' "$HERMES_HOME/.env" 2>/dev/null || true
-            printf 'API_SERVER_KEY=%s\n' "$_gen_key" >> "$HERMES_HOME/.env"
-            echo "[stage2] Generated API_SERVER_KEY for the loopback gateway api_server"
+        if [ ! -f "$HERMES_HOME/.env" ]; then
+            # Create an empty, owner-only .env so the append below (and any
+            # later runtime save_env_value writes) have a durable target.
+            # Created under a restrictive umask so the file is 0600 from the
+            # first instant — no touch→chmod window, and no dependence on a
+            # silenced chmod succeeding. The chown/chmod block below still
+            # re-tightens perms every boot.
+            (umask 077 && as_hermes touch "$HERMES_HOME/.env") 2>/dev/null || true
         fi
-        unset _gen_key
+        if [ -f "$HERMES_HOME/.env" ]; then
+            _gen_key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+            if [ -n "$_gen_key" ]; then
+                # Drop an empty assignment line if the seed left one behind,
+                # then append the generated key. The append is guarded: on a
+                # read-only volume / full disk it must degrade to the warning
+                # below, not abort the whole stage2 hook under `set -e`.
+                sed -i '/^API_SERVER_KEY=$/d' "$HERMES_HOME/.env" 2>/dev/null || true
+                if printf 'API_SERVER_KEY=%s\n' "$_gen_key" >> "$HERMES_HOME/.env" 2>/dev/null; then
+                    echo "[stage2] Generated API_SERVER_KEY for the loopback gateway api_server"
+                else
+                    echo "[stage2] Warning: could not write API_SERVER_KEY to $HERMES_HOME/.env (read-only volume?) — gateway api_server (cron fires) will be unavailable"
+                fi
+            fi
+            unset _gen_key
+        else
+            echo "[stage2] Warning: could not create $HERMES_HOME/.env — gateway api_server (cron fires) will be unavailable"
+        fi
     fi
 fi
 
@@ -467,6 +523,29 @@ if [ -f "$HERMES_HOME/.env" ]; then
     else
         chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+    fi
+fi
+
+# --- Grant the gateway access to the Fly Machines API socket (scale-to-zero) ---
+# On Fly, flyd mounts the local Machines API ("flaps") unix socket at /.fly/api
+# owned root:root 0755. The gateway's scale-to-zero self-suspend
+# (gateway/scale_to_zero.py suspend_self) must POST to it, but the gateway runs
+# as the unprivileged `hermes` user — without this it gets EACCES on every
+# suspend attempt and the machine can never sleep (fail-awake; verified live on
+# staging 2026-08-20: "flaps suspend request failed: [Errno 13]"). This hook
+# runs as root before user services (the gateway) start, so grant group access
+# here. Scope note: group-write exposes the WHOLE local Machines API to the
+# hermes group (any group member could e.g. stop/suspend this machine), not
+# just the suspend endpoint — accepted because the agent already executes
+# arbitrary user code as that same principal and the socket only controls THIS
+# machine. No-op off Fly (socket absent).
+if [ -S /.fly/api ]; then
+    if refuse_symlinked_path "chgrp/chmod" /.fly/api; then
+        :
+    elif chgrp hermes /.fly/api 2>/dev/null && chmod g+w /.fly/api 2>/dev/null; then
+        echo "[stage2] Granted hermes group access to the Fly Machines API socket"
+    else
+        echo "[stage2] Warning: could not grant group access to /.fly/api — scale-to-zero self-suspend will fail EACCES (fail-awake)"
     fi
 fi
 

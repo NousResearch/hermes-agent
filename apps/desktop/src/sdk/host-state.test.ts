@@ -129,6 +129,56 @@ describe('host.state focused-session atoms', () => {
   })
 })
 
+describe('host.state.focusedSessionProfile', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const { host } = await import('@/sdk/index')
+    const profile = await import('@/store/profile')
+    const session = await import('@/store/session')
+    const states = await import('@/store/session-states')
+
+    return { host, profile, session, states }
+  }
+
+  it('is a readonly atom that falls back to the gateway profile with no focused session', async () => {
+    const { host, profile } = await setup()
+
+    expect(typeof host.state.focusedSessionProfile.get).toBe('function')
+    expect(typeof host.state.focusedSessionProfile.listen).toBe('function')
+
+    profile.$activeGatewayProfile.set('newsanalyst')
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+    profile.$activeGatewayProfile.set('default')
+  })
+
+  it('resolves the focused session to the owner stamped on its session row, not the socket home', async () => {
+    const { host, profile, session } = await setup()
+
+    // The gateway socket is homed on default (e.g. cold start), but the chat
+    // on screen belongs to newsanalyst — the readout must say newsanalyst.
+    profile.$activeGatewayProfile.set('default')
+    session.$sessions.set([{ id: 'news-1', profile: 'newsanalyst' } as never])
+    session.$selectedStoredSessionId.set('news-1')
+
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+
+    // An uncached/unstamped id inherits the gateway profile (the old ladder).
+    session.$selectedStoredSessionId.set('unknown-id')
+    expect(host.state.focusedSessionProfile.get()).toBe('default')
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+})
+
 describe('host.state busy vs gateway', () => {
   afterEach(() => {
     $sessionStates.set({})

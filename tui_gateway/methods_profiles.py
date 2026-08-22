@@ -109,6 +109,7 @@ def _(rid, params: dict) -> dict:
                 return {
                     "id": session_id,
                     "resolved_id": tip,
+                    "root_title": row.get("title") or "",
                     "title": tip_row.get("title") or "",
                     "preview": preview,
                     "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
@@ -128,29 +129,47 @@ def _(rid, params: dict) -> dict:
         except Exception:
             return None
 
-    def _latest_profile_session_row(profile_path):
-        """Most recent human-facing session in a profile's state.db, or None.
+    def _latest_profile_session_rows(profile_path):
+        """(newest human-facing session, newest worker session) for a profile.
 
-        Mirrors session.list's deny-list (drops ``tool`` sub-agent rows and
-        ``kanban`` dispatcher workers).  Best-effort: any failure (missing
-        state.db, locked db, older schema) degrades to None rather than
-        failing the whole profiles.list call.
+        First element mirrors session.list's deny-list (drops ``tool``
+        sub-agent rows and ``kanban`` dispatcher workers). Second element is
+        the newest DENIED row — the freshest kanban/tool worker — so roster
+        UIs can show that a profile is actively working even though worker
+        sessions never surface in conversation lists (hermes-agent#90268).
+        Workers heartbeat ``last_activity_at`` every ≤60s while running
+        (#72016), so a live worker's ``last_active`` stays fresh and the
+        client can apply its own liveness window. Best-effort: any failure
+        (missing state.db, locked db, older schema) degrades to (None, None)
+        rather than failing the whole profiles.list call.
         """
         try:
             from pathlib import Path
 
             db_path = Path(profile_path) / "state.db"
             if not db_path.exists():
-                return None
+                return None, None
             from hermes_state import SessionDB
 
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
+                human = None
+                worker = None
                 for s in db.list_sessions_rich(
                     source=None, limit=20, order_by_last_active=True, compact_rows=True
                 ):
-                    if (s.get("source") or "").strip().lower() in deny:
+                    src = (s.get("source") or "").strip().lower()
+                    if src in deny:
+                        if worker is None:
+                            worker = {
+                                "id": s["id"],
+                                "source": src,
+                                "title": s.get("title") or "",
+                                "last_active": s.get("last_active") or s.get("started_at") or 0,
+                            }
+                        continue
+                    if human is not None:
                         continue
                     row = {
                         "id": s["id"],
@@ -170,15 +189,17 @@ def _(rid, params: dict) -> dict:
                             row["preview"] = latest
                     except Exception:
                         pass
-                    return row
+                    human = row
+                    if worker is not None:
+                        break
+                return human, worker
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
         except Exception:
-            return None
-        return None
+            return None, None
 
     try:
         from hermes_cli.profiles import list_profiles
@@ -204,7 +225,12 @@ def _(rid, params: dict) -> dict:
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:
-                row["last_session"] = _latest_profile_session_row(p.path)
+                last_row, worker_row = _latest_profile_session_rows(p.path)
+                row["last_session"] = last_row
+                # Freshest kanban/tool worker (or None) — lets rosters count
+                # a profile as active while its worker runs (#90268). Older
+                # clients ignore the extra field.
+                row["worker_session"] = worker_row
                 pin = preferred_ids.get(p.name)
                 if isinstance(pin, str) and pin.strip():
                     row["preferred_session"] = _preferred_session_row(p.path, pin.strip())
@@ -217,12 +243,22 @@ def _(rid, params: dict) -> dict:
                 from pathlib import Path as _Path
 
                 meta_path = _Path(str(p.path)) / "profile.yaml"
+                # Presence of this field feature-detects gateway-owned CAS,
+                # including a brand-new profile whose revision map is empty.
+                row["ui_meta_revisions"] = {}
                 if meta_path.is_file():
                     with open(meta_path, "r", encoding="utf-8") as f:
                         raw_meta = _yaml.safe_load(f) or {}
                     ui_meta = raw_meta.get("ui_meta")
                     if isinstance(ui_meta, dict) and ui_meta:
                         row["ui_meta"] = ui_meta
+                    revisions = raw_meta.get("_ui_meta_revisions")
+                    if isinstance(revisions, dict) and revisions:
+                        row["ui_meta_revisions"] = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
             except Exception:
                 pass
 
@@ -667,7 +703,9 @@ def _(rid, params: dict) -> dict:
     ``model`` + ``provider`` (both required together),
     ``disabled_skills`` (list[str], replace semantics),
     ``enabled_toolsets`` (list[str], replace semantics; empty list clears
-    the pin so every toolset is enabled again).
+    the pin so every toolset is enabled again), and
+    ``ui_meta_expected_revisions`` (dict[str, int], optional compare-and-swap
+    preconditions for keys supplied in ``ui_meta``).
 
     Each section is applied independently and best-effort; the result
     reports per-section success so a UI can surface partial failures.
@@ -702,32 +740,73 @@ def _(rid, params: dict) -> dict:
                 else:
                     import yaml as _yaml
 
-                    meta_path = profile_dir / "profile.yaml"
-                    existing = {}
-                    if meta_path.is_file():
-                        try:
-                            with open(meta_path, "r", encoding="utf-8") as f:
-                                loaded = _yaml.safe_load(f) or {}
-                            if isinstance(loaded, dict):
-                                existing = loaded
-                        except Exception:
-                            existing = {}
-                    current = existing.get("ui_meta")
-                    if not isinstance(current, dict):
-                        current = {}
-                    for key, value in incoming.items():
-                        if value is None:
-                            current.pop(key, None)
-                        else:
-                            current[key] = value
-                    if current:
-                        existing["ui_meta"] = current
-                    else:
-                        existing.pop("ui_meta", None)
-                    from utils import atomic_yaml_write
+                    expected = params.get("ui_meta_expected_revisions")
+                    if expected is not None and not isinstance(expected, dict):
+                        raise ValueError("ui_meta_expected_revisions must be an object")
 
-                    atomic_yaml_write(meta_path, existing, sort_keys=False)
-                    applied["ui_meta"] = True
+                    meta_path = profile_dir / "profile.yaml"
+                    with _profile_ui_meta_lock:
+                        existing = {}
+                        if meta_path.is_file():
+                            try:
+                                with open(meta_path, "r", encoding="utf-8") as f:
+                                    loaded = _yaml.safe_load(f) or {}
+                                if isinstance(loaded, dict):
+                                    existing = loaded
+                            except Exception:
+                                existing = {}
+
+                        raw_revisions = existing.get("_ui_meta_revisions")
+                        revisions = dict(raw_revisions) if isinstance(raw_revisions, dict) else {}
+                        revisions = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
+                        conflicts = {}
+                        if isinstance(expected, dict):
+                            for key in incoming:
+                                wanted = expected.get(key)
+                                actual = revisions.get(key, 0)
+                                if (
+                                    not isinstance(wanted, int)
+                                    or isinstance(wanted, bool)
+                                    or wanted < 0
+                                    or wanted != actual
+                                ):
+                                    conflicts[key] = {"expected": wanted, "actual": actual}
+
+                        if conflicts:
+                            applied["ui_meta"] = False
+                            applied["ui_meta_conflicts"] = conflicts
+                            applied["ui_meta_revisions"] = {
+                                key: revisions.get(key, 0) for key in incoming
+                            }
+                        else:
+                            current = existing.get("ui_meta")
+                            if not isinstance(current, dict):
+                                current = {}
+                            for key, value in incoming.items():
+                                if value is None:
+                                    current.pop(key, None)
+                                else:
+                                    current[key] = value
+                                revisions[key] = revisions.get(key, 0) + 1
+                            if current:
+                                existing["ui_meta"] = current
+                            else:
+                                existing.pop("ui_meta", None)
+                            # Revisions intentionally survive deletion: a
+                            # stale client must not recreate a removed key by
+                            # presenting the initial revision again.
+                            existing["_ui_meta_revisions"] = revisions
+                            from utils import atomic_yaml_write
+
+                            atomic_yaml_write(meta_path, existing, sort_keys=False)
+                            applied["ui_meta"] = True
+                            applied["ui_meta_revisions"] = {
+                                key: revisions[key] for key in incoming
+                            }
             except Exception:
                 applied["ui_meta"] = False
 

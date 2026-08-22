@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 
-import { redactSecrets, SSH_ERROR } from './ssh-connection'
+import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 const PROTOCOL_VERSION = 1
@@ -162,14 +162,6 @@ function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
   )
 }
 
-function assertCurrent(signal) {
-  if (signal?.aborted) {
-    const error: any = new Error('SSH bootstrap was cancelled.')
-    error.kind = 'superseded'
-    throw error
-  }
-}
-
 async function processState(ssh, runtime, lock) {
   return helper(ssh, runtime, 'process-state', [
     String(lock.pid),
@@ -215,7 +207,7 @@ async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    assertCurrent(signal)
+    assertBootstrapNotSuperseded(signal)
     let state
 
     try {
@@ -286,7 +278,7 @@ async function connectWindowsRemote(deps) {
     readyTimeoutMs = 45_000
   } = deps
 
-  assertCurrent(signal)
+  assertBootstrapNotSuperseded(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
@@ -356,7 +348,7 @@ async function connectWindowsRemote(deps) {
     await helper(ssh, runtime, 'remove-lock', [ownershipId])
   }
 
-  assertCurrent(signal)
+  assertBootstrapNotSuperseded(signal)
   const token = crypto.randomBytes(32).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
   await helper(ssh, runtime, 'upload-token', [ownershipId, spawnNonce], token)
@@ -405,7 +397,7 @@ async function connectWindowsRemote(deps) {
     await forward(localPort, remotePort)
     const baseUrl = `http://127.0.0.1:${localPort}`
     await waitForHermes(baseUrl, token)
-    assertCurrent(signal)
+    assertBootstrapNotSuperseded(signal)
     await helper(ssh, runtime, 'write-lock', [ownershipId], JSON.stringify({ ...owned, port: remotePort }))
 
     return {

@@ -47,14 +47,26 @@ _COMMANDCODE_ANTHROPIC_ENV = ("COMMANDCODE_API_KEY", "COMMANDCODE_ANTHROPIC_BASE
 
 def _fetch_commandcode_models(
     timeout: float = 10.0,
+    base_url: str | None = None,
 ) -> list[str] | None:
     """Fetch the live model list from the CommandCode /models endpoint.
 
     Returns a flat list of model IDs or None on failure.
     No auth required — the public models endpoint is open.
+
+    ``base_url`` overrides the endpoint only when the caller passed a URL
+    that differs from the default ``_COMMANDCODE_BASE`` (a user-configured
+    ``model.base_url`` / ``COMMANDCODE_BASE_URL`` pointing at a proxy or
+    custom deployment). The picker passes base_url unconditionally, falling
+    back to the profile default — equality means "not customised".
     """
+    caller_base = (base_url or "").strip()
+    if caller_base and caller_base.rstrip("/") != _COMMANDCODE_BASE.rstrip("/"):
+        models_url = caller_base.rstrip("/") + "/models"
+    else:
+        models_url = _COMMANDCODE_MODELS_URL
     try:
-        req = urllib.request.Request(_COMMANDCODE_MODELS_URL)
+        req = urllib.request.Request(models_url)
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", _profile_user_agent())
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -79,10 +91,11 @@ class CommandCodeProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch from the public CommandCode /models endpoint."""
-        return _fetch_commandcode_models(timeout=timeout)
+        return _fetch_commandcode_models(timeout=timeout, base_url=base_url)
 
 
 commandcode = CommandCodeProfile(
@@ -126,13 +139,14 @@ class CommandCodeAnthropicProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch from the public CommandCode /models endpoint.
 
         Filter to Anthropic-family models only (claude-*).
         """
-        all_models = _fetch_commandcode_models(timeout=timeout)
+        all_models = _fetch_commandcode_models(timeout=timeout, base_url=base_url)
         if all_models is None:
             return None
         return [m for m in all_models if m.startswith("claude-")]

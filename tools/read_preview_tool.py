@@ -63,7 +63,7 @@ READ_PREVIEW_SCHEMA = {
         "per read); a file tab answers identity only (read the file with "
         "read_file); an artifact tab points back at the conversation. Use after "
         "open_preview, or whenever the user refers to what's on screen in the "
-        "browser ('what does this page say?')."
+        "browser ('what does this page say?'). To close the pane, use close_preview."
     ),
     "parameters": {
         "type": "object",

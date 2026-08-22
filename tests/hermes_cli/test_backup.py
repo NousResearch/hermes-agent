@@ -133,6 +133,19 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_state_snapshots_dir(self):
+        """state-snapshots/ is excluded for the same reason as backups/: every
+        quick / pre-update snapshot holds its own copy of state.db, so zipping
+        the tree would ship the DB once per retained snapshot."""
+        from hermes_cli.backup import _EXCLUDED_DIRS, _QUICK_SNAPSHOTS_DIR, _should_exclude
+        assert _QUICK_SNAPSHOTS_DIR in _EXCLUDED_DIRS
+        assert _should_exclude(Path(_QUICK_SNAPSHOTS_DIR) / "20260814-203829-2026-08-15" / "state.db")
+        assert _should_exclude(Path(_QUICK_SNAPSHOTS_DIR) / "20260814-203829-2026-08-15" / "manifest.json")
+        # Named profiles accumulate snapshots too.
+        assert _should_exclude(Path("profiles/coder") / _QUICK_SNAPSHOTS_DIR / "x" / "state.db")
+        # The live DB is still backed up.
+        assert not _should_exclude(Path("state.db"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -240,6 +253,35 @@ class TestBackup:
             names = zf.namelist()
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
+
+    def test_state_snapshots_not_nested_into_backup(self, tmp_path, monkeypatch):
+        """A quick snapshot left under state-snapshots/ must not be re-shipped
+        by the full backup — each snapshot already holds a copy of state.db, so
+        nesting them multiplies the archive by (1 + retained snapshots)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+            conn.execute("INSERT INTO sessions VALUES ('s1')")
+
+        from hermes_cli.backup import _QUICK_SNAPSHOTS_DIR, create_quick_snapshot, run_backup
+
+        # Real producer, so the layout under state-snapshots/ is whatever the
+        # code actually writes (manifest.json + state.db copy + ...).
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id and (hermes_home / _QUICK_SNAPSHOTS_DIR / snap_id / "state.db").exists()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+        assert not any(n.startswith(_QUICK_SNAPSHOTS_DIR + "/") for n in names), names
+        # Exactly one state.db in the archive: the live one.
+        assert [n for n in names if n == "state.db" or n.endswith("/state.db")] == ["state.db"]
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1135,51 @@ class TestSafeCopyDb:
         assert not dst.exists()
 
 
+    def test_locked_source_fails_fast_not_hang(self, tmp_path):
+        import subprocess
+        import sys
+        import time
+
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "locked.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.commit()
+        conn.close()
+
+        # Hold an EXCLUSIVE transaction in a separate process. POSIX file
+        # locks only conflict across processes, so an in-process connection
+        # cannot reproduce the "database is locked" condition.
+        holder = (
+            "import sqlite3, time\n"
+            f"c = sqlite3.connect({str(src)!r})\n"
+            "c.execute('BEGIN EXCLUSIVE')\n"
+            "print('LOCKED', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", holder],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "LOCKED"
+            started = time.monotonic()
+            result = _safe_copy_db(src, dst)
+            elapsed = time.monotonic() - started
+            assert result is False
+            # The busy timeout is 5s, so a fast failure lands around there.
+            # The regression this guards against is backup() retrying
+            # SQLITE_BUSY forever, which would never return at all.
+            assert elapsed < 30
+        finally:
+            proc.kill()
+            proc.wait()
+
+
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
         from hermes_cli.backup import is_zeroed_sqlite_file
         p = tmp_path / "state.db"
@@ -1409,6 +1496,28 @@ class TestPreUpdateBackup:
         assert not any("__pycache__" in n for n in names)
         # pid files excluded
         assert "gateway.pid" not in names
+
+    def test_pre_update_zip_does_not_nest_the_pre_update_snapshot(self, hermes_home):
+        """``hermes update`` in ``full`` mode takes the quick snapshot *before*
+        the full zip, so the zip walk sees the snapshot it just made. It must
+        skip it — otherwise every pre-update zip ships state.db twice."""
+        from hermes_cli.backup import (
+            _QUICK_SNAPSHOTS_DIR,
+            create_pre_update_backup,
+            create_quick_snapshot,
+        )
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+
+        snap_id = create_quick_snapshot(label="pre-update", hermes_home=hermes_home)
+        assert snap_id and (hermes_home / _QUICK_SNAPSHOTS_DIR / snap_id / "state.db").exists()
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+        assert "state.db" in names
+        assert not any(n.startswith(_QUICK_SNAPSHOTS_DIR + "/") for n in names), names
 
 
     def test_rotation_keeps_only_n(self, hermes_home):

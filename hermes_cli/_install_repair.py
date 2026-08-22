@@ -92,7 +92,9 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     """
     uv_bin = _er._find_uv_binary()
     if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(root / "venv")}
+        from hermes_constants import project_venv_dir
+
+        env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -102,13 +104,14 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
 
 def _venv_scripts_dir(root: Path) -> Path | None:
     """Project venv Scripts/bin dir, when present. stdlib-only."""
-    venv_dir = root / "venv"
-    if not venv_dir.is_dir():
-        return None
-    # hermes_constants is stdlib-only, so the canonical layout helper is safe
+    # hermes_constants is stdlib-only, so the canonical layout helpers are safe
     # to use from this corrupted-venv repair path (#76105: never open-code
     # the Scripts/bin split).
-    from hermes_constants import venv_bin_dir
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(root)
+    if venv_dir is None:
+        return None
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None

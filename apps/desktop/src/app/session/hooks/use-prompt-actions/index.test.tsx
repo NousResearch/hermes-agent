@@ -9,6 +9,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -1201,6 +1202,69 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('clears the goal card when /goal clear returns a typed exec dispatch (#80348)', async () => {
+    // The gateway can answer `/goal clear` with a TYPED `{ type: "exec" }`
+    // dispatch instead of the plain `{ output }` shape. The typed branch used
+    // to render and return without touching the goal store, so the stale
+    // "Goal paused" card kept showing until the chat was reopened.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '✓ Goal cleared.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal clear')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+
+    $goalsBySession.set({})
+  })
+
+  it('updates the goal card live when /goal resume returns a typed exec dispatch', async () => {
+    // Sibling of the clear path: a typed exec `▶ Goal resumed: …` must flip
+    // the paused card back to active without a chat reopen.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '▶ Goal resumed: ship the release notes' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal resume')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toMatchObject({
+      status: 'active',
+      title: 'ship the release notes'
+    })
+
+    $goalsBySession.set({})
   })
 
   it('queues the /goal kickoff instead of dropping it when the session is busy (#63352)', async () => {
@@ -2453,7 +2517,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -2523,7 +2586,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -2571,7 +2633,6 @@ describe('usePromptActions restoreToMessage', () => {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         confirm_truncate: true,
-        truncate_before_user_ordinal: 0,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
@@ -5308,8 +5369,10 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
     // First attempt only — no plain resubmit that drops truncate_before_user_ordinal.
     expect(submitCalls).toHaveLength(1)
     expect(submitCalls[0]?.[1]).toMatchObject({
-      truncate_before_user_ordinal: 0,
       confirm_truncate: true
     })
+    expect(
+      (submitCalls[0]?.[1] as { truncate_before_user_ordinal?: unknown } | undefined)?.truncate_before_user_ordinal
+    ).toBeUndefined()
   })
 })

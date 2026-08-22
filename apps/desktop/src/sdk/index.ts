@@ -46,6 +46,7 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $gatewaySwapTarget,
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -62,7 +63,12 @@ import {
   $currentCwd,
   $currentModel,
   $gatewayState,
-  $selectedStoredSessionId
+  $messages,
+  $selectedStoredSessionId,
+  $sessions,
+  rememberedSessionProfile,
+  requestSessionResume,
+  setResumeExhaustedSessionId
 } from '@/store/session'
 import {
   $focusedRuntimeId,
@@ -72,6 +78,8 @@ import {
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { UsageStats } from '@/types/hermes'
+
+import { planPluginOpenSession } from './plugin-open-session-plan'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -99,6 +107,22 @@ const $focusedBusy = focusedTurnFlag(state => state.busy, PRIMARY_SESSION_VIEW.$
 const $focusedAwaitingResponse = focusedTurnFlag(
   state => state.awaitingResponse,
   PRIMARY_SESSION_VIEW.$awaitingResponse
+)
+
+/**
+ * Owner profile of the FOCUSED chat. The gateway-routing atom
+ * (`$activeGatewayProfile`) answers "which backend is the live socket homed
+ * on" — but tab/tile focus moves without swapping the socket, and a cold
+ * start can restore a route into a session the booting gateway doesn't own.
+ * Any per-bot readout (roster highlight, a bot-scoped panel) must follow the
+ * chat the user is LOOKING AT, so this resolves the focused stored session to
+ * the owner stamped on its session row (the cross-profile aggregator tags
+ * every row) and only falls back to the gateway profile for a draft or an
+ * uncached id — the same ladder the remembered-navigation key and the HUD use.
+ */
+const $focusedSessionProfile = computed(
+  [$focusedStoredSessionId, $sessions, $activeGatewayProfile],
+  (focused, sessions, activeProfile) => normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
 )
 
 export interface PluginProfileRoute {
@@ -194,6 +218,168 @@ const $activeConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
+const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+let openSessionGeneration = 0
+
+interface PluginOpenSessionOptions {
+  awaitHydration?: boolean
+  expectHistory?: boolean
+  hydrationTimeoutMs?: number
+  intent?: OpenSessionIntent
+  keepAllProfilesScope?: boolean
+  profile?: null | string
+  /** A cold profile backend can lose the hydration-timeout race once and still
+   *  be fine on a second try. When set, a hydration timeout is retried
+   *  internally before it reaches the caller or arms the core stranded-session
+   *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
+   *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
+  retryHydrationTimeoutOnce?: boolean
+}
+
+function waitForFocusedSessionHydration({
+  expectHistory,
+  generation,
+  profile,
+  requireActiveProfile,
+  storedSessionId,
+  timeoutMs
+}: {
+  expectHistory: boolean
+  generation: number
+  profile: string
+  requireActiveProfile: boolean
+  storedSessionId: string
+  timeoutMs: number
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const unbinds: Array<() => void> = []
+    let timer: number | undefined
+
+    const finish = (error?: Error) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+      }
+
+      for (const unbind of unbinds) {
+        unbind()
+      }
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve()
+      }
+    }
+
+    const check = () => {
+      if (generation !== openSessionGeneration) {
+        finish(new Error('Session open was superseded by a newer selection.'))
+
+        return
+      }
+
+      const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
+      const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
+      const runtimeReady = Boolean($activeSessionId.get())
+      const historyPainted = Boolean($messages.get().length)
+
+      // Paint-first hydration: for a history-bearing chat, the wake is DONE
+      // the moment the persisted transcript is painted on the right session —
+      // the REST prefetch delivers it seconds after the profile backend's
+      // HTTP comes up, while the full runtime resume (agent build, MCP
+      // discovery, skill load) keeps warming in the background and binds the
+      // composer when it lands. Gating on runtimeReady serialized the wake
+      // behind that whole boot: on a cold multi-profile start the 20s budget
+      // regularly lost the race on slower machines and surfaced as "errors
+      // waking up bots" even though the transcript had been available almost
+      // immediately. Only an expected-EMPTY chat still waits for the runtime
+      // — with no transcript to paint, a bound runtime is the only proof the
+      // surface is real rather than a stuck loader.
+      const hydrated = expectHistory ? historyPainted : runtimeReady
+
+      if (profileMatches && sessionMatches && hydrated) {
+        finish()
+      }
+    }
+
+    unbinds.push($activeGatewayProfile.listen(check))
+    unbinds.push($selectedStoredSessionId.listen(check))
+    unbinds.push($activeSessionId.listen(check))
+    unbinds.push($messages.listen(check))
+
+    timer = window.setTimeout(() => {
+      finish(new Error(`Timed out loading ${profile}'s session history.`))
+    }, timeoutMs)
+
+    check()
+  })
+}
+
+// Wait for a profile switch, but never longer than the wake budget.
+//
+// ensureGatewayProfile awaits the store's dial, and HermesGateway.connect() has
+// no dial timeout of its own: a backend that accepts the socket and then never
+// completes the handshake leaves this promise pending for the life of the
+// window. That is not merely a slow open. waitForFocusedSessionHydration arms
+// the only timer on this path, and it is armed AFTER this await returns - so an
+// unbounded activation means the wake never settles at all, and the pane wedges
+// with no error, no Retry and no timeout (#89556: `ws accepted` in the gateway
+// log with no matching `ws closed`).
+//
+// The activation gets its OWN budget rather than sharing the hydration one. A
+// cold profile backend can legitimately spend most of the hydration budget
+// painting a large transcript - that race is already tight enough to lose
+// (#89617) - so charging activation to the same clock would turn a wedge into a
+// regression. The trade is that a wake that is slow in BOTH phases can now take
+// up to twice the budget before it surfaces; that is a maintainer call and is
+// called out in the PR rather than buried here.
+// The caller supplies the dial itself, because WHICH backend to open is a
+// routing decision (a workspace switch moves chrome; a plain bot navigation
+// only opens the gateway) while the deadline enforced here is the same either
+// way.
+async function awaitProfileActivation(
+  dial: () => Promise<void>,
+  targetProfile: string,
+  timeoutMs: number
+): Promise<void> {
+  const activation = dial()
+  let timer: number | undefined
+
+  try {
+    await Promise.race([
+      activation,
+      new Promise<never>((_resolve, reject) => {
+        // Same message shape as the hydration timeout on purpose: openSession's
+        // catch keys the core stranded-session surface off this prefix, and a
+        // wedged dial wants exactly that surface. The phase is distinguished in
+        // the [bot-wake] support log, not in the user-facing string.
+        timer = window.setTimeout(
+          () => reject(new Error(`Timed out loading ${targetProfile}'s session history.`)),
+          timeoutMs
+        )
+      })
+    ])
+  } finally {
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+    }
+  }
+
+  // No extra catch on the abandoned dial: an in-flight activation has no
+  // cancellation handle and keeps running after the budget expires, but
+  // Promise.race subscribes to every input, so a rejection that lands after the
+  // race has settled is already handled and cannot escape as an unhandled
+  // rejection. An explicit `activation.catch()` here was dead code - verified
+  // by mutation: removing it changed no test outcome.
+}
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -217,6 +403,11 @@ export const host = {
      *  primary. Prefer this over `activeSessionId` for any readout that
      *  should follow the user between tiles (context, tokens, cost). */
     focusedSessionId: readonlyAtom<null | string>($focusedRuntimeId),
+    /** Owner profile of the focused chat (session-row stamp, falling back to
+     *  the gateway profile for drafts/uncached ids). Prefer this over
+     *  `profile` for any readout keyed to the bot/profile the user is looking
+     *  at — tab focus moves without swapping the gateway socket. */
+    focusedSessionProfile: readonlyAtom<string>($focusedSessionProfile),
     /** Stored (durable) id of the focused session — for navigation and
      *  session-list matching, where runtime ids don't survive reloads. */
     focusedStoredSessionId: readonlyAtom<null | string>($focusedStoredSessionId),
@@ -252,14 +443,6 @@ export const host = {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 
-  /** Open a stored session the way core surfaces do (focus an existing
-   *  tile/main, else load into main). When `profile` names a non-active
-   *  profile, its backend is activated first so the resume routes to the
-   *  right state.db — the same soft profile swap the unified sidebar does.
-   *  `keepAllProfilesScope` (default true) keeps the Sessions sidebar in the
-   *  unified all-profiles view instead of narrowing it to the target
-   *  profile's sessions — a cross-profile open from a plugin surface is a
-   *  navigation, not a scope choice; pass false to also scope the sidebar. */
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
    *  activation, no navigation, no scope change (openGatewayForProfile; it
    *  already no-ops for shared-remote routes and the primary). Roster UIs
@@ -341,7 +524,10 @@ export const host = {
       throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
     }
 
-    return bridge.list()
+    const registryPayload = await bridge.list()
+    const rows = Array.isArray(registryPayload?.connections) ? registryPayload.connections : []
+
+    return rows.map(connection => ({ ...connection, primary: connection.id === registryPayload.primary }))
   },
 
   /** The union agent roster across every registered connection: one row per
@@ -373,33 +559,183 @@ export const host = {
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
-  openSession: async (
-    storedSessionId: string,
-    options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
-  ): Promise<void> => {
+  /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
+   *  is navigation, not a workspace or chrome API-home switch —
+   *  keepAllProfilesScope defaults true so `$activeGatewayProfile` /
+   *  Sessions REST stay on the previous (usually launch) backend while the
+   *  bot backend is dialed in the background. The bot forever-chat is hidden
+   *  and would otherwise look like every session disappeared. Pass false to
+   *  also scope chrome onto that profile and collapse the sidebar. */
+  openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
+    const generation = ++openSessionGeneration
     const profile = (options.profile ?? '').trim()
+    const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
+    const expectHistory = options.expectHistory ?? false
 
-    if (profile && profile !== $activeGatewayProfile.get()) {
-      await ensureGatewayProfile(profile)
+    const plan = planPluginOpenSession({
+      activeProfile: $activeGatewayProfile.get(),
+      keepAllProfilesScope: options.keepAllProfilesScope,
+      profile
+    })
 
-      if (options.keepAllProfilesScope !== false) {
-        setShowAllProfiles(true)
+    // Wake-path phase timings. Logged ONLY on a hydration timeout (bridged
+    // into desktop.log via the renderer-console tap), so a support bundle
+    // pinpoints WHERE the budget went — profile activation vs hydration —
+    // instead of leaving us to infer it from process spawn timestamps.
+    const wakeStartedAt = Date.now()
+    let profileActiveAt = wakeStartedAt
+    const hydrationTimeoutMs = Math.max(1, options.hydrationTimeoutMs ?? DEFAULT_SESSION_HYDRATION_TIMEOUT_MS)
+    // Which half of the wake a timeout landed in. Only meaningful on the
+    // failure path, where the two phases have different remedies: a stuck dial
+    // is a gateway problem, a slow transcript is a backend-warmup one.
+    let wakePhase: 'activation' | 'hydration' = 'activation'
+
+    // Bounded to 2 attempts (never more): a cold profile backend can lose the
+    // hydration-timeout race once and still be fine moments later, but this is
+    // a caller-opt-in retry of the SAME wait, not a backoff loop.
+    const maxAttempts = options.awaitHydration && options.retryHydrationTimeoutOnce ? 2 : 1
+
+    try {
+      // WHICH backend to dial is the plan's call; HOW LONG to wait is the wake
+      // budget's. A workspace switch moves $activeGatewayProfile / chrome REST;
+      // a plain navigation only opens the bot's gateway so session.resume can
+      // hydrate, leaving chrome on the launch backend.
+      const dial = plan.switchWorkspace
+        ? () => ensureGatewayProfile(plan.switchWorkspace as string)
+        : plan.dialWithoutSwitching
+          ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
+          : null
+
+      if (dial) {
+        // Bounded only on the hydration contract, which is where a budget and a
+        // Retry surface both already exist. A plain open never asked for a
+        // deadline and has nowhere to render one, so it keeps today's
+        // behaviour rather than gaining a rejection its callers cannot handle.
+        await (options.awaitHydration ? awaitProfileActivation(dial, targetProfile, hydrationTimeoutMs) : dial())
+        profileActiveAt = Date.now()
+      }
+
+      if (plan.showAllProfiles !== null) {
+        setShowAllProfiles(plan.showAllProfiles)
+      }
+
+      wakePhase = 'hydration'
+
+      if (generation !== openSessionGeneration) {
+        throw new Error('Session open was superseded by a newer selection.')
+      }
+
+      if (options.awaitHydration) {
+        // Keep the target-specific overlay visible through transcript hydration,
+        // not merely through the gateway/profile activation that precedes it.
+        $gatewaySwapTarget.set(targetProfile)
+      }
+
+      // Only the HYDRATION half retries. Activation already failed its own
+      // bounded wait above, and a wedged dial does not get better by dialling
+      // again inside the same wake — that is the Retry surface's job.
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          openSession(
+            storedSessionId,
+            (to: string, opts?: { replace?: boolean }) => {
+              const target = to.startsWith('#') ? to : `#${to}`
+
+              if (opts?.replace) {
+                window.location.replace(target)
+              } else {
+                window.location.hash = target
+              }
+            },
+            options.intent ?? 'in-place'
+          )
+
+          // Judge the main surface AFTER the open: on a cold start the persisted
+          // route can already point at this session while selection has not
+          // settled, so a pre-open "already selected" precondition skips the
+          // resume exactly when it is needed (#89206 — blank Bot Chat with the
+          // roster preview intact). The surface is healthy only when this stored
+          // session is selected, a runtime is bound, and the expected transcript
+          // is present; anything less gets an explicit sequenced resume request.
+          // The route-resume effect only honors the request while the route
+          // points at this session, and consumes it alongside any resume the
+          // navigation itself triggers, so a redundant request is a no-op.
+          const surfaceHealthy =
+            $selectedStoredSessionId.get() === storedSessionId &&
+            Boolean($activeSessionId.get()) &&
+            (!expectHistory || $messages.get().length > 0)
+
+          if (options.awaitHydration && !surfaceHealthy) {
+            requestSessionResume(storedSessionId)
+          }
+
+          if (options.awaitHydration) {
+            await waitForFocusedSessionHydration({
+              expectHistory,
+              generation,
+              profile: targetProfile,
+              // A background dial never moves $activeGatewayProfile, so gating
+              // hydration on it would wait for something that is not coming.
+              requireActiveProfile: plan.requireActiveProfileForHydration,
+              storedSessionId,
+              timeoutMs: hydrationTimeoutMs
+            })
+          }
+
+          break
+        } catch (error) {
+          const retryable =
+            options.awaitHydration &&
+            generation === openSessionGeneration &&
+            attempt < maxAttempts &&
+            error instanceof Error &&
+            error.message.startsWith('Timed out loading ')
+
+          if (!retryable) {
+            throw error
+          }
+
+          // Logged per attempt so a support bundle shows the retry happened at
+          // all; the terminal failure is reported once by the catch below.
+          console.warn('[bot-wake] hydration timed out, retrying', {
+            attempt,
+            hydrationWaitMs: Date.now() - profileActiveAt,
+            profile: targetProfile,
+            storedSessionId
+          })
+        }
+      }
+    } catch (error) {
+      if (
+        options.awaitHydration &&
+        generation === openSessionGeneration &&
+        error instanceof Error &&
+        error.message.startsWith('Timed out loading ')
+      ) {
+        const timedOutAt = Date.now()
+
+        console.warn('[bot-wake] hydration timed out', {
+          attempts: wakePhase === 'hydration' ? maxAttempts : 1,
+          hydrationWaitMs: wakePhase === 'hydration' ? timedOutAt - profileActiveAt : 0,
+          phase: wakePhase,
+          profile: targetProfile,
+          profileActivationMs: (wakePhase === 'activation' ? timedOutAt : profileActiveAt) - wakeStartedAt,
+          runtimeBound: Boolean($activeSessionId.get()),
+          selectionSettled: $selectedStoredSessionId.get() === storedSessionId,
+          storedSessionId,
+          transcriptPainted: $messages.get().length > 0
+        })
+        // Reuse the core stranded-session surface: it renders the explicit
+        // error and Retry button, and the normal resume path clears the latch.
+        setResumeExhaustedSessionId(storedSessionId)
+      }
+
+      throw error
+    } finally {
+      if (options.awaitHydration && generation === openSessionGeneration) {
+        $gatewaySwapTarget.set(null)
       }
     }
-
-    openSession(
-      storedSessionId,
-      (to: string, opts?: { replace?: boolean }) => {
-        const target = to.startsWith('#') ? to : `#${to}`
-
-        if (opts?.replace) {
-          window.location.replace(target)
-        } else {
-          window.location.hash = target
-        }
-      },
-      options.intent ?? 'in-place'
-    )
   },
 
   /** Open (or re-front) a plugin-rendered MAIN-AREA workspace tile — the same
@@ -575,7 +911,10 @@ export type { TitlebarTool } from '@/app/shell/titlebar-controls'
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
  *  never touches the page router) and `fixedProfile` to pin every tab to one
- *  bot's backend; the internal profile selector hides itself. Bot Mode's
+ *  bot's backend; the internal profile selector hides itself. Add
+ *  `fixedConnection` (registry connection id) to pin a bot living on another
+ *  registered gateway — probe `SkillsView.supportsFixedConnection` first;
+ *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
  *  Advanced section is the reference consumer. */
 export { SkillsView } from '@/app/skills'
 /** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
@@ -647,6 +986,7 @@ export type {
   PluginContext,
   PluginContribution,
   PluginNativeNotificationInput,
+  PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
   PluginStorage
@@ -689,6 +1029,7 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
 export { triggerHaptic as haptic } from '@/lib/haptics'
+export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -728,6 +1069,36 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+/** Live accent override — set a hex and the ACTIVE theme repaints with its
+ *  accent family re-seeded from it (see `retintTheme`); `null` restores the
+ *  authored palette. Deliberately not persisted: it is an authoring knob, not
+ *  a setting, so a plugin that sets it must clear it on dispose. */
+export { $accentOverride, setAccentOverride } from '@/themes/accent-override'
+/** OKLCH colour maths, for anything deriving a palette rather than hardcoding
+ *  one: perceptual conversion, the sRGB gamut boundary, WCAG contrast, and
+ *  hue-stable blending. */
+export {
+  contrastRatio,
+  hexToOklch,
+  hueDelta,
+  maxChroma,
+  mixOklab,
+  normalizeHex,
+  type Oklch,
+  oklchToHex,
+  oklchToSrgb255,
+  readableOn
+} from '@/themes/color'
+/** The painted theme, its name, and the appearance it resolved to — plus
+ *  `setTheme` / `setMode` to change it from a component. */
+export { useTheme } from '@/themes/context'
+/** Switch the theme from outside React (a gateway event, a connection coming
+ *  up, any callback with no component around it). Returns false and leaves the
+ *  appearance alone when the name doesn't resolve, so it doubles as the "is
+ *  this theme installed?" check. */
+export { requestTheme } from '@/themes/request'
+export { retintTheme, themeHue } from '@/themes/retint'
+export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
 export type { RpcEvent, StatusResponse } from '@/types/hermes'
 /** Subscribe a component to a `host.state` atom. */
@@ -736,6 +1107,10 @@ export { useStore as useValue } from '@nanostores/react'
  *  the app root, so their queries cache, dedupe, poll (`refetchInterval`), and
  *  invalidate exactly like core screens — no hand-rolled atoms or polls. */
 export { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+/** Deterministic soft-body avatars from any string (name → face). String
+ *  renderer for rasterization; React component for live rendering. */
+export { blobatar as blobatarSvg } from 'blobatar/blob'
+export { Blobatar } from 'blobatar/react'
 /** Plugin-local reactive state (share between a trigger and its panel, poll
  *  loops, cross-component signals) — the same primitive `host.state` uses. */
 export { atom, computed } from 'nanostores'

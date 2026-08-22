@@ -52,14 +52,14 @@ jobs:
       - name: Decide whether to build
         id: gate
         env:
-          # python_prod (not python): the image copies installed code, never
-          # tests/, so tests-only PRs skip the build.
-          PYTHON_PROD: ${{ steps.classify.outputs.python_prod }}
-          FRONTEND: ${{ steps.classify.outputs.frontend }}
-          DOCKER_META: ${{ steps.classify.outputs.docker_meta }}
+          # The docker lane derives from python_prod (not python: the image
+          # copies installed code, never tests/, so tests-only PRs skip the
+          # build), frontend and docker_meta. classify_changes.py owns the
+          # formula so this gate and the nix lane cannot drift apart.
+          DOCKER: ${{ steps.classify.outputs.docker }}
         run: |
           set -euo pipefail
-          if [ "$PYTHON_PROD" = "true" ] || [ "$FRONTEND" = "true" ] || [ "$DOCKER_META" = "true" ]; then
+          if [ "$DOCKER" = "true" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"

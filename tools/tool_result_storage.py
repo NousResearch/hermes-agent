@@ -281,13 +281,34 @@ def _build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
-    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
+    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n"
+    msg += (
+        "Recovery: page through the saved file with read_file (offset/limit) or "
+        "process it with execute_code — do NOT re-request the same data from the "
+        "remote API; the full result is already on disk.\n\n"
+    )
     msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
     if has_more:
         msg += "\n..."
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
+
+
+_PERSISTED_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
+
+
+def extract_persisted_path(content: str) -> str | None:
+    """Return the file path from a <persisted-output> replacement block.
+
+    Used by the result-reference stubbing guard (agent/tool_guardrails.py) so
+    a stub referencing a persisted first occurrence can carry the spillover
+    path instead of dangling. Returns None for non-persisted content.
+    """
+    if not isinstance(content, str) or PERSISTED_OUTPUT_TAG not in content:
+        return None
+    match = _PERSISTED_PATH_RE.search(content)
+    return match.group(1).strip() if match else None
 
 
 def maybe_persist_tool_result(

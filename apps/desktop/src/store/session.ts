@@ -598,6 +598,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+export interface SessionResumeRequest {
+  sequence: number
+  sessionId: string
+}
+let sessionResumeRequestSequence = 0
+export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the
@@ -771,6 +777,17 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+
+export const requestSessionResume = (sessionId: string) => {
+  const id = sessionId.trim()
+
+  if (!id) {
+    return
+  }
+
+  $sessionResumeRequest.set({ sequence: ++sessionResumeRequestSequence, sessionId: id })
+}
+
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)

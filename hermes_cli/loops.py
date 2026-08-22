@@ -369,30 +369,23 @@ def _meta_key(session_id: str) -> str:
     return f"{_META_PREFIX}{session_id}"
 
 
-_DB_CACHE: Dict[str, Any] = {}
-
-
 def _get_session_db() -> Optional[Any]:
-    """One SessionDB per HERMES_HOME (same pattern as goals._get_session_db)."""
-    try:
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+    """One SessionDB per HERMES_HOME.
 
-        home = str(get_hermes_home())
+    Delegates to the goals module's cached SessionDB so goals, loops,
+    and heartbeats share one connection (same pattern as
+    ``hermes_cli/heartbeat.py``). The delegation also inherits the
+    off-loop bootstrap and the window logic: a cold cache on the loop
+    thread never runs ``SessionDB()`` inline. The previous copy here
+    did, which froze the loop for the init duration and dropped the
+    first ``loop:*`` write (the /goal bug class, #88965).
+    """
+    try:
+        from hermes_cli.goals import _get_session_db as _goals_db
     except Exception as exc:  # pragma: no cover
         logger.debug("LoopManager: SessionDB bootstrap failed (%s)", exc)
         return None
-
-    cached = _DB_CACHE.get(home)
-    if cached is not None:
-        return cached
-    try:
-        db = SessionDB()
-    except Exception as exc:  # pragma: no cover
-        logger.debug("LoopManager: SessionDB() raised (%s)", exc)
-        return None
-    _DB_CACHE[home] = db
-    return db
+    return _goals_db()
 
 
 def load_loop(session_id: str) -> Optional[LoopState]:
@@ -422,6 +415,9 @@ def save_loop(session_id: str, state: LoopState) -> None:
         return
     db = _get_session_db()
     if db is None:
+        from hermes_cli.goals import _warn_dropped_write
+
+        _warn_dropped_write("LoopManager", "loop", session_id)
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

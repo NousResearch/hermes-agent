@@ -21,8 +21,9 @@ test('group room composers mount GroupMentionInput, not bare Input', () => {
   assert.ok(!/jsx\(Input, \{\s*'aria-label': `Message \$\{group\}`/.test(source))
   assert.ok(!/jsx\(Input, \{\s*'aria-label': 'Reply in thread'/.test(source))
 
-  // Both receive the seated members for the popover scope.
-  assert.ok(/GroupMentionInput\(\{ members, onChange, value/.test(source))
+  // Both receive the seated members for the popover scope (onSubmitDraft
+  // rides along so Enter submits from the multi-line textarea, #89884).
+  assert.ok(/GroupMentionInput\(\{ members, onChange, onSubmitDraft, value/.test(source))
 })
 
 test('popover offers @everyone/@all and inserts parser-compatible strings', () => {

@@ -249,7 +249,12 @@ async def test_secondary_adapter_busy_guard_stamps_profile_before_resolving_mode
         "steer",
     )
     event = _event(profile=None)
-    adapter_session_key = build_session_key(event.source)
+    # Seed the lane the adapter itself derives. A profile-owned adapter keys its
+    # own _active_sessions in its own namespace (agent:research:...) — see
+    # BasePlatformAdapter._session_key_profile. Seeding the unstamped
+    # agent:main: key here asserted the pre-fix behaviour, where every profile's
+    # adapter collapsed onto the default lane.
+    adapter_session_key = build_session_key(event.source, profile="research")
     adapter._active_sessions[adapter_session_key] = asyncio.Event()
 
     routed_source = _event(profile="research").source

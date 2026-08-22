@@ -79,6 +79,44 @@ export interface RemoteBootRetryContext {
    * never self-heal without the user signing in again.
    */
   isReauth: boolean
+  /**
+   * True when SSH refused to connect because the host's key CHANGED
+   * (StrictHostKeyChecking fails closed). Retrying cannot succeed until the
+   * user verifies the change and removes the stale known_hosts entry, so this
+   * is terminal like a reauth rejection — not connectivity.
+   */
+  isHostKeyChanged?: boolean
+}
+
+/**
+ * A host-key-change refusal is identifiable both by the `kind` tag
+ * classifySshError puts on the error and — for errors that crossed a
+ * stringifying boundary — by the stable phrases ssh/our own message carry.
+ * One user hit 157 consecutive boot-retry failures over 2.5h against a
+ * reinstalled VPS (Aug 2026 bundle) because this was classified as transient.
+ */
+export function isHostKeyChangedBootFailure(error: unknown): boolean {
+  if ((error as { kind?: string } | null | undefined)?.kind === 'host-key-changed') {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|host key for .+ has CHANGED/i.test(
+    message
+  )
+}
+
+/**
+ * Whether a failed remote boot should latch (into `backendStartFailure`)
+ * because the host key changed. Same rationale as the reauth latch: the
+ * failure cannot self-heal, and an unlatched terminal failure makes every
+ * recovery surface re-drive the identical doomed boot. The latch is released
+ * by the existing reset/repair/apply-config paths once the user has run
+ * `ssh-keygen -R <host>`.
+ */
+export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isHostKeyChanged === true
 }
 
 /**
@@ -93,9 +131,10 @@ export interface RemoteBootRetryContext {
  * only arms after a completed boot, so the app sat on "Desktop boot failed"
  * until the user manually re-entered the same connection details (which just
  * forced a fresh bootstrap). A missing capability differs from a transient
- * failure: confirmed reauth rejections and local failures stay out of the
- * retry path; everything else remote is connectivity and should retry.
+ * failure: confirmed reauth rejections, host-key changes, and local failures
+ * stay out of the retry path; everything else remote is connectivity and
+ * should retry.
  */
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
-  return context.attemptedRemote && !context.isReauth
+  return context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true
 }

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { canOpenNewWindow, canOpenSessionWindow, openNewWindow, openSessionInNewWindow } from './windows'
+import {
+  canOpenNewWindow,
+  canOpenSessionWindow,
+  isPeerInstanceWindow,
+  openNewWindow,
+  openSessionInNewWindow
+} from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -47,6 +53,15 @@ describe('canOpenSessionWindow', () => {
   it('is true when the bridge exposes openSessionWindow', () => {
     installBridge(vi.fn().mockResolvedValue({ ok: true }))
     expect(canOpenSessionWindow()).toBe(true)
+  })
+})
+
+describe('isPeerInstanceWindow', () => {
+  it('recognizes only the full peer marker', () => {
+    expect(isPeerInstanceWindow('?peer=1')).toBe(true)
+    expect(isPeerInstanceWindow('?peer=0')).toBe(false)
+    expect(isPeerInstanceWindow('?win=secondary')).toBe(false)
+    expect(isPeerInstanceWindow('')).toBe(false)
   })
 })
 

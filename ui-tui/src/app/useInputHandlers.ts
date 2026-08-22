@@ -62,6 +62,29 @@ export function handleIdleHotkeyExit(
   return actions.die()
 }
 
+export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
+
+/**
+ * Ctrl+C (and terminals that rewrite Cmd+C to it) is clear / interrupt / exit
+ * in that order. A non-empty composer always wins — mid-stream, the chord
+ * used to interrupt the turn even when the user was trying to dump a draft.
+ */
+export function resolveCtrlCComposerAction(opts: {
+  busy: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): CtrlCComposerAction {
+  if (opts.hasDraft) {
+    return 'clear'
+  }
+
+  if (opts.busy && opts.hasSession) {
+    return 'interrupt'
+  }
+
+  return 'exit'
+}
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -334,10 +357,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
-  // sits above the isBlocked early-return on purpose: Ctrl+C interrupts a
-  // running turn rather than clearing, so while the agent streams there is
-  // otherwise no way to throw away a half-typed prompt. The draft is pushed
-  // to history first so Up recalls it.
+  // sits above the isBlocked early-return so a prompt overlay cannot swallow
+  // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
+  // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
 
   useInput((ch, key) => {
@@ -610,17 +632,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
-      if (live.busy && live.sid) {
+      const ctrlC = resolveCtrlCComposerAction({
+        busy: live.busy,
+        hasDraft: Boolean(cState.input || cState.inputBuf.length),
+        hasSession: Boolean(live.sid)
+      })
+
+      if (ctrlC === 'clear') {
+        return cActions.clearIn()
+      }
+
+      if (ctrlC === 'interrupt' && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,
           gw: gateway.gw,
           sid: live.sid,
           sys: actions.sys
         })
-      }
-
-      if (cState.input || cState.inputBuf.length) {
-        return cActions.clearIn()
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

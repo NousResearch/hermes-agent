@@ -387,6 +387,25 @@ def profile_exists(name: str) -> bool:
     return get_profile_dir(canon).is_dir()
 
 
+def list_profile_names() -> List[str]:
+    """Cheap name-only profile listing: ``default`` plus profile dirs.
+
+    Unlike :func:`list_profiles` this reads NO per-profile config/metadata —
+    it is a directory scan, safe to call from hot paths (cron delivery-target
+    listings, create-time validation).
+    """
+    names = ["default"]
+    profiles_root = _get_profiles_root()
+    try:
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name):
+                    names.append(entry.name)
+    except OSError:
+        pass
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Alias / wrapper script management
 # ---------------------------------------------------------------------------

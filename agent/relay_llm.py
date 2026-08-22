@@ -434,6 +434,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._stream: Any = None
         self._raw_stream_resource: Any = None
         self._closed = False
+        self._runtime_lease: relay_runtime.RelayOperationLease | None = None
         self._close_error: BaseException | None = None
         self._callback_error: BaseException | None = None
         self._logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None = None
@@ -573,7 +574,12 @@ class ManagedLlmStream(Iterator[Any]):
                 self._callback_error = exc
                 raise
 
-        loop = asyncio.new_event_loop()
+        self._runtime_lease = runtime.acquire_operation_lease()
+        try:
+            loop = asyncio.new_event_loop()
+        except BaseException:
+            self._release_runtime_lease()
+            raise
         self._loop = loop
         self._relay_observes_chunks = True
         try:
@@ -613,10 +619,14 @@ class ManagedLlmStream(Iterator[Any]):
                     model_name=self._logical_model_name,
                     provider_name=self._logical_provider_name,
                     response_model_name=self._logical_response_model_name,
+                    operation_lease=self._runtime_lease,
                 )
                 self._logical = None
-            loop.close()
-            self._loop = None
+            try:
+                loop.close()
+            finally:
+                self._loop = None
+                self._release_runtime_lease()
             raise
 
     def __iter__(self) -> "ManagedLlmStream":
@@ -662,6 +672,7 @@ class ManagedLlmStream(Iterator[Any]):
                     model_name=self._logical_model_name,
                     provider_name=self._logical_provider_name,
                     response_model_name=self._logical_response_model_name,
+                    operation_lease=self._runtime_lease,
                 )
                 self._logical = None
             self._close(logical_outcome="cancelled")
@@ -719,8 +730,75 @@ class ManagedLlmStream(Iterator[Any]):
         self._stream = iter(pending)
         self._raw_stream_resource = None
         self._accept_chunk = None
-        if loop is not None:
-            close = getattr(relay_stream, "aclose", None)
+        try:
+            if loop is not None:
+                close = getattr(relay_stream, "aclose", None)
+                if callable(close):
+
+                    async def close_stream() -> None:
+                        await close()
+
+                    try:
+                        loop.run_until_complete(close_stream())
+                    except Exception:
+                        logger.debug(
+                            "Relay stream cleanup failed during provider fallback",
+                            exc_info=True,
+                        )
+                loop.close()
+            if not self._defer_logical_completion:
+                _complete_logical(
+                    self._logical,
+                    outcome="success",
+                    model_name=self._logical_model_name,
+                    provider_name=self._logical_provider_name,
+                    response_model_name=self._logical_response_model_name,
+                    operation_lease=self._runtime_lease,
+                )
+                self._logical = None
+        finally:
+            self._release_runtime_lease()
+
+    def _close(self, *, logical_outcome: str) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._prefetched_chunks.clear()
+        try:
+            loop = self._loop
+            self._loop = None
+            if loop is None:
+                resources = (self._stream, self._raw_stream_resource)
+                self._stream = None
+                self._raw_stream_resource = None
+                closed_ids: set[int] = set()
+                for resource in resources:
+                    if resource is None or id(resource) in closed_ids:
+                        continue
+                    closed_ids.add(id(resource))
+                    close = getattr(resource, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception as exc:
+                            if self._close_error is None:
+                                self._close_error = exc
+                            logger.debug(
+                                "Provider stream cleanup failed",
+                                exc_info=True,
+                            )
+                if not self._defer_logical_completion:
+                    _complete_logical(
+                        self._logical,
+                        outcome=logical_outcome,
+                        model_name=self._logical_model_name,
+                        provider_name=self._logical_provider_name,
+                        response_model_name=self._logical_response_model_name,
+                        operation_lease=self._runtime_lease,
+                    )
+                    self._logical = None
+                return
+            close = getattr(self._stream, "aclose", None)
             if callable(close):
 
                 async def close_stream() -> None:
@@ -728,49 +806,9 @@ class ManagedLlmStream(Iterator[Any]):
 
                 try:
                     loop.run_until_complete(close_stream())
-                except Exception:
-                    logger.debug(
-                        "Relay stream cleanup failed during provider fallback",
-                        exc_info=True,
-                    )
-            loop.close()
-        if not self._defer_logical_completion:
-            _complete_logical(
-                self._logical,
-                outcome="success",
-                model_name=self._logical_model_name,
-                provider_name=self._logical_provider_name,
-                response_model_name=self._logical_response_model_name,
-            )
-            self._logical = None
-
-    def _close(self, *, logical_outcome: str) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._prefetched_chunks.clear()
-        loop = self._loop
-        self._loop = None
-        if loop is None:
-            resources = (self._stream, self._raw_stream_resource)
-            self._stream = None
-            self._raw_stream_resource = None
-            closed_ids: set[int] = set()
-            for resource in resources:
-                if resource is None or id(resource) in closed_ids:
-                    continue
-                closed_ids.add(id(resource))
-                close = getattr(resource, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception as exc:
-                        if self._close_error is None:
-                            self._close_error = exc
-                        logger.debug(
-                            "Provider stream cleanup failed",
-                            exc_info=True,
-                        )
+                except Exception as exc:
+                    if self._close_error is None:
+                        self._close_error = exc
             if not self._defer_logical_completion:
                 _complete_logical(
                     self._logical,
@@ -778,30 +816,18 @@ class ManagedLlmStream(Iterator[Any]):
                     model_name=self._logical_model_name,
                     provider_name=self._logical_provider_name,
                     response_model_name=self._logical_response_model_name,
+                    operation_lease=self._runtime_lease,
                 )
                 self._logical = None
-            return
-        close = getattr(self._stream, "aclose", None)
-        if callable(close):
+            loop.close()
+        finally:
+            self._release_runtime_lease()
 
-            async def close_stream() -> None:
-                await close()
-
-            try:
-                loop.run_until_complete(close_stream())
-            except Exception as exc:
-                if self._close_error is None:
-                    self._close_error = exc
-        if not self._defer_logical_completion:
-            _complete_logical(
-                self._logical,
-                outcome=logical_outcome,
-                model_name=self._logical_model_name,
-                provider_name=self._logical_provider_name,
-                response_model_name=self._logical_response_model_name,
-            )
-            self._logical = None
-        loop.close()
+    def _release_runtime_lease(self) -> None:
+        lease = self._runtime_lease
+        self._runtime_lease = None
+        if lease is not None:
+            lease.release()
 
     def __del__(self) -> None:
         self._close(logical_outcome="cancelled")
@@ -941,6 +967,7 @@ def _complete_logical(
     model_name: str | None = None,
     provider_name: str | None = None,
     response_model_name: str | None = None,
+    operation_lease: relay_runtime.RelayOperationLease | None = None,
 ) -> None:
     if logical is None:
         return
@@ -960,7 +987,10 @@ def _complete_logical(
                 output.update({"model": model_name, "provider": provider_name})
                 if response_model_name is not None:
                     output["response_model"] = response_model_name
-            lease.host.run_in_session(
+            callback = lease.host.run_in_session
+            if operation_lease is not None:
+                callback = operation_lease.run_in_session
+            callback(
                 lease.session,
                 relay_runtime.pop_relay_scope,
                 lease.host.relay,
@@ -1103,6 +1133,10 @@ def _relay_request_body(
     body = _jsonable(request)
     if not isinstance(body, dict):
         return {}
+    # ``timeout`` configures the provider SDK client, not a provider wire
+    # protocol. Preserve it for the original callback request, but never pass
+    # it to Relay intercepts or routed transports.
+    body.pop("timeout", None)
     # The Responses SDK accepts ``tools=None`` as "no tools", while Relay's
     # typed Responses codec correctly expects either an array or an absent
     # field. Normalize only the codec-facing copy; the original provider

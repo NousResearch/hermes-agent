@@ -548,7 +548,11 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/hub/search',
   'GET /api/skills/hub/sources',
   'POST /api/skills/hub/uninstall',
-  'POST /api/skills/hub/update'
+  'POST /api/skills/hub/update',
+  // Spawns a background action polled via /api/actions/{name}/status — must
+  // live on the SAME backend as that poll family (below), or the poll asks a
+  // backend that never registered the dynamic action name and 404s.
+  'POST /api/mcp/catalog/install'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -569,6 +573,16 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
   const method = String(opts.requestMethod || 'GET').toUpperCase()
 
   if (LOCAL_PRIMARY_SCOPED_ROUTES.has(`${method} ${pathname}`)) {
+    return true
+  }
+
+  // Action-status polls MUST land on the same backend as the endpoints that
+  // spawned them: `_spawn_hermes_action` registers the (often dynamic, e.g.
+  // `skills-install-<slug>-<hash>`) action name only in the spawning
+  // process's memory. Every action-spawning route above scopes to the
+  // primary, so the poll family follows — a pooled-backend poll 404s with
+  // "Unknown action" even though the install itself succeeded (#89xxx).
+  if (pathname.startsWith('/api/actions/')) {
     return true
   }
 
@@ -750,15 +764,16 @@ function pathWithProfileScope(path, profile) {
 
 /**
  * Registry connection a REST request is explicitly pinned to, or null for the
- * legacy profile-routed path. `''`/`'local'` mean the local pool — callers
- * only detour through the registry for a genuinely non-local connection, so
- * single-source users keep the byte-identical v1 route.
+ * legacy profile-routed path. An explicit `local` id must stay registry-scoped:
+ * when the v1 route is remote, only the registry resolver can force the request
+ * back to this device. Single-source users omit the id and keep the
+ * byte-identical v1 route.
  */
 function apiRequestRegistryConnectionId(request): null | string {
   const raw = request && typeof request === 'object' ? (request as { connectionId?: unknown }).connectionId : ''
   const id = String(raw ?? '').trim()
 
-  if (!id || id === 'local') {
+  if (!id) {
     return null
   }
 

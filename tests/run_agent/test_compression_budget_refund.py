@@ -72,7 +72,12 @@ def _tool_call(i: int):
     return SimpleNamespace(
         id=f"call_{i}",
         type="function",
-        function=SimpleNamespace(name="web_search", arguments='{"query": "x"}'),
+        # Vary the query per call: a real marathon turn issues distinct
+        # lookups, and identical (args, result) pairs are now legitimately
+        # deduped into reference stubs by the stall-guard subsystem —
+        # zero-variance args here would deflate the very context pressure
+        # this test exists to exercise.
+        function=SimpleNamespace(name="web_search", arguments=f'{{"query": "x{i}"}}'),
     )
 
 

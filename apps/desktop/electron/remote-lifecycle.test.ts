@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict'
+import { exec as execCallback, spawn } from 'node:child_process'
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -26,12 +31,14 @@ import {
   scrapeReadyPort,
   spawnLogPath,
   spawnRemoteDashboard,
+  spawnTokenPath,
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
+const exec = promisify(execCallback)
 
 function ownedLock(over: any = {}) {
   return {
@@ -298,6 +305,170 @@ test('pidIsOurDashboard requires the exact serve ownership nonce', async () => {
   )
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
 })
+
+test('pidIsOurDashboard accepts the venv entrypoint an installer wrapper execs into', async () => {
+  let ownershipProbe = ''
+
+  const ssh = fakeSsh([
+    [
+      /python3 -c/,
+      (command: string) => {
+        ownershipProbe = command
+
+        return 'OWNED\n'
+      }
+    ]
+  ])
+
+  assert.equal(
+    await pidIsOurDashboard(ssh, 5, SPAWN_NONCE, '~/.local/bin/hermes', '/Users/cd9c/.hermes', OWNERSHIP_ID, 'ops'),
+    true
+  )
+  assert.match(ownershipProbe, /hermes-agent.*venv.*bin.*hermes/)
+  assert.match(ownershipProbe, /desktop-ssh.*0123456789abcdef\.token/)
+  assert.match(ownershipProbe, /expected_profile=.*ops/)
+})
+
+test.skipIf(process.platform === 'win32')(
+  'pidIsOurDashboard recognizes an installer wrapper after it execs python + entrypoint',
+  async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
+    const installDir = path.join(temp, 'install dir')
+    const venvBin = path.join(installDir, 'venv', 'bin')
+    const pythonLink = path.join(venvBin, 'python')
+    const entrypoint = path.join(installDir, 'hermes')
+    const launcher = path.join(temp, 'hermes launcher')
+    const python = (await exec('command -v python3')).stdout.trim()
+    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+
+    await mkdir(venvBin, { recursive: true })
+    await symlink(python, pythonLink)
+    await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
+    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await chmod(launcher, 0o755)
+
+    const backendFlags = [
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '0',
+      '--ssh-session-token-file',
+      tokenPath,
+      '--ssh-owner-nonce',
+      SPAWN_NONCE
+    ]
+
+    const children: ReturnType<typeof spawn>[] = []
+
+    const spawnInstaller = (args: string[]) => {
+      const process = spawn(launcher, args, { stdio: 'ignore' })
+
+      children.push(process)
+
+      return process
+    }
+
+    const child = spawnInstaller(['--profile', 'ops', 'serve', '--isolated', ...backendFlags])
+
+    const ssh = {
+      exec: async (command: string) => (await exec(command, { shell: '/bin/bash' })).stdout
+    }
+
+    const waitForEntrypoint = async (process: ReturnType<typeof spawn>) => {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const command = (await exec(`ps -ww -o command= -p ${process.pid}`)).stdout
+
+        if (command.includes(entrypoint)) {
+          return true
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+
+      return false
+    }
+
+    try {
+      assert.equal(await waitForEntrypoint(child), true, 'wrapper must exec into the fake installer entrypoint')
+      assert.equal(
+        await pidIsOurDashboard(ssh, child.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', OWNERSHIP_ID, 'ops'),
+        true
+      )
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          child.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          'fedcba9876543210fedcba9876543210',
+          'ops'
+        ),
+        false
+      )
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          child.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'wrong-profile'
+        ),
+        false
+      )
+
+      const misplacedIsolated = spawnInstaller(['--profile', 'ops', '--isolated', 'serve', ...backendFlags])
+
+      assert.equal(await waitForEntrypoint(misplacedIsolated), true)
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          misplacedIsolated.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
+        false,
+        '--isolated before serve must remain foreign'
+      )
+
+      const conflictingProfile = spawnInstaller([
+        '--profile',
+        'ops',
+        'serve',
+        '--isolated',
+        ...backendFlags,
+        '--profile',
+        'foreign'
+      ])
+
+      assert.equal(await waitForEntrypoint(conflictingProfile), true)
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          conflictingProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
+        false,
+        'a duplicate conflicting profile must remain foreign'
+      )
+    } finally {
+      for (const process of children) {
+        process.kill('SIGTERM')
+      }
+
+      await rm(temp, { force: true, recursive: true })
+    }
+  }
+)
 
 test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])

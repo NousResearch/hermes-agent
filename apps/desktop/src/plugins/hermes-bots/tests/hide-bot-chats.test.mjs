@@ -59,6 +59,14 @@ test('hideOwnedBotSessions sweeps canonical chats AND room member sessions', asy
     host: {
       request: async (method, params) => {
         calls.push({ method, params })
+        if (method === 'profiles.list') {
+          return {
+            profiles: [
+              { name: 'alpha', preferred_session: { id: 'chat-a', title: 'Bot Chat' } },
+              { name: 'beta', preferred_session: { id: 'chat-b', title: 'Bot Chat' } }
+            ]
+          }
+        }
         return {}
       }
     },
@@ -75,9 +83,36 @@ test('hideOwnedBotSessions sweeps canonical chats AND room member sessions', asy
   vm.runInNewContext(section, context, { filename: 'h.js' })
   await context.__h.hideOwnedBotSessions()
 
-  const ids = calls.map(c => c.params.session_id).sort()
+  const ids = calls.filter(c => c.method === 'session.set_hidden').map(c => c.params.session_id).sort()
   assert.deepEqual(ids, ['chat-a', 'chat-b', 'room-core-a', 'room-core-b'])
-  assert.ok(calls.every(c => c.method === 'session.set_hidden' && c.params.hidden === true))
+  const hiddenCalls = calls.filter(c => c.method === 'session.set_hidden')
+  assert.ok(hiddenCalls.every(c => c.params.hidden === true))
+})
+
+test('safety: a stale canonical pointer to an ordinary session is not hidden', async () => {
+  const start = source.indexOf('function hideOwnedBotSessions()')
+  const end = source.indexOf('/** Fetch server-side avatars', start)
+  const calls = []
+  const context = {
+    host: {
+      request: async (method, params) => {
+        calls.push({ method, params })
+        if (method === 'profiles.list') {
+          return {
+            profiles: [{ name: 'default', preferred_session: { id: 'ordinary-1', title: '生产调度会优化' } }]
+          }
+        }
+        return {}
+      }
+    },
+    $botMeta: { get: () => ({ default: { chat: 'ordinary-1' } }) },
+    $groupChats: { get: () => ({}) }
+  }
+  const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
+  vm.runInNewContext(section, context, { filename: 'h-stale.js' })
+  await context.__h.hideOwnedBotSessions()
+
+  assert.equal(calls.some(c => c.method === 'session.set_hidden'), false)
 })
 
 test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and only those', async () => {
@@ -140,9 +175,11 @@ test('hideOwnedBotSessions chains the ownership sweep and survives its absence o
   assert.match(source, /return Promise\.all\(\[known, sweepBotProfileSessions\(\)\.catch\(\(\) => undefined\)\]\)/)
 })
 
-test('the Bots session browser lists with include_hidden', () => {
-  // The one session.list consumer that must see the always-hidden rows.
-  // (Canonical-chat recovery now goes through profiles.list
+test('the canonical-chat adoption scan lists with include_hidden', () => {
+  // The one session.list consumer that must see the always-hidden rows:
+  // findExistingCanonicalChat (adopt-before-mint) — canonical Bot Chats are
+  // born hidden, so a visible-only scan would miss the very row whose
+  // existence forbids minting. (Pin recovery goes through profiles.list
   // preferred_session_ids, whose resolver already sees hidden rows.)
-  assert.match(source, /session\.list', \{ profile: botName, limit: PROFILE_SESSION_LIST_LIMIT, include_hidden: true \}/)
+  assert.match(source, /include_hidden: true\s*\}\)\s*const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/)
 })

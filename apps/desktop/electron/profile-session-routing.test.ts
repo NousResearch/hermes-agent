@@ -5,8 +5,10 @@ import { test } from 'vitest'
 import {
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
+  fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
-  mergeProfileSessionWindow
+  mergeProfileSessionWindow,
+  spliceRegistrySessionRows
 } from './profile-session-routing'
 
 test('remote sidebar slices all follow the selected profile', () => {
@@ -218,4 +220,157 @@ test('remote session reads keep small requests on one call', async () => {
 
   assert.deepEqual(calls, [{ profile: 'remote-work', path: '/api/sessions?limit=20&offset=0' }])
   assert.equal(result, expected)
+})
+
+test('registry sources: ssh backends are read natively and rows tagged with connection + profile', async () => {
+  const calls: Array<{ descriptor: unknown; path: string }> = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-spark',
+        kind: 'ssh',
+        backends: [
+          { descriptor: 'spark-desc', profileLabel: 'research' },
+          { descriptor: 'spark-desc-2', profileLabel: '' }
+        ]
+      }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0', profile: 'all' }),
+    async (descriptor, path) => {
+      calls.push({ descriptor, path })
+
+      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+    }
+  )
+
+  assert.equal(calls.length, 2)
+  // The remote serves its own state.db: no profile param forwarded.
+  assert.ok(calls.every(({ path }) => path.startsWith('/api/sessions?') && !path.includes('profile=')))
+  // Hidden Bot Mode chats must stay hidden — include_hidden is never requested.
+  assert.ok(calls.every(({ path }) => !path.includes('include_hidden')))
+
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).connection_id, (row as any).profile]),
+    [
+      ['s-spark-desc', 'gw-spark', 'research'],
+      ['s-spark-desc-2', 'gw-spark', 'default']
+    ]
+  )
+  assert.ok(rows.every(row => (row as any).is_default_profile === false))
+})
+
+test('registry sources: shared remote hosts read the cross-profile aggregate once', async () => {
+  const calls: string[] = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-cloud',
+        kind: 'remote',
+        backends: [{ descriptor: 'cloud-desc', profileLabel: null }]
+      }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    async (_descriptor, path) => {
+      calls.push(path)
+
+      return {
+        sessions: [
+          { id: 'r-1', profile: 'hermes-claude' },
+          { id: 'r-2', profile: '' }
+        ],
+        total: 2
+      }
+    }
+  )
+
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].startsWith('/api/profiles/sessions?'))
+  assert.ok(calls[0].includes('profile=all'))
+  assert.ok(!calls[0].includes('include_hidden'))
+
+  // The remote's own profile stamps survive; missing stamps get 'default'.
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['r-1', 'hermes-claude', 'gw-cloud'],
+      ['r-2', 'default', 'gw-cloud']
+    ]
+  )
+})
+
+test('registry sources: an older shared host without the aggregator falls back to its flat list', async () => {
+  const calls: string[] = []
+
+  const rows = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw-old', kind: 'remote', backends: [{ descriptor: 'old-desc', profileLabel: null }] }],
+    new URLSearchParams({ limit: '20' }),
+    async (_descriptor, path) => {
+      calls.push(path)
+
+      if (path.startsWith('/api/profiles/sessions')) {
+        throw new Error('404: No such API endpoint')
+      }
+
+      return { sessions: [{ id: 'legacy-1' }], total: 1 }
+    }
+  )
+
+  assert.equal(calls.length, 2)
+  assert.ok(calls[1].startsWith('/api/sessions?'))
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile]),
+    [['legacy-1', 'default']]
+  )
+})
+
+test('registry sources: a dead gateway contributes nothing instead of breaking the list', async () => {
+  const rows = await fetchRegistrySessionRows(
+    [
+      { connectionId: 'gw-dead', kind: 'ssh', backends: [{ descriptor: 'dead', profileLabel: 'x' }] },
+      { connectionId: 'gw-live', kind: 'ssh', backends: [{ descriptor: 'live', profileLabel: 'y' }] }
+    ],
+    new URLSearchParams({ limit: '10' }),
+    async descriptor => {
+      if (descriptor === 'dead') {
+        throw new Error('ECONNREFUSED')
+      }
+
+      return { sessions: [{ id: 'ok-1' }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(
+    rows.map(row => (row as any).id),
+    ['ok-1']
+  )
+})
+
+test('splice: registry rows dedupe by id and extend per-profile totals', () => {
+  const merged: unknown[] = [
+    { id: 'local-1', profile: 'default', last_active: 100 },
+    { id: 'dupe', profile: 'work', last_active: 90 }
+  ]
+
+  const totals: Record<string, number> = { default: 1, work: 1 }
+
+  const { added } = spliceRegistrySessionRows(
+    merged,
+    [
+      { id: 'dupe', profile: 'work', connection_id: 'gw-1', last_active: 95 },
+      { id: 'remote-1', profile: 'hermes-claude', connection_id: 'gw-1', last_active: 120 },
+      { id: 'remote-2', connection_id: 'gw-1', last_active: 110 }
+    ],
+    totals
+  )
+
+  assert.equal(added, 2)
+  assert.deepEqual(
+    merged.map(row => (row as any).id),
+    ['local-1', 'dupe', 'remote-1', 'remote-2']
+  )
+  assert.equal(totals['hermes-claude'], 1)
+  assert.equal(totals.default, 2) // untagged registry row counts under default
+  assert.equal(totals.work, 1) // deduped row does not double-count
 })

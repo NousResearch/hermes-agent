@@ -8130,8 +8130,8 @@ def run_conversation(
                     # attempted final answer before the verification loop runs.
                     # Only the nudge is flagged synthetic so it gets stripped
                     # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
-                    append_message(messages, final_msg)
+                    agent._emit_interim_assistant_message(final_msg, force_display=True)
+                    messages.append(final_msg)
                     try:
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:
@@ -8202,8 +8202,8 @@ def run_conversation(
                     # attempted final answer before the pre_verify loop runs.
                     # Only the nudge is flagged synthetic so it gets stripped
                     # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
-                    append_message(messages, final_msg)
+                    agent._emit_interim_assistant_message(final_msg, force_display=True)
+                    messages.append(final_msg)
                     try:
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:

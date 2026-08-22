@@ -6748,7 +6748,7 @@ class AIAgent:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
     def _emit_interim_assistant_message(
-        self, assistant_msg: Dict[str, Any]
+        self, assistant_msg: Dict[str, Any], *, force_display: bool = False
     ) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer.
 
@@ -6759,6 +6759,15 @@ class AIAgent:
         suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
         when the only streamed text was unrelated mid-turn commentary. (#65919
         review: response-loss blocker)
+
+        When ``force_display`` is True, bypass the dedup gate
+        (``_interim_text_was_delivered``) and force ``already_streamed=False``
+        so the gateway calls ``on_commentary()`` (standalone permanent bubble)
+        instead of ``on_segment_break()`` (paragraph separator that can be
+        overwritten by subsequent messages). This is needed for the
+        verify-on-stop and pre_verify paths where the response MUST survive
+        as a permanent UI element, even if similar text was previously
+        streamed or delivered.
         """
         if not isinstance(assistant_msg, dict):
             return
@@ -6770,7 +6779,7 @@ class AIAgent:
             if (
                 not key
                 or key in pending_keys
-                or self._interim_text_was_delivered(part)
+                or (not force_display and self._interim_text_was_delivered(part))
             ):
                 continue
             pending_keys.add(key)
@@ -6783,10 +6792,10 @@ class AIAgent:
         if (
             not visible
             or visible == "(empty)"
-            or self._interim_text_was_delivered(visible)
+            or (not force_display and self._interim_text_was_delivered(visible))
         ):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        already_streamed = False if force_display else self._interim_content_was_streamed(visible)
         try:
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 

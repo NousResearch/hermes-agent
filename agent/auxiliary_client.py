@@ -8758,6 +8758,18 @@ def _build_call_kwargs(
                 sticky_key = None
             if sticky_key:
                 merged_extra["session_id"] = sticky_key
+    # Gemini's OpenAI-compatible endpoint rejects the ``reasoning`` field
+    # outright (400 "Unknown name reasoning: Cannot find field"), so a
+    # reasoning-disabled config — ``{"enabled": False}``, e.g. from
+    # ``auxiliary.<task>.reasoning_effort: none`` — must be omitted rather
+    # than serialized. Omission is equivalent for Gemini: it never reasons
+    # unless explicitly asked. Providers that need an explicit disabled
+    # field are untouched (#87910).
+    if merged_extra.get("reasoning") == {"enabled": False}:
+        if str(provider or "").strip().lower() in {
+            "gemini", "google", "google-gemini", "google-ai-studio",
+        }:
+            merged_extra.pop("reasoning", None)
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 

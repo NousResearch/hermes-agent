@@ -13346,6 +13346,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
     """Issue #62503: session.most_recent must not return the launch profile tip."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    stale_checks = []
 
     class LaunchDB:
         def list_sessions_rich(self, **kwargs):
@@ -13358,8 +13359,13 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         def list_sessions_rich(self, **kwargs):
             return [
                 {"id": "tool-noise", "source": "tool", "title": "t", "started_at": 9},
+                {"id": "stale-tip", "source": "tui", "title": "S", "started_at": 6},
                 {"id": "ml-tip", "source": "desktop", "title": "M", "started_at": 3},
             ]
+
+        def archive_if_unreachable_local_endpoint(self, session_id):
+            stale_checks.append(session_id)
+            return session_id == "stale-tip"
 
         def close(self):
             pass
@@ -13376,6 +13382,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         }
     )
     assert resp["result"]["session_id"] == "ml-tip"
+    assert stale_checks == ["stale-tip", "ml-tip"]
 
 
 def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
@@ -14857,6 +14864,26 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_skips_archived_unreachable_local_row(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {"id": "stale", "source": "tui", "started_at": 2},
+                {"id": "healthy", "source": "tui", "started_at": 1},
+            ]
+
+        def archive_if_unreachable_local_endpoint(self, session_id):
+            return session_id == "stale"
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "healthy"
 
 
 def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):

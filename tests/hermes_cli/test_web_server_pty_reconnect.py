@@ -83,6 +83,41 @@ def test_fresh_param_ignores_channel_active_session_file(pty_client, monkeypatch
     assert not active_file.exists()
 
 
+def test_automatic_reconnect_drops_unreachable_local_resume(monkeypatch, tmp_path):
+    import hermes_cli.main as main_mod
+    import hermes_cli.web_server as ws
+
+    active_file = tmp_path / "active.json"
+    active_file.write_text('{"session_id":"stale"}', encoding="utf-8")
+
+    class _DB:
+        def archive_if_unreachable_local_endpoint(self, session_id):
+            return session_id == "stale"
+
+        def close(self):
+            pass
+
+    def _open_db(_profile, *, read_only):
+        assert read_only is False
+        return _DB()
+
+    monkeypatch.setattr(ws, "_open_session_db_for_profile", _open_db)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+    )
+
+    _argv, _cwd, env = ws._resolve_chat_argv(
+        resume="stale",
+        active_session_file=str(active_file),
+        automatic_resume=True,
+    )
+
+    assert "HERMES_TUI_RESUME" not in env
+    assert not active_file.exists()
+
+
 def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     """Child EOF must close the WS server-side and reap the PTY.
 

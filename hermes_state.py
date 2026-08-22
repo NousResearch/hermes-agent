@@ -19,12 +19,14 @@ import atexit
 import contextlib
 import errno
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import queue
 import random
 import re
+import socket
 import sqlite3
 import sys
 import threading
@@ -33,6 +35,7 @@ import weakref
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agent.memory_manager import sanitize_context
 from agent.session_activity import ActivityProvenance
@@ -6426,6 +6429,77 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def archive_if_unreachable_local_endpoint(
+        self,
+        session_id: str,
+        *,
+        connect_timeout: float = 0.25,
+    ) -> bool:
+        """Archive an automatic-resume target whose loopback endpoint is down.
+
+        This is deliberately narrower than provider initialization: only an
+        unended, non-archived row with an explicit loopback ``base_url`` is
+        probed, using a bounded TCP connect. Non-local endpoints, malformed
+        metadata, and reachable local endpoints are left untouched. The row is
+        archived rather than deleted so an explicit resume remains possible.
+
+        Returns ``True`` only when this call archived the row.
+        """
+        if not session_id:
+            return False
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_config FROM sessions "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+
+        raw_config = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            config = json.loads(raw_config or "{}")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(config, dict):
+            return False
+
+        base_url = str(config.get("base_url") or "").strip()
+        try:
+            parsed = urlparse(base_url)
+            host = parsed.hostname
+            if parsed.scheme not in {"http", "https"} or not host:
+                return False
+            if host.lower() != "localhost":
+                try:
+                    if not ipaddress.ip_address(host).is_loopback:
+                        return False
+                except ValueError:
+                    return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False
+
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return False
+        except OSError:
+            pass
+
+        archived_at = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, "
+                "end_reason = 'archived_local_endpoint_stale', archived = 1 "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (archived_at, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed.
 
@@ -11665,6 +11739,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = False,
         workspace_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
@@ -11687,6 +11762,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         where_clauses = []
         params: list = []
+        if not include_archived:
+            where_clauses.append("s.archived = 0")
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)

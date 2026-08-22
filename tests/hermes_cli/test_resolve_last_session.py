@@ -6,8 +6,9 @@ from hermes_cli.main import _resolve_last_session
 
 
 class _FakeDB:
-    def __init__(self, rows):
+    def __init__(self, rows, stale_ids=()):
         self._rows = rows
+        self._stale_ids = set(stale_ids)
         self.closed = False
 
     def search_sessions(self, source=None, limit=20, **_kw):
@@ -20,6 +21,9 @@ class _FakeDB:
 
     def close(self):
         self.closed = True
+
+    def archive_if_unreachable_local_endpoint(self, session_id):
+        return session_id in self._stale_ids
 
 
 
@@ -61,6 +65,16 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
     finally:
         db.close()
 
+def test_resolve_last_session_skips_unreachable_local_candidate(monkeypatch):
+    rows = [
+        {"id": "stale", "source": "cli", "last_active": 20.0},
+        {"id": "healthy", "source": "cli", "last_active": 10.0},
+    ]
+    fake_db = _FakeDB(rows, stale_ids={"stale"})
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: fake_db)
+
+    assert _resolve_last_session("cli") == "healthy"
+
 
 
 
@@ -75,8 +89,9 @@ class _WorkspaceAwareDB:
     when its ``git_repo_root`` equals it, or (no repo root recorded) when its
     ``cwd`` is at or under it."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, stale_ids=()):
         self._rows = rows
+        self._stale_ids = set(stale_ids)
         self.closed = False
 
     def search_sessions(self, source=None, limit=20, workspace_key=None, **_kw):
@@ -98,6 +113,51 @@ class _WorkspaceAwareDB:
 
     def close(self):
         self.closed = True
+
+    def archive_if_unreachable_local_endpoint(self, session_id):
+        return session_id in self._stale_ids
+
+
+def test_resolve_last_session_skips_stale_workspace_mru(monkeypatch, tmp_path):
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    monkeypatch.chdir(repo_a)
+    monkeypatch.setattr(
+        "hermes_cli.main.subprocess.run",
+        lambda cmd, **kw: __import__("subprocess").CompletedProcess(
+            cmd, 0, stdout=str(repo_a), stderr=""
+        ),
+    )
+
+    rows = [
+        {
+            "id": "global_recent",
+            "source": "cli",
+            "last_active": 30.0,
+            "cwd": str(repo_b),
+            "git_repo_root": str(repo_b),
+        },
+        {
+            "id": "workspace_stale",
+            "source": "cli",
+            "last_active": 20.0,
+            "cwd": str(repo_a),
+            "git_repo_root": str(repo_a),
+        },
+        {
+            "id": "workspace_healthy",
+            "source": "cli",
+            "last_active": 10.0,
+            "cwd": str(repo_a),
+            "git_repo_root": str(repo_a),
+        },
+    ]
+    fake_db = _WorkspaceAwareDB(rows, stale_ids={"workspace_stale"})
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: fake_db)
+
+    assert _resolve_last_session("cli") == "workspace_healthy"
 
 
 def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):

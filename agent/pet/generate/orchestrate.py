@@ -258,10 +258,20 @@ def hatch_pet(
         # (no clean gutters), which slices badly. We retry such rolls; only the
         # final attempt falls back to lenient ``auto`` slicing so a stubborn row
         # still yields *something* rather than dropping the whole row.
+        #
+        # However, some rows are fundamentally *unsegmentable* — the model produces
+        # poses that are merged/touching with no clean separation possible. These
+        # rows fail with specific ValueErrors from extract_strip_frames. Retrying
+        # them just burns paid image-generation requests. Detect these errors and
+        # fail fast: skip strict retries and go straight to the lenient ``auto``
+        # attempt (or give up if even that fails).
+        unsegmentable = False
         for attempt in range(_ROW_GEN_ATTEMPTS):
             if cancelled():
                 return state, None
-            strict = attempt < _ROW_GEN_ATTEMPTS - 1
+            # If a previous attempt hit an unsegmentable error, skip strict retries
+            # and jump straight to the lenient ``auto`` method on the next attempt.
+            strict = not unsegmentable and attempt < _ROW_GEN_ATTEMPTS - 1
             strips: list[Path] = []
             try:
                 strips = imagegen.generate(
@@ -285,6 +295,43 @@ def hatch_pet(
                     slug, state, time.monotonic() - t0, attempt + 1,
                 )
                 return state, frames
+            except ValueError as exc:
+                # Unsegmentable rows fail with specific ValueErrors from
+                # extract_strip_frames / _validate_extracted_frames. Retrying the
+                # strict ``components`` method on these just burns requests — the
+                # model output is fundamentally incompatible with clean segmentation.
+                # Mark as unsegmentable so the next attempt (if any) jumps straight
+                # to the lenient ``auto`` method, or we give up after this attempt
+                # if we're already on the last one.
+                msg = str(exc).lower()
+                is_unsegmentable = any(
+                    (keyword in msg) for keyword in (
+                        "could not segment",
+                        "frame",
+                        "multi-pose",
+                        "multiple separated subjects",
+                        "empty",
+                    )
+                )
+                if is_unsegmentable:
+                    unsegmentable = True
+                    logger.warning(
+                        "pet hatch %r: row %r unsegmentable (attempt %d/%d): %s — skipping strict retries",
+                        slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc,
+                    )
+                    # If this was already the last attempt (lenient), give up.
+                    if not strict:
+                        last_exc = exc
+                        break
+                    # Otherwise continue to next attempt which will use ``auto``.
+                    last_exc = exc
+                    continue
+                # Other ValueErrors (unexpected) — treat as generic failure, retry.
+                last_exc = exc
+                logger.warning(
+                    "pet hatch %r: row %r attempt %d/%d failed: %s",
+                    slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc,
+                )
             except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated
                 last_exc = exc
                 logger.warning(

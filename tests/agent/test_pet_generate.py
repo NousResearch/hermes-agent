@@ -56,8 +56,6 @@ def test_extract_strip_frames_transparent_returns_centered_cells():
         assert frame.getchannel("A").getextrema()[1] > 0
 
 
-
-
 def test_remove_background_defringes_antialiased_edge():
     # The contaminated antialiased ring where sprite meets backdrop survives the
     # key (it's a blend, too far from pure magenta). Defringe shaves that 1px ring:
@@ -73,26 +71,6 @@ def test_remove_background_defringes_antialiased_edge():
     assert keyed.getpixel((100, 100))[3] > 0  # core intact
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ───────────────────────── atlas compose / validate ─────────────────────────
 
 
@@ -101,14 +79,6 @@ def _frames_for_all_states() -> dict[str, list]:
     for state, _row, count in atlas.ROW_SPECS:
         out[state] = atlas.extract_strip_frames(_strip(count), count)
     return out
-
-
-
-
-
-
-
-
 
 
 def test_validate_atlas_rejects_postage_stamp_sprite():
@@ -124,12 +94,6 @@ def test_validate_atlas_rejects_postage_stamp_sprite():
 
     assert not result["ok"]
     assert any("too small" in e for e in result["errors"])
-
-
-
-
-
-
 
 
 def test_normalize_cells_uses_consistent_pose_scale_for_motion_rows():
@@ -198,13 +162,7 @@ def test_register_local_pet_is_generated_and_exports_zip():
     assert any(n.startswith("zippy/spritesheet") for n in names)
 
 
-
-
-
-
 # ───────────────────────── orchestration (mocked imagegen) ─────────────────────────
-
-
 
 
 def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
@@ -409,8 +367,54 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
     assert "idle" in result.states  # filled by the base-image fallback
 
 
+def test_hatch_pet_skips_strict_retries_on_unsegmentable_row(monkeypatch, tmp_path):
+    """When a row is unsegmentable (poses touching/merged), the strict
+    ``components`` method fails with a ValueError. The fix detects this and
+    skips further strict retries, jumping straight to the lenient ``auto``
+    attempt — saving paid image-generation requests."""
+    from agent.pet.generate import atlas as atlas_mod
+    from agent.pet.generate import imagegen, orchestrate
 
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
 
+    attempts: dict[str, int] = {}
+    idle_methods: list[str] = []
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        attempts[prefix] = attempts.get(prefix, 0) + 1
+        state = prefix.replace("pet_row_", "")
+        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        p = tmp_path / f"{prefix}_{attempts[prefix]}.png"
+        _strip(count).save(p)
+        return [p]
+
+    original_extract = atlas_mod.extract_strip_frames
+
+    def flaky_extract(strip, count, *, method="auto", fit=True, **kwargs):
+        # Only track methods for idle row
+        if "idle" in str(strip).lower():
+            idle_methods.append(method)
+        # First call (strict "components") for idle row raises unsegmentable error
+        if method == "components" and "idle" in str(strip).lower():
+            raise ValueError("could not segment 6 padded sprites from strip")
+        # Other calls (including lenient "auto" for idle) succeed
+        return original_extract(strip, count, method=method, fit=fit, **kwargs)
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+    monkeypatch.setattr(atlas_mod, "extract_strip_frames", flaky_extract)
+
+    result = orchestrate.hatch_pet(base_image=base, slug="unsegmentable-test", concept="a fox")
+
+    # Idle row should have been attempted twice: once strict (failed), once lenient (succeeded)
+    assert attempts["pet_row_idle"] == 2
+    # Methods used for idle should be ["components", "auto"] — no third strict retry
+    assert idle_methods == ["components", "auto"]
+    # Pet should still hatch successfully with idle row filled
+    assert "idle" in result.states
+    # No leftover strip files
+    assert not list(tmp_path.glob("pet_row_*"))
 
 
 class _FakeImgProvider:
@@ -420,8 +424,6 @@ class _FakeImgProvider:
 
     def is_available(self):
         return self._available
-
-
 
 
 def test_list_sprite_providers_marks_default(monkeypatch):

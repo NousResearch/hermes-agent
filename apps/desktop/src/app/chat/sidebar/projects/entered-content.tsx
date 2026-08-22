@@ -23,7 +23,7 @@ import {
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
 } from './workspace-groups'
-import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
+import { StartWorkButton, WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
 
 // The entered project's body. Main-checkout sessions render directly — no
 // redundant repo/branch header (the breadcrumb already names the project). Only
@@ -237,15 +237,18 @@ function RepoFlatSection({
       <WorkspaceHeader
         action={
           onNewSession && (
-            <WorkspaceAddButton
-              label={s.newSessionIn(repo.label)}
-              onClick={() => {
-                // Reveal the repo the new session targets if the user had it
-                // collapsed — the session lands in one of its lanes.
-                setWorkspaceNodeOpen(repo.id, true)
-                onNewSession(repo.path)
-              }}
-            />
+            <div className="flex items-center">
+              <WorkspaceAddButton
+                label={s.newSessionIn(repo.label)}
+                onClick={() => {
+                  // Reveal the repo the new session targets if the user had it
+                  // collapsed — the session lands in one of its lanes.
+                  setWorkspaceNodeOpen(repo.id, true)
+                  onNewSession(repo.path)
+                }}
+              />
+              {repo.path && <StartWorkButton label={`${s.projects.startWork}: ${repo.label}`} repoPath={repo.path} />}
+            </div>
           )
         }
         emphasis

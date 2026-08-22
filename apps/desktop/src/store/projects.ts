@@ -1280,10 +1280,14 @@ export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(nul
 // `repoPath` is resolved when the dialog opens (see resolveWorktreeRepoPath).
 // It is not read from the rail that received the key, so the dialog always
 // targets the surface the user looks at.
+export type WorktreeDialogMode = 'create' | 'convert'
+
 export interface WorktreeDialogState {
   repoPath: string
   /** The base branch selected in a "branch off from X" menu. */
   base?: string
+  /** Open the dialog in create or convert mode. */
+  mode?: WorktreeDialogMode
 }
 
 export const $worktreeDialog = atom<null | WorktreeDialogState>(null)

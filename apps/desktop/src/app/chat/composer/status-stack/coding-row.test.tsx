@@ -1,10 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
 
+const openWorktreeDialog = vi.fn()
+
 vi.mock('@/store/coding-status', () => ({
+  openWorktreeDialog,
   registerRepoStatusCwd: () => undefined,
   repoStatusForCwd: () =>
     atom({
@@ -18,6 +22,24 @@ vi.mock('@/store/coding-status', () => ({
       untracked: 0
     }),
   repoWorktreesForCwd: () => atom([])
+}))
+
+vi.mock('@/components/ui/actions-menu', () => ({
+  ActionsContextMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
+  ActionsMenu: ({ children, items }: { children: ReactNode; items: (kit: unknown) => ReactNode }) => (
+    <>
+      {children}
+      {items({
+        Label: ({ children: label }: { children: ReactNode }) => <div>{label}</div>,
+        Separator: () => <div />
+      })}
+    </>
+  ),
+  renderActionItem: (_kit: unknown, item: { key: string; label: ReactNode; onSelect: () => void }) => (
+    <button key={item.key} onClick={item.onSelect} type="button">
+      {item.label}
+    </button>
+  )
 }))
 
 const { CodingStatusRow } = await import('./coding-row')
@@ -89,5 +111,58 @@ describe('CodingStatusRow', () => {
     // Confirmation is the button turning into a checkmark, not a notification.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy())
     expect($notifications.get()).toHaveLength(0)
+  })
+})
+
+describe('CodingStatusRow worktree dialog mode routing', () => {
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
+  it('opens Start Work in create mode', async () => {
+    render(
+      <CodingStatusRow
+        onBranchOff={() => Promise.resolve()}
+        onConvertBranch={() => Promise.resolve()}
+        onOpen={() => undefined}
+        onOpenWorktree={() => undefined}
+        repoPath="/repo"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New worktree' }))
+
+    await waitFor(() => {
+      expect(openWorktreeDialog).toHaveBeenCalledWith({ base: undefined, mode: 'create', repoPath: '/repo' })
+    })
+  })
+
+  it('opens Convert Branch in convert mode', async () => {
+    render(
+      <CodingStatusRow
+        onBranchOff={() => Promise.resolve()}
+        onConvertBranch={() => Promise.resolve()}
+        onOpen={() => undefined}
+        onOpenWorktree={() => undefined}
+        repoPath="/repo"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Convert a branch…' }))
+
+    await waitFor(() => {
+      expect(openWorktreeDialog).toHaveBeenCalledWith({ base: undefined, mode: 'convert', repoPath: '/repo' })
+    })
+  })
+
+  it('opens a branch-off entry in create mode with the base pinned', async () => {
+    render(<CodingStatusRow onBranchOff={() => Promise.resolve()} onOpen={() => undefined} repoPath="/repo" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'New branch from main' }))
+
+    await waitFor(() => {
+      expect(openWorktreeDialog).toHaveBeenCalledWith({ base: 'main', mode: 'create', repoPath: '/repo' })
+    })
   })
 })

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -27,7 +27,8 @@ import {
   projectRootCwd,
   requestStartWorkSession,
   startWorkInRepo,
-  switchBranchInRepo
+  switchBranchInRepo,
+  type WorktreeDialogMode
 } from '@/store/projects'
 
 import { BaseBranchPicker } from './base-branch-picker'
@@ -73,7 +74,7 @@ export function WorktreeDialog() {
 
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
+  const [convertMode, setConvertMode] = useState<WorktreeDialogMode>('create')
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
@@ -82,6 +83,7 @@ export function WorktreeDialog() {
   // and the user does not reopen the dialog.
   const [repoPath, setRepoPath] = useState('')
   const [projectOpen, setProjectOpen] = useState(false)
+  const branchLoadGenerationRef = useRef(0)
 
   // Every project with a working root is a valid target. The list is deduped by
   // path, because an auto project and a user project can share one folder.
@@ -116,13 +118,15 @@ export function WorktreeDialog() {
 
   const activeProjectLabel = activeOption?.label ?? repoPath.split('/').pop() ?? repoPath
 
-  // Reset to a fresh state each time the dialog opens. Apply the resolved repo
-  // and the base branch that the caller selected, for example "branch off from
-  // main" in the dropdown menu of the coding row.
+  // Reset to a fresh state each time the dialog opens. Apply the resolved repo,
+  // the mode, and the base branch that the caller selected, for example "branch
+  // off from main" in the dropdown menu of the coding row. The mode is initialized
+  // synchronously from the caller's intent, so the dialog's first committed
+  // content and autofocus target already match.
   useEffect(() => {
     if (state) {
       setName('')
-      setConvertMode(false)
+      setConvertMode(state.mode ?? 'create')
       setSelectedBase(state.base ?? '')
       setRepoPath(state.repoPath)
       setBranches([])
@@ -140,14 +144,27 @@ export function WorktreeDialog() {
       return
     }
 
+    // Generation guard: async branch loading across close/reopen and repository
+    // replacement can resolve out of order. Stale success, error, or finally
+    // updates must not repaint newer state.
+    const generation = ++branchLoadGenerationRef.current
+
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      const nextBranches = await listRepoBranches(repoPath)
+
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches(nextBranches)
+      }
     } catch {
-      setBranches([])
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches([])
+      }
     } finally {
-      setBranchesLoading(false)
+      if (generation === branchLoadGenerationRef.current) {
+        setBranchesLoading(false)
+      }
     }
   }, [repoPath])
 
@@ -156,6 +173,23 @@ export function WorktreeDialog() {
     requestStartWorkSession(path)
     closeWorktreeDialog()
   }
+
+  // When the dialog opens in convert mode, load the branch list immediately so
+  // the user does not have to click "convert" again. Invalidates any outstanding
+  // branch request when this session closes or is replaced, so stale updates
+  // cannot repaint newer state.
+  useEffect(() => {
+    if (state && state.mode === 'convert') {
+      void loadBranches()
+    }
+  }, [state, loadBranches])
+
+  useEffect(
+    () => () => {
+      branchLoadGenerationRef.current += 1
+    },
+    []
+  )
 
   const submit = async () => {
     const branch = name.trim()
@@ -210,7 +244,7 @@ export function WorktreeDialog() {
   }
 
   const enterConvert = () => {
-    setConvertMode(true)
+    setConvertMode('convert')
     void loadBranches()
   }
 
@@ -218,8 +252,8 @@ export function WorktreeDialog() {
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-          <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
+          <DialogTitle>{convertMode === 'convert' ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
+          <DialogDescription>{convertMode === 'convert' ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
         </DialogHeader>
 
         {/* Project picker: change the repo that the worktree is cut from. Show
@@ -274,7 +308,7 @@ export function WorktreeDialog() {
           </Popover>
         )}
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <Command
             className="rounded-md border border-(--ui-stroke-tertiary)"
             filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
@@ -334,12 +368,12 @@ export function WorktreeDialog() {
           </>
         )}
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <DialogFooter className="sm:justify-start">
             <Button
               className="px-0 text-(--ui-text-secondary) hover:text-foreground"
               disabled={pending}
-              onClick={() => setConvertMode(false)}
+              onClick={() => setConvertMode('create')}
               type="button"
               variant="link"
             >

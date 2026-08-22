@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
+import { type WorktreeDialogMode } from '@/store/projects'
 import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store/pull-requests'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
@@ -110,8 +111,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // rails can no longer each open their own copy. The menu items below only
   // publish the intent. They pin the repo of THIS rail, so the kebab of a tile
   // targets the worktree of that tile.
-  const startBranch = (base: string | undefined) => {
-    void openWorktreeDialog({ base, repoPath: resolvedRepoPath })
+  // Start Work opens the dialog in create mode; Convert Branch opens it in
+  // convert mode, so the first committed content and autofocus target already
+  // match the caller's intent.
+  const startBranch = (base: string | undefined, mode: WorktreeDialogMode) => {
+    void openWorktreeDialog({ base, mode, repoPath: resolvedRepoPath })
   }
 
   if (!status) {
@@ -132,7 +136,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     branchTargets.push({ base: current, label: s.branchOffFrom(current) })
   }
 
-  if (status.defaultBranch && status.defaultBranch !== current) {
+  if (status.defaultBranch && current && status.defaultBranch !== current) {
     branchTargets.push({ base: status.defaultBranch, label: s.branchOffFrom(status.defaultBranch) })
   }
 
@@ -161,7 +165,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     const branchItems: ActionItemSpec[] = branchTargets.map(target => ({
       key: target.base ?? '__head__',
       label: <span className="truncate">{target.label}</span>,
-      onSelect: () => startBranch(target.base)
+      onSelect: () => startBranch(target.base, 'create')
     }))
 
     const worktreeItems: ActionItemSpec[] = otherWorktrees.map(worktree => ({
@@ -188,13 +192,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
         {renderActionItem(kit, {
           key: '__start__',
           label: <span className="truncate">{p.startWork}</span>,
-          onSelect: () => startBranch(undefined)
+          onSelect: () => startBranch(undefined, 'create')
         })}
         {onConvertBranch &&
           renderActionItem(kit, {
             key: '__convert__',
             label: <span className="truncate">{p.convertBranch}</span>,
-            onSelect: () => startBranch(undefined)
+            onSelect: () => startBranch(undefined, 'convert')
           })}
       </>
     )

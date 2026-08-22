@@ -158,15 +158,15 @@ export function WorkspaceContextMenu({
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath }: { repoPath: string }) {
+export function StartWorkButton({ label, repoPath }: { label?: string; repoPath: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 
   return (
-    <Tip label={p.startWork}>
+    <Tip label={label ?? p.startWork}>
       <button
-        aria-label={p.startWork}
-        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+        aria-label={label ?? p.startWork}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 focus-visible:opacity-100"
         // Publish the intent. The one WorktreeDialog in the sidebar renders it.
         // This button pins its own repo, so it targets this section.
         onClick={() => void openWorktreeDialog({ repoPath })}

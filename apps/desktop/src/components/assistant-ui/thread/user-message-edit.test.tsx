@@ -263,9 +263,13 @@ describe('Enter submission and latch behavior', () => {
       return id
     }) as typeof window.setTimeout)
 
-    vi.spyOn(window, 'clearTimeout').mockImplementation(((id?: number) => {
+    // `id` is typed `unknown` for the same reason the arrays above are: what
+    // actually arrives is whatever `setTimeout` returned, and under jsdom that
+    // is a Timeout object rather than the `number` the DOM lib promises.
+    // Declaring it `number` would have documented a shape this never sees.
+    vi.spyOn(window, 'clearTimeout').mockImplementation(((id?: unknown) => {
       cleared.push(id)
-      realClearTimeout(id)
+      realClearTimeout(id as number | undefined)
     }) as typeof window.clearTimeout)
 
     const onEdit = vi.fn(async () => {})

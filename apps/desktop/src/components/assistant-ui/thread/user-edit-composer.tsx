@@ -140,6 +140,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // bus leaks: confirming or cancelling an edit tears the composer down while
   // `'edit'` is still the active target. Release it alongside the thread-scroll
   // cleanup so keyboard routing falls back to the visible chat composer.
+  //
+  // It also drains whatever `scheduleTimeout` still has pending, which is a
+  // second concern under the same heading rather than a separate one: both
+  // are "this composer is going away", they unmount together by definition,
+  // and a sibling unmount-only effect would only be a second place to forget.
   useEffect(
     () => () => {
       notifyThreadEditClose()

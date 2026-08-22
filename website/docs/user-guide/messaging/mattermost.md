@@ -185,7 +185,7 @@ You can designate a "home channel" where the bot sends proactive messages (such 
 
 ### Using the Slash Command
 
-Type `/sethome` in any Mattermost channel where the bot is present. That channel becomes the home channel.
+Type `/sethome` in any Mattermost channel where the bot is present. That channel becomes the home channel. (Requires [native slash commands](#native-slash-commands) — see below — or a leading space to bypass Mattermost's client-side interception.)
 
 ### Manual Configuration
 
@@ -251,6 +251,44 @@ Behavior:
 - Find a channel ID via the Mattermost UI → channel header → "View Info", or read it from the channel URL.
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+## Native Slash Commands
+
+Out of the box, Mattermost's client intercepts any message starting with `/` and treats it as a **Mattermost** command — unregistered ones (like `/model`) are rejected locally and never reach Hermes. Typing a leading space (` /model`) bypasses this, but real `/commands` with autocomplete require registering them on the Mattermost server.
+
+The Mattermost adapter ships an optional HTTP endpoint that receives these server-side callbacks and injects them into the gateway as native COMMAND events.
+
+### Setup
+
+1. **Enable the listener** — add your verification tokens to `~/.hermes/.env`:
+
+   ```bash
+   # Comma-separated tokens from Mattermost's slash-command admin pages
+   MATTERMOST_SLASH_TOKENS=token1,token2
+   ```
+
+   The listener starts automatically when the gateway starts and tokens are present. Host/port live in `config.yaml` (defaults `0.0.0.0:8645`):
+
+   ```yaml
+   mattermost:
+     slash_command_host: 0.0.0.0
+     slash_command_port: 8645
+   ```
+
+2. **Register commands in Mattermost** — Main Menu → Integrations → Slash Commands → Add. Set the **Request URL** to `http://<hermes-host>:8645/` and copy the generated **Verification Token** back into `MATTERMOST_SLASH_TOKENS`. Repeat per command. Turn on **Autocomplete** with a description and argument hint so commands show up as you type.
+
+3. **SSRF note for private networks** — Mattermost blocks outbound integration callbacks to "reserved" IP ranges (this includes VPN ranges like CGNAT `100.64.0.0/10` used by Tailscale/Netbird-style meshes). If your Hermes host is on such a network, whitelist it in Mattermost's `config.json`:
+
+   ```json
+   "ServiceSettings": { "AllowedUntrustedInternalConnections": "<hermes-host-ip>/32" }
+   ```
+
+### Behavior
+
+- The endpoint answers immediately with an ephemeral `200` ack; the gateway processes the command asynchronously and replies in the channel (or thread, per `MATTERMOST_REPLY_MODE`).
+- Verification tokens are checked with a constant-time compare against `MATTERMOST_SLASH_TOKENS`; anything else gets `401` and is dropped.
+- Slash payloads carry no thread context, so a slash command always targets the per-user channel session (in thread reply-mode, conversations in a thread stay separate).
+- Commands Mattermost reserves as built-ins (`/status`, `/help`) cannot be overridden — use a leading space for those two.
 
 ## Troubleshooting
 

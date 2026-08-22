@@ -9,15 +9,24 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_SLASH_TOKENS     Comma-separated slash-command verification
+                                tokens (secret). When set, an HTTP listener
+                                receives Mattermost's server-side slash-command
+                                callbacks and injects them as COMMAND events
+                                (config.yaml extra keys: slash_command_host,
+                                slash_command_port; default 0.0.0.0:8645).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
+import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -75,6 +84,11 @@ _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
+# Native slash-command listener defaults (config.yaml ``extra`` keys
+# ``slash_command_host`` / ``slash_command_port`` override these).
+_SLASH_COMMAND_DEFAULT_HOST = "0.0.0.0"
+_SLASH_COMMAND_DEFAULT_PORT = 8645
+
 
 def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return a post payload that prevents Mattermost from firing mentions."""
@@ -84,6 +98,13 @@ def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         payload["props"] = dict(_MATTERMOST_DISABLE_MENTIONS_PROPS)
     return payload
+
+
+def _slash_command_text(form: Dict[str, str]) -> str:
+    """Reconstruct a slash command's text: ``command`` plus ``text`` when present."""
+    command = form.get("command", "")
+    text = form.get("text", "")
+    return command + ((" " + text) if text else "")
 
 
 def check_mattermost_requirements() -> bool:
@@ -142,9 +163,17 @@ class MattermostAdapter(BasePlatformAdapter):
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
+        self._last_get_status: Optional[int] = None
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Native slash-command HTTP listener (Mattermost server-side slash
+        # commands POST callbacks here; see _start_slash_command_listener).
+        self._slash_runner: Any = None        # aiohttp.web.AppRunner
+        self._slash_site: Any = None          # aiohttp.web.TCPSite
+        self._slash_tokens: Tuple[str, ...] = ()
+        self._slash_injections: set = set()   # strong refs to in-flight tasks
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -159,12 +188,14 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _api_get(self, path: str) -> Dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
+        self._last_get_status = None
         if ".." in path:
             logger.error("MM API path traversal blocked: %s", path)
             return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                self._last_get_status = resp.status
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
@@ -338,12 +369,19 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
+
+        # Native slash-command HTTP listener (only when configured —
+        # after credentials are verified above, mirroring the WS auth gate).
+        await self._start_slash_command_listener()
+
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
         """Disconnect from Mattermost."""
         self._closing = True
+
+        await self._stop_slash_command_listener()
 
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
@@ -364,6 +402,264 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
+    # ------------------------------------------------------------------
+    # Native slash-command HTTP listener
+    # ------------------------------------------------------------------
+
+    def _resolve_slash_tokens(self) -> Tuple[str, ...]:
+        """Parse MATTERMOST_SLASH_TOKENS into a tuple of verification tokens.
+
+        Scope-aware via ``_get_scoped_secret`` (same pattern as
+        MATTERMOST_TOKEN): the per-command verification tokens are secrets,
+        so ``.env``/env is the correct home per repo rules.
+        """
+        raw = _get_scoped_secret("MATTERMOST_SLASH_TOKENS", "") or ""
+        return tuple(t.strip() for t in raw.split(",") if t.strip())
+
+    def _resolve_allowed_channel_ids(self) -> set:
+        """Resolve the channel allowlist exactly like the WS path does.
+
+        Mirrors the ``allowed_channels`` parse in ``_handle_ws_event``
+        (config ``extra`` first, then the ``MATTERMOST_ALLOWED_CHANNELS``
+        env fallback; list or comma-separated string). Used here as
+        defense-in-depth on the HTTP surface.
+        """
+        allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
+        if allowed_raw is None:
+            allowed_raw = os.getenv("MATTERMOST_ALLOWED_CHANNELS", "")
+        if isinstance(allowed_raw, list):
+            return {str(c).strip() for c in allowed_raw if str(c).strip()}
+        return {c.strip() for c in str(allowed_raw).split(",") if c.strip()}
+
+    async def _start_slash_command_listener(self) -> None:
+        """Start the HTTP listener for Mattermost slash-command callbacks.
+
+        Mattermost's client swallows messages that start with ``/`` as
+        unregistered slash commands, so gateway commands typed in Mattermost
+        never reach the WebSocket. Registering real server-side slash
+        commands fixes that — Mattermost then POSTs each invocation here,
+        and we inject it into the same message pipeline as a COMMAND event.
+
+        Fail-closed: with no verification tokens configured the listener
+        never binds, so an unauthenticated HTTP surface cannot appear by
+        accident.
+
+        Note on ``PORT_BINDING_PLATFORM_VALUES`` (gateway/config.py): the
+        Mattermost entry there would have to be *conditional* on this
+        listener being enabled, but enablement is keyed on a profile-scoped
+        secret this adapter reads at connect time — invisible to
+        ``platform_binds_port(platform, extra)``, which only sees ``extra``.
+        Registering Mattermost unconditionally would falsely fail-fast every
+        multiplexed secondary profile using plain WS Mattermost, so the
+        plugin stays out of that registry; a bind conflict is instead
+        reported here and degrades to WS-only.
+        """
+        from aiohttp import web
+
+        self._slash_tokens = self._resolve_slash_tokens()
+        if not self._slash_tokens:
+            logger.warning(
+                "Mattermost: slash-command HTTP endpoint disabled — "
+                "MATTERMOST_SLASH_TOKENS is not set (comma-separated "
+                "verification tokens from Mattermost's slash-command admin "
+                "pages). Server-side slash commands will not reach Hermes."
+            )
+            return
+        if self._slash_runner is not None:
+            return  # already listening (reconnect cycle)
+
+        extra = self.config.extra or {}
+        host = str(extra.get("slash_command_host", "") or "").strip() or _SLASH_COMMAND_DEFAULT_HOST
+        try:
+            port = int(extra.get("slash_command_port", _SLASH_COMMAND_DEFAULT_PORT))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Mattermost: invalid slash_command_port %r — using default %d",
+                extra.get("slash_command_port"), _SLASH_COMMAND_DEFAULT_PORT,
+            )
+            port = _SLASH_COMMAND_DEFAULT_PORT
+
+        app = web.Application()
+        app.router.add_route("*", "/", self._handle_slash_command_request)
+        app.router.add_route("*", "/commands", self._handle_slash_command_request)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        # Same SO_REUSEADDR posture as the webhook adapter: keep the Linux
+        # default so a quick disconnect→connect cycle can rebind past
+        # TIME_WAIT; disable on macOS where BSD semantics would split traffic.
+        site = web.TCPSite(
+            runner,
+            host,
+            port,
+            reuse_address=False if sys.platform == "darwin" else None,
+        )
+        try:
+            await site.start()
+        except OSError as exc:
+            await runner.cleanup()
+            logger.error(
+                "Mattermost: slash-command listener could not bind %s:%d: %s "
+                "— slash commands disabled (WebSocket path unaffected)",
+                host, port, exc,
+            )
+            return
+        self._slash_runner = runner
+        self._slash_site = site
+        logger.info(
+            "Mattermost: slash-command endpoint listening on %s:%d (POST / and /commands)",
+            host, port,
+        )
+
+    async def _stop_slash_command_listener(self) -> None:
+        """Stop the slash-command listener and release its port."""
+        if self._slash_site is not None:
+            try:
+                await self._slash_site.stop()
+            except Exception as exc:  # noqa: BLE001 — shutdown best-effort
+                logger.debug("Mattermost: slash-command site stop: %s", exc)
+            self._slash_site = None
+        if self._slash_runner is not None:
+            try:
+                await self._slash_runner.cleanup()
+            except Exception as exc:  # noqa: BLE001 — shutdown best-effort
+                logger.debug("Mattermost: slash-command runner cleanup: %s", exc)
+            self._slash_runner = None
+            logger.info("Mattermost: slash-command endpoint stopped")
+
+    async def _handle_slash_command_request(self, request: Any) -> Any:
+        """Handle one Mattermost slash-command callback POST."""
+        from aiohttp import web
+
+        # Only POST on / and /commands is wired; anything else (wrong
+        # method, wrong path) gets a flat 404 so the endpoint stays invisible.
+        if request.method != "POST":
+            return web.json_response({"error": "not found"}, status=404)
+
+        # Mattermost posts application/x-www-form-urlencoded; tolerate a
+        # missing Content-Type header, reject anything else.
+        ctype = request.headers.get("Content-Type")
+        if ctype is not None and not ctype.strip().lower().startswith(
+            "application/x-www-form-urlencoded"
+        ):
+            return web.json_response({"error": "not found"}, status=404)
+
+        body = await request.read()
+        form: Dict[str, str] = {}
+        for key, value in urllib.parse.parse_qsl(
+            body.decode("utf-8", errors="replace"), keep_blank_values=True
+        ):
+            form[key] = value
+
+        # Auth: Mattermost sends the verification token as a form field.
+        # Constant-time compare against every configured token.
+        token = form.get("token", "")
+        if not token or not any(
+            hmac.compare_digest(t.encode("utf-8"), token.encode("utf-8"))
+            for t in self._slash_tokens
+        ):
+            logger.warning(
+                "Mattermost: slash-command callback rejected (bad or missing token) from %s",
+                request.remote,
+            )
+            return web.json_response({"error": "unauthorized"}, status=401)
+
+        channel_id = form.get("channel_id", "")
+        allowed = self._resolve_allowed_channel_ids()
+        if allowed and channel_id not in allowed:
+            logger.warning(
+                "Mattermost: slash-command callback rejected (channel %s not in allowed_channels)",
+                channel_id,
+            )
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        command = form.get("command", "")
+        if not command:
+            return web.json_response({"error": "bad request"}, status=400)
+
+        # Ack immediately — Mattermost enforces a ~5s callback timeout, so
+        # the agent turn must never be awaited inline. The event injection
+        # is scheduled and lands in the same session a regular WS message
+        # from this channel would.
+        task = asyncio.create_task(self._inject_slash_command_event(form))
+        self._slash_injections.add(task)
+        task.add_done_callback(self._slash_injections.discard)
+        return web.json_response(
+            {
+                "response_type": "ephemeral",
+                "text": f"✅ {_slash_command_text(form)} received — working on it.",
+            }
+        )
+
+    async def _inject_slash_command_event(self, form: Dict[str, str]) -> None:
+        """Build a COMMAND MessageEvent from a slash payload and dispatch it.
+
+        Mirrors the WebSocket path in ``_handle_ws_event`` so the event
+        keys into the SAME session as regular channel chat: same
+        ``build_source`` call shape, same channel-type mapping (via
+        ``get_chat_info``), same per-channel prompt resolution.
+        """
+        try:
+            channel_id = form.get("channel_id", "")
+            user_id = form.get("user_id", "")
+            user_name = (form.get("user_name", "") or "").lstrip("@") or user_id
+            trigger_id = form.get("trigger_id", "")
+
+            # Resolve the channel type through the same API + mapping the
+            # WS path uses, so DMs key as DMs and channels as channels.
+            chat_type = "channel"
+            try:
+                chat_info = await self.get_chat_info(channel_id)
+                chat_type = chat_info.get("type") or "channel"
+            except Exception as exc:  # noqa: BLE001 — best-effort lookup
+                logger.warning(
+                    "Mattermost: slash-command channel lookup failed for %s: %s",
+                    channel_id, exc,
+                )
+
+            # Thread parity with the WS path: root_id when provided. A
+            # slash invocation creates no post, so there is no post-id
+            # fallback — a bare command lands in the channel's main session.
+            # In reply_mode=thread the WS path falls back to thread_id=post_id
+            # for top-level posts; a slash invocation has no post (and
+            # trigger_id is not a post id — it would make reply posts carry an
+            # invalid root_id), so slash commands key to the stable per-user
+            # channel session in every mode. See
+            # tests/gateway/test_mattermost_slash_commands.py.
+            thread_id = form.get("root_id") or None
+
+            source = self.build_source(
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=thread_id,
+                message_id=trigger_id or None,
+            )
+
+            from gateway.platforms.base import resolve_channel_prompt
+            _channel_prompt = resolve_channel_prompt(
+                self.config.extra, channel_id, None,
+            )
+
+            msg_event = MessageEvent(
+                text=_slash_command_text(form),
+                message_type=MessageType.COMMAND,
+                source=source,
+                raw_message=form,
+                message_id=trigger_id or None,
+                media_urls=None,
+                media_types=None,
+                channel_prompt=_channel_prompt,
+            )
+
+            # A slash command is explicit intent — require_mention gating
+            # is bypassed by construction (never consulted here).
+            await self.handle_message(msg_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Mattermost: failed to inject slash-command event")
 
     async def _resolve_root_id(self, post_id: str) -> str:
         """Resolve a post_id to the thread root_id for Mattermost.
@@ -377,9 +673,15 @@ class MattermostAdapter(BasePlatformAdapter):
             return post_id
         # Check if this post has a root_id (meaning it's a reply)
         data = await self._api_get(f"posts/{post_id}")
-        if data and data.get("root_id"):
-            return data["root_id"]
-        return post_id
+        if data:
+            return data["root_id"] if data.get("root_id") else post_id
+        if self._last_get_status in (400, 404):
+            logger.warning(
+                "Mattermost: thread root %s not found (HTTP %s) — posting flat instead",
+                post_id, self._last_get_status,
+            )
+            return ""
+        return post_id  # transient/unknown error — keep legacy behavior
 
     async def send(
         self,
@@ -430,11 +732,12 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
-        await self._api_post(
-            f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
-        )
+        """Send a typing indicator (thread-scoped when replying in a thread)."""
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        parent_id = str((metadata or {}).get("thread_id") or "")
+        if parent_id:
+            payload["parent_id"] = parent_id
+        await self._api_post(f"users/{self._bot_user_id}/typing", payload)
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False

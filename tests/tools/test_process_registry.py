@@ -1832,7 +1832,7 @@ class TestSystemdCgroupIsolation:
 
         argv = captured["argv"]
         # No systemd-run wrapping — direct shell invocation.
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == ["/bin/bash", "-lc", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
     def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
@@ -1858,7 +1858,7 @@ class TestSystemdCgroupIsolation:
             registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == ["/bin/bash", "-lc", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
     @pytest.mark.parametrize("use_pty", [False, True])
@@ -1901,7 +1901,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash", "-lc", "set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 
@@ -1952,7 +1952,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash", "-lc", "set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 

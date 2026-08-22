@@ -209,10 +209,10 @@ class TestMacosLoginShellSwallowRegression:
         import subprocess
         env = dict(os.environ)
         env["HOME"] = str(home)
-        # Mirror process_registry.spawn_local: [shell, "-lic", "set +m; <cmd>"]
+        # Mirror process_registry.spawn_local: [shell, "-lc", "set +m; <cmd>"]
         # with stdin redirected to /dev/null.
         return subprocess.run(
-            [shell, "-lic", f"set +m; {command}"],
+            [shell, "-lc", f"set +m; {command}"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -268,7 +268,7 @@ class TestMacosLoginShellSwallowRegression:
         shell = _find_shell()
         marker = tmp_path / "ok_marker"
         subprocess.run(
-            [shell, "-lic", f"set +m; echo ok > {marker}"],
+            [shell, "-lc", f"set +m; echo ok > {marker}"],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
         assert marker.exists(), f"_find_shell()={shell} swallowed the command"

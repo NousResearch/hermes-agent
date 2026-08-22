@@ -1102,7 +1102,7 @@ class ProcessRegistry:
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
-        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        shell_argv = [user_shell, "-lc", f"set +m; {safe_command}"]
         in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()

@@ -9271,6 +9271,83 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
         server._sessions.pop("sid", None)
 
 
+@pytest.mark.parametrize(
+    "provider_flag", [" --provider custom:new-provider", ""]
+)
+def test_config_set_model_recovers_failed_deferred_resume(monkeypatch, provider_flag):
+    old_ready = threading.Event()
+    old_ready.set()
+    reasoning = {"effort": "high"}
+    old_override = {"model": "old/model", "provider": "removed-provider"}
+    session = _session(
+        agent_ready=old_ready,
+        agent_build_started=True,
+        agent_error="Unknown provider 'removed-provider'",
+        model_override=old_override,
+        resume_runtime_overrides={
+            "model_override": old_override,
+            "provider_override": "removed-provider",
+            "reasoning_config_override": reasoning,
+        },
+    )
+    session["agent"] = None
+    server._sessions["sid"] = session
+    seen = {"build": 0, "persist": 0}
+
+    def fake_apply_model_switch(_sid, current, _value, **_kwargs):
+        current["model_override"] = {
+            "model": "new/model",
+            "provider": "custom:new-provider",
+        }
+        return {
+            "value": "new/model",
+            "warning": "",
+            "confirm_required": False,
+            "scope": "session",
+        }
+
+    def fake_start_agent_build(sid, current):
+        seen["build"] += 1
+        assert sid == "sid"
+        assert current["agent_error"] is None
+        assert current["agent_ready"] is not old_ready
+        assert current.get("agent_build_started") is None
+        overrides = current["resume_runtime_overrides"]
+        assert overrides["model_override"] == current["model_override"]
+        assert overrides["provider_override"] == "custom:new-provider"
+        assert overrides["reasoning_config_override"] == reasoning
+        current["agent"] = types.SimpleNamespace(model="new/model")
+        current["agent_ready"].set()
+
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply_model_switch)
+    monkeypatch.setattr(server, "_start_agent_build", fake_start_agent_build)
+    monkeypatch.setattr(
+        server,
+        "_persist_live_session_runtime",
+        lambda _session: seen.__setitem__("persist", seen["persist"] + 1),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": f"new/model{provider_flag}",
+                },
+            }
+        )
+
+        assert resp["result"]["value"] == "new/model"
+        assert seen == {"build": 1, "persist": 1}
+        assert session["agent_error"] is None
+        assert session["agent"].model == "new/model"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(monkeypatch):
     seen = {"build": 0, "wait": 0}
     session = _session()

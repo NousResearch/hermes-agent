@@ -171,6 +171,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.profileSwitchDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.profileSwitch}`,
+      keywords: ['profile', 'switch', 'session', 'restore', 'fresh draft'],
+      label: appearance.profileSwitchTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.profileSwitch, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,

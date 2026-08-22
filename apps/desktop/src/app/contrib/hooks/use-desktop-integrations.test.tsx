@@ -1,11 +1,20 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $pendingConnectionId } from '@/store/connections'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import {
+  $profileSwitchRestoreIntent,
+  _resetProfileSwitchBehaviorForTests,
+  requestProfileSwitchRestore,
+  scopeProfileSwitchRestoreIntent,
+  setProfileSwitchBehavior
+} from '@/store/profile-switch-behavior'
+import { $sessions, _resetLegacyDiscardForTests, setRememberedSessionId } from '@/store/session'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
+import { deferred } from '../../../test/deferred'
 import { makeSessionInfo } from '../../../test/session-info'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
@@ -13,7 +22,12 @@ import { useDesktopIntegrations } from './use-desktop-integrations'
 // Mutable HUD-window flag so the restore tests can flip the window kind the
 // hook believes it runs in. Default false keeps the pre-existing restore
 // coverage exercising the real main-window path.
-const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) }))
+const { hudWindowMock, openSessionMock } = vi.hoisted(() => ({
+  hudWindowMock: vi.fn(() => false),
+  openSessionMock: vi.fn()
+}))
+
+vi.mock('@/app/open-session', () => ({ openSession: openSessionMock }))
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
@@ -46,6 +60,10 @@ describe('useDesktopIntegrations', () => {
   beforeEach(() => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
+    _resetProfileSwitchBehaviorForTests()
+    $pendingConnectionId.set(null)
+    $sessions.set([])
+    openSessionMock.mockClear()
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
@@ -75,55 +93,261 @@ describe('useDesktopIntegrations', () => {
     vi.restoreAllMocks()
   })
 
-  function render({
-    activeProfile = 'default',
-    locationPathname = '/',
-    profileReady = false,
-    resumeExhaustedSessionId = null as string | null,
-    routedSessionId = null as string | null,
-    sessions = [] as readonly SessionInfo[]
-  } = {}) {
+  interface HookProps {
+    activeConnectionId: null | string
+    activeProfile: string
+    locationPathname: string
+    profileReady: boolean
+    refreshSessions: () => Promise<unknown>
+    resumeExhaustedSessionId: string | null
+    routedSessionId: string | null
+    sessions: readonly SessionInfo[]
+    visibleStoredSessionId: null | string
+  }
+
+  function render(initial: Partial<HookProps> = {}) {
+    const defaults: HookProps = {
+      activeConnectionId: 'remote-a',
+      activeProfile: 'default',
+      locationPathname: '/',
+      profileReady: false,
+      refreshSessions: vi.fn(async () => undefined),
+      resumeExhaustedSessionId: null,
+      routedSessionId: null,
+      sessions: [],
+      visibleStoredSessionId: null
+    }
+
     return renderHook(
-      ({
-        activeProfile,
-        locationPathname,
-        profileReady,
-        resumeExhaustedSessionId,
-        routedSessionId,
-        sessions
-      }: {
-        activeProfile: string
-        locationPathname: string
-        profileReady: boolean
-        resumeExhaustedSessionId: string | null
-        routedSessionId: string | null
-        sessions: readonly SessionInfo[]
-      }) =>
+      (next: Partial<HookProps>) => {
+        const props = { ...defaults, ...next }
+
         useDesktopIntegrations({
-          activeProfile,
+          activeConnectionId: props.activeConnectionId,
+          activeProfile: props.activeProfile,
           chatOpen: false,
           hasPreview: false,
-          locationPathname,
+          locationPathname: props.locationPathname,
           navigate,
-          profileReady,
-          refreshSessions: vi.fn(),
-          resumeExhaustedSessionId,
-          routedSessionId,
+          profileReady: props.profileReady,
+          refreshSessions: props.refreshSessions,
+          resumeExhaustedSessionId: props.resumeExhaustedSessionId,
+          routedSessionId: props.routedSessionId,
           runtimeIdByStoredSessionId: { current: new Map() },
-          sessions
-        }),
-      {
-        initialProps: {
-          activeProfile,
-          locationPathname,
-          profileReady,
-          resumeExhaustedSessionId,
-          routedSessionId,
-          sessions
-        }
-      }
+          sessions: props.sessions,
+          visibleStoredSessionId: props.visibleStoredSessionId
+        })
+      },
+      { initialProps: initial }
     )
   }
+
+  function requestScopedRestore(profile: string, connectionId: null | string = 'remote-a') {
+    const intent = requestProfileSwitchRestore(profile)
+    scopeProfileSwitchRestoreIntent(intent.sequence, connectionId)
+
+    return intent
+  }
+
+  describe('explicit profile-switch restore', () => {
+    it('uses native in-place opening for the remembered visible tile, never route replacement', async () => {
+      const sessions = [
+        session({ id: 'tab-1', profile: 'alpha' }),
+        session({ id: 'tab-2', profile: 'alpha' }),
+        session({ id: 'tab-3', profile: 'alpha' }),
+        session({ id: 'tab-4', profile: 'alpha' }),
+        session({ id: 'tab-5', profile: 'alpha' })
+      ]
+
+      $sessions.set(sessions)
+
+      render({
+        activeProfile: 'alpha',
+        locationPathname: '/settings',
+        profileReady: true,
+        sessions,
+        visibleStoredSessionId: 'tab-3'
+      })
+
+      await act(async () => {
+        setProfileSwitchBehavior('restore_last_session')
+        requestScopedRestore('alpha')
+        await Promise.resolve()
+      })
+
+      expect(openSessionMock).toHaveBeenCalledWith('tab-3', navigate, 'in-place')
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('waits for the target profile refresh before validating its remembered session', async () => {
+      const alphaSessions = [session({ id: 'alpha-tab', profile: 'alpha' })]
+      const betaSessions = [session({ id: 'beta-tab', profile: 'beta' })]
+      const refresh = deferred<void>()
+      const refreshSessions = vi.fn(() => refresh.promise)
+
+      const result = render({
+        activeProfile: 'alpha',
+        locationPathname: '/settings',
+        profileReady: true,
+        refreshSessions,
+        sessions: alphaSessions,
+        visibleStoredSessionId: 'alpha-tab'
+      })
+
+      act(() => {
+        setProfileSwitchBehavior('restore_last_session')
+        setRememberedSessionId('beta-tab', 'beta')
+        requestScopedRestore('beta')
+      })
+
+      expect(openSessionMock).not.toHaveBeenCalled()
+
+      // Target activation lands first while the old profile's rows are still in
+      // memory. The remembered beta anchor must stay pending, not be cleared.
+      result.rerender({
+        activeProfile: 'beta',
+        locationPathname: '/',
+        profileReady: true,
+        refreshSessions,
+        resumeExhaustedSessionId: null,
+        routedSessionId: null,
+        sessions: alphaSessions,
+        visibleStoredSessionId: null
+      })
+
+      expect(refreshSessions).toHaveBeenCalledTimes(1)
+      expect(openSessionMock).not.toHaveBeenCalled()
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.beta')).toBe('beta-tab')
+
+      $sessions.set(betaSessions)
+      await act(async () => {
+        refresh.resolve()
+        await refresh.promise
+      })
+
+      expect(openSessionMock).toHaveBeenCalledWith('beta-tab', navigate, 'in-place')
+    })
+
+    it('binds restore to the target backend after a cross-backend profile activation', async () => {
+      const refreshSessions = vi.fn(async () => true)
+
+      const result = render({
+        activeConnectionId: 'remote-a',
+        activeProfile: 'alpha',
+        locationPathname: '/',
+        profileReady: true,
+        sessions: [session({ id: 'alpha-tab', profile: 'alpha' })],
+        visibleStoredSessionId: 'alpha-tab'
+      })
+
+      setRememberedSessionId('beta-tab', 'beta')
+      let intentSequence = 0
+      act(() => {
+        setProfileSwitchBehavior('restore_last_session')
+        intentSequence = requestProfileSwitchRestore('beta').sequence
+      })
+
+      result.rerender({
+        activeConnectionId: 'remote-b',
+        activeProfile: 'beta',
+        locationPathname: '/',
+        profileReady: true,
+        refreshSessions,
+        resumeExhaustedSessionId: null,
+        routedSessionId: null,
+        sessions: [],
+        visibleStoredSessionId: null
+      })
+      expect(refreshSessions).not.toHaveBeenCalled()
+
+      await act(async () => {
+        scopeProfileSwitchRestoreIntent(intentSequence, 'remote-b')
+        await Promise.resolve()
+      })
+
+      expect(refreshSessions).toHaveBeenCalledTimes(1)
+      expect(openSessionMock).toHaveBeenCalledWith('beta-tab', navigate, 'in-place')
+    })
+
+    it('retries when another refresh supersedes the restore barrier', async () => {
+      const betaSessions = [session({ id: 'beta-tab', profile: 'beta' })]
+
+      const refreshSessions = vi
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValueOnce(false)
+        .mockImplementationOnce(async () => {
+          $sessions.set(betaSessions)
+
+          return true
+        })
+
+      setRememberedSessionId('beta-tab', 'beta')
+      render({
+        activeProfile: 'beta',
+        locationPathname: '/',
+        profileReady: true,
+        refreshSessions,
+        sessions: [],
+        visibleStoredSessionId: null
+      })
+
+      await act(async () => {
+        setProfileSwitchBehavior('restore_last_session')
+        requestScopedRestore('beta')
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(refreshSessions).toHaveBeenCalledTimes(2)
+      expect(openSessionMock).toHaveBeenCalledWith('beta-tab', navigate, 'in-place')
+    })
+
+    it('restores a remembered session outside the recent-session page', async () => {
+      const refreshSessions = vi.fn(async () => true)
+
+      setRememberedSessionId('older-beta-session', 'beta')
+      render({
+        activeProfile: 'beta',
+        locationPathname: '/',
+        profileReady: true,
+        refreshSessions,
+        sessions: [],
+        visibleStoredSessionId: null
+      })
+
+      await act(async () => {
+        setProfileSwitchBehavior('restore_last_session')
+        requestScopedRestore('beta')
+        await Promise.resolve()
+      })
+
+      expect(openSessionMock).toHaveBeenCalledWith('older-beta-session', navigate, 'in-place')
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.beta')).toBe('older-beta-session')
+    })
+
+    it('cancels an intent as soon as another connection is pending', () => {
+      render({
+        activeProfile: 'alpha',
+        locationPathname: '/',
+        profileReady: true,
+        sessions: [session({ id: 'alpha-tab', profile: 'alpha' })],
+        visibleStoredSessionId: 'alpha-tab'
+      })
+
+      act(() => {
+        setProfileSwitchBehavior('restore_last_session')
+        requestScopedRestore('beta')
+      })
+      expect($profileSwitchRestoreIntent.get()).not.toBeNull()
+
+      act(() => {
+        $pendingConnectionId.set('remote-b')
+      })
+
+      expect($profileSwitchRestoreIntent.get()).toBeNull()
+      expect(openSessionMock).not.toHaveBeenCalled()
+    })
+  })
 
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {
@@ -170,9 +394,11 @@ describe('useDesktopIntegrations', () => {
         activeProfile: 'default',
         locationPathname: '/',
         profileReady: true,
+        refreshSessions: async () => undefined,
         resumeExhaustedSessionId: null,
         routedSessionId: null,
-        sessions: [session({ id: 'remembered-session', profile: 'default' })]
+        sessions: [session({ id: 'remembered-session', profile: 'default' })],
+        visibleStoredSessionId: null
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
@@ -328,9 +554,11 @@ describe('useDesktopIntegrations', () => {
         activeProfile: 'ops',
         locationPathname: '/ops-session',
         profileReady: true,
+        refreshSessions: async () => undefined,
         resumeExhaustedSessionId: null,
         routedSessionId: 'ops-session',
-        sessions
+        sessions,
+        visibleStoredSessionId: null
       })
 
       // The ops session should now be persisted under ops's key.
@@ -394,9 +622,11 @@ describe('useDesktopIntegrations', () => {
         activeProfile: 'default',
         locationPathname: '/settings',
         profileReady: true,
+        refreshSessions: async () => undefined,
         resumeExhaustedSessionId: null,
         routedSessionId: null,
-        sessions: []
+        sessions: [],
+        visibleStoredSessionId: null
       })
 
       // Overlay routes must NOT be persisted.

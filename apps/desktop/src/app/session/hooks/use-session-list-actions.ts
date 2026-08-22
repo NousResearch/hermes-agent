@@ -224,16 +224,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   }, [profileScope])
 
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
-  const refreshSessions = useCallback(async () => {
+  const refreshSessionsCommitted = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
     const activationEpoch = gatewayActivationEpoch()
 
     if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
-      return
+      return false
     }
 
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
+    let committed = false
     // The loading flag exists to drive the initial skeletons (they only render
     // while the list is empty). Turn-complete / reconnect refreshes over a
     // populated list used to flip it true→false anyway, churning every
@@ -330,6 +331,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
         // Hit the cap → at least one platform may have more on disk than loaded.
         setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
+        committed = true
       }
     } finally {
       // The request id is enough here: a newer refresh owns its own loading
@@ -344,7 +346,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     if (sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
       void refreshCronJobs()
     }
+
+    return committed
   }, [profileScope, refreshCronJobs])
+
+  const refreshSessions = useCallback(async () => {
+    await refreshSessionsCommitted()
+  }, [refreshSessionsCommitted])
 
   const loadMoreSessions = useCallback(async () => {
     bumpSessionsLimit()
@@ -386,6 +394,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     loadMoreSessions,
     refreshCronJobs,
     refreshMessagingSessions,
-    refreshSessions
+    refreshSessions,
+    refreshSessionsCommitted
   }
 }

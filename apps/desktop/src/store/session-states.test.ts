@@ -325,4 +325,19 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
     expect(tree.$activeTreeGroup.get()).toBe('grp-main')
   })
+
+  it('focuses an existing third session tile without replacing or reordering open tabs', async () => {
+    const { states, tree } = await setup()
+
+    for (const id of ['tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5']) {
+      states.openSessionTile(id, 'center', 'workspace')
+    }
+
+    const before = states.$sessionTiles.get().map(tile => tile.storedSessionId)
+    states.focusOpenSession('tab-3')
+
+    expect(states.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(before)
+    expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('tab-3'))?.active).toBe(tilePane('tab-3'))
+    expect(tree.$activeTreeGroup.get()).toBe('grp-main')
+  })
 })

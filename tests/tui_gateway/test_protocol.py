@@ -1101,6 +1101,112 @@ def test_dispatch_runs_short_handlers_inline(server):
     assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
 
 
+def test_dispatch_quick_command_exec_does_not_block_fast_handler(capture, monkeypatch):
+    """An exec quick command must not monopolize the RPC reader thread."""
+    server, buf = capture
+    released = threading.Event()
+
+    def slow_run(*_args, **_kwargs):
+        released.wait(timeout=5)
+        return types.SimpleNamespace(returncode=0, stdout="done", stderr="")
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"slow": {"type": "exec", "command": "slow"}}},
+    )
+    monkeypatch.setattr(server.subprocess, "run", slow_run)
+    monkeypatch.setitem(
+        server._methods,
+        "fast.ping",
+        lambda rid, params: server._ok(rid, {"pong": True}),
+    )
+
+    watchdog = threading.Timer(3, released.set)
+    watchdog.start()
+    try:
+        slow_response = server.dispatch({
+            "id": "slow",
+            "method": "command.dispatch",
+            "params": {"name": "slow"},
+        })
+        fast_response = server.dispatch({
+            "id": "fast",
+            "method": "fast.ping",
+            "params": {},
+        })
+
+        assert slow_response is None
+        assert fast_response["result"] == {"pong": True}
+        assert not released.is_set()
+    finally:
+        watchdog.cancel()
+        released.set()
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    assert json.loads(buf.getvalue()) == {
+        "jsonrpc": "2.0",
+        "id": "slow",
+        "result": {"type": "exec", "output": "done"},
+    }
+
+
+def test_dispatch_non_exec_quick_command_stays_inline(server, monkeypatch):
+    """Only subprocess-backed quick commands may bypass command ordering."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"shortcut": {"type": "alias", "target": "/help"}}},
+    )
+
+    response = server.dispatch({
+        "id": "alias",
+        "method": "command.dispatch",
+        "params": {"name": "shortcut"},
+    })
+
+    assert response["result"] == {"type": "alias", "target": "/help"}
+
+
+def test_dispatch_quick_command_timeout_redacts_command(capture, monkeypatch):
+    """A timed-out exec command must not disclose its configured command text."""
+    server, buf = capture
+    command = "quick-command-secret"
+
+    def timeout(*_args, **_kwargs):
+        raise server.subprocess.TimeoutExpired(command, 30)
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"timeout": {"type": "exec", "command": command}}},
+    )
+    monkeypatch.setattr(server.subprocess, "run", timeout)
+
+    assert server.dispatch({
+        "id": "timeout",
+        "method": "command.dispatch",
+        "params": {"name": "timeout"},
+    }) is None
+
+    for _ in range(50):
+        if buf.getvalue():
+            break
+        time.sleep(0.01)
+
+    response = buf.getvalue()
+    assert command not in response
+    assert json.loads(response) == {
+        "jsonrpc": "2.0",
+        "id": "timeout",
+        "error": {"code": 4018, "message": "quick command timed out"},
+    }
+
+
 @pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
 def test_completion_handlers_are_pool_routed(completion_method, server):
     """complete.path/complete.slash must run on the pool, never the reader thread.

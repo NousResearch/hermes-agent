@@ -448,19 +448,22 @@ def _(rid, params: dict) -> dict:
             sanitized_env = build_subprocess_env()
             from hermes_cli._subprocess_compat import windows_hide_flags
 
-            r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
-                capture_output=True,
-                text=True,
-                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
-                # crash the gateway thread on locale-mismatched Windows (#53137).
-                encoding="utf-8", errors="replace",
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-                env=sanitized_env,
-                creationflags=windows_hide_flags(),
-            )
+            try:
+                r = subprocess.run(
+                    qc.get("command", ""),
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                    # crash the gateway thread on locale-mismatched Windows (#53137).
+                    encoding="utf-8", errors="replace",
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=sanitized_env,
+                    creationflags=windows_hide_flags(),
+                )
+            except subprocess.TimeoutExpired:
+                return _err(rid, 4018, "quick command timed out")
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")

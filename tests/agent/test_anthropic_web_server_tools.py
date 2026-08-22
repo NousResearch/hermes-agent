@@ -1,5 +1,6 @@
 """Behavior contracts for Anthropic-native web search and fetch."""
 
+import json
 import logging
 import textwrap
 from types import SimpleNamespace
@@ -210,6 +211,7 @@ def test_pause_turn_remains_distinct_for_the_conversation_loop():
 
 
 def test_model_key_does_not_implicitly_replace_the_web_backend(monkeypatch):
+    from agent import web_search_registry
     from tools import web_tools
 
     monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
@@ -218,6 +220,15 @@ def test_model_key_does_not_implicitly_replace_the_web_backend(monkeypatch):
     monkeypatch.setattr(web_tools, "_list_registered_web_providers", lambda: [])
     keys = {"ANTHROPIC_API_KEY": "sk-ant-api-test"}
     monkeypatch.setattr(web_tools, "_has_env", lambda name: bool(keys.get(name)))
+    # Disable the keyless free tier. With it on, a ring provider reports ready
+    # on zero credentials, so ``check_web_api_key()`` returns True no matter
+    # what the Anthropic key does — masking exactly what this test asserts
+    # (see test_web_keyless_fallback.py for the tier's own coverage). Patching
+    # the registry module is enough: every reader late-imports the symbol from
+    # it inside the function body, so the rebound name is what runs. Turning
+    # the tier off also removes the per-process ring rotation, which would
+    # otherwise make ``_get_backend()`` return a different vendor per run.
+    monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
 
     assert web_tools._get_backend() != "anthropic"
     assert not web_tools.check_web_api_key()
@@ -371,6 +382,110 @@ def test_unexecutable_selection_keeps_the_tool_shaped_so_it_can_explain(
     assert "hermes tools" in web_tools.web_search_tool("anything")
 
 
+def test_per_capability_anthropic_selection_hides_web_on_a_foreign_model(
+    anthropic_key, monkeypatch
+):
+    """``web.backend`` is not the only way to select an unrunnable backend.
+
+    ``web.search_backend``/``web.extract_backend`` are resolved strictly — the
+    stored name is returned with no availability probe and no fallback — so a
+    per-capability selection routes exactly like the shared key.  With BOTH
+    capabilities pinned to ``anthropic`` on a transport that cannot carry the
+    server-side tools, nothing can serve either one, and an unrelated web
+    credential must not light the toolset up on their behalf.
+
+    ``TAVILY_API_KEY`` is that unrelated credential: it is what makes this
+    case return True if the readiness gate looks only at ``web.backend``.
+    ``keyless_fallback: false`` keeps Tavily the sole witness, so a failure
+    here can never be blamed on the free-tier ring.
+    """
+    from tools import web_tools
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    _write_hermes_config("""
+        model:
+          provider: openrouter
+          base_url: https://openrouter.ai/api/v1
+        web:
+          search_backend: anthropic
+          extract_backend: anthropic
+          keyless_fallback: false
+    """)
+
+    assert web_tools._get_search_backend() == "anthropic"
+    assert web_tools._get_extract_backend() == "anthropic"
+    assert web_tools._is_backend_available("anthropic") is False
+    assert web_tools._is_backend_available("tavily") is True
+    assert web_tools.check_web_api_key() is False
+
+
+def test_one_capability_stuck_on_anthropic_leaves_the_other_serving(
+    anthropic_key, monkeypatch
+):
+    """Only a total loss of web hides the toolset; a half-broken split stays.
+
+    Extract still routes to a backend that runs locally, so ``web`` must stay
+    available — hiding it would take away a capability the agent really has.
+    The stuck capability is not silently dropped either: ``web_search`` keeps
+    its ordinary shape and answers with the typed ``tool_error`` that says why
+    it cannot run and what to do about it.
+    """
+    from tools import web_tools
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    _write_hermes_config("""
+        model:
+          provider: openrouter
+          base_url: https://openrouter.ai/api/v1
+        web:
+          search_backend: anthropic
+          extract_backend: tavily
+          keyless_fallback: false
+    """)
+
+    assert web_tools._get_search_backend() == "anthropic"
+    assert web_tools._get_extract_backend() == "tavily"
+    assert web_tools.check_web_api_key() is True
+
+    payload = json.loads(web_tools.web_search_tool("anything"))
+    assert "results" not in payload
+    assert "cannot be executed by Hermes locally" in payload["error"]
+    assert "hermes tools" in payload["error"]
+
+
+def test_a_keyless_capability_still_counts_as_web(anthropic_key):
+    """The half-broken split must not be widened to the keyless free tier.
+
+    ``_is_backend_available`` is keyless-blind, so the credential-free half of
+    this config looks unavailable to every probe in the readiness gate — yet
+    the free-tier ring really does serve it.  A gate that hides ``web`` as
+    soon as *either* capability lands on ``anthropic`` would take that away.
+
+    The Anthropic key IS present here (``anthropic_key``), so the False below
+    is about the transport, not a missing credential — which is exactly the
+    situation a user lands in after selecting ``anthropic`` for search.
+
+    Deliberately asserts no backend name: ``_keyless_preference()`` is seeded
+    per process, so which ring vendor answers differs from run to run.
+    """
+    from tools import web_tools
+
+    _write_hermes_config("""
+        model:
+          provider: openrouter
+          base_url: https://openrouter.ai/api/v1
+        web:
+          search_backend: anthropic
+          extract_backend: exa
+    """)
+
+    assert web_tools._is_backend_available("anthropic") is False
+    assert web_tools._is_backend_available("exa") is False
+    assert web_tools.check_web_api_key() is True
+
+
 def test_dropping_a_server_only_tool_is_reported_once(caplog):
     """The projection must not remove a user-visible capability in silence.
 
@@ -417,11 +532,11 @@ def test_native_web_fetch_bounds_the_content_it_injects(anthropic_key):
     """A server-side fetch must carry a content ceiling of its own.
 
     The local ``web_extract`` path is bounded before a result reaches the model
-    (auxiliary summariser, then ``max_result_size_chars`` on the registry
-    entry).  The native fetch runs inside Anthropic's request, so neither guard
-    ever sees it: without ``max_content_tokens`` one large page is injected
-    whole and — because the block is preserved for replay — resent on every
-    later turn of the session.
+    (the ``web.extract_char_limit`` head+tail window, then
+    ``max_result_size_chars`` on the registry entry).  The native fetch runs
+    inside Anthropic's request, so neither guard ever sees it: without
+    ``max_content_tokens`` one large page is injected whole and — because the
+    block is preserved for replay — resent on every later turn of the session.
     """
     from tools import registry, web_tools
 

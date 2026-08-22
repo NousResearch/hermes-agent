@@ -695,10 +695,30 @@ def load_cli_config() -> Dict[str, Any]:
     # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
     # where it was already set correctly by gateway/run.py's config bridge.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    # …or unless this process IS a dispatcher-spawned kanban worker. The
+    # dispatcher pins TERMINAL_CWD to the task's workspace in
+    # kanban_db._default_spawn (#41312 / #34619); force-exporting the assignee
+    # profile's terminal.cwd over it replaces a task-scoped boundary with a
+    # profile-wide one, and because the Docker backend bind-mounts
+    # os.getenv("TERMINAL_CWD") when docker_mount_cwd_to_workspace is on, that
+    # turns a bounded worktree mount into a broad writable host mount (#73556).
+    # The profile still supplies backend/image/network/resource policy below —
+    # only the workspace boundary is protected. Validated the same way the
+    # dispatcher validates it, so an unusable workspace changes nothing.
+    _kanban_workspace_pin = ""
+    if os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        _ws = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+        if _ws and os.path.isabs(_ws) and os.path.isdir(_ws):
+            _kanban_workspace_pin = _ws
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
             if env_var == "TERMINAL_CWD":
                 if _is_gateway:
+                    continue
+                if _kanban_workspace_pin:
+                    os.environ[env_var] = _kanban_workspace_pin
+                    terminal_config[config_key] = _kanban_workspace_pin
+                    defaults["terminal"]["cwd"] = _kanban_workspace_pin
                     continue
                 # CLI: always export (overrides stale .env or inherited values)
                 os.environ[env_var] = str(terminal_config[config_key])

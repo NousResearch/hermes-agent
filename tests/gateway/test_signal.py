@@ -380,6 +380,7 @@ class TestSignalSendImageFile:
         assert captured[0]["params"]["recipient"] == ["+155****4567"]
         assert captured[0]["params"]["attachments"] == [str(img_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        assert "voiceNote" not in captured[0]["params"]
         # Typing indicator must be stopped before sending
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         # Timestamp must be tracked for echo-back prevention
@@ -461,8 +462,32 @@ class TestSignalSendVoice:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(audio_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        # signal-cli JSON-RPC maps CLI --voice-note to camelCase voiceNote.
+        # Without it, clients render TTS audio as a generic file (#89831).
+        assert captured[0]["params"].get("voiceNote") is True
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
+    async def test_send_voice_marks_group_attachment_as_voice_note(self, monkeypatch, tmp_path):
+        """Group sends use groupId, but still need the voice-note flag."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        audio_path = tmp_path / "reply.ogg"
+        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+
+        result = await adapter.send_voice(
+            chat_id="group:abc123==", audio_path=str(audio_path)
+        )
+
+        assert result.success is True
+        params = captured[0]["params"]
+        assert params["groupId"] == "abc123=="
+        assert "recipient" not in params
+        assert params.get("voiceNote") is True
 
 
     @pytest.mark.asyncio
@@ -508,6 +533,7 @@ class TestSignalSendVideo:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(vid_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        assert "voiceNote" not in captured[0]["params"]
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
 

@@ -1787,9 +1787,12 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
         valid_media = media_files or []
         attachment_paths = []
-        for media_path, _is_voice in valid_media:
+        voice_paths: set[str] = set()
+        for media_path, is_voice in valid_media:
             if os.path.exists(media_path):
                 attachment_paths.append(media_path)
+                if is_voice:
+                    voice_paths.add(media_path)
             else:
                 logger.warning("Signal media file not found, skipping: %s", media_path)
 
@@ -1819,6 +1822,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 params["recipient"] = [chat_id]
             if batch_attachments:
                 params["attachments"] = batch_attachments
+                if any(path in voice_paths for path in batch_attachments):
+                    params["voiceNote"] = True
 
             payload = {
                 "jsonrpc": "2.0",

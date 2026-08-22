@@ -1615,6 +1615,29 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+        assert "voiceNote" not in params
+
+    def test_voice_media_sets_voice_note_flag(self, tmp_path, monkeypatch):
+        """TTS / voice files must be sent as Signal voice notes (#89831)."""
+        audio = tmp_path / "reply.ogg"
+        audio.write_bytes(b"OggS" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "spoken reply",
+                media_files=[(str(audio), True)],
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert params["attachments"] == [str(audio)]
+        assert params.get("voiceNote") is True
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

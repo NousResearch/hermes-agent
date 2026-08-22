@@ -1419,6 +1419,8 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         media_label: str,
         caption: Optional[str] = None,
+        *,
+        voice_note: bool = False,
     ) -> SendResult:
         """Send any file as a Signal attachment via RPC.
 
@@ -1440,6 +1442,9 @@ class SignalAdapter(BasePlatformAdapter):
             "message": caption or "",
             "attachments": [file_path],
         }
+        if voice_note:
+            # CLI --voice-note → JSON-RPC voiceNote (signal-cli 0.14.2+).
+            params["voiceNote"] = True
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -1489,12 +1494,15 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send an audio file as a Signal attachment.
+        """Send an audio file as a Signal voice note.
 
-        Signal does not distinguish voice messages from file attachments at
-        the API level, so this routes through the same RPC send path.
+        signal-cli JSON-RPC maps CLI ``--voice-note`` to ``voiceNote``.
+        Without it, clients render the file as a generic attachment
+        instead of a native tap-to-play voice bubble.
         """
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        return await self._send_attachment(
+            chat_id, audio_path, "Audio", caption, voice_note=True
+        )
 
     async def send_video(
         self,

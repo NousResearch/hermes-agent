@@ -2779,6 +2779,50 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Shared local-provider WAV conversion
+# ===========================================================================
+
+def _convert_local_wav_output(wav_path: str, output_path: str) -> None:
+    """Convert local-provider WAV output to the requested final format.
+
+    Ogg containers do not imply Opus: ffmpeg defaults vary by build and can
+    select Vorbis or FLAC. Voice-message platforms require Opus specifically.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning(
+            "ffmpeg not found; writing raw WAV to %s (extension may be misleading)",
+            output_path,
+        )
+        os.replace(wav_path, output_path)
+        return
+
+    command = [ffmpeg, "-i", wav_path]
+    if output_path.lower().endswith(".ogg"):
+        command.extend([
+            "-acodec", "libopus", "-ac", "1", "-b:a", "48k", "-vbr", "on",
+            "-application", "voip", "-compression_level", "10", "-f", "ogg",
+        ])
+    command.extend(["-y", "-loglevel", "error", output_path])
+    subprocess.run(
+        command,
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        creationflags=windows_hide_flags(),
+    )
+    try:
+        os.remove(wav_path)
+    except OSError as exc:
+        logger.warning(
+            "Failed to remove temporary local TTS WAV %s after writing %s: %s",
+            wav_path,
+            output_path,
+            exc,
+        )
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -2851,14 +2895,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
     # If the caller wanted .mp3 or .ogg, convert from WAV
     if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            os.remove(wav_path)
-        else:
-            # No ffmpeg — just rename the WAV to the expected path
-            os.rename(wav_path, output_path)
+        _convert_local_wav_output(wav_path, output_path)
 
     return output_path
 
@@ -3058,17 +3095,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     # Convert to desired format if caller requested mp3/ogg
     if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            try:
-                os.remove(wav_path)
-            except OSError:
-                pass
-        else:
-            # No ffmpeg — keep WAV and return that path
-            os.rename(wav_path, output_path)
+        _convert_local_wav_output(wav_path, output_path)
 
     return output_path
 
@@ -3124,14 +3151,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     # Convert to desired format if needed
     if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            os.remove(wav_path)
-        else:
-            # No ffmpeg — rename the WAV to the expected path
-            os.rename(wav_path, output_path)
+        _convert_local_wav_output(wav_path, output_path)
 
     return output_path
 

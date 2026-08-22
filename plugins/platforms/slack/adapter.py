@@ -2279,6 +2279,7 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        seed_text: Optional[str] = None,
     ) -> Optional[str]:
         """Create a Slack thread anchor for a session handoff.
 
@@ -2286,6 +2287,14 @@ class SlackAdapter(BasePlatformAdapter):
         a channel-level construct. So we post a seed message into the home
         channel and return its ``ts`` — the watcher uses that as the
         ``thread_id`` for subsequent sends.
+
+        ``seed_text`` (e.g. a cron channel-summary line) replaces the fixed
+        handoff label as the seed body; the cap is defensive only — the cron
+        caller already enforces a much tighter summary limit. It is model
+        output, so broadcast mentions are escaped exactly as in
+        ``format_message`` — this raw ``chat_postMessage`` lane must not be
+        the one place agent text can ping @channel/@everyone. The fixed
+        label fallback stays raw (trusted constant).
 
         Returns the seed message ts as a string, or ``None`` on failure.
         """
@@ -2295,12 +2304,15 @@ class SlackAdapter(BasePlatformAdapter):
             client = self._get_client(parent_chat_id)
             if client is None:
                 return None
-            seed_text = (
+            seed = _SLACK_SPECIAL_MENTION_RE.sub(
+                lambda m: m.group(0).replace("<", "&lt;", 1),
+                (seed_text or "").strip()[:2000],
+            ) or (
                 f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
             )
             result = await client.chat_postMessage(
                 channel=parent_chat_id,
-                text=seed_text,
+                text=seed,
             )
             ts = _slack_response_payload(result).get("ts")
             if ts:

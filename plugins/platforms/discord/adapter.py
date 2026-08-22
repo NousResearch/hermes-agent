@@ -7343,12 +7343,15 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        seed_text: Optional[str] = None,
     ) -> Optional[str]:
         """Create a Discord thread under a text channel for a handoff.
 
         Falls back to a seed-message + ``message.create_thread`` path if
         ``parent.create_thread`` is rejected (some channel types or
-        permission setups). Returns the new thread id as a string, or
+        permission setups). ``seed_text`` (cron channel-summary) applies
+        only on that fallback — the direct create has no seed message.
+        Returns the new thread id as a string, or
         ``None`` on failure or when the parent isn't a text channel
         (DMs, voice channels, threads themselves can't host threads).
         """
@@ -7403,7 +7406,28 @@ class DiscordAdapter(BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            # 1900-char cap keeps the seed under Discord's 2000-char message
+            # limit; the fixed label is used when no seed_text is supplied.
+            seed = (seed_text or "").strip()[:1900] or (
+                f"\U0001f9f5 Hermes handoff: **{thread_name}**"
+            )
+            send_kwargs: Dict[str, Any] = {}
+            # seed_text is model output: pin a per-send AllowedMentions
+            # override (same shape as the approval-prompt sends) so a summary
+            # containing @everyone/@here/@role can never broadcast — the
+            # client-level safe default is env-overridable
+            # (DISCORD_ALLOW_MENTION_EVERYONE) and must not govern
+            # agent-authored seed bodies. Label-only sends keep the legacy
+            # call untouched.
+            allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+            if seed_text and allowed_mentions_cls is not None:
+                send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                )
+            seed_msg = await send(seed, **send_kwargs)
             thread = await seed_msg.create_thread(
                 name=thread_name,
                 auto_archive_duration=1440,

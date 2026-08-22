@@ -3168,6 +3168,7 @@ class RelayAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        seed_text: Optional[str] = None,
     ) -> Optional[str]:
         """Create a thread/topic under ``parent_chat_id`` via the connector.
 
@@ -3177,18 +3178,32 @@ class RelayAdapter(BasePlatformAdapter):
         `thread_create`; None on any failure/unavailability so the handoff
         watcher falls back to the parent channel — the same contract as the
         native adapters' create_handoff_thread.
+
+        ``seed_text`` rides the op as an ADDITIVE optional field (cron
+        channel-summary deliveries): connectors whose thread anchor is a
+        posted seed message (Slack) use it as the seed body in place of the
+        named label; connectors that predate the field, or whose threads
+        have no seed message, ignore it — contract-safe per the
+        additive-only evolution rule (docs/relay-connector-contract.md).
+        The field carries unsanitized model output — the contract requires
+        connectors to apply their normal outbound broadcast-mention hygiene
+        before posting it (same requirement as ``send`` content).
         """
         if self._transport is None or not self.descriptor.supports_op("thread_create"):
             return None
         thread_name = (str(name or "").strip() or "handoff")[:100]
+        payload = {
+            "op": "thread_create",
+            "chat_id": str(parent_chat_id),
+            "thread_name": thread_name,
+            "metadata": self._with_scope(str(parent_chat_id), None),
+        }
+        seed = str(seed_text or "").strip()
+        if seed:
+            payload["seed_text"] = seed[:2000]
         try:
             result = await self._transport.send_outbound(
-                {
-                    "op": "thread_create",
-                    "chat_id": str(parent_chat_id),
-                    "thread_name": thread_name,
-                    "metadata": self._with_scope(str(parent_chat_id), None),
-                },
+                payload,
                 platform=self._platform_by_chat.get(str(parent_chat_id)),
             )
         except Exception:  # noqa: BLE001 - handoff falls back to the parent channel

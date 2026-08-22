@@ -4014,6 +4014,7 @@ class BasePlatformAdapter(ABC):
         self,
         parent_chat_id: str,
         name: str,
+        seed_text: Optional[str] = None,
     ) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a session handoff.
 
@@ -4021,6 +4022,15 @@ class BasePlatformAdapter(ABC):
         session to a thread-capable platform — the new thread isolates the
         handed-off conversation from any pre-existing chat in the home
         channel and gives users a clean per-handoff scrollback.
+
+        ``seed_text`` optionally replaces the fixed seed-message body on
+        platforms where the new thread is anchored to a posted message
+        (Slack always; Discord's seed-message fallback). Platforms whose
+        threads are channel-level constructs with no seed message
+        (Telegram forum topics, Discord's direct create) ignore it — the
+        thread ``name`` still carries the handoff/job identity there.
+        Cron channel-summary deliveries use it to put the agent's TL;DR
+        at the channel root (cron/scheduler.py).
 
         Returns the new thread/topic id (as a string) on success, or
         ``None`` if the platform doesn't support threading or the

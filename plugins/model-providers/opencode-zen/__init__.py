@@ -215,6 +215,11 @@ opencode_go = OpenCodeGoProfile(
     base_url="https://opencode.ai/zen/go/v1",
     default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # opencode-go proxies to Xiaomi MiMo for mimo-* models; MiMo rejects
+    # list-type tool content with "text is not set" (400).  The direct
+    # xiaomi profile already sets supports_vision_tool_messages=False;
+    # propagate the same safety here for the relay path.
+    supports_vision_tool_messages=False,
 )
 
 register_provider(opencode_zen)

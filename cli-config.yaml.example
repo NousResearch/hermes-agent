@@ -1185,6 +1185,11 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#   signal:
+#     # Drop the redundant written text when a voice reply (TTS speak or a
+#     # MEDIA voice clip) is delivered with no other non-voice content — useful
+#     # where voice notes arrive as caption-less attachments (e.g. Signal).
+#     suppress_text_when_voice: true
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

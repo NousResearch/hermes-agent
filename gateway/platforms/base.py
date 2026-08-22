@@ -6286,11 +6286,53 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _should_suppress_text_on_voice(
+        self,
+        *,
+        voice_delivered: bool,
+        media_files,
+        images,
+        local_files,
+    ) -> bool:
+        """Return whether the redundant text reply should be dropped for a voice
+        delivery on this platform.
+
+        Enabled per platform by ``suppress_text_when_voice``. When on, a voice
+        reply — one that was actually delivered this turn (``voice_delivered``)
+        or a MEDIA voice clip still queued for delivery — with no other
+        non-voice content (images/documents) suppresses the written text. On
+        platforms whose voice notes arrive as caption-less attachments (e.g.
+        Signal) this avoids delivering audio plus the same text twice.
+        """
+        if not getattr(self.config, "suppress_text_when_voice", False):
+            return False
+        _has_voice = voice_delivered or any(
+            is_voice for _, is_voice in (media_files or [])
+        )
+        _has_non_voice = (
+            bool(images)
+            or bool(local_files)
+            or any(not is_voice for _, is_voice in (media_files or []))
+        )
+        return _has_voice and not _has_non_voice
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        # Whether a voice reply was actually delivered this turn (auto-TTS or a
+        # MEDIA voice clip). Drives text suppression so the written text is
+        # only dropped when a voice really went out, and so a failed voice
+        # never gets reported as a successful delivery.
+        _voice_delivered_ok = False
+        # Text deferred until after a queued MEDIA voice clip is sent, so a
+        # failed voice can fall back to the text reply.
+        _deferred_text = None
+        # Whether the redundant text reply was suppressed in favor of a voice
+        # delivery this turn. Initialized so the success path can read it even
+        # when the ``if response:`` block is skipped for a falsy response.
+        _suppress_text = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -6535,6 +6577,8 @@ class BasePlatformAdapter(ABC):
                             metadata=_final_thread_metadata,
                         )
                         _record_delivery(tts_result)
+                        if getattr(tts_result, "success", False):
+                            _voice_delivered_ok = True
                         _tts_caption_delivered = bool(
                             _tts_caption_delivered
                             or (
@@ -6558,12 +6602,12 @@ class BasePlatformAdapter(ABC):
                 # adapter while its in-flight handler was still producing a
                 # final response; that response is a new message, so resolve
                 # the current transport before sending it.
-                if text_content and not _tts_caption_delivered:
+                async def _send_text(text_to_send):
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(
                         "[%s] Sending response (%d chars) to %s",
                         delivery_adapter.name,
-                        len(text_content),
+                        len(text_to_send),
                         event.source.chat_id,
                     )
                     _reply_anchor = _reply_anchor_for_event(event)
@@ -6591,7 +6635,7 @@ class BasePlatformAdapter(ABC):
                                 _obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),
-                                    text_content,
+                                    text_to_send,
                                 )
                                 await asyncio.to_thread(
                                     record_obligation,
@@ -6603,7 +6647,7 @@ class BasePlatformAdapter(ABC):
                                     ),
                                     chat_id=event.source.chat_id,
                                     thread_id=getattr(event.source, "thread_id", None),
-                                    content=text_content,
+                                    content=text_to_send,
                                 )
                                 await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
@@ -6611,7 +6655,7 @@ class BasePlatformAdapter(ABC):
                             _obligation_id = None
                     result = await delivery_adapter._send_with_retry(
                         chat_id=event.source.chat_id,
-                        content=text_content,
+                        content=text_to_send,
                         reply_to=_reply_anchor,
                         metadata=_final_thread_metadata,
                     )
@@ -6649,6 +6693,27 @@ class BasePlatformAdapter(ABC):
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
+                    return result
+
+                if text_content and not _tts_caption_delivered:
+                    # Optional per-platform text suppression for voice replies.
+                    # Suppress only when a voice was actually delivered (auto-TTS
+                    # already sent) or a MEDIA voice clip is still queued, and
+                    # there is no other non-voice content. A queued voice clip
+                    # defers the decision until after the media send so a failed
+                    # voice can fall back to the text reply.
+                    _suppress_text = self._should_suppress_text_on_voice(
+                        voice_delivered=_voice_delivered_ok,
+                        media_files=media_files,
+                        images=images,
+                        local_files=local_files,
+                    )
+                    if _suppress_text and any(is_voice for _, is_voice in media_files):
+                        _deferred_text = text_content
+                    elif not _suppress_text:
+                        await _send_text(text_content)
+                else:
+                    _suppress_text = False
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -6744,6 +6809,9 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
+                        if is_voice and getattr(media_result, "success", False):
+                            _voice_delivered_ok = True
+
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                             await self._notify_media_delivery_failure(
@@ -6788,6 +6856,21 @@ class BasePlatformAdapter(ABC):
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
+                # Resolve deferred text (a queued MEDIA voice clip that would
+                # have suppressed the text). If the voice actually delivered,
+                # keep the text suppressed; otherwise send the text fallback so
+                # the user still receives the reply and the failure is surfaced.
+                if _deferred_text is not None:
+                    if _voice_delivered_ok:
+                        _suppress_text = True
+                    else:
+                        logger.error(
+                            "[%s] voice delivery failed; sending text fallback (%d chars) to %s",
+                            self.name, len(_deferred_text), event.source.chat_id,
+                        )
+                        await _send_text(_deferred_text)
+                        _suppress_text = False
+
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
@@ -6804,6 +6887,15 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # When the text was intentionally suppressed because a voice reply
+            # was ACTUALLY delivered this turn, delivery was NOT a failure — the
+            # voice WAS the delivery. A failed voice clears ``_suppress_text``
+            # (and sends the text fallback above), so it is reported honestly
+            # through delivery_attempted/delivery_succeeded instead.
+            if _suppress_text and _voice_delivered_ok:
+                delivery_attempted = True
+                delivery_succeeded = True
+                processing_ok = True
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(

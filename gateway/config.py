@@ -674,6 +674,16 @@ class PlatformConfig:
     # Telegram, Matrix, …) ignore it.
     typing_status_text: Optional[str] = None
 
+
+    # When True, a voice reply (auto-TTS speak or a MEDIA voice clip) that
+    # carries no other non-voice media (images/documents) suppresses the
+    # redundant written text on this platform. Useful where voice notes arrive
+    # as caption-less attachments (e.g. Signal), so the user doesn't receive
+    # audio and the same text twice. Default False preserves the historical
+    # always-send-text behavior; opt in per platform with
+    # ``platforms.<platform>.suppress_text_when_voice: true``.
+    suppress_text_when_voice: bool = False
+
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
@@ -687,6 +697,7 @@ class PlatformConfig:
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
+            "suppress_text_when_voice": self.suppress_text_when_voice,
         }
         if self.typing_status_text is not None:
             result["typing_status_text"] = self.typing_status_text
@@ -731,6 +742,12 @@ class PlatformConfig:
         if _typing_text is None:
             _typing_text = extra.get("typing_status_text")
 
+
+        # suppress_text_when_voice takes the same two routes.
+        _suppress_voice = data.get("suppress_text_when_voice")
+        if _suppress_voice is None:
+            _suppress_voice = extra.get("suppress_text_when_voice")
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -747,6 +764,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             typing_status_text=_typing_text,
+            suppress_text_when_voice=_coerce_bool(_suppress_voice, False),
             channel_overrides=channel_overrides,
             extra=extra,
         )

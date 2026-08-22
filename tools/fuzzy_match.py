@@ -98,6 +98,30 @@ def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
     return old_string not in content
 
 
+def _drop_overlapping(matches: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Collapse overlapping spans to ``str.replace``-style non-overlapping ones.
+
+    The sliding-window strategies (``_find_normalized_matches``,
+    ``_strategy_trimmed_boundary``, ``unicode_normalized`` via its
+    ``line_trimmed`` fallback) stride by one line and return a match for every
+    offset whose window compares equal after normalization — consecutive
+    windows can share lines, so their spans overlap. ``_apply_replacements``
+    substitutes back-to-front assuming disjoint spans; with overlapping ones
+    the second replacement slices at stale offsets into already-rewritten text
+    and silently deletes content. ``_strategy_exact`` advances past each match
+    for exactly this reason; this applies the same semantics to every strategy
+    (greedy left-to-right: keep a span only when it starts at or after the
+    previously kept span's end).
+    """
+    kept: List[Tuple[int, int]] = []
+    last_end = -1
+    for start, end in sorted(matches):
+        if start >= last_end:
+            kept.append((start, end))
+            last_end = end
+    return kept
+
+
 def _format_match_locations(content: str, matches: List[Tuple[int, int]],
                             cap: int = 5) -> str:
     """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows.
@@ -174,6 +198,11 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
 
     for strategy_name, strategy_fn in strategies:
         matches = strategy_fn(content, old_string)
+        # Normalization strategies stride by one line, so their windows can
+        # overlap when the pattern's normalized lines repeat. De-overlap before
+        # counting/applying so replace_all semantics (and the descending
+        # substitution in _apply_replacements) stay correct for every strategy.
+        matches = _drop_overlapping(matches)
 
         if matches:
             # Found matches with this strategy

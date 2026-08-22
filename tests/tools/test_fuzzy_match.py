@@ -190,6 +190,58 @@ class TestReplaceAll:
         assert count == 0
         assert "2 matches" in err
 
+    def test_sliding_window_overlapping_matches_replace_all(self):
+        """Normalization strategies stride by one line, so their windows can
+        overlap when the pattern's normalized lines repeat.
+
+        Regression (#92132): line_trimmed matched "x)\\nx)" at BOTH window
+        offsets (lines 0-1 and 1-2) of "x)\\n x)\\n x)\\n"; _apply_replacements
+        applied the overlapping spans back-to-front on stale offsets and the
+        whole third line was silently deleted while reporting count=2.
+        De-overlapped spans must keep str.replace() semantics.
+        """
+        content = "x)\n x)\n x)\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "x)\nx)", "y", replace_all=True
+        )
+        assert strategy == "line_trimmed"
+        assert err is None
+        assert count == 1
+        assert new == "y\n x)\n"
+
+    def test_sliding_window_overlapping_matches_unique_without_flag(self):
+        """After de-overlap the sliding window yields ONE match, so a plain
+        (replace_all=False) edit applies instead of erroring on a phantom
+        second match that shares lines with the first."""
+        content = "x)\n x)\n x)\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "x)\nx)", "y", replace_all=False
+        )
+        assert err is None
+        assert count == 1
+        assert new == "y\n x)\n"
+
+    def test_sliding_window_disjoint_windows_all_replaced(self):
+        """Disjoint sliding-window matches still replace every window under
+        replace_all, and the content between the windows survives. The second
+        window's replacement carries the file region's one-space base indent
+        (the documented _reindent_replacement contract for fuzzy matches)."""
+        content = "x)\n x)\nMID\n x)\n x)\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "x)\nx)", "y", replace_all=True
+        )
+        assert strategy == "line_trimmed"
+        assert err is None
+        assert count == 2
+        assert new == "y\nMID\n y\n"
+
+        # without the flag the two disjoint windows are a genuine ambiguity
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "x)\nx)", "y", replace_all=False
+        )
+        assert count == 0
+        assert "2 matches" in err
+
 
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""

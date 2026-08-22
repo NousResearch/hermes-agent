@@ -113,8 +113,10 @@ class TestWebSocketHostOriginGuard:
                     "Host": "evil.example",
                     "Origin": "http://evil.example",
                 },
-            ):
-                pass
+            ) as conn:
+                # Rejection arrives as a close frame after the handshake
+                # (web_server._ws_reject); the first receive observes it.
+                conn.receive_text()
 
         assert exc.value.code == 4403
 

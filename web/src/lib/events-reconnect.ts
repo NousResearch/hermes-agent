@@ -16,6 +16,15 @@ export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
 const WS_CLOSE_NORMAL = 1000;
 /** Ticket rejected / forbidden: retrying just burns tickets, user must reload. */
 const WS_CLOSE_AUTH_CODES = new Set([4401, 4403]);
+/**
+ * 4400-4499 is the private-use range web_server.py answers rejections with
+ * (4400 bad channel, 4401 auth, 4403 host/origin, 4404 chat disabled, 4408
+ * peer). The server accepts the upgrade and closes with the code, so the
+ * browser sees `open` and then this close — reconnecting with the same
+ * request can only reproduce it.
+ */
+const WS_CLOSE_REJECTION_MIN = 4400;
+const WS_CLOSE_REJECTION_MAX = 4499;
 
 /**
  * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
@@ -36,16 +45,26 @@ export function eventsReconnectDelayMs(attempt: number): number {
 /**
  * Whether a close code should trigger a retry.
  *
- * Auth rejections are terminal (the banner tells the user to reload) and a
- * normal 1000 close is intentional. Everything else — gateway restart,
- * network drop, 1005/1006, proxy timeout — is worth retrying.
+ * Server rejections (4400-4499, auth included) are terminal — the banner
+ * tells the user to reload — and a normal 1000 close is intentional.
+ * Everything else — gateway restart, network drop, 1005/1006, proxy
+ * timeout — is worth retrying.
  */
 export function shouldRetryEventsClose(code: number | undefined): boolean {
   if (code === undefined) {
     return true;
   }
 
-  return code !== WS_CLOSE_NORMAL && !WS_CLOSE_AUTH_CODES.has(code);
+  return code !== WS_CLOSE_NORMAL && !isEventsRejection(code);
+}
+
+/** Any app-level rejection the server closed the socket with (4400-4499). */
+export function isEventsRejection(code: number | undefined): boolean {
+  return (
+    code !== undefined &&
+    code >= WS_CLOSE_REJECTION_MIN &&
+    code <= WS_CLOSE_REJECTION_MAX
+  );
 }
 
 export function isEventsAuthRejection(code: number | undefined): boolean {

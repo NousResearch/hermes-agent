@@ -59,15 +59,20 @@ def _recv_until(conn, frame_type: str, *, status: str | None = None) -> dict:
 
 
 def test_console_ws_rejects_missing_or_bad_token(console_client):
+    # The rejection is delivered as a close frame AFTER the handshake (see
+    # web_server._ws_reject), so the context enters and the first receive
+    # observes the close code + reason.
     with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect("/api/console"):
-            pass
+        with console_client.websocket_connect("/api/console") as conn:
+            conn.receive_text()
     assert exc.value.code == 4401
+    assert exc.value.reason == "auth: no_credential"
 
     with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect(_url(token="wrong")):
-            pass
+        with console_client.websocket_connect(_url(token="wrong")) as conn:
+            conn.receive_text()
     assert exc.value.code == 4401
+    assert exc.value.reason == "auth: token_mismatch"
 
 
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):

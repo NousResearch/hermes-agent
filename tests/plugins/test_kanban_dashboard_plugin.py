@@ -566,17 +566,19 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     c = TestClient(app)
 
-    # No token → policy violation close.
+    # No token → policy violation close. The rejection is delivered as a
+    # close frame AFTER the handshake (a pre-accept close would reach the
+    # browser as a bare 1006), so the first receive observes it.
     from starlette.websockets import WebSocketDisconnect
     with pytest.raises(WebSocketDisconnect) as exc:
-        with c.websocket_connect("/api/plugins/kanban/events"):
-            pass
+        with c.websocket_connect("/api/plugins/kanban/events") as conn:
+            conn.receive_text()
     assert exc.value.code == 1008
 
     # Wrong token → policy violation close.
     with pytest.raises(WebSocketDisconnect) as exc:
-        with c.websocket_connect("/api/plugins/kanban/events?token=nope"):
-            pass
+        with c.websocket_connect("/api/plugins/kanban/events?token=nope") as conn:
+            conn.receive_text()
     assert exc.value.code == 1008
 
     # Correct token → accepted (connect then close cleanly from our side).
@@ -589,6 +591,74 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # The bug symptom was a traceback; we don't assert on stderr because
     # capturing asyncio's internal "exception was never retrieved" logging
     # is flaky. The assertion that matters is: no CancelledError escaped.
+
+
+def test_ws_events_rejection_code_reaches_a_real_client(tmp_path, monkeypatch):
+    """The 1008 must arrive as a close frame on a real server. Starlette's
+    TestClient reports a pre-accept close as WebSocketDisconnect(1008), but
+    uvicorn answers a pre-accept close with HTTP 403 and no close frame, so
+    the dashboard's "1008 -> auth failed, reload" branch never ran and it
+    retried with backoff instead. Real uvicorn + real websockets client."""
+    uvicorn = pytest.importorskip("uvicorn")
+    websockets = pytest.importorskip("websockets")
+    import asyncio
+    import socket
+    import threading
+    import types
+
+    import hermes_cli
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(16)
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve(sockets=[sock])), daemon=True)
+    thread.start()
+    started = threading.Event()
+    for _ in range(200):
+        if server.started:
+            started.set()
+            break
+        started.wait(0.05)
+    assert server.started, "uvicorn did not start"
+
+    async def capture_close(url):
+        async with websockets.connect(url, open_timeout=5) as ws:
+            try:
+                await asyncio.wait_for(ws.recv(), timeout=5)
+            except websockets.ConnectionClosed as exc:
+                assert exc.rcvd is not None, "closed without a close frame"
+                return exc.rcvd.code
+        raise AssertionError("server did not close the socket")
+
+    try:
+        code = asyncio.run(capture_close(f"ws://127.0.0.1:{port}/api/plugins/kanban/events?token=nope"))
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        try:
+            sock.close()
+        except OSError:
+            pass
+    assert code == 1008
 
 
 # ---------------------------------------------------------------------------

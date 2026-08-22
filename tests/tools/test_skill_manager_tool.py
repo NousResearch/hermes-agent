@@ -947,3 +947,33 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestCuratorArchiveFalseSuccessGuard:
+    """#91442: archive_skill() re-resolves the skill directory on its own, and
+    a name-collision can make it report ok while a DIFFERENT same-named entry
+    was moved — leaving this skill at its live path. _delete_skill must never
+    report success (and write a ledger entry with before == after) unless the
+    live directory it resolved at entry is actually gone."""
+
+    def test_misresolved_archive_reported_as_failure(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_curator_skill("umbrella", _skill_content("umbrella"))
+            _create_curator_skill("collide", _skill_content("collide"))
+            with patch(
+                "tools.skill_usage.archive_skill",
+                return_value=(True, "archived to .archive/collide-20260821"),
+            ):
+                result = _delete_skill("collide", absorbed_into="umbrella")
+        assert result["success"] is False, result
+        assert "still present" in result["error"], result
+        assert (skills_root / "collide").exists()
+
+    def test_real_archive_still_succeeds(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_curator_skill("umbrella", _skill_content("umbrella"))
+            _create_curator_skill("collide", _skill_content("collide"))
+            result = _delete_skill("collide", absorbed_into="umbrella")
+        assert result["success"] is True, result
+        assert result.get("_archived") is True
+        assert not (skills_root / "collide").exists()

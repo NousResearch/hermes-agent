@@ -1272,6 +1272,24 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             return {"success": False, "error": f"failed to archive '{name}': {e}"}
         if not ok:
             return {"success": False, "error": archive_msg}
+        # FAIL-CLOSED verification: archive_skill() re-resolves the skill
+        # directory on its own, and in name-collision scenarios it can
+        # report ok while having moved a different entry (e.g. the
+        # just-archived original) — leaving this skill at its live path.
+        # Reporting success then writes a false ledger entry (before ==
+        # after) and downstream fail-closed consumers (duplicate-name
+        # reconcilers) trip over the leftover for hours (#91442). Never
+        # claim success unless the live directory we resolved at entry is
+        # actually gone.
+        if skill_dir.exists():
+            return {
+                "success": False,
+                "error": (
+                    f"archive reported success for '{name}' but its directory "
+                    f"is still present at {skill_dir} — refusing to report a "
+                    "false delete (possible name-collision mis-resolution)"
+                ),
+            }
         message = f"Skill '{name}' archived ({archive_msg})."
         if is_consolidation:
             message += f" Content absorbed into '{absorbed_target}'."

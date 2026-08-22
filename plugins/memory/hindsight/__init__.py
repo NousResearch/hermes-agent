@@ -40,6 +40,7 @@ import queue
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,6 +89,10 @@ _HINDSIGHT_GLYPH = "👁️"
 # overwrites prior turns server-side, so we keep the per-process
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
+# Hindsight 0.8.6 made ``store_document_text`` hierarchical and therefore
+# overridable per bank (vectorize-io/hindsight#2940).
+_MIN_VERSION_FOR_BANK_DOCUMENT_TEXT_POLICY = "0.8.6"
+_APPEND_CAPABILITY_CACHE_MAX = 256
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -215,10 +220,13 @@ def _ensure_cloud_client_dependency() -> None:
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
 
-# Cache of API_URL -> bool (whether that API supports update_mode='append').
-# Probed once per URL per process — every provider talking to the same API
-# gets the same answer without re-hitting /version on each initialize().
-_append_capability_cache: Dict[str, bool] = {}
+# Bounded insertion-ordered cache of (API URL, raw bank ID) -> bool (whether
+# append is usable). URL encoding is transport-only; the raw ID is the stable
+# identity. ``bank_id_template`` can produce many banks in a gateway process,
+# so evict the oldest probe rather than growing for the process lifetime.
+# ``store_document_text`` is hierarchical, so two banks behind one API can
+# legitimately resolve different answers.
+_append_capability_cache: Dict[tuple[str, str], bool] = {}
 _append_capability_lock = threading.Lock()
 
 
@@ -233,18 +241,21 @@ def _meets_minimum_version(actual: str | None, required: str) -> bool:
         return False
 
 
-def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
-                                 timeout: float = 5.0) -> str | None:
-    """GET ``<api_url>/version`` and return the version string (or None on failure).
+def _fetch_hindsight_api_capabilities(
+    api_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """GET ``<api_url>/version`` and return its version and feature flags.
 
-    Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
-    Any failure (timeout, 404, malformed JSON, missing key) → None, which
-    the caller treats as "legacy API, no update_mode support".
+    Older Hindsight APIs omitted the ``features`` object. Keep that distinct
+    from an explicit feature set so legacy append behavior remains compatible.
+    Any request or payload failure returns ``(None, None)``.
     """
     import urllib.error
     import urllib.request
     if not api_url:
-        return None
+        return None, None
     url = api_url.rstrip("/") + "/version"
     req = urllib.request.Request(url)
     if api_key:
@@ -255,48 +266,102 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
         data = json.loads(payload)
     except Exception as exc:
         logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
-        return None
+        return None, None
     if not isinstance(data, dict):
-        return None
+        return None, None
     version = data.get("version") or data.get("api_version")
-    return str(version) if version else None
+    features = data.get("features")
+    return (
+        str(version) if version else None,
+        features if isinstance(features, dict) else None,
+    )
+
+
+def _fetch_hindsight_bank_config(
+    api_url: str,
+    bank_id: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any] | None:
+    """Return the target bank's resolved configuration, or None on failure."""
+    import urllib.request
+
+    if not api_url or not bank_id:
+        return None
+    encoded_bank_id = quote(bank_id, safe="")
+    url = api_url.rstrip("/") + f"/v1/default/banks/{encoded_bank_id}/config"
+    req = urllib.request.Request(url)
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.debug("Hindsight bank config probe failed for %s: %s", url, exc)
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _check_api_supports_update_mode_append(api_url: str,
+                                           bank_id: str,
                                            api_key: str | None = None) -> bool:
-    """Cached capability check for ``update_mode='append'`` on *api_url*.
+    """Return whether ``update_mode='append'`` is usable for *bank_id*.
 
-    Probes once per URL per process. Returns False on any probe failure —
-    that's the safe default: a per-process unique ``document_id`` and no
-    ``update_mode`` keeps the resume-overwrite fix (#6654) intact.
+    Append needs both API support and retained source text. The latter is an
+    effective per-bank policy, not merely a server feature flag. Probe once per
+    URL/bank tuple and fail closed to the cumulative non-append path.
     """
-    if not api_url:
+    if not api_url or not bank_id:
         return False
+    cache_key = (api_url, bank_id)
     with _append_capability_lock:
-        if api_url in _append_capability_cache:
-            return _append_capability_cache[api_url]
-    version = _fetch_hindsight_api_version(api_url, api_key)
+        if cache_key in _append_capability_cache:
+            return _append_capability_cache[cache_key]
+    version, features = _fetch_hindsight_api_capabilities(api_url, api_key)
     supported = _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+    bank_config = None
+    effective_store_document_text = None
+    if supported and _meets_minimum_version(
+        version, _MIN_VERSION_FOR_BANK_DOCUMENT_TEXT_POLICY
+    ):
+        if features is None or features.get("bank_config_api") is not False:
+            bank_config = _fetch_hindsight_bank_config(api_url, bank_id, api_key)
+            resolved = bank_config.get("config") if isinstance(bank_config, dict) else None
+            effective_store_document_text = (
+                resolved.get("store_document_text") if isinstance(resolved, dict) else None
+            )
+        supported = effective_store_document_text is True
+    elif supported and features is not None:
+        # Before per-bank overrides, the server feature was the effective
+        # policy. A missing key is a legacy payload and historically implies
+        # source-text storage is enabled; only an explicit false disables
+        # append (vectorize-io/hindsight#2511).
+        effective_store_document_text = features.get("store_document_text")
+        supported = effective_store_document_text is not False
     with _append_capability_lock:
         # Re-check after acquiring the lock in case a concurrent probe filled it.
-        cached = _append_capability_cache.get(api_url)
+        cached = _append_capability_cache.get(cache_key)
         if cached is None:
-            _append_capability_cache[api_url] = supported
+            if len(_append_capability_cache) >= _APPEND_CAPABILITY_CACHE_MAX:
+                _append_capability_cache.pop(next(iter(_append_capability_cache)))
+            _append_capability_cache[cache_key] = supported
         else:
             supported = cached
     if not supported:
         logger.warning(
-            "Hindsight API at %s reports version %r, older than %s. "
-            "Falling back to per-process document_id — retains across "
-            "processes/sessions create separate documents instead of "
-            "appending to a session-scoped one. Upgrade Hindsight to "
-            "%s+ to enable update_mode='append' deduplication.",
-            api_url, version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
-            _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+            "Hindsight append retention is unavailable for the selected bank "
+            "at %s (API version=%r, effective store_document_text=%r). "
+            "Falling back to a per-process document_id with cumulative retains.",
+            api_url,
+            version,
+            effective_store_document_text,
         )
     else:
-        logger.debug("Hindsight API %s version %s supports update_mode='append'",
-                     api_url, version)
+        logger.debug(
+            "Hindsight API %s version %s supports update_mode='append' for the selected bank",
+            api_url,
+            version,
+        )
     return supported
 
 
@@ -1552,13 +1617,15 @@ class HindsightMemoryProvider(MemoryProvider):
         and don't pass ``update_mode`` at all — that's the only way the
         resume-overwrite fix (#6654) keeps working on legacy servers.
 
-        Probe is cached at module level per API URL, so this is one HTTP
-        round-trip per (process, api_url) pair regardless of how many
-        retains fire.
+        Probe results are cached at module level per API URL and bank ID,
+        so each target bank's effective document-storage policy is isolated
+        while repeated retains avoid additional HTTP round-trips.
         """
         if not self._session_id:
             return fallback_document_id, None
-        if _check_api_supports_update_mode_append(self._probe_url(), self._api_key):
+        if _check_api_supports_update_mode_append(
+            self._probe_url(), self._bank_id, self._api_key
+        ):
             return self._session_id, "append"
         return fallback_document_id, None
 

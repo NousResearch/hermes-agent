@@ -1159,8 +1159,8 @@ class TestUpdateModeAppendCapability:
         per-process unique doc_id and NOT pass update_mode."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: None,
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (None, None),
         )
         old_doc = provider._document_id
         provider.sync_turn("hello", "hi")
@@ -1176,8 +1176,8 @@ class TestUpdateModeAppendCapability:
         """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: ("0.5.6", None),
         )
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
@@ -1188,6 +1188,239 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_legacy_feature_payload_without_storage_flag_preserves_append(
+        self, provider, monkeypatch
+    ):
+        """Pre-policy feature payloads omitted store_document_text entirely."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.5.6",
+                {"observations": True, "bank_config_api": True},
+            ),
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+
+    def test_pre_policy_boundary_skips_bank_config_probe(self, provider, monkeypatch):
+        """0.8.5 remains on legacy feature semantics immediately below the boundary."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.8.5",
+                {"observations": True, "bank_config_api": True},
+            ),
+        )
+        bank_probe = MagicMock(side_effect=AssertionError("0.8.5 must not query bank config"))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+        bank_probe.assert_not_called()
+
+    def test_text_disabled_bank_uses_cumulative_non_append_retains(
+        self, provider, monkeypatch
+    ):
+        """At the 0.8.6 boundary, text-disabled banks use cumulative replacement."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.8.6",
+                {"store_document_text": True, "bank_config_api": True},
+            ),
+        )
+        bank_probe = MagicMock(
+            return_value={
+                "config": {"store_document_text": False},
+                "overrides": {"store_document_text": False},
+            }
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        provider.sync_turn("first-user", "first-assistant")
+        provider._retain_queue.join()
+        provider.sync_turn("second-user", "second-assistant")
+        provider._retain_queue.join()
+
+        calls = provider._client.aretain_batch.await_args_list
+        assert len(calls) == 2
+        assert all(call.kwargs["document_id"] == provider._document_id for call in calls)
+        assert all("update_mode" not in call.kwargs["items"][0] for call in calls)
+        first_content = calls[0].kwargs["items"][0]["content"]
+        second_content = calls[1].kwargs["items"][0]["content"]
+        assert "first-user" in first_content
+        assert "second-user" not in first_content
+        assert "first-user" in second_content
+        assert "second-user" in second_content
+        assert second_content.index("first-user") < second_content.index("second-user")
+        bank_probe.assert_called_once()
+
+    def test_policy_boundary_text_enabled_bank_allows_append(self, provider, monkeypatch):
+        """At 0.8.6, the resolved bank policy overrides the server default."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.8.6",
+                {"store_document_text": False, "bank_config_api": True},
+            ),
+        )
+        bank_probe = MagicMock(
+            return_value={
+                "config": {"store_document_text": True},
+                "overrides": {"store_document_text": True},
+            }
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+        bank_probe.assert_called_once()
+
+    def test_append_policy_cache_isolated_per_bank(self, provider, monkeypatch):
+        """Banks behind one API URL may resolve different source-text policies."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": True},
+            ),
+        )
+
+        def _bank_config(_api_url, bank_id, *_args, **_kwargs):
+            return {"config": {"store_document_text": bank_id == "text-bank"}}
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            _bank_config,
+        )
+
+        provider._bank_id = "text-bank"
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+        provider._bank_id = "facts-only-bank"
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+
+    def test_bank_policy_probe_failure_falls_back_without_append(
+        self, provider, monkeypatch
+    ):
+        """An unknown effective policy must not risk a rejected append."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": True},
+            ),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            lambda *a, **kw: None,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+
+    def test_missing_resolved_storage_policy_falls_back_without_append(
+        self, provider, monkeypatch
+    ):
+        """A fetched config that omits the policy is still not proof append is safe."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": True},
+            ),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            lambda *a, **kw: {"config": {}, "overrides": {}},
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+
+    def test_disabled_bank_config_feature_skips_unavailable_probe(
+        self, provider, monkeypatch
+    ):
+        """An explicit feature flag avoids a guaranteed 404 and fails closed."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": False},
+            ),
+        )
+        bank_probe = MagicMock(side_effect=AssertionError("bank config probe should be skipped"))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+        bank_probe.assert_not_called()
+
+    def test_append_policy_cache_evicts_oldest_bank(self, provider, monkeypatch):
+        """Templated bank IDs must not grow the process-wide cache without bound."""
+        import plugins.memory.hindsight as hindsight_module
+
+        self._clear_capability_cache()
+        monkeypatch.setattr(hindsight_module, "_APPEND_CAPABILITY_CACHE_MAX", 2)
+        api_probe = MagicMock(return_value=("0.5.6", None))
+        monkeypatch.setattr(
+            hindsight_module,
+            "_fetch_hindsight_api_capabilities",
+            api_probe,
+        )
+
+        for bank_id in ("bank-a", "bank-b", "bank-c"):
+            assert hindsight_module._check_api_supports_update_mode_append(
+                "http://hindsight.test", bank_id
+            )
+
+        assert list(hindsight_module._append_capability_cache) == [
+            ("http://hindsight.test", "bank-b"),
+            ("http://hindsight.test", "bank-c"),
+        ]
+        assert hindsight_module._check_api_supports_update_mode_append(
+            "http://hindsight.test", "bank-a"
+        )
+        assert api_probe.call_count == 4
+
 
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch
@@ -1196,8 +1429,8 @@ class TestUpdateModeAppendCapability:
         in the OLD session's stable document, not a per-process id."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: ("0.5.6", None),
         )
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
         p.sync_turn("turn1-user", "turn1-asst")

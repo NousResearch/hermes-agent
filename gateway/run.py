@@ -3496,8 +3496,9 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     """Return the visible text portion of a response before direct send().
 
     Queued follow-up resends only replay explicit ``MEDIA:`` attachments in
-    this path. Keep bare local paths and ordinary image URLs visible because
-    the post-stream uploader intentionally ignores them (#20834).
+    this path. Bare local paths stay visible as text; explicit image tags
+    (``http(s)://`` / ``file://``) in the response are delivered separately
+    by the post-stream uploader after the text is sent.
 
     Do not apply a broad ``MEDIA:`` regex after ``extract_media()`` — the
     extractor deliberately preserves protected code/inline spans and
@@ -22197,8 +22198,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         already shown to the user as text, or (b) stale tool/inspected
         content that was never part of the intended visible reply. Promoting
         such paths into uploads after the fact sent files the model never
-        asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
-        attachment contract — trigger post-stream uploads.
+        asked to deliver (#20834). Only explicit attachment directives
+        trigger post-stream uploads: ``MEDIA:`` paths, and explicit
+        ``file://`` / ``http(s)://`` markdown/HTML image tags extracted by
+        ``extract_images``.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -22227,7 +22230,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # post-stream delivery is explicit-only (#20834). Bare local paths
             # in an already-streamed reply are text the user has seen (or
             # stale inspected content), not an attachment request.
-            adapter.extract_images(cleaned)
+            # Capture extracted images for dedup with MEDIA paths below
+            _stream_extracted_images, cleaned = adapter.extract_images(cleaned)
 
             _thread_meta = (
                 dict(thread_metadata)
@@ -22245,23 +22249,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
             # set, image-extension files skip the photo path and route to
             # send_document below — preserving original bytes.
-            image_paths: list = []
+            image_delivery: list = []
             non_image_media: list = []
+            delivery_keys: set = set()
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice
                         and not force_document_attachments):
-                    image_paths.append(media_path)
+                    image_delivery.append((f"file://{_quote(media_path)}", ""))
+                    delivery_keys.add(("local", os.path.normcase(media_path)))
                 else:
                     non_image_media.append((media_path, is_voice))
 
-            if image_paths:
+            # Also include explicit image tags (HTTP(S) or file:// URIs)
+            # from extract_images, deduplicated against MEDIA paths.
+            # Uses canonical local-path keys from the resolved MEDIA paths
+            # and `_normalize_file_url` for file:// extracted images so:
+            #   - foo.png and foo.png.backup.png (different files) both deliver
+            #   - file://C:/a.png and file:///C:/a.png (same file) deliver once
+            #   - MEDIA:/a.png and file:///C:/a.png (same file) deliver once
+            # HTTP(S) URLs use exact-string comparison.
+            # Namespace tuples prevent accidental collision between local paths
+            # and URL strings.
+            for img_url, img_alt in _stream_extracted_images:
+                if img_url.lower().startswith('file://'):
+                    normed = BasePlatformAdapter._normalize_file_url(img_url)
+                    if normed:
+                        key = ("local", os.path.normcase(normed))
+                        if key in delivery_keys:
+                            continue
+                        delivery_keys.add(key)
+                elif ("local", img_url) in delivery_keys or ("url", img_url) in delivery_keys:
+                    continue
+                else:
+                    delivery_keys.add(("url", img_url))
+                image_delivery.append((img_url, img_alt))
+
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
-                        images=images,
+                        images=image_delivery,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
@@ -22571,13 +22600,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_metadata,
                     )
 
-                # Send extracted images
-                for image_url, alt_text in (images or []):
+                # Send extracted images via send_multiple_images so that
+                # ``file://`` URIs reach ``send_image_file`` (decoded) instead
+                # of being passed as a literal pathname to ``send_image``.
+                # Build canonical dedup keys from file:// images so the
+                # media_files loop below does NOT re-send the same file.
+                _image_dedup_keys: set = set()
+                for img_url, _ in (images or []):
+                    if img_url.lower().startswith('file://'):
+                        _n = BasePlatformAdapter._normalize_file_url(img_url)
+                        if _n:
+                            _image_dedup_keys.add(os.path.normcase(_n))
+                if images:
                     try:
-                        await adapter.send_image(
+                        await adapter.send_multiple_images(
                             chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
+                            images=images,
                             metadata=_thread_metadata,
                         )
                     except Exception:
@@ -22607,11 +22645,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 metadata=_thread_metadata,
                             )
                         elif _ext in _IMAGE_EXTS:
-                            await adapter.send_image_file(
-                                chat_id=source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
-                            )
+                            if os.path.normcase(media_path) not in _image_dedup_keys:
+                                await adapter.send_image_file(
+                                    chat_id=source.chat_id,
+                                    image_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
                         else:
                             await adapter.send_document(
                                 chat_id=source.chat_id,

@@ -4343,6 +4343,7 @@ class AIAgent:
             last_activity_provenance=provenance,
             extra={
             "current_tool": self._current_tool,
+            "tool_started_at": getattr(self, "_current_tool_started_at", None),
             "api_call_count": self._api_call_count,
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,

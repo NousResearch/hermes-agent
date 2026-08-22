@@ -11,12 +11,27 @@ from tools.process_registry import process_registry
 
 
 class _IdleAgent:
-    def __init__(self, idle_seconds=60.0):
+    def __init__(
+        self,
+        idle_seconds=60.0,
+        current_tool=None,
+        activity_observed=None,
+        tool_started_at=None,
+    ):
         self.idle_seconds = idle_seconds
+        self.current_tool = current_tool
+        self.activity_observed = activity_observed
+        self.tool_started_at = tool_started_at
         self.interrupts = []
 
     def get_activity_summary(self):
-        return {"seconds_since_activity": self.idle_seconds}
+        if self.activity_observed is not None:
+            self.activity_observed.set()
+        return {
+            "seconds_since_activity": self.idle_seconds,
+            "current_tool": self.current_tool,
+            "tool_started_at": self.tool_started_at,
+        }
 
     def interrupt(self, reason):
         self.interrupts.append(reason)
@@ -65,6 +80,80 @@ def test_thread_watchdog_reaps_only_processes_created_by_timed_out_turn(monkeypa
             "gateway_turn_timeout",
         )
     ]
+
+
+def test_thread_watchdog_does_not_abandon_silent_in_flight_tool(monkeypatch):
+    activity_observed = threading.Event()
+    agent = _IdleAgent(
+        current_tool="silent_tool",
+        activity_observed=activity_observed,
+    )
+    worker_done, timeout_fired, cleanup_lock = _state()
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an active tool must not be reaped")
+        ),
+    )
+
+    watchdog = threading.Thread(
+        target=_watch_gateway_turn_inactivity,
+        kwargs={
+            "agent_holder": [agent],
+            "task_id": "session-a",
+            "process_baseline": frozenset(),
+            "timeout": 30.0,
+            "worker_done": worker_done,
+            "timeout_fired": timeout_fired,
+            "cleanup_lock": cleanup_lock,
+            "poll_interval": 0.01,
+        },
+    )
+    watchdog.start()
+    assert activity_observed.wait(5)
+    assert not timeout_fired.is_set()
+    worker_done.set()
+    watchdog.join(timeout=1)
+
+    assert not timeout_fired.is_set()
+    assert agent.interrupts == []
+
+
+def test_thread_watchdog_abandons_hung_in_flight_tool(monkeypatch):
+    agent = _IdleAgent(current_tool="hung_tool", tool_started_at=0.0)
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append(
+            (task_id, baseline, source)
+        )
+        or 1,
+    )
+
+    watchdog = threading.Thread(
+        target=_watch_gateway_turn_inactivity,
+        kwargs={
+            "agent_holder": [agent],
+            "task_id": "session-a",
+            "process_baseline": frozenset(),
+            "timeout": 30.0,
+            "in_flight_tool_timeout": 0.01,
+            "worker_done": worker_done,
+            "timeout_fired": timeout_fired,
+            "cleanup_lock": cleanup_lock,
+            "poll_interval": 0.01,
+        },
+    )
+    watchdog.start()
+    watchdog.join(timeout=1)
+
+    assert not watchdog.is_alive()
+    assert timeout_fired.is_set()
+    assert agent.interrupts == ["Execution timed out (inactivity)"]
+    assert calls == [("session-a", frozenset(), "gateway_turn_timeout")]
 
 
 def test_completed_worker_wins_race_and_preserves_background_process(monkeypatch):

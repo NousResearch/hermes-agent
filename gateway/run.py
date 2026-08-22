@@ -3255,6 +3255,24 @@ _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
+_DEFAULT_IN_FLIGHT_TOOL_TIMEOUT = 420.0
+
+
+def _resolve_in_flight_tool_timeout() -> Optional[float]:
+    """Resolve the independent wall-time ceiling for an executing tool."""
+    raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
+    if not raw:
+        return _DEFAULT_IN_FLIGHT_TOOL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid HERMES_CONCURRENT_TOOL_TIMEOUT_S=%r; using %.0fs",
+            raw,
+            _DEFAULT_IN_FLIGHT_TOOL_TIMEOUT,
+        )
+        return _DEFAULT_IN_FLIGHT_TOOL_TIMEOUT
+    return value if value > 0 else None
 
 
 def _reap_gateway_turn_processes(
@@ -3441,6 +3459,7 @@ def _watch_gateway_turn_inactivity(
     task_id: str,
     process_baseline,
     timeout: float,
+    in_flight_tool_timeout: Optional[float] = _DEFAULT_IN_FLIGHT_TOOL_TIMEOUT,
     worker_done: threading.Event,
     timeout_fired: threading.Event,
     cleanup_lock: threading.Lock,
@@ -3453,12 +3472,26 @@ def _watch_gateway_turn_inactivity(
         if agent is None or not hasattr(agent, "get_activity_summary"):
             continue
         try:
-            idle_seconds = float(
-                agent.get_activity_summary().get("seconds_since_activity", 0.0)
-            )
+            activity = agent.get_activity_summary()
+            current_tool = activity.get("current_tool")
+            if current_tool:
+                started_at = activity.get("tool_started_at")
+                if (
+                    in_flight_tool_timeout is None
+                    or started_at is None
+                    or time.monotonic() - float(started_at) < in_flight_tool_timeout
+                ):
+                    continue
+                logger.warning(
+                    "In-flight tool %s exceeded its %.0fs wall-time ceiling",
+                    current_tool,
+                    in_flight_tool_timeout,
+                )
+            else:
+                idle_seconds = float(activity.get("seconds_since_activity", 0.0))
+                if idle_seconds < timeout:
+                    continue
         except Exception:
-            continue
-        if idle_seconds < timeout:
             continue
         _abandon_timed_out_gateway_turn(
             agent_holder=agent_holder,
@@ -28939,6 +28972,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Default 1800s (30 min inactivity).  0 = unlimited.
             _agent_timeout_raw = _float_env("HERMES_AGENT_TIMEOUT", 1800)
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
+            _in_flight_tool_timeout = _resolve_in_flight_tool_timeout()
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
@@ -28999,6 +29033,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "task_id": _turn_task_id,
                         "process_baseline": _turn_process_baseline,
                         "timeout": _agent_timeout,
+                        "in_flight_tool_timeout": _in_flight_tool_timeout,
                         "worker_done": _turn_worker_done,
                         "timeout_fired": _turn_timeout_fired,
                         "cleanup_lock": _turn_cleanup_lock,
@@ -29091,6 +29126,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             _act = _agent_ref.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            if _act.get("current_tool"):
+                                _idle_secs = 0.0
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.

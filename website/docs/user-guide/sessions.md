@@ -847,6 +847,10 @@ If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
 persistence failed for that run.
 :::
 
+:::tip Moving to a new machine
+Sessions, memory, skills, and config are all under `~/.hermes/`. To move machines, back up the whole directory (`hermes backup` creates a zip) and restore with `hermes import`, or use `hermes profile export`/`import` to move a profile. Sessions resume seamlessly on the new machine with `hermes --resume <id>` — there is no separate "session sync" step. For a lighter move, `hermes sessions export <file>.jsonl` writes the conversation transcripts you care about.
+:::
+
 :::note Legacy JSONL transcripts
 Sessions created before state.db became canonical may have leftover
 `*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or

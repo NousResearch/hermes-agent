@@ -152,6 +152,12 @@ Not sure what's available? Here's a quick directory of major features:
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](/user-guide/features/hooks) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](/user-guide/features/batch-processing) |
 | **Provider Routing** | Route requests across multiple LLM providers | [Provider Routing](/user-guide/features/provider-routing) |
+| **Goals** | Set a standing objective; Hermes keeps working across turns until it's done | [Persistent Goals](/user-guide/features/goals) |
+| **Kanban** | Multi-profile task board with a dispatcher for parallel agent work | [Kanban](/user-guide/features/kanban) |
+| **Web Dashboard** | Browser-based dashboard for sessions, board, and system status | [Web Dashboard](/user-guide/features/web-dashboard) |
+| **ACP / IDE** | Use Hermes inside ACP-compatible editors (VS Code, Zed, JetBrains) | [ACP](/user-guide/features/acp) |
+| **Voice Mode** | Real-time voice conversations (CLI, Telegram, Discord) | [Voice Mode](/user-guide/features/voice-mode) |
+| **Wake Word** | Hands-free activation from messaging platforms | [Wake Word](/user-guide/features/wake-word) |
 
 ## What to Read Next
 
@@ -163,6 +169,7 @@ Based on where you are right now:
 - **Setting up for a team?** → Read [Security](/user-guide/security) and [Sessions](/user-guide/sessions) to understand access control and conversation management.
 - **Ready to build?** → Jump into the [Developer Guide](/developer-guide/architecture) to understand the internals and start contributing.
 - **Want practical examples?** → Check out the [Guides](/guides/tips) section for real-world projects and tips.
+- **Coming from OpenClaw?** → Use the [Migrate from OpenClaw](/guides/migrate-from-openclaw) guide to move sessions, config, and workflows.
 
 :::tip
 You don't need to read everything. Pick the path that matches your goal, follow the links in order, and you'll be productive quickly. You can always come back to this page to find your next step.

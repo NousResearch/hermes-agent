@@ -1805,7 +1805,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ```yaml
 display:
-  tool_progress: all      # off | new | all | verbose
+  tool_progress: all      # off | new | all | verbose | log (log = tool activity to session log only)
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
@@ -1833,6 +1833,8 @@ display:
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+Additional display keys that are documented on their feature/platform pages (not shown here for brevity): `display.reasoning_style` (code|blockquote|subtext — Discord), `display.live_status` and `display.status_phrases` (Slack status line), `display.memory_notifications` (memory writes), `display.busy_ack_enabled`/`busy_ack_detail`, `display.platforms.<p>.cleanup_progress`, and `display.background_process_notifications`. See the [Slack](/user-guide/messaging/slack), [Discord](/user-guide/messaging/discord), [Memory](/user-guide/features/memory), and [Messaging overview](/user-guide/messaging) pages for those.
 
 ### Per-turn summary and spinner token flow
 

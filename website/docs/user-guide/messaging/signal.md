@@ -194,7 +194,7 @@ You can still see tool activity in the CLI, and final Signal replies can include
 ### Phone Number Redaction
 
 All phone numbers are automatically redacted in logs:
-- `+15551234567` → `+155****4567`
+- `+15551234567` → `+15550123456`
 - This applies to both Hermes gateway logs and the global redaction system
 
 ### Note to Self (Single-Number Setup)

@@ -53,6 +53,10 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 [Hermes Relay](/user-guide/messaging/relay) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
 :::
 
+:::note A2A and Webhooks
+[A2A](/user-guide/messaging/a2a) (agent-to-agent) and [Webhooks](/user-guide/messaging/webhooks) are event/passthrough surfaces, not chat platforms — they receive structured requests rather than conversational messages, so the chat capabilities above (voice, reactions, typing, streaming) don't apply.
+:::
+
 ## Architecture
 
 ```mermaid
@@ -293,7 +297,7 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 
 ## Per-Channel Model & System Prompt Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -323,8 +327,8 @@ Details:
 # Restrict to specific users (recommended):
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
-SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
-SMS_ALLOWED_USERS=+155****4567,+155****6543
+SIGNAL_ALLOWED_USERS=+15550123456,+15550987654
+SMS_ALLOWED_USERS=+15550123456,+15550987654
 EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 MATRIX_ALLOWED_USERS=@alice:matrix.org
@@ -690,7 +694,7 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 ### Restart notifications
 
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
+When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `~/.hermes/config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:
@@ -707,7 +711,7 @@ Disable it on noisy or low-priority platforms while leaving it on for your prima
 
 ### Typing indicators
 
-While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `~/.hermes/config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:

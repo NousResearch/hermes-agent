@@ -11054,6 +11054,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     f"staying on {old_model}."
                 )
                 return
+        else:
+            # The agent is not constructed yet (switch before the first turn):
+            # agent.switch_model() — which reloads the credential pool on the
+            # agent — never runs. Re-resolve the CLI's runtime provider so
+            # the pool is bound for THIS provider before lazy `_init_agent`
+            # snapshots it; otherwise the new provider runs with no pool and
+            # 429/billing/401 never rotate to the next key (#92250).
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                resolved = resolve_runtime_provider(requested=self.provider)
+                # Bind whatever pool the resolved runtime carries for THIS
+                # provider (None when it has none) — same value the resume
+                # path binds and lazy `_init_agent` will snapshot.
+                self._credential_pool = resolved.get("credential_pool")
+            except Exception as exc:
+                logger.debug(
+                    "Credential pool re-resolution for switched provider "
+                    "%s failed; no rotation this session (%s)",
+                    self.provider, exc,
+                )
 
         from hermes_cli.model_switch import format_model_for_display
         _display_old = format_model_for_display(old_model)

@@ -40,6 +40,7 @@ class _StubCLI:
     base_url = ""
     _explicit_base_url = ""
     api_mode = ""
+    _credential_pool = None
     _pending_model_switch_note = ""
 
 
@@ -169,3 +170,112 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
         cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
 
     assert ("model.context_length", None) in writes
+
+
+def test_switch_before_first_turn_binds_credential_pool(monkeypatch):
+    """A `/model` switch before the agent is constructed (lazy `_init_agent`)
+    must still re-bind the CLI credential pool to the NEW provider, so the
+    first 429/billing/401 can rotate to the next key. Regression #92250.
+    """
+    import cli as cli_mod
+
+    fake_pool = object()
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "new-provider",
+            "api_mode": "chat_completions",
+            "base_url": "",
+            "api_key": "new-key",
+            "credential_pool": fake_pool,
+            "requested_provider": requested,
+        },
+    )
+
+    cli = _StubCLI()
+    # Simulate a session that started on provider A with an old pool.
+    cli.provider = "old-provider"
+    cli.model = "old-model"
+    cli.api_key = "old-key"
+    cli._explicit_api_key = ""
+    cli.base_url = "https://old.example/v1"
+    cli.api_mode = "chat_completions"
+    cli._credential_pool = "stale-pool"
+
+    result = ModelSwitchResult(
+        success=True,
+        new_model="new-model",
+        target_provider="new-provider",
+        provider_changed=True,
+        api_key="new-key",
+        base_url="",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="New Provider",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+
+    cli_mod.HermesCLI._apply_model_switch_result(cli, result, False)
+
+    assert cli._credential_pool is fake_pool, (
+        "switch-before-agent must re-bind the pool for the new provider, "
+        f"got {cli._credential_pool!r}"
+    )
+
+
+def test_switch_before_first_turn_no_pool_leaves_none(monkeypatch):
+    """When the resolved runtime carries no pool (provider with a single key),
+    the rebind must land on None — not silently keep the stale old-provider pool,
+    which would be rejected as mismatched later. Regression #92250.
+    """
+    import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "solo-provider",
+            "api_mode": "chat_completions",
+            "base_url": "",
+            "api_key": "solo-key",
+            "credential_pool": None,
+            "requested_provider": requested,
+        },
+    )
+
+    cli = _StubCLI()
+    cli.provider = "old-provider"
+    cli.model = "old-model"
+    cli.api_key = "old-key"
+    cli.base_url = "https://old.example/v1"
+    cli.api_mode = "chat_completions"
+    cli._credential_pool = "stale-pool"
+
+    result = ModelSwitchResult(
+        success=True,
+        new_model="solo-model",
+        target_provider="solo-provider",
+        provider_changed=True,
+        api_key="solo-key",
+        base_url="",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="Solo Provider",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+
+    cli_mod.HermesCLI._apply_model_switch_result(cli, result, False)
+
+    assert cli._credential_pool is None, (
+        "no-pool provider must clear the stale pool, "
+        f"got {cli._credential_pool!r}"
+    )

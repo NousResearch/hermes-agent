@@ -18,7 +18,7 @@ This is different from the [API server](./api-server.md):
 |---|---|---|
 | What it serves | Your agent (full toolset, memory, skills) | Raw model inference |
 | Use case | "Use Hermes as a chat backend" | "Use my Portal sub from another app" |
-| Auth | Your `API_SERVER_KEY` | Any bearer (proxy attaches the real one) |
+| Auth | Your `API_SERVER_KEY` | Any bearer by default; optional required bearer |
 | Tool calls | Yes — the agent runs tools | No — passthrough only |
 
 Use the API server when you want the **agent** as a backend. Use the
@@ -46,7 +46,7 @@ hermes proxy start
 Starting Hermes proxy for Nous Portal
   Listening on:  http://127.0.0.1:8645/v1
   Forwarding to: (resolved per-request from your subscription)
-  Use any bearer token in the client — the proxy attaches your real credential.
+  Inbound auth:  any bearer accepted
 ```
 
 Leave this running in the foreground. Use `tmux`, `nohup`, or a systemd
@@ -72,7 +72,8 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Currently shipped: `nous` (Nous Portal) and `xai` (xAI / Grok). More
+Currently shipped: `nous` (Nous Portal), `openai-codex` (OpenAI Codex), and
+`xai` (xAI / Grok). More
 OAuth providers can be added by implementing the `UpstreamAdapter`
 interface in `hermes_cli/proxy/adapters/`.
 
@@ -95,7 +96,10 @@ happens if you signed out from the Portal web UI) — just re-run
 
 ## Allowed paths
 
-The proxy only forwards paths the upstream actually serves. For Nous
+The proxy only forwards paths the upstream actually serves. OpenAI Codex
+forwards raw `/v1/responses` requests only; it adds the first-party provider
+headers required by the subscription endpoint but does not add Hermes agent
+instructions, tools, memory, sessions, or an agent loop. For Nous
 Portal:
 
 | Path | Purpose |
@@ -161,6 +165,19 @@ OpenAI-compatible client.
 
 ## Exposing on LAN
 
+By default the proxy binds `127.0.0.1` (localhost only). For local applications
+that need an authenticated listener, put a secret in an environment variable
+and name that variable on startup:
+
+```bash
+hermes proxy start --provider openai-codex --auth-key-env MY_PROXY_KEY
+```
+
+Both `/health` and `/v1/*` then require `Authorization: Bearer <value>`. The
+health response declares `agent: false`, `memory: false`, and
+`tools_resolved: 0`; the Codex adapter also reports contract
+`hermes-codex-responses-v1`.
+
 By default the proxy binds `127.0.0.1` (localhost only). To let other
 machines on your network use it:
 
@@ -168,10 +185,9 @@ machines on your network use it:
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
-⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
-Use a firewall, VPN, or reverse proxy with proper auth if you expose
-this beyond your trusted network.
+⚠ **Be aware:** without `--auth-key-env`, anyone on your network can use your
+subscription. Require an inbound bearer and also use a firewall or VPN when
+exposing the listener beyond localhost.
 
 ## Rate limits
 
@@ -184,7 +200,7 @@ subscription quota. Monitor usage at
 
 The proxy is intentionally minimal. Per request:
 
-1. Receive `POST /v1/chat/completions` from your app
+1. Receive an adapter-allowed `/v1/*` request from your app
 2. Look up the adapter's current credential (refresh if expiring)
 3. Forward the request body verbatim, with `Authorization: Bearer <minted-key>`
 4. Stream the response back unchanged (SSE preserved)

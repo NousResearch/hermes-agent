@@ -12,6 +12,7 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import signal
 from typing import Optional
@@ -85,7 +86,11 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(
+    adapter: UpstreamAdapter,
+    *,
+    inbound_bearer_key: Optional[str] = None,
+) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
@@ -98,16 +103,31 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)
     app[_adapter_key] = adapter
 
+    def _authorized(request: "web.Request") -> bool:
+        if not inbound_bearer_key:
+            return True
+        supplied = request.headers.get("Authorization", "")
+        return hmac.compare_digest(supplied, f"Bearer {inbound_bearer_key}")
+
     async def handle_health(request: "web.Request") -> "web.Response":
+        if not _authorized(request):
+            return _json_error(401, "unauthorized", code="proxy_unauthorized")
         return web.json_response(
             {
                 "status": "ok",
                 "upstream": adapter.display_name,
                 "authenticated": adapter.is_authenticated(),
+                "contract": adapter.health_contract,
+                "provider": adapter.name,
+                "agent": False,
+                "memory": False,
+                "tools_resolved": 0,
             }
         )
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+        if not _authorized(request):
+            return _json_error(401, "unauthorized", code="proxy_unauthorized")
         # Extract the path *after* /v1
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
@@ -142,7 +162,10 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 upstream_url = f"{upstream_url}?{request.query_string}"
 
             fwd_headers = _filter_request_headers(request.headers)
-            fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+            fwd_headers["Authorization"] = (
+                f"{active_cred.token_type} {active_cred.bearer}"
+            )
+            fwd_headers.update(dict(active_cred.headers))
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",
@@ -248,6 +271,7 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    inbound_bearer_key: Optional[str] = None,
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set.
 
@@ -258,7 +282,7 @@ async def run_server(
             "aiohttp is required for `hermes proxy`. Run `hermes setup` to install it."
         )
 
-    app = create_app(adapter)
+    app = create_app(adapter, inbound_bearer_key=inbound_bearer_key)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

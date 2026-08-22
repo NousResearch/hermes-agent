@@ -319,8 +319,8 @@ def build_gateway_parser(
         description=(
             "Run a local HTTP server that forwards OpenAI-compatible requests "
             "to an OAuth-authenticated provider (e.g. Nous Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials."
+            "apps can point at the proxy; the proxy attaches your real "
+            "credentials without running the Hermes agent loop."
         ),
     )
     proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
@@ -331,7 +331,7 @@ def build_gateway_parser(
     proxy_start.add_argument(
         "--provider",
         default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
+        help="Upstream provider (default: nous). See `hermes proxy providers`.",
     )
     proxy_start.add_argument(
         "--host",
@@ -343,6 +343,14 @@ def build_gateway_parser(
         type=int,
         default=None,
         help="Bind port (default: 8645)",
+    )
+    proxy_start.add_argument(
+        "--auth-key-env",
+        default=None,
+        help=(
+            "Require an inbound bearer read from this environment variable. "
+            "The value is never printed or stored by the proxy."
+        ),
     )
 
     proxy_subparsers.add_parser(

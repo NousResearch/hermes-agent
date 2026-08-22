@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from typing import Any
 
@@ -52,19 +53,36 @@ def cmd_proxy_start(args: Any) -> int:
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    auth_key_env = str(getattr(args, "auth_key_env", None) or "").strip()
+    inbound_bearer_key = (
+        os.environ.get(auth_key_env, "").strip() if auth_key_env else None
+    )
+    if auth_key_env and not inbound_bearer_key:
+        print(
+            f"Proxy inbound authentication variable {auth_key_env} is unset.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{host}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
-        f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
+        f"  Inbound auth:  {'bearer required' if inbound_bearer_key else 'any bearer accepted'}\n"
         f"\n"
         f"Press Ctrl+C to stop.",
         file=sys.stderr,
     )
 
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(
+            run_server(
+                adapter,
+                host=host,
+                port=port,
+                inbound_bearer_key=inbound_bearer_key,
+            )
+        )
     except KeyboardInterrupt:
         print("\nproxy: stopped", file=sys.stderr)
     except OSError as exc:

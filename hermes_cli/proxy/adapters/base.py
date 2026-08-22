@@ -34,6 +34,9 @@ class UpstreamCredential:
     expires_at: Optional[str] = None
     """ISO-8601 expiry timestamp for the bearer, when known. Informational."""
 
+    headers: tuple[tuple[str, str], ...] = ()
+    """Provider-required outbound headers that override inbound values."""
+
 
 class UpstreamAdapter(ABC):
     """Contract for an upstream provider the proxy can forward to."""
@@ -47,6 +50,11 @@ class UpstreamAdapter(ABC):
     @abstractmethod
     def display_name(self) -> str:
         """Human-readable provider name for logs and ``proxy status``."""
+
+    @property
+    def health_contract(self) -> str:
+        """Machine-readable proof that this is a zero-agent pass-through."""
+        return "hermes-subscription-proxy-v1"
 
     @property
     @abstractmethod

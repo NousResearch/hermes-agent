@@ -202,6 +202,35 @@ def test_rich_reinjection_block_is_self_contained():
         assert needle in text, f"missing {needle!r}"
 
 
+def test_batch_reinjection_marks_changed_source_as_stale():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_stale",
+        "is_batch": True,
+        "goals": ["Review mutable repository"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Historical review",
+                "source_freshness": "stale",
+                "stale_input_paths": ["/repo/source.py"],
+            }
+        ],
+        "status": "completed",
+    }
+
+    text = format_process_notification(evt)
+
+    assert text is not None
+    assert "ASYNC DELEGATION BATCH COMPLETE" in text
+    assert "SOURCE FRESHNESS: STALE" in text
+    assert "historical evidence, not current instructions" in text
+    assert "Treat affected findings as historical" in text
+    assert "do not resume or duplicate superseded work" in text
+    assert "act on these or re-dispatch" not in text
+
+
 def test_dispatch_rejected_at_capacity():
     ev = threading.Event()
 

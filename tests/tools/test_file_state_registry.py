@@ -74,6 +74,37 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn("B", warn)
         self.assertIn("sibling", warn.lower())
 
+    def test_stale_reads_reports_only_writes_after_the_read(self):
+        p = self._mk()
+        file_state.note_write("B", p)
+        file_state.record_read("A", p)
+        self.assertEqual(file_state.stale_reads("A"), [])
+
+        time.sleep(0.01)
+        file_state.note_write("B", p)
+        self.assertEqual(file_state.stale_reads("A"), [p])
+
+    def test_stale_reads_ignores_the_readers_own_write(self):
+        p = self._mk()
+        file_state.record_read("A", p)
+        time.sleep(0.01)
+        file_state.note_write("A", p)
+        self.assertEqual(file_state.stale_reads("A"), [])
+
+    def test_stale_reads_detects_external_change_and_deletion(self):
+        changed = self._mk("before\n")
+        deleted = self._mk("present\n")
+        file_state.record_read("A", changed)
+        file_state.record_read("A", deleted)
+
+        previous = os.stat(changed).st_mtime_ns
+        with open(changed, "w") as handle:
+            handle.write("after\n")
+        os.utime(changed, ns=(previous + 1_000_000, previous + 1_000_000))
+        os.unlink(deleted)
+
+        self.assertEqual(file_state.stale_reads("A"), sorted([changed, deleted]))
+
 
     def test_lock_path_serializes_same_path(self):
         p = self._mk()
@@ -136,6 +167,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
                 file_state.writes_since("A", 0.0, [p]),
                 {},
             )
+            self.assertEqual(file_state.stale_reads("A"), [])
         finally:
             del os.environ["HERMES_DISABLE_FILE_STATE_GUARD"]
 

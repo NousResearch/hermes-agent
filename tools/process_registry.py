@@ -2755,14 +2755,39 @@ def _format_async_delegation(evt: dict) -> str:
         goals = evt.get("goals") or []
         n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
+        stale_results = [
+            r for r in results
+            if isinstance(r, dict) and r.get("source_freshness") == "stale"
+        ]
+        completion_guidance = (
+            f"A background fan-out of {n} subagent(s) you dispatched earlier "
+            "has finished, but the source-freshness guard found changed inputs. "
+            "The results below are historical evidence, not current instructions."
+            if stale_results
+            else (
+                f"A background fan-out of {n} subagent(s) you dispatched earlier "
+                "has finished. All ran in parallel and waited on each other; their "
+                "consolidated results are below. You may have moved on since "
+                "dispatching — act on these or re-dispatch if things have changed."
+            )
+        )
         lines = [
             f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
-            f"A background fan-out of {n} subagent(s) you dispatched earlier "
-            "has finished. All ran in parallel and waited on each other; their "
-            "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
+            completion_guidance,
             "",
         ]
+        if stale_results:
+            lines.extend(
+                [
+                    "SOURCE FRESHNESS: STALE — "
+                    f"{len(stale_results)} result(s) were produced from files "
+                    "that changed before the subagent finished.",
+                    "Treat affected findings as historical. Re-ground on the "
+                    "current source before acting; do not resume or duplicate "
+                    "superseded work solely because this completion arrived.",
+                    "",
+                ]
+            )
         if isinstance(dispatched_at, (int, float)):
             ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
             age = f" ({_format_age(completed_at - dispatched_at)} ago)"

@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
@@ -1086,6 +1087,47 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+    def test_run_single_child_marks_late_result_stale_when_input_changes(self):
+        from tools import file_state
+        from tools.delegate_tool import _run_single_child
+
+        fd, path = tempfile.mkstemp(prefix="hermes_delegate_stale_", suffix=".txt")
+        os.close(fd)
+        child = MagicMock()
+        child._subagent_id = "child-stale-source"
+        child._credential_pool = None
+
+        def finish_after_parent_write(**_kwargs):
+            file_state.record_read(child._subagent_id, path)
+            time.sleep(0.01)
+            file_state.note_write("parent-task", path)
+            return {
+                "final_response": "reviewed the old source",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = finish_after_parent_write
+        file_state.get_registry().clear()
+        try:
+            result = _run_single_child(
+                task_index=0,
+                goal="Review mutable source",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+        finally:
+            file_state.get_registry().clear()
+            os.unlink(path)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["source_freshness"], "stale")
+        self.assertEqual(result["stale_input_paths"], [path])
+        self.assertIn("STALE SOURCE", result["summary"])
+        self.assertIn("do not resume superseded work", result["summary"])
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

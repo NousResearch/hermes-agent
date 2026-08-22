@@ -3136,6 +3136,37 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        # Completion freshness guard. A background child may finish after the
+        # parent (or an external git/editor operation) has changed files the
+        # child read. Surface that fact structurally and in the summary so a
+        # late completion cannot silently revive superseded work. This checks
+        # each file's read stamp, not merely "any write since dispatch", which
+        # avoids flagging writes that happened before the child's final read.
+        try:
+            stale_inputs = file_state.stale_reads(child_task_id)
+        except Exception:
+            logger.debug("file_state stale-read check failed", exc_info=True)
+            stale_inputs = []
+        if stale_inputs:
+            entry["source_freshness"] = "stale"
+            entry["stale_input_paths"] = stale_inputs[:40]
+            shown_paths = stale_inputs[:8]
+            freshness_note = (
+                "[STALE SOURCE: "
+                f"{len(stale_inputs)} file(s) this subagent read changed before "
+                "it finished. Treat these findings as historical; re-read the "
+                "current source before acting, and do not resume superseded work "
+                "solely from this completion. Files: "
+                + ", ".join(shown_paths)
+                + (f" (+{len(stale_inputs) - 8} more)" if len(stale_inputs) > 8 else "")
+                + "]"
+            )
+            entry["summary"] = (
+                f"{entry['summary']}\n\n{freshness_note}"
+                if entry.get("summary")
+                else freshness_note
+            )
+
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
         if isinstance(_output_schema, dict):

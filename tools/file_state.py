@@ -23,6 +23,9 @@ Three public hooks are used by the file tools:
 Plus ``lock_path(path)`` — a context-manager returning a per-path lock to
 wrap the whole read→modify→write block. And ``writes_since(task_id,
 since_ts, paths)`` for the subagent-completion reminder in delegate_tool.
+``stale_reads(task_id)`` closes the inverse race: it reports files a child
+read that changed before the child returned, so late delegation results are
+not mistaken for current repository evidence.
 
 All methods are no-ops when ``HERMES_DISABLE_FILE_STATE_GUARD=1`` is set.
 
@@ -248,6 +251,44 @@ class FileStateRegistry:
         with self._state_lock:
             return list(self._reads.get(task_id, {}).keys())
 
+    def stale_reads(self, task_id: str) -> List[str]:
+        """Return files read by ``task_id`` that changed afterward.
+
+        This is the completion-side inverse of :meth:`check_stale`. A child
+        can finish a correct review of revision A after the parent has already
+        advanced the same worktree to revision B. Without a hard signal, the
+        late summary re-enters the conversation looking current and can revive
+        superseded work.
+
+        Registry-tracked sibling writes are compared to each file's exact
+        read timestamp. Untracked changes (terminal-driven git operations,
+        editor saves, checkout/reset) are detected by mtime drift. A deleted
+        input is stale too. The child's own writes refresh its read stamp in
+        ``note_write`` and therefore do not self-invalidate.
+        """
+        if _disabled():
+            return []
+        with self._state_lock:
+            reads = dict(self._reads.get(task_id, {}))
+            writers = dict(self._last_writer)
+
+        stale: List[str] = []
+        for path, (read_mtime, read_ts, _partial) in reads.items():
+            writer = writers.get(path)
+            if writer is not None:
+                writer_task_id, writer_ts = writer
+                if writer_task_id != task_id and writer_ts > read_ts:
+                    stale.append(path)
+                    continue
+            try:
+                current_mtime = os.path.getmtime(path)
+            except OSError:
+                stale.append(path)
+                continue
+            if current_mtime != read_mtime:
+                stale.append(path)
+        return sorted(stale)
+
     # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state.  Intended for tests only."""
@@ -320,6 +361,10 @@ def known_reads(task_id: str) -> List[str]:
     return _registry.known_reads(task_id)
 
 
+def stale_reads(task_id: str) -> List[str]:
+    return _registry.stale_reads(task_id)
+
+
 __all__ = [
     "FileStateRegistry",
     "get_registry",
@@ -329,4 +374,5 @@ __all__ = [
     "lock_path",
     "writes_since",
     "known_reads",
+    "stale_reads",
 ]

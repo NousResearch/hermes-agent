@@ -2368,6 +2368,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_session_generation",
     )
 
     def __init__(self, name: str):
@@ -2442,12 +2443,17 @@ class MCPServerTask:
         # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
+        # Bumped when a session is adopted or torn down. Teardown is not
+        # serialized by ``_rpc_lock``, so a non-None ``ClientSession`` can
+        # remain assigned after its transport has started closing. Dynamic
+        # refresh binds to this generation, not the pointer alone.
+        self._session_generation: int = 0
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
 
-    def _advertises_tools(self) -> bool:
+    def _advertises_tools(self, init_result: Optional[Any] = None) -> bool:
         """Whether the server advertises the ``tools`` capability.
 
         Per the MCP spec, ``InitializeResult.capabilities.tools`` is non-None
@@ -2460,8 +2466,12 @@ class MCPServerTask:
         Returns True when no capability info was captured (legacy fallback:
         preserve the old always-call-list_tools behavior rather than regress
         any server that was working before this gate).
+
+        Pass ``init_result`` to evaluate a locked generation snapshot rather
+        than whatever ``self.initialize_result`` is now.
         """
-        init_result = self.initialize_result
+        if init_result is None:
+            init_result = self.initialize_result
         caps = getattr(init_result, "capabilities", None) if init_result is not None else None
         if caps is None:
             return True
@@ -2590,9 +2600,35 @@ class MCPServerTask:
             deadlines.append(self._last_tool_call_at + self._idle_timeout_seconds)
         return min(deadlines) if deadlines else None
 
+    def _invalidate_session_generation(self) -> None:
+        """Mark the current session generation dead for in-flight refreshes.
+
+        Teardown is not serialized by ``_rpc_lock``. The ``ClientSession``
+        object can stay assigned while its transport is already closing, so
+        a non-None pointer is not proof the session is live. Refresh binds
+        to this counter rather than inventing a second ownership model.
+        """
+        self._session_generation += 1
+
+    def _adopt_session(self, session) -> None:
+        """Install a live session and start a new refresh generation."""
+        self.session = session
+        self._session_generation += 1
+
+    def _refresh_generation_stale(self, generation: int, session) -> bool:
+        """True when the snapshotted refresh generation is no longer current."""
+        return (
+            self._session_generation != generation
+            or self.session is not session
+            or self.session is None
+            or self._shutdown_event.is_set()
+            or self._recycled_reason is not None
+        )
+
     def _mark_stdio_recycled(self, reason: str) -> None:
         """Mark a stdio session dormant before its transport finishes closing."""
         self._recycled_reason = reason
+        self._invalidate_session_generation()
         self.session = None
 
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
@@ -2705,24 +2741,64 @@ class MCPServerTask:
         The lock prevents overlapping refreshes from rapid-fire notifications.
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
+
+        Session pointer, generation, and advertised capabilities are
+        snapshotted only after both locks are held. A queued refresh can
+        sit behind shutdown or reconnect; capturing earlier would query a
+        stale or already-dying transport. A superseded or torn-down
+        generation never mutates the registry.
         """
         from tools.registry import registry
-
-        if not self._advertises_tools():
-            # A server that doesn't implement tools/* should never send
-            # tools/list_changed, but guard anyway — calling tools/list
-            # would raise MCPError(-32601).
-            return
 
         async with self._refresh_lock:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server (follow nextCursor)
+            # 1. Resolve the current generation only after entering the RPC
+            # lock, then fetch every page. Teardown is not under this lock,
+            # so bind the fetch to the snapshotted generation rather than
+            # assuming a non-None ClientSession is still live.
             async with self._rpc_lock:
-                new_mcp_tools = await _paginate_full_list(
-                    self.session.list_tools, "tools", self.name
+                session = self.session
+                generation = self._session_generation
+                init_result = self.initialize_result
+                if session is None:
+                    logger.debug(
+                        "MCP server '%s': skipping dynamic tool refresh; session is closed",
+                        self.name,
+                    )
+                    return
+                if not self._advertises_tools(init_result):
+                    # A server that doesn't implement tools/* should never
+                    # send tools/list_changed, but guard anyway — calling
+                    # tools/list would raise MCPError(-32601).
+                    return
+                try:
+                    new_mcp_tools = await _paginate_full_list(
+                        session.list_tools, "tools", self.name
+                    )
+                except Exception as exc:
+                    if (
+                        _is_session_expired_error(exc)
+                        and self._refresh_generation_stale(generation, session)
+                    ):
+                        logger.debug(
+                            "MCP server '%s': skipping dynamic tool refresh; "
+                            "session transport closed during teardown",
+                            self.name,
+                        )
+                        return
+                    raise
+
+            # Reconnect / shutdown may replace or close the session while
+            # pagination is in flight. Never let that response overwrite
+            # the current registry.
+            if self._refresh_generation_stale(generation, session):
+                logger.debug(
+                    "MCP server '%s': discarding tool refresh from superseded session",
+                    self.name,
                 )
+                return
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -2946,8 +3022,13 @@ class MCPServerTask:
                         pass
 
         if self._shutdown_event.is_set():
+            # Invalidate before ClientSession.__aexit__ starts closing the
+            # transport so an in-flight refresh cannot treat the still-assigned
+            # pointer as live.
+            self._invalidate_session_generation()
             return "shutdown"
         self._reconnect_event.clear()
+        self._invalidate_session_generation()
         return "reconnect"
 
     async def _wait_for_reconnect_or_shutdown(
@@ -3151,7 +3232,7 @@ class MCPServerTask:
                     self.initialize_result = await self._negotiate_session(
                         session, connect_timeout
                     )
-                    self.session = session
+                    self._adopt_session(session)
                     self._mark_lifecycle_started()
                     await self._discover_tools()
                     self._ready.set()
@@ -3523,7 +3604,7 @@ class MCPServerTask:
                         self.initialize_result = await self._negotiate_session(
                             session, float(connect_timeout)
                         )
-                        self.session = session
+                        self._adopt_session(session)
                         await self._discover_tools()
                         self._ready.set()
                         # Session is live again: clear any breaker state from a
@@ -3588,7 +3669,7 @@ class MCPServerTask:
                             self.initialize_result = await self._negotiate_session(
                                 session, float(connect_timeout)
                             )
-                            self.session = session
+                            self._adopt_session(session)
                             await self._discover_tools()
                             self._ready.set()
                             # Session is live again: clear any breaker state from
@@ -3635,7 +3716,7 @@ class MCPServerTask:
                         self.initialize_result = await self._negotiate_session(
                             session, float(connect_timeout)
                         )
-                        self.session = session
+                        self._adopt_session(session)
                         await self._discover_tools()
                         self._ready.set()
                         # Session is live again: clear any breaker state from a
@@ -4122,6 +4203,7 @@ class MCPServerTask:
                 if self._shutdown_event.is_set():
                     return
             finally:
+                self._invalidate_session_generation()
                 self.session = None
 
     async def start(self, config: dict):
@@ -4145,6 +4227,7 @@ class MCPServerTask:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
+        self._invalidate_session_generation()
         self._shutdown_event.set()
         # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
         # event to unblock it. _shutdown_event alone is sufficient (the

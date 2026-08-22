@@ -13512,6 +13512,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
+            # Close stale OPEN rows left by hard-killed processes (kill -9,
+            # OOM, crash, container restart) BEFORE the ended-only prune:
+            # _prune_filter_where hard-codes ended_at IS NOT NULL, so the
+            # built-in retention machinery never sees these rows and they
+            # accumulate forever. Safe: only rows idle for
+            # STALE_OPEN_CLOSE_DAYS (7), where idle = the freshest of
+            # last_activity_at and started_at (COALESCE), so live sessions,
+            # the rotating gateway signal session, and brand-new rows whose
+            # first activity touch hasn't landed yet are untouched. Rows are
+            # CLOSED, never deleted — messages stay searchable and the
+            # ended-only prune below can then reclaim them via retention.
+            try:
+                _stale_cutoff = time.time() - 7 * 86400
+                def _close_stale_open(conn):
+                    return conn.execute(
+                        "UPDATE sessions SET ended_at=?, end_reason='idle_auto_close' "
+                        "WHERE ended_at IS NULL "
+                        "AND COALESCE(last_activity_at, started_at) < ?",
+                        (time.time(), _stale_cutoff),
+                    ).rowcount
+                _stale_closed = self._execute_write(_close_stale_open)
+                if _stale_closed:
+                    logger.info(
+                        "state.db auto-maintenance: closed %d stale OPEN session(s) "
+                        "inactive > 7 days (hard-kill orphans)",
+                        _stale_closed,
+                    )
+            except Exception as _exc:
+                logger.warning("stale-OPEN session close failed: %s", _exc)
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
                 sessions_dir=sessions_dir,

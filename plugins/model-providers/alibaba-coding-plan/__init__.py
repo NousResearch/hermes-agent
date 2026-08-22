@@ -13,7 +13,7 @@ alibaba_coding_plan = ProviderProfile(
     display_name="Alibaba Cloud (Coding Plan)",
     description="Alibaba Cloud Coding Plan (Dedicated coding tier)",
     signup_url="https://help.aliyun.com/zh/model-studio/",
-    env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_BASE_URL"),
+    env_vars=("ALIBABA_CODING_PLAN_API_KEY", "ALIBABA_CODING_PLAN_BASE_URL"),
     base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
     auth_type="api_key",
 )

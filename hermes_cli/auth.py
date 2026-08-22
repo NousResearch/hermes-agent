@@ -420,7 +420,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Alibaba Cloud (Coding Plan)",
         auth_type="api_key",
         inference_base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
-        api_key_env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
+        api_key_env_vars=("ALIBABA_CODING_PLAN_API_KEY",),
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
     "minimax-cn": ProviderConfig(

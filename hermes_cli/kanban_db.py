@@ -119,16 +119,20 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 #
 # ``needs_input`` and ``capability`` are "truly blocked": they go to ``blocked``
 # for a human, and the unblock-loop breaker (see ``block_task`` /
-# ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
-# unblocking them only to have the worker re-block for the same reason.
+# ``BLOCK_RECURRENCE_LIMIT``) marks them loop-escalated (a
+# ``block_loop_detected`` event plus a raised ``block_recurrences``) if a cron
+# keeps unblocking them only to have the worker re-block.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
-# the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
-# unblocker (usually a cron) and routes the task to ``triage`` instead of back
-# to ``blocked`` — breaking the infinite unblock↔re-block loop and forcing a
-# human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
+# a truly-blocked reason, the unblock-loop breaker stops trusting the
+# unblocker (usually a cron) and records a ``block_loop_detected`` event; the
+# task stays in ``blocked`` — breaking the infinite unblock↔re-block loop and
+# forcing a human-in-the-loop decision. It deliberately does NOT route to
+# ``triage``: ``triage`` is swept unconditionally by the gateway
+# auto-decomposer, which would re-dispatch the card and restart the loop.
+# Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
@@ -1417,9 +1421,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
+    -- reason after having been unblocked. When it reaches
+    -- BLOCK_RECURRENCE_LIMIT the task is flagged loop-escalated (it stays in
+    -- ``blocked``) so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0
@@ -6267,16 +6271,18 @@ def block_task(
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
       is re-blocked for the SAME kind after having been unblocked, the
       unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      :data:`BLOCK_RECURRENCE_LIMIT`, a ``block_loop_detected`` event is
+      recorded and the task stays in ``blocked`` — breaking the cron-unblock ↔
+      worker-re-block loop and forcing a human-in-the-loop decision. It is NOT
+      routed to ``triage``, which the auto-decomposer sweeps back into
+      dispatch.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
-    Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    Returns True on any successful transition (to ``blocked`` or ``todo``),
+    False when the task wasn't in a blockable state.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
@@ -6353,22 +6359,35 @@ def block_task(
             )
             return True
 
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
+        # Truly-blocked kinds. Increment the unblock-loop counter: block_task
+        # only fires from running/ready (i.e. AFTER an unblock returned the
+        # task to the work pool), so reaching here means
+        # blocked → unblocked → about-to-re-block.
+        # Count CONSECUTIVE blocks regardless of kind. Counting only same-kind
+        # recurrences (``prev + 1 if same_cause else 1``) inverted the
+        # incentive: a worker that honestly reported the same wall every time
+        # escalated, while one whose reported ``kind`` varied (``capability``
+        # then ``transient`` then ``needs_input``) reset the counter to 1 and
+        # escaped the breaker indefinitely. The kind is still recorded on the
+        # task and in the event payload for display/triage; it just no longer
+        # gates the counter. A "decay by one on changed kind" variant was
+        # considered and rejected: at the default BLOCK_RECURRENCE_LIMIT of 2
+        # it is arithmetically identical to the old reset (increment then
+        # decrement nets zero), so it would preserve the escape hatch.
+        recurrences = prev_recurrences + 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked.
+            # Loop detected — stop letting the unblocker spin this task. It
+            # stays in ``blocked`` (NOT ``triage``): ``triage`` is swept
+            # unconditionally by the gateway auto-decomposer, which would feed
+            # the escalated card straight back into dispatch and re-arm the
+            # very loop this breaker exists to stop. The ``block_loop_detected``
+            # event and the elevated ``block_recurrences`` value are what mark
+            # the card as loop-escalated rather than ordinarily blocked.
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'triage',
+                   SET status        = 'blocked',
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,

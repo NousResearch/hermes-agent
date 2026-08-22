@@ -11,6 +11,7 @@ tripped for the lifetime of the process. These tests lock in the
 half-open / cooldown / reconnect-resets-breaker behavior that fixes
 that.
 """
+
 import json
 from unittest.mock import MagicMock
 
@@ -129,7 +130,8 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     try:
         # Trip the breaker by setting the count at/above threshold and
         # stamping the open-time to "now".
-        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        _, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        mcp_tool._server_error_counts["srv"] = threshold
         fake_now = [1000.0]
 
         def _fake_monotonic():
@@ -142,7 +144,6 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         # required for this state to be tracked at all).
         if hasattr(mcp_tool, "_server_breaker_opened_at"):
             mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
-        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
 
@@ -189,7 +190,8 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
     mcp_tool._ensure_mcp_loop()
 
     try:
-        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        _, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        mcp_tool._server_error_counts["srv"] = threshold
         fake_now = [1000.0]
 
         def _fake_monotonic():
@@ -198,7 +200,6 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
         if hasattr(mcp_tool, "_server_breaker_opened_at"):
             mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
-        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
 
@@ -243,7 +244,8 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
 
     try:
-        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        _, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        mcp_tool._server_error_counts["srv"] = threshold
         fake_now = [1000.0]
 
         def _fake_monotonic():
@@ -251,7 +253,6 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
         mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
-        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
 
         # Advance past cooldown → next call is a half-open probe.
         fake_now[0] += cooldown + 1.0
@@ -292,11 +293,11 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     mcp_tool._ensure_mcp_loop()
 
     try:
-        mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        _, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        mcp_tool._server_error_counts["srv"] = threshold
         fake_now = [1000.0]
         monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now[0])
         mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
-        cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
         fake_now[0] += cooldown + 1.0
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
@@ -349,9 +350,11 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
 
     # Open the breaker well above threshold, with a recent open-time so
     # it would short-circuit everything without a reset.
-    mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 2
+    _, threshold, _ = mcp_tool._get_circuit_breaker_config()
+    mcp_tool._server_error_counts["srv"] = threshold + 2
     if hasattr(mcp_tool, "_server_breaker_opened_at"):
         import time as _time
+
         mcp_tool._server_breaker_opened_at["srv"] = _time.monotonic()
 
     # Force handle_401 to claim recovery succeeded.
@@ -387,9 +390,9 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         # Post-reconnect count was reset to 0, then the failing retry
         # bumped it to exactly 1 — well below threshold.
         count = mcp_tool._server_error_counts.get("srv", 0)
-        assert count < mcp_tool._CIRCUIT_BREAKER_THRESHOLD, (
+        assert count < threshold, (
             f"successful reconnect must reset the breaker below threshold; "
-            f"got count={count}, threshold={mcp_tool._CIRCUIT_BREAKER_THRESHOLD}"
+            f"got count={count}, threshold={threshold}"
         )
     finally:
         _cleanup(mcp_tool, "srv")
@@ -490,7 +493,9 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
     asyncio.run(_scenario())
 
 
-def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
+def test_initial_connect_budget_parks_instead_of_exiting_then_revives(
+    monkeypatch, tmp_path
+):
     """Initial connection failures must park, not permanently exit the task.
 
     Regression for #57129's remaining live case: a slow HTTP/SSE server or
@@ -569,3 +574,251 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+# ---------------------------------------------------------------------------
+# Tests for configuration-driven circuit breaker
+# ---------------------------------------------------------------------------
+
+
+def test_circuit_breaker_disabled_via_config(monkeypatch, tmp_path_factory):
+    """When mcp.circuit_breaker.enabled=false, the breaker should not
+    short-circuit calls even after many consecutive failures.
+    """
+    import yaml
+
+    hermes_home = tmp_path_factory.mktemp("hermes_home")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Create config.yaml with circuit breaker disabled
+    config = {
+        "mcp": {
+            "circuit_breaker": {
+                "enabled": False,
+                "threshold": 3,
+                "cooldown_seconds": 60.0,
+            }
+        }
+    }
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_fails(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.is_error = True
+        block = MagicMock()
+        block.text = "server error"
+        result.content = [block]
+        result.structured_content = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_fails)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        # Verify config is read correctly
+        enabled, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        assert enabled is False
+        assert threshold == 3
+        assert cooldown == 60.0
+
+        # Simulate many consecutive failures
+        for i in range(10):
+            mcp_tool._bump_server_error("srv")
+
+        # Even though we have 10 failures (well above threshold),
+        # the breaker should NOT block calls because it's disabled
+        fake_now = [1000.0]
+
+        def _fake_monotonic():
+            return fake_now[0]
+
+        monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+
+        # Should have actually called the server (not short-circuited)
+        assert call_count["n"] == 1, (
+            "disabled breaker should allow calls even after many failures"
+        )
+
+        # Error count should be tracked but breaker should not be open
+        assert mcp_tool._server_error_counts.get("srv", 0) == 11
+        assert "srv" not in mcp_tool._server_breaker_opened_at
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_circuit_breaker_custom_threshold_applied(monkeypatch, tmp_path_factory):
+    """Test that custom threshold is actually applied (breaker trips at custom count)."""
+    import yaml
+
+    hermes_home = tmp_path_factory.mktemp("hermes_home")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Custom threshold of 5 (instead of default 3)
+    config = {
+        "mcp": {
+            "circuit_breaker": {
+                "enabled": True,
+                "threshold": 5,
+                "cooldown_seconds": 60.0,
+            }
+        }
+    }
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_fails(*a, **kw):
+        call_count["n"] += 1
+        raise RuntimeError("server error")
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_fails)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        # Verify config loaded
+        enabled, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+        assert threshold == 5
+
+        # Simulate 4 failures (one below threshold)
+        for i in range(4):
+            mcp_tool._bump_server_error("srv")
+
+        # Breaker should NOT be open yet (4 < 5)
+        assert "srv" not in mcp_tool._server_breaker_opened_at, (
+            "breaker should not open until threshold is reached"
+        )
+
+        # 5th failure should trip the breaker
+        mcp_tool._bump_server_error("srv")
+        assert "srv" in mcp_tool._server_breaker_opened_at, (
+            "breaker should open at threshold=5"
+        )
+
+        # Next call should be short-circuited (not reach the server)
+        fake_now = [1000.0]
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now[0])
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+
+        # Should short-circuit without calling the server
+        assert call_count["n"] == 0, "call should be short-circuited, not reach server"
+        assert "unreachable" in result.lower()
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_circuit_breaker_custom_cooldown_applied(monkeypatch, tmp_path_factory):
+    """Test that custom cooldown is actually applied (wait time matches config)."""
+    import yaml
+
+    hermes_home = tmp_path_factory.mktemp("hermes_home")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Custom cooldown of 10 seconds (instead of default 60)
+    config = {
+        "mcp": {
+            "circuit_breaker": {
+                "enabled": True,
+                "threshold": 3,
+                "cooldown_seconds": 10.0,
+            }
+        }
+    }
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_success(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.is_error = False
+        block = MagicMock()
+        block.text = "ok"
+        result.content = [block]
+        result.structured_content = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_success)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        # Trip the breaker
+        mcp_tool._server_error_counts["srv"] = 3
+        fake_now = [1000.0]
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now[0])
+        mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        # During cooldown (5 seconds < 10s): should short-circuit
+        fake_now[0] = 1005.0
+        result = handler({})
+        assert "unreachable" in result.lower()
+        assert call_count["n"] == 0, "should not call server during cooldown"
+
+        # After cooldown (11 seconds > 10s): should allow probe
+        fake_now[0] = 1011.0
+        result = handler({})
+        parsed = json.loads(result)
+        assert parsed.get("result") == "ok", "should allow probe after cooldown"
+        assert call_count["n"] == 1, "probe should reach server"
+
+        # Breaker should be reset after successful probe
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_circuit_breaker_config_sanity_checks(monkeypatch, tmp_path_factory):
+    """Test that invalid config values are sanity-checked."""
+    import yaml
+
+    hermes_home = tmp_path_factory.mktemp("hermes_home")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Create config.yaml with invalid values (too low threshold, negative cooldown)
+    config = {
+        "mcp": {
+            "circuit_breaker": {
+                "enabled": True,
+                "threshold": 0,  # Too low, should be clamped to 1
+                "cooldown_seconds": -10.0,  # Negative, should be clamped to 0
+            }
+        }
+    }
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    from tools import mcp_tool
+
+    # Verify sanity-checked values
+    enabled, threshold, cooldown = mcp_tool._get_circuit_breaker_config()
+    assert threshold == 1, "threshold should be clamped to 1"
+    assert cooldown == 0.0, "cooldown should be clamped to 0"

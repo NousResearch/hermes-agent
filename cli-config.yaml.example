@@ -1295,6 +1295,18 @@ platform_toolsets:
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 #
+# MCP circuit breaker — protects against infinite retry loops when an MCP
+# server is unreachable or failing (#10447). After N consecutive failures,
+# the breaker "opens" and blocks calls for a cooldown period. The next call
+# after cooldown is a "probe" that actually hits the server; success closes
+# the breaker, failure re-arms the cooldown.
+#
+# mcp:
+#   circuit_breaker:
+#     enabled: true           # master switch (default: true)
+#     threshold: 3            # consecutive failures before opening (default: 3)
+#     cooldown_seconds: 60.0  # how long the breaker stays open (default: 60.0)
+#
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:
 #   analysis:

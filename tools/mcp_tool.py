@@ -4302,8 +4302,45 @@ def _connect_cooldown_active(server_name: str) -> bool:
 # this state — they keep the count and timestamp in sync.
 _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
-_CIRCUIT_BREAKER_THRESHOLD = 3
-_CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+
+# Circuit breaker settings — read from config on each check (lightweight, no caching).
+# Defaults match the historical hardcoded values for backward compatibility.
+# These module-level constants are only used as fallbacks if config read fails.
+_CIRCUIT_BREAKER_DEFAULT_ENABLED = True
+_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
+_CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 60.0
+
+
+def _get_circuit_breaker_config() -> Tuple[bool, int, float]:
+    """Read circuit breaker settings from config.yaml.
+
+    Returns:
+        Tuple of (enabled, threshold, cooldown_seconds)
+
+    Reads from mcp.circuit_breaker.* on every call (config is cached internally
+    by load_config_readonly). Falls back to safe defaults on any error.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mcp_config = config.get("mcp", {})
+        cb_config = mcp_config.get("circuit_breaker", {})
+
+        enabled = bool(cb_config.get("enabled", _CIRCUIT_BREAKER_DEFAULT_ENABLED))
+        threshold = int(cb_config.get("threshold", _CIRCUIT_BREAKER_DEFAULT_THRESHOLD))
+        cooldown = float(cb_config.get("cooldown_seconds", _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC))
+
+        # Sanity checks
+        if threshold < 1:
+            threshold = 1
+        if cooldown < 0:
+            cooldown = 0.0
+
+        return enabled, threshold, cooldown
+
+    except Exception:
+        # Best-effort: on any error, use defaults
+        return _CIRCUIT_BREAKER_DEFAULT_ENABLED, _CIRCUIT_BREAKER_DEFAULT_THRESHOLD, _CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC
 
 # ---------------------------------------------------------------------------
 # Trust-tier gating state (per-server trust + per-tool readOnlyHint).
@@ -4453,13 +4490,23 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
 def _bump_server_error(server_name: str) -> None:
     """Increment the consecutive-failure count for ``server_name``.
 
-    When the count crosses :data:`_CIRCUIT_BREAKER_THRESHOLD`, stamp the
+    When the count crosses the configured threshold, stamp the
     breaker-open timestamp so the cooldown clock starts (or re-starts,
     for probe failures in the half-open state).
+
+    If the circuit breaker is disabled via config (mcp.circuit_breaker.enabled=false),
+    this function still tracks errors for diagnostics but won't open the breaker.
     """
+    enabled, threshold, _ = _get_circuit_breaker_config()
+
+    if not enabled:
+        # Still track errors for diagnostics, but don't open the breaker
+        _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+        return
+
     n = _server_error_counts.get(server_name, 0) + 1
     _server_error_counts[server_name] = n
-    if n >= _CIRCUIT_BREAKER_THRESHOLD:
+    if n >= threshold:
         _server_breaker_opened_at[server_name] = time.monotonic()
 
 
@@ -4469,6 +4516,9 @@ def _reset_server_error(server_name: str) -> None:
     Clears both the failure count and the breaker-open timestamp. Call
     this on any unambiguous success signal (successful tool call,
     successful reconnect, manual /mcp refresh).
+
+    If the circuit breaker is disabled, this still clears the error count
+    for diagnostic consistency.
     """
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
@@ -5769,11 +5819,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # failure the error paths below bump the count again, which
         # re-stamps the open-time via _bump_server_error (re-arming
         # the cooldown).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+        #
+        # If the circuit breaker is disabled (mcp.circuit_breaker.enabled=false),
+        # skip the short-circuit check but still track errors for diagnostics.
+        enabled, threshold, cooldown = _get_circuit_breaker_config()
+
+        if enabled and _server_error_counts.get(server_name, 0) >= threshold:
             opened_at = _server_breaker_opened_at.get(server_name, 0.0)
             age = time.monotonic() - opened_at
-            if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
-                remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+            if age < cooldown:
+                remaining = max(1, int(cooldown - age))
                 return tool_error(
                     f"MCP server '{server_name}' is unreachable after "
                     f"{_server_error_counts[server_name]} consecutive "

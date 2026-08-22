@@ -677,6 +677,21 @@ DEFAULT_CONFIG = {
         # When disabled, the watcher still detects the change and prints
         # guidance to apply it deliberately via /reload-mcp.
         "auto_reload_on_config_change": True,
+
+        # Circuit breaker for MCP servers — protects against infinite retry
+        # loops when an MCP server is unreachable or failing (#10447).
+        # After N consecutive failures, the breaker "opens" and blocks calls
+        # for a cooldown period. The next call after cooldown is a "probe"
+        # that actually hits the server; success closes the breaker, failure
+        # re-arms the cooldown.
+        #
+        # Set enabled=false to disable the circuit breaker entirely (not
+        # recommended — models can burn 100+ iterations retrying a dead server).
+        "circuit_breaker": {
+            "enabled": True,              # master switch for MCP circuit breaker
+            "threshold": 3,               # consecutive failures before opening
+            "cooldown_seconds": 60.0,     # how long the breaker stays open
+        },
     },
 
     # Tool-output truncation thresholds. When terminal output or a

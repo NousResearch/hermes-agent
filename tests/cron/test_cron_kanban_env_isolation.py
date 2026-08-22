@@ -438,6 +438,11 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
         "HERMES_KANBAN_BRANCH",
         "HERMES_KANBAN_GOAL_MODE",
         "HERMES_KANBAN_GOAL_MAX_TURNS",
+        # Unattended-session marker for the approval deny gate, not board/task
+        # identity. Must NOT join KANBAN_ENV_KEYS: a delegate_task child of a
+        # kanban worker is still unattended, so scrubbing the marker would
+        # reopen the dangerous-command auto-approve gap in nested sessions.
+        "HERMES_KANBAN_SESSION",
     }
     uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
     assert not uncovered, (

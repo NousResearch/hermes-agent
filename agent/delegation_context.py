@@ -106,6 +106,18 @@ def is_dispatcher_owned_worker_context() -> bool:
     return not _NON_DISPATCHER_OWNED_CONTEXT.get()
 
 
+def is_non_dispatcher_owned_context() -> bool:
+    """Return True for an in-process job that must ignore parent worker identity.
+
+    Unlike :func:`is_dispatcher_owned_worker_context`, this deliberately does
+    not classify ``delegate_task`` children as separate operations: delegated
+    children remain part of their parent worker's unattended authorization
+    boundary.  Cron jobs entered through ``non_dispatcher_owned_context`` are
+    independent executions and must use ``approvals.cron_mode`` instead.
+    """
+    return bool(_NON_DISPATCHER_OWNED_CONTEXT.get())
+
+
 def enter_non_dispatcher_owned_context() -> Token[bool]:
     """Token-based form of :func:`non_dispatcher_owned_context`.
 

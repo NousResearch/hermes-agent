@@ -13517,15 +13517,62 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  {line}")
         print()
 
-    def _show_usage(self):
-        """Rate limits + session token usage (when a live agent exists) + Nous credits.
+    def _fetch_account_usage_lines(self, provider, base_url=None, api_key=None) -> list[str]:
+        """Fetch + render the active provider's account-usage block.
 
-        The Nous credits block is agent-independent (a portal fetch), so it runs even
-        with no live agent — important for the TUI, where /usage runs in a slash-worker
-        subprocess that resumes the session WITHOUT building an agent (self.agent is None),
-        which would otherwise early-return before any credits showed.
+        Runs off-thread with a 10s wait bound; on timeout the executor is shut
+        down WITHOUT waiting (the worker's own httpx timeout bounds it) so a
+        slow provider API can't hang the prompt. Returns [] on any failure
+        (fail-open). Prefixed with two spaces to match the rest of /usage.
         """
+        # Lazy import — pulls the OpenAI SDK chain, only needed here.
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        account_snapshot = None
+        if provider:
+            _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider,
+                    base_url=base_url, api_key=api_key,
+                ).result(timeout=10.0)
+            except concurrent.futures.TimeoutError:
+                _pool.shutdown(wait=False, cancel_futures=True)
+                account_snapshot = None
+            except Exception:
+                _pool.shutdown(wait=False, cancel_futures=True)
+                account_snapshot = None
+            else:
+                _pool.shutdown(wait=True)
+        return [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+
+    def _show_usage(self):
+        """Rate limits + session token usage (when a live agent exists) + account usage.
+
+        Exactly ONE account block is shown, for the active inference provider:
+        the Nous credits block for Nous-backed sessions, or the provider account
+        block (Codex / OpenRouter / OpenCode Go / Anthropic / ...) for everything
+        else. When the provider is unknown (no agent resident, nothing persisted),
+        the Nous block is the fallback so /usage still shows something in the TUI
+        slash-worker subprocess that resumes without building an agent.
+        """
+        # Lazy import — no SDK chain here, but kept local for symmetry with the
+        # other account_usage imports.
+        from agent.account_usage import is_nous_provider
+
+        _provider = getattr(self.agent, "provider", None) or getattr(self, "provider", None)
+        _show_nous = is_nous_provider(_provider) or not _provider
+
         if not self.agent:
+            if not _show_nous:
+                _lines = self._fetch_account_usage_lines(_provider)
+                if _lines:
+                    print()
+                    for line in _lines:
+                        print(line)
+                else:
+                    print("(._.) No active agent -- send a message first.")
+                return
             if self._print_nous_credits_block():
                 self._print_usage_cta()
             else:
@@ -13536,6 +13583,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         calls = agent.session_api_calls
 
         if calls == 0:
+            if not _show_nous:
+                _lines = self._fetch_account_usage_lines(
+                    _provider,
+                    base_url=getattr(agent, "base_url", None) or getattr(self, "base_url", None),
+                    api_key=getattr(agent, "api_key", None) or getattr(self, "api_key", None),
+                )
+                if _lines:
+                    print()
+                    for line in _lines:
+                        print(line)
+                else:
+                    print("(._.) No API calls made yet in this session.")
+                return
             if self._print_nous_credits_block():
                 self._print_usage_cta()
             else:
@@ -13589,27 +13649,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
         base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
         api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        # Lazy import — pulls the OpenAI SDK chain, only needed here.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+        account_lines = self._fetch_account_usage_lines(provider, base_url=base_url, api_key=api_key)
         if account_lines:
             print()
             for line in account_lines:
                 print(line)
 
-        # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
-        # runs at the no-agent / no-calls early-returns above). See the helper.
-        if self._print_nous_credits_block():
+        # Nous credits magnitudes + monthly-grant gauge — Nous-backed sessions
+        # only (other providers' account blocks render above). Also runs at the
+        # no-agent / no-calls early-returns above. See the helper.
+        if _show_nous and self._print_nous_credits_block():
             self._print_usage_cta()
 
         if self.verbose:

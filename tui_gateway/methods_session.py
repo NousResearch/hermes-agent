@@ -1548,16 +1548,19 @@ def _(rid, params: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if agent is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits block — agent-independent (a portal fetch), so it shows even
-    # with zero API calls or on a resumed session. The TUI /usage panel renders
-    # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
-    # or on any portal hiccup.
+    # Nous credits block — shown only for Nous-backed sessions (or when the
+    # provider is unknown, e.g. a resumed session with no agent resident).
+    # Sessions running another subscription (opencode-go, openai-codex, ...)
+    # render that provider's account block instead. Fail-open: [] when not
+    # logged into Nous or on any portal hiccup.
     try:
-        from agent.account_usage import nous_credits_lines
+        from agent.account_usage import is_nous_provider, nous_credits_lines
 
-        credits = nous_credits_lines()
-        if credits:
-            usage["credits_lines"] = credits
+        provider = getattr(agent, "provider", None)
+        if not provider or is_nous_provider(provider):
+            credits = nous_credits_lines()
+            if credits:
+                usage["credits_lines"] = credits
     except Exception:
         pass
     return _ok(rid, usage)

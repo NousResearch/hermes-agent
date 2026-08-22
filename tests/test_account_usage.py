@@ -4,6 +4,7 @@ from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
     fetch_account_usage,
+    is_nous_provider,
     render_account_usage_lines,
 )
 
@@ -201,3 +202,100 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_opencode_go_renders_windows(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "go-test-key",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _RoutingClient(
+            {
+                "https://opencode.ai/zen/go/v1/usage": {
+                    "usage": {
+                        "rolling": {"status": "ok", "percent": 17, "resetsAt": "2026-08-12T21:42:35.692Z"},
+                        "weekly": {"status": "ok", "percent": 8, "resetsAt": "2026-08-17T00:00:00.692Z"},
+                        "monthly": {"status": "ok", "percent": 21, "resetsAt": "2026-08-27T21:37:49.692Z"},
+                    }
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert snapshot is not None
+    assert snapshot.provider == "opencode-go"
+    assert snapshot.plan == "Go"
+    assert [w.label for w in snapshot.windows] == ["Rolling window", "Weekly", "Monthly"]
+    assert [w.used_percent for w in snapshot.windows] == [17.0, 8.0, 21.0]
+    assert all(w.reset_at is not None for w in snapshot.windows)
+    lines = render_account_usage_lines(snapshot)
+    assert lines[0] == "📈 OpenCode Go"
+    assert "opencode-go (Go)" in lines[1]
+    assert "Rolling window: 83% remaining (17% used)" in lines[2]
+    assert "Weekly: 92% remaining (8% used)" in lines[3]
+    assert "Monthly: 79% remaining (21% used)" in lines[4]
+
+
+def test_fetch_account_usage_opencode_go_skips_missing_windows_and_keeps_status(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "go-test-key",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _RoutingClient(
+            {
+                "https://opencode.ai/zen/go/v1/usage": {
+                    "usage": {
+                        "rolling": {"status": "paused", "percent": 0},
+                        "weekly": {"status": "ok", "percent": "not-a-number"},
+                        "monthly": {"status": "ok", "percent": 55},
+                    }
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Rolling window", "Monthly"]
+    assert snapshot.windows[0].detail == "status: paused"
+    assert snapshot.windows[0].reset_at is None
+    assert snapshot.windows[1].used_percent == 55.0
+
+
+def test_fetch_account_usage_opencode_go_returns_none_without_key(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "",
+        },
+    )
+
+    assert fetch_account_usage("opencode-go") is None
+
+
+def test_is_nous_provider():
+    assert is_nous_provider("nous")
+    assert is_nous_provider("NOUS")
+    assert is_nous_provider(" nous ")
+    assert not is_nous_provider("opencode-go")
+    assert not is_nous_provider("openai-codex")
+    assert not is_nous_provider("openrouter")
+    assert not is_nous_provider(None)
+    assert not is_nous_provider("")

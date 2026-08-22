@@ -201,6 +201,72 @@ class TestUsageAccountSection:
         assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
 
 
+class TestUsageProviderOnlyBlock:
+    """Only the active provider's account block is rendered by /usage."""
+
+    @pytest.mark.asyncio
+    async def test_nous_credits_hidden_for_non_nous_provider(self, monkeypatch):
+        agent = _make_mock_agent(provider="opencode-go")
+        runner = _make_runner(SK, cached_agent=agent)
+        monkeypatch.setattr(
+            "gateway.slash_commands.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands.render_account_usage_lines",
+            lambda snapshot, markdown=False: [
+                "📈 **OpenCode Go**",
+                "Provider: opencode-go (Go)",
+            ],
+        )
+        credits_calls: list = []
+        monkeypatch.setattr(
+            "agent.account_usage.nous_credits_lines",
+            lambda markdown=False: credits_calls.append(1) or [],
+        )
+
+        event = MagicMock()
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(event)
+
+        assert "📈 **OpenCode Go**" in result
+        assert credits_calls == []
+
+    @pytest.mark.asyncio
+    async def test_nous_credits_shown_for_nous_provider(self, monkeypatch):
+        agent = _make_mock_agent(provider="nous")
+        runner = _make_runner(SK, cached_agent=agent)
+        monkeypatch.setattr(
+            "gateway.slash_commands.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: None,
+        )
+        monkeypatch.setattr(
+            "agent.account_usage.nous_credits_lines",
+            lambda markdown=False: ["💰 Nous balance: $1.23"],
+        )
+
+        event = MagicMock()
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(event)
+
+        assert "💰 Nous balance: $1.23" in result
+
+    @pytest.mark.asyncio
+    async def test_nous_credits_fallback_when_provider_unknown(self, monkeypatch):
+        # No agent resident and no persisted billing data: provider is None and
+        # the Nous block remains the fallback account view.
+        runner = _make_runner(SK)
+        monkeypatch.setattr(
+            "agent.account_usage.nous_credits_lines",
+            lambda markdown=False: ["💰 Nous balance: $1.23"],
+        )
+
+        event = MagicMock()
+        result = await runner._handle_usage_command(event)
+
+        assert "💰 Nous balance: $1.23" in result
+
+
 class TestUsageReset:
     """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""
 

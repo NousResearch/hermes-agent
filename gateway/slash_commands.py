@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import fetch_account_usage, is_nous_provider, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
@@ -5361,17 +5361,20 @@ class GatewaySlashCommandsMixin:
         # ── Nous credits magnitudes + monthly-grant % gauge ─────────────
         # Shared with the CLI / TUI /usage block via nous_credits_lines(): a single
         # auth-gate + portal-fetch + render path (which also honors the dev fixture).
-        # Run off the event loop. The helper gates on "a Nous account is logged in"
-        # — NOT the inference provider and NOT nested under `if provider:` — so a
-        # Nous-credentialled user running inference elsewhere (or with none resident)
-        # still sees their balance. NO recovery trigger: messaging binds no notice
-        # consumer, so /usage only displays. Fail-open: never break /usage.
-        try:
-            from agent.account_usage import nous_credits_lines
+        # Run off the event loop. Rendered ONLY for Nous-backed sessions (provider
+        # "nous") or when the provider is unknown (no agent / no persisted billing
+        # data): the block is account-level portal data, so a session running
+        # inference through another subscription (opencode-go, openai-codex, ...)
+        # shows that provider's account block above instead. NO recovery trigger:
+        # messaging binds no notice consumer, so /usage only displays. Fail-open:
+        # never break /usage.
+        if not provider or is_nous_provider(provider):
+            try:
+                from agent.account_usage import nous_credits_lines
 
-            credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
-        except Exception:
-            credits_lines = []  # fail-open: never break /usage
+                credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
+            except Exception:
+                credits_lines = []  # fail-open: never break /usage
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []

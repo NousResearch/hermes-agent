@@ -22,6 +22,19 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def is_nous_provider(provider: Optional[str]) -> bool:
+    """True when the active inference provider is the Nous Portal (``nous``).
+
+    ``/usage`` renders the Nous credits block only for Nous-backed sessions:
+    the block is account-level portal data (balance, monthly grant), so it is
+    out of place when the session is running inference through a different
+    subscription (opencode-go, openai-codex, openrouter, ...). Callers pass
+    ``provider or ""`` — an empty/unknown provider is treated as "not Nous"
+    here; each surface decides separately how to handle the unknown case.
+    """
+    return str(provider or "").strip().lower() == "nous"
+
+
 @dataclass(frozen=True)
 class AccountUsageWindow:
     label: str
@@ -881,6 +894,62 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_opencode_go_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Fetch OpenCode Go subscription usage from the public usage API.
+
+    OpenCode Go exposes ``GET {base}/usage`` (``https://opencode.ai/zen/go/v1/usage``
+    by default) with the same Bearer API key used for inference. The payload is
+    ``{"usage": {"rolling"|"weekly"|"monthly": {"status", "percent", "resetsAt"}}}``
+    where ``percent`` is the share of that window's quota already used.
+    """
+    runtime = resolve_runtime_provider(
+        requested="opencode-go",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    normalized = str(runtime.get("base_url", "") or "https://opencode.ai/zen/go/v1").rstrip("/")
+    usage_url = f"{normalized}/usage"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(usage_url, headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    usage = payload.get("usage") or {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("rolling", "Rolling window"), ("weekly", "Weekly"), ("monthly", "Monthly")):
+        window = usage.get(key) or {}
+        percent = window.get("percent")
+        if percent is None:
+            continue
+        try:
+            used_percent = float(percent)
+        except (TypeError, ValueError):
+            continue  # one malformed window must not discard the others
+        status = str(window.get("status") or "ok").strip().lower()
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=used_percent,
+                reset_at=_parse_dt(window.get("resetsAt")),
+                detail=None if status == "ok" else f"status: {status}",
+            )
+        )
+    return AccountUsageSnapshot(
+        provider="opencode-go",
+        source="usage_api",
+        fetched_at=_utc_now(),
+        title="OpenCode Go",
+        plan="Go",
+        windows=tuple(windows),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -897,6 +966,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "opencode-go":
+            return _fetch_opencode_go_account_usage(base_url, api_key)
     except Exception:
         return None
     return None

@@ -265,6 +265,85 @@ class TestCLIUsageReport:
         assert "Cache write tokens:" not in output
 
 
+class TestCLIUsageProviderOnlyBlock:
+    """CLI /usage renders only the active provider's account block."""
+
+    def _make_agent_cli(self, provider: str, api_calls: int):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=api_calls,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = provider
+        cli_obj.verbose = False
+        return cli_obj
+
+    def test_show_usage_hides_nous_block_for_non_nous_provider(self, capsys, monkeypatch):
+        cli_obj = self._make_agent_cli("opencode-go", api_calls=3)
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "agent.account_usage.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 OpenCode Go", "Provider: opencode-go (Go)"],
+        )
+        nous_calls: list = []
+        monkeypatch.setattr(
+            cli_obj, "_print_nous_credits_block", lambda: nous_calls.append(1) or False
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "📈 OpenCode Go" in output
+        assert "Model:" in output
+        assert nous_calls == []
+
+    def test_show_usage_shows_nous_block_for_nous_provider(self, capsys, monkeypatch):
+        cli_obj = self._make_agent_cli("nous", api_calls=3)
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: None,
+        )
+        nous_calls: list = []
+        monkeypatch.setattr(
+            cli_obj, "_print_nous_credits_block", lambda: nous_calls.append(1) or False
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Model:" in output
+        assert nous_calls == [1]
+
+    def test_show_usage_zero_calls_non_nous_fetches_account_block(self, capsys, monkeypatch):
+        cli_obj = self._make_agent_cli("opencode-go", api_calls=0)
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "agent.account_usage.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 OpenCode Go", "Provider: opencode-go (Go)"],
+        )
+        nous_calls: list = []
+        monkeypatch.setattr(
+            cli_obj, "_print_nous_credits_block", lambda: nous_calls.append(1) or False
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "📈 OpenCode Go" in output
+        assert "No API calls made yet" not in output
+        assert nous_calls == []
+
+
 class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 

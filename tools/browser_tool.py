@@ -56,6 +56,7 @@ import logging
 import os
 import signal
 import re
+import shlex
 import subprocess
 import shutil
 import sys
@@ -1678,6 +1679,34 @@ _cleanup_running = False
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
 
+# agent-browser's CDP mode has no command-line target/session selector.  For a
+# shared endpoint we therefore use its own stable tab ids inside a single
+# ``batch`` request (``tab tN`` followed by the real operation).  The fallback
+# lock below protects older/proxy backends where that tab lookup is unavailable
+# by keeping Target.activateTarget and the CLI command in one critical section.
+_CDP_PAGE_BOUND_COMMANDS = frozenset({
+    "back",
+    "click",
+    "console",
+    "errors",
+    "eval",
+    "fill",
+    "open",
+    "press",
+    "record",
+    "screenshot",
+    "scroll",
+    "snapshot",
+})
+_cdp_binding_locks: Dict[str, threading.Lock] = {}
+_cdp_binding_locks_guard = threading.Lock()
+
+
+def _cdp_binding_lock(cdp_url: str) -> threading.Lock:
+    """Return the process-wide lock for one shared CDP endpoint."""
+    with _cdp_binding_locks_guard:
+        return _cdp_binding_locks.setdefault(cdp_url, threading.Lock())
+
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
     """Return a provider-authoritative session expiry as epoch seconds.
@@ -2457,8 +2486,117 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Skip for local sidecars — they have no CDP URL.
     if not force_local:
         _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     return session_info
+
+
+def _bind_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Copy the supervisor's dedicated page target onto session_info.
+
+    Multi-session CDP isolation requires the public browser path (navigate /
+    click / …) to know which page this task_id owns (#69727).
+    """
+    if not session_info.get("cdp_url") and not _get_cdp_override_raw():
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        target_id = supervisor.page_target_id()
+        if target_id:
+            session_info["page_target_id"] = target_id
+    except Exception as exc:
+        logger.debug(
+            "Could not bind page_target_id for task=%s: %s", task_id, exc
+        )
+
+
+def _activate_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Focus this task's dedicated CDP page before agent-browser CLI work."""
+    if not session_info.get("cdp_url") and not session_info.get("page_target_id"):
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        result = supervisor.activate_owned_page()
+        if not result.get("ok"):
+            logger.debug(
+                "activate_owned_page failed for task=%s: %s",
+                task_id,
+                result.get("error"),
+            )
+    except Exception as exc:
+        logger.debug("activate_owned_page error for task=%s: %s", task_id, exc)
+
+
+def _session_page_tab_ref(task_id: str, session_info: Dict[str, Any]) -> Optional[str]:
+    """Return the agent-browser tab ref bound to this Hermes task's page."""
+    if not session_info.get("cdp_url"):
+        return None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return None
+        result = supervisor.page_target_tab_ref()
+        if result.get("ok") and result.get("tab_ref"):
+            return str(result["tab_ref"])
+        logger.debug(
+            "Could not resolve agent-browser tab ref for task=%s: %s",
+            task_id,
+            result.get("error"),
+        )
+    except Exception as exc:
+        logger.debug("page-target tab binding error for task=%s: %s", task_id, exc)
+    return None
+
+
+def _navigate_via_supervisor_page(
+    task_id: str, url: str, session_info: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Navigate using the supervisor's dedicated page when on CDP.
+
+    Returns a result dict on success/handled-failure, or ``None`` to fall
+    through to the agent-browser CLI path (local sessions, no supervisor).
+    """
+    if not session_info.get("cdp_url"):
+        return None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None or not supervisor.page_target_id():
+            return None
+        nav = supervisor.navigate_page(url)
+        if not nav.get("ok"):
+            return {
+                "success": False,
+                "error": nav.get("error") or "supervisor Page.navigate failed",
+                "page_target_id": session_info.get("page_target_id"),
+            }
+        return {
+            "success": True,
+            "url": url,
+            "page_target_id": nav.get("target_id") or session_info.get("page_target_id"),
+            "frame_id": nav.get("frame_id"),
+            "via": "cdp_supervisor",
+        }
+    except Exception as exc:
+        logger.debug(
+            "supervisor navigate failed for task=%s, falling back to CLI: %s",
+            task_id,
+            exc,
+        )
+        return None
 
 
 
@@ -2853,8 +2991,26 @@ def _run_browser_command(
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
+    cdp_tab_ref = None
+    cdp_binding_lock = None
+    uses_cdp_tab_batch = False
     if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
+        # Cloud / user CDP — connect via CDP.  agent-browser exposes no raw
+        # target/session flag, so bind page operations through its stable tab
+        # state in one batch request.  Older/proxy backends that cannot expose
+        # Target.getTargets use the serialized activation fallback below.
+        _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
+        if command in _CDP_PAGE_BOUND_COMMANDS:
+            cdp_tab_ref = _session_page_tab_ref(task_id, session_info)
+            uses_cdp_tab_batch = cdp_tab_ref is not None
+            if not uses_cdp_tab_batch:
+                cdp_binding_lock = _cdp_binding_lock(str(session_info["cdp_url"]))
+                cdp_binding_lock.acquire()
+        if not uses_cdp_tab_batch:
+            # Keep activation and the CLI request linearized when a target
+            # index cannot be queried from the remote CDP proxy.
+            _activate_session_page_target(task_id, session_info)
         # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
@@ -2884,10 +3040,20 @@ def _run_browser_command(
     else:
         cmd_prefix = [browser_cmd]
 
-    cmd_parts = cmd_prefix + backend_args + [
-        "--json",
-        command
-    ] + args
+    if uses_cdp_tab_batch:
+        # ``batch`` executes both commands in the same agent-browser daemon,
+        # making the selected target/session part of the operation rather than
+        # a racy browser-global focus side effect.
+        batch_commands = [
+            shlex.join(["tab", str(cdp_tab_ref)]),
+            shlex.join([command, *(str(arg) for arg in args)]),
+        ]
+        cmd_parts = cmd_prefix + backend_args + ["--json", "batch", *batch_commands]
+    else:
+        cmd_parts = cmd_prefix + backend_args + [
+            "--json",
+            command
+        ] + args
 
     try:
         # Give each task its own socket directory to prevent concurrency conflicts.
@@ -3029,6 +3195,17 @@ def _run_browser_command(
             elif stdout_text:
                 try:
                     parsed = json.loads(stdout_text)
+                    if uses_cdp_tab_batch:
+                        if not isinstance(parsed, list) or not parsed:
+                            raise ValueError("agent-browser batch returned no command result")
+                        final = parsed[-1]
+                        result = {
+                            "success": bool(final.get("success")),
+                            "data": final.get("result") or {},
+                        }
+                        if final.get("error"):
+                            result["error"] = final["error"]
+                        parsed = result
                     # Warn if snapshot came back empty (common sign of daemon/CDP issues)
                     if command == "snapshot" and parsed.get("success"):
                         snap_data = parsed.get("data", {})
@@ -3082,6 +3259,9 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
+
+    if cdp_binding_lock is not None:
+        cdp_binding_lock.release()
 
     # --- Lightpanda automatic Chrome fallback ---
     # If engine is lightpanda and the result looks broken, retry with Chrome.
@@ -3429,6 +3609,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if is_first_nav:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
+
+    # CDP multi-session: navigate on the supervisor-owned page, not whichever
+    # tab agent-browser considers active (#69727).
+    supervisor_result = _navigate_via_supervisor_page(
+        nav_session_key, url, session_info
+    )
+    if supervisor_result is not None:
+        if is_first_nav and session_info.get("features"):
+            supervisor_result["stealth"] = session_info.get("features")
+        return json.dumps(supervisor_result)
 
     result = _run_browser_command(
         nav_session_key,

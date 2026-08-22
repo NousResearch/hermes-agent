@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -160,6 +161,19 @@ def _test_page_url() -> str:
     return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
 
 
+def _title_page_url(title: str) -> str:
+    html = f"<!doctype html><html><head><title>{title}</title></head><body>{title}</body></html>"
+    return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
+
+
+def _interactive_page_url() -> str:
+    html = """<!doctype html><html><head><title>interactive</title></head><body>
+<button id="owned-click" onclick="document.title='clicked'">Click</button>
+<input id="owned-input">
+</body></html>"""
+    return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
+
+
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
     import asyncio
@@ -235,6 +249,90 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     assert snap.pending_dialogs == ()
     # At minimum a top frame should exist after the navigate.
     assert snap.frame_tree.get("top") is not None
+
+
+def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_registry):
+    """Two task IDs navigate separate real Chrome tabs through owned sessions.
+
+    This is the integration boundary behind ``browser_navigate`` for shared
+    CDP browsers: each operation goes through ``CDPSupervisor.navigate_page``
+    and must remain bound to that supervisor's page session (#69727).
+    """
+    cdp_url, _port = chrome_cdp
+    first = supervisor_registry.get_or_start(task_id="pytest-nav-a", cdp_url=cdp_url)
+    second = supervisor_registry.get_or_start(task_id="pytest-nav-b", cdp_url=cdp_url)
+
+    assert first.page_target_id()
+    assert second.page_target_id()
+    assert first.page_target_id() != second.page_target_id()
+    assert first.navigate_page(_title_page_url("owned-page-a"))["ok"] is True
+    assert second.navigate_page(_title_page_url("owned-page-b"))["ok"] is True
+
+    deadline = time.monotonic() + 5
+    titles = (None, None)
+    while time.monotonic() < deadline:
+        first_title = first.evaluate_runtime("document.title")
+        second_title = second.evaluate_runtime("document.title")
+        titles = (first_title.get("result"), second_title.get("result"))
+        if titles == ("owned-page-a", "owned-page-b"):
+            break
+        time.sleep(0.05)
+
+    assert titles == ("owned-page-a", "owned-page-b")
+
+
+@pytest.mark.skipif(not shutil.which("npx"), reason="agent-browser integration requires npx")
+def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch):
+    """Concurrent click/fill operations stay on their task-owned CDP pages."""
+    from tools import browser_tool
+
+    cdp_url, _port = chrome_cdp
+    first = supervisor_registry.get_or_start(task_id="pytest-action-a", cdp_url=cdp_url)
+    second = supervisor_registry.get_or_start(task_id="pytest-action-b", cdp_url=cdp_url)
+    page_url = _interactive_page_url()
+    assert first.navigate_page(page_url)["ok"] is True
+    assert second.navigate_page(page_url)["ok"] is True
+
+    sessions = {
+        "pytest-action-a": {"session_name": "pytest_action_a", "cdp_url": cdp_url},
+        "pytest-action-b": {"session_name": "pytest_action_b", "cdp_url": cdp_url},
+    }
+    monkeypatch.setattr(browser_tool, "_get_session_info", lambda task_id: sessions[task_id])
+    monkeypatch.setattr(
+        browser_tool,
+        "_find_agent_browser",
+        lambda **_kwargs: "npx agent-browser",
+    )
+    browser_tool._cached_agent_browser = None
+    browser_tool._agent_browser_resolved = False
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            click_future = pool.submit(
+                browser_tool._run_browser_command,
+                "pytest-action-a",
+                "click",
+                ["#owned-click"],
+            )
+            fill_future = pool.submit(
+                browser_tool._run_browser_command,
+                "pytest-action-b",
+                "fill",
+                ["#owned-input", "task-b"],
+            )
+            click_result = click_future.result(timeout=30)
+            fill_result = fill_future.result(timeout=30)
+
+        assert click_result["success"] is True, click_result
+        assert fill_result["success"] is True, fill_result
+        assert first.evaluate_runtime("document.title").get("result") == "clicked"
+        assert second.evaluate_runtime("document.querySelector('#owned-input').value").get("result") == "task-b"
+    finally:
+        for task_id in sessions:
+            try:
+                browser_tool._run_browser_command(task_id, "close", [], timeout=10)
+            except Exception:
+                pass
 
 
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):

@@ -1042,8 +1042,14 @@ def _extract_member_atomically(
         raise
 
 
-def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
+def run_import(args, extra_skip_names: Optional[set] = None) -> None:
+    """Restore a Hermes backup from a zip file.
+
+    ``extra_skip_names`` adds basename-level entries to the built-in
+    ``_IMPORT_SKIP_NAMES`` filter (used by the cloud importer to drop
+    ``.env``/``auth.json`` so credentials can never ride a bundle into a
+    hosted instance).
+    """
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -1152,7 +1158,9 @@ def run_import(args) -> None:
             # reconciler on the target and disconnects hosted instances from the
             # Nous portal. Matched by basename so both the root profile and
             # named profiles (profiles/<name>/gateway_state.json) are covered.
-            if Path(rel).name in _IMPORT_SKIP_NAMES:
+            if Path(rel).name in _IMPORT_SKIP_NAMES or (
+                extra_skip_names and Path(rel).name in extra_skip_names
+            ):
                 skipped_runtime.append(rel)
                 continue
 

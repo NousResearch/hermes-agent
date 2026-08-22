@@ -598,6 +598,13 @@ def main() -> int:
         )
         return 0
 
+    # First-boot cloud migration import: self-gating on
+    # HERMES_MIGRATION_BUNDLE_URL and never raises, so a failed import
+    # leaves the boot to continue with an empty (working) instance.
+    from hermes_cli import cloud_import
+
+    cloud_import.maybe_run()
+
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
     actions = reconcile_profile_gateways(

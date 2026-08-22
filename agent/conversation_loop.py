@@ -49,6 +49,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
+    coalesce_tool_call_id,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -7023,7 +7024,13 @@ def run_conversation(
                 
                 # Validate tool call arguments are valid JSON
                 # Handle empty strings as empty objects (common model quirk)
-                invalid_json_args = []
+                #
+                # Key invalid calls by tool_call_id, never by tool name (#84698):
+                # two parallel calls to the SAME tool (one valid JSON, one
+                # invalid) must not collide — name-keying made the valid sibling
+                # inherit the Invalid-JSON error and never execute. Ids are
+                # already unique here: _uniquify_tool_call_ids ran at ingestion.
+                invalid_json_by_id: dict[str, tuple[str, str]] = {}
                 for tc in assistant_message.tool_calls:
                     args = tc.function.arguments
                     if isinstance(args, (dict, list)):
@@ -7047,19 +7054,31 @@ def run_conversation(
                             # invalid-name error result below. Don't let its
                             # broken args trigger the whole-turn JSON retry.
                             continue
-                        invalid_json_args.append((tc.function.name, str(e)))
-                
-                if invalid_json_args:
+                        invalid_json_by_id[coalesce_tool_call_id(tc)] = (
+                            tc.function.name,
+                            str(e),
+                        )
+
+                # Mixed JSON batch collected here so the assistant message
+                # (built during the normal dispatch path below) keeps EVERY
+                # call the model emitted — providers require each tool_call to
+                # have a matching tool result — while only the valid subset is
+                # dispatched. Mirrors the invalid-*name* mixed-batch handling.
+                _invalid_json_batch_calls = []
+
+                if invalid_json_by_id:
                     # Check if the invalid JSON is due to truncation rather
                     # than a model formatting mistake.  Routers sometimes
                     # rewrite finish_reason from "length" to "tool_calls",
                     # hiding the truncation from the length handler above.
                     # Detect truncation: args that don't end with } or ]
                     # (after stripping whitespace) are cut off mid-stream.
+                    # Key by id so a complete same-name sibling is not
+                    # false-positived into the truncated set (#84698).
                     _truncated = any(
                         not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
                         for tc in assistant_message.tool_calls
-                        if tc.function.name in {n for n, _ in invalid_json_args}
+                        if coalesce_tool_call_id(tc) in invalid_json_by_id
                     )
                     if _truncated:
                         agent._vprint(
@@ -7083,47 +7102,76 @@ def run_conversation(
                             "error": _final_response,
                         }
 
-                    # Track retries for invalid JSON arguments
-                    agent._invalid_json_retries += 1
+                    _n_valid_json = sum(
+                        1
+                        for tc in assistant_message.tool_calls
+                        if coalesce_tool_call_id(tc) not in invalid_json_by_id
+                    )
+                    _first_name, error_msg = next(iter(invalid_json_by_id.values()))
 
-                    tool_name, error_msg = invalid_json_args[0]
-                    agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
-
-                    if agent._invalid_json_retries < 3:
-                        agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
-                        # Don't add anything to messages, just retry the API call
-                        continue
+                    if _n_valid_json > 0:
+                        # Mixed batch: valid siblings execute (same design as
+                        # invalid-name mixed batches). Do not burn whole-turn
+                        # JSON retries or Skip the valid calls (#84698). The
+                        # broken calls get their error results after the
+                        # assistant message is appended, alongside the valid
+                        # calls' execution results — pairing stays intact.
+                        agent._invalid_json_retries = 0
+                        _invalid_json_batch_calls = [
+                            tc
+                            for tc in assistant_message.tool_calls
+                            if coalesce_tool_call_id(tc) in invalid_json_by_id
+                        ]
+                        agent._buffer_vprint(
+                            f"⚠️  Invalid JSON in tool call arguments for '{_first_name}' "
+                            f"in batch — erroring that call, executing {_n_valid_json} "
+                            f"valid call(s)"
+                        )
                     else:
-                        # Instead of returning partial, inject tool error results so the model can recover.
-                        # Using tool results (not user messages) preserves role alternation.
-                        agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
-                        agent._invalid_json_retries = 0  # Reset for next attempt
-                        
-                        # Append the assistant message with its (broken) tool_calls
-                        recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
-                        append_message(messages, recovery_assistant)
-                        
-                        # Respond with tool error results for each tool call
-                        invalid_names = {name for name, _ in invalid_json_args}
-                        for tc in assistant_message.tool_calls:
-                            if tc.function.name in invalid_names:
-                                err = next(e for n, e in invalid_json_args if n == tc.function.name)
-                                tool_result = (
-                                    f"Error: Invalid JSON arguments. {err}. "
-                                    f"For tools with no required parameters, use an empty object: {{}}. "
-                                    f"Please retry with valid JSON."
-                                )
-                            else:
-                                tool_result = "Skipped: other tool call in this response had invalid JSON."
-                            append_message(messages, {
-                                "role": "tool",
-                                "name": tc.function.name,
-                                "tool_call_id": tc.id,
-                                "content": tool_result,
-                            })
-                        continue
-                
+                        # Every call has invalid JSON — keep the 3× retry then
+                        # recovery-inject behaviour.
+                        agent._invalid_json_retries += 1
+                        agent._buffer_vprint(
+                            f"⚠️  Invalid JSON in tool call arguments for '{_first_name}': {error_msg}"
+                        )
+
+                        if agent._invalid_json_retries < 3:
+                            agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
+                            # Don't add anything to messages, just retry the API call
+                            continue
+                        else:
+                            # Instead of returning partial, inject tool error results so the model can recover.
+                            # Using tool results (not user messages) preserves role alternation.
+                            agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
+                            agent._invalid_json_retries = 0  # Reset for next attempt
+
+                            # Append the assistant message with its (broken) tool_calls
+                            recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
+                            append_message(messages, recovery_assistant)
+
+                            # Respond with tool error results, keyed by id so a
+                            # same-name sibling can never be misrouted.
+                            for tc in assistant_message.tool_calls:
+                                _tid = coalesce_tool_call_id(tc)
+                                if _tid in invalid_json_by_id:
+                                    err = invalid_json_by_id[_tid][1]
+                                    tool_result = (
+                                        f"Error: Invalid JSON arguments. {err}. "
+                                        f"For tools with no required parameters, use an empty object: {{}}. "
+                                        f"Please retry with valid JSON."
+                                    )
+                                else:
+                                    tool_result = "Skipped: other tool call in this response had invalid JSON."
+                                append_message(messages, {
+                                    "role": "tool",
+                                    "name": tc.function.name,
+                                    "tool_call_id": tc.id,
+                                    "content": tool_result,
+                                })
+                            continue
+
                 # Reset retry counter on successful JSON validation
+                # (or mixed fall-through where valid siblings still execute).
                 agent._invalid_json_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
@@ -7274,6 +7322,35 @@ def run_conversation(
                     assistant_message.tool_calls = [
                         tc for tc in assistant_message.tool_calls
                         if tc.function.name in agent.valid_tool_names
+                    ]
+
+                # Mixed invalid-JSON batch (#84698): same pairing pattern as
+                # the invalid-name block above — error only the broken-arg
+                # calls (keyed by id, so a valid same-name sibling is never
+                # misrouted) and strip them from the execution set. The
+                # assistant message already kept every call, so tool_call/
+                # result pairing stays intact.
+                if _invalid_json_batch_calls:
+                    for tc in _invalid_json_batch_calls:
+                        err = invalid_json_by_id.get(
+                            coalesce_tool_call_id(tc), ("", "invalid JSON")
+                        )[1]
+                        append_message(messages, {
+                            "role": "tool",
+                            "name": tc.function.name,
+                            "tool_call_id": tc.id,
+                            "content": (
+                                f"Error: Invalid JSON arguments. {err}. "
+                                f"For tools with no required parameters, use an empty object: {{}}. "
+                                f"Please retry with valid JSON."
+                            ),
+                        })
+                    _invalid_json_ids = {
+                        coalesce_tool_call_id(tc) for tc in _invalid_json_batch_calls
+                    }
+                    assistant_message.tool_calls = [
+                        tc for tc in assistant_message.tool_calls
+                        if coalesce_tool_call_id(tc) not in _invalid_json_ids
                     ]
 
                 _tool_turn_persisted = None

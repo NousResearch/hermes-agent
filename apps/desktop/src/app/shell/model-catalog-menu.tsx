@@ -312,6 +312,86 @@ export function ModelCatalogMenu({
     }
   }
 
+  // ── Keyboard path into a row's edit submenu ───────────────────────────────
+  // Rows are HIGHLIGHTED, not DOM-focused (focus stays in the search input so
+  // typing keeps working), which is why Radix's own ArrowRight-on-the-trigger
+  // never fires. ArrowRight therefore hands focus to the highlighted trigger
+  // and replays the key there: from that point Radix owns everything — opening
+  // the sub, focusing its first item, and returning focus to the trigger when
+  // ArrowLeft closes it. `onOpenChange` below finishes that round trip by
+  // putting focus back in the search field. (Escape is not part of it: inside
+  // a sub, Radix dismisses the WHOLE menu rather than just the sub.)
+  //
+  // ArrowRight is hard-coded rather than direction-aware because Radix's own
+  // binding is: the app installs no `DirectionProvider` and passes no `dir`,
+  // so `useDirection` resolves to `ltr` and Radix opens subs on ArrowRight in
+  // every locale, RTL included. Matching that keeps the two in step; whoever
+  // wires up a `DirectionProvider` has to teach this handler the same
+  // direction Radix reads, or the sub goes unreachable again in Arabic.
+  const searchRef = useRef<HTMLInputElement>(null)
+  // WHICH row we opened from the keyboard, not merely THAT we opened one: a
+  // bare flag is still set when a keyboard-opened sub closes because the mouse
+  // moved on to another row, and refocusing search there pulls focus out from
+  // under a pointer interaction that has already taken the menu over.
+  const keyboardSubRef = useRef<null | { key: string; trigger: HTMLElement }>(null)
+
+  const openActiveSubmenu = (): boolean => {
+    const trigger = listRef.current?.querySelector<HTMLElement>('[data-kb-active]')
+
+    if (!trigger || !kbActiveKey) {
+      return false
+    }
+
+    keyboardSubRef.current = { key: kbActiveKey, trigger }
+    trigger.focus()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+
+    // Highlight also lands on rows that are plain items rather than submenu
+    // triggers (the MoA presets), which swallow the key; an open can also be
+    // interrupted. Either way, don't strand focus on a row where typing no
+    // longer reaches the search field.
+    requestAnimationFrame(() => {
+      // Only while the claim is still ours and untouched: a sub that opened
+      // and closed inside this one frame has already been handled below, and
+      // a stale frame reaching in afterwards would move focus twice.
+      if (keyboardSubRef.current?.trigger !== trigger) {
+        return
+      }
+
+      if (trigger.getAttribute('data-state') !== 'open') {
+        keyboardSubRef.current = null
+        searchRef.current?.focus()
+      }
+    })
+
+    return true
+  }
+
+  // Only the sub THIS row opened from the keyboard owes focus back to the
+  // search field; during mouse use focus never left it, and hover open/close
+  // fires constantly.
+  const handleSubOpenChange = (open: boolean, key: string) => {
+    const claim = keyboardSubRef.current
+
+    if (open || claim?.key !== key) {
+      return
+    }
+
+    keyboardSubRef.current = null
+
+    // Deferred one frame because Radix restores focus to the trigger straight
+    // AFTER this callback — and that restore is the signal we need. Radix does
+    // it only for a keyboard close (ArrowLeft); a sub closed because the
+    // pointer moved to another row leaves focus where it fell, and grabbing it
+    // then would fight the mouse. So finish the round trip only if the trigger
+    // really is holding focus.
+    requestAnimationFrame(() => {
+      if (document.activeElement === claim.trigger) {
+        searchRef.current?.focus()
+      }
+    })
+  }
+
   // Rows are hover-selectable, so they go inert with the pointer.
   const quietRows = pointerQuiet && 'pointer-events-none'
 
@@ -330,6 +410,13 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
+          } else if (event.key === 'ArrowRight' && caretAtEnd(event.currentTarget)) {
+            // Claimed only with the caret parked at the end of the query, where
+            // ArrowRight has nothing left to do as a text cursor.
+            if (openActiveSubmenu()) {
+              event.preventDefault()
+              event.stopPropagation()
+            }
           }
         }}
         onValueChange={value => {
@@ -337,6 +424,7 @@ export function ModelCatalogMenu({
           setKbOverride(null)
         }}
         placeholder={copy.search}
+        ref={searchRef}
         value={search}
       />
 
@@ -428,7 +516,10 @@ export function ModelCatalogMenu({
 
                     // Clicking the row commits the model and closes; the edit
                     // submenu (reasoning/fast) is reached by HOVER, so you can
-                    // tweak those without the click dismissing everything.
+                    // tweak those without the click dismissing everything. The
+                    // trailing caret is what advertises that submenu — without
+                    // it the row's effort badge reads as a fixed model+effort
+                    // combo rather than an editable setting.
                     const activate = () => {
                       if (!isCurrent) {
                         void selectFamily(family, group.provider)
@@ -438,9 +529,11 @@ export function ModelCatalogMenu({
                     }
 
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub
+                        key={`${group.provider.slug}:${family.id}`}
+                        onOpenChange={open => handleSubOpenChange(open, `${group.provider.slug}:${family.id}`)}
+                      >
                         <DropdownMenuSubTrigger
-                          hideChevron
                           onClick={activate}
                           onKeyDown={event => {
                             if (event.key === 'Enter' || event.key === ' ') {
@@ -531,6 +624,14 @@ export function ModelCatalogMenu({
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
+
+/** True when the text cursor sits at the very end with nothing selected — the
+ *  only state where ArrowRight is free for the menu to claim. */
+function caretAtEnd(input: HTMLInputElement): boolean {
+  const { selectionEnd, selectionStart, value } = input
+
+  return selectionStart === value.length && selectionEnd === value.length
+}
 
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search

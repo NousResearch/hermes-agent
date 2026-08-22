@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -104,5 +104,88 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit Models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+// A row shows its model's effort ("Gemini 3.1 Pro  Max"), which reads as a
+// fixed model+effort combo unless the row also advertises that the effort is
+// editable behind it. The caret is that advertisement, and ArrowRight is the
+// way in for anyone not driving the menu with a mouse.
+describe('the per-row options submenu is discoverable', () => {
+  it('marks each model row as opening a submenu', async () => {
+    renderMenu()
+
+    const row = await screen.findByText(/Gemini 3\.1 Pro/i)
+    const trigger = row.closest('[data-slot="dropdown-menu-sub-trigger"]')
+
+    expect(trigger).not.toBeNull()
+    expect(trigger?.querySelector('.codicon-chevron-right')).not.toBeNull()
+  })
+
+  it('opens the highlighted row with ArrowRight, so effort is reachable without a mouse', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+
+    // Nothing is selected yet, so highlight the first row before opening it.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+
+    expect(await screen.findByText('Effort')).not.toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Extra High' })).not.toBeNull()
+  })
+
+  it('returns focus to the search field when the keyboard closes the sub again', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    await screen.findByText('Effort')
+
+    // ArrowLeft, not Escape: inside a sub, Escape dismisses the whole menu.
+    fireEvent.keyDown(screen.getByText('Effort'), { key: 'ArrowLeft' })
+
+    await waitFor(() => expect(input.ownerDocument.activeElement).toBe(input))
+  })
+
+  // That round trip is owed by the row we opened and by no other. Once the
+  // pointer takes the menu over, Radix closes the keyboard-opened sub without
+  // handing focus back — reclaiming it there would pull focus out from under
+  // an interaction already in progress.
+  it('leaves focus alone when the pointer takes over from a keyboard-opened sub', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    await screen.findByText('Effort')
+
+    const hovered = screen.getByText(/Gemini 2\.5 Flash/i).closest('[data-slot="dropdown-menu-sub-trigger"]')
+
+    fireEvent.pointerMove(hovered as Element, { pointerType: 'mouse' })
+    await waitFor(() => expect(hovered?.getAttribute('data-state')).toBe('open'))
+
+    expect(input.ownerDocument.activeElement).not.toBe(input)
+  })
+
+  it('leaves ArrowRight to the search field while the caret is inside the query', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' }) as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: 'gemini' } })
+    input.setSelectionRange(0, 0)
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+
+    expect(screen.queryByText('Effort')).toBeNull()
   })
 })

@@ -52,7 +52,21 @@ export function ReviewShipBar() {
 
   // Commit / push / PR operate on the working tree, so they only make sense for
   // the uncommitted scope — the branch / last-turn scopes are read-only views.
-  if (scope !== 'uncommitted' || !hasFiles) {
+  if (scope !== 'uncommitted') {
+    // Don't just vanish: say why. A user who reopened the pane on a persisted
+    // non-uncommitted scope would otherwise find no ship bar and no hint that
+    // it's a deliberate read-only view, not a broken pane.
+    return (
+      <div
+        className="shrink-0 px-2 pb-1.5 text-center text-[0.64rem] text-(--ui-text-tertiary)"
+        data-suppress-pane-reveal-side=""
+      >
+        {c.readOnlyScope}
+      </div>
+    )
+  }
+
+  if (!hasFiles) {
     return null
   }
 

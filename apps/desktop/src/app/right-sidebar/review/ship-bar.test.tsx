@@ -42,8 +42,20 @@ describe('ReviewShipBar', () => {
     expect(screen.getByText('Commit')).toBeTruthy()
   })
 
-  it('renders nothing for the branch scope (committed work has no working-tree actions)', () => {
+  it('renders a read-only note for the branch scope (no working-tree actions)', () => {
     $reviewScope.set('branch')
+
+    const { container } = renderBar()
+
+    // The bar itself must be gone (no Commit button), replaced by the note
+    // explaining why — not silently vanishing.
+    expect(screen.queryByText('Commit')).toBeNull()
+    expect(screen.getByText(/Read-only view/)).toBeTruthy()
+    expect(container.firstChild).not.toBeNull()
+  })
+
+  it('renders nothing for the uncommitted scope when there are no files', () => {
+    $reviewFiles.set([])
 
     const { container } = renderBar()
 

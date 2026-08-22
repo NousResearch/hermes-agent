@@ -514,6 +514,32 @@ describe('$reviewTurnBase', () => {
     $reviewTurnBase.set({ '/repo': 'abc123' })
     expect($reviewTurnBase.get()).toEqual({ '/repo': 'abc123' })
   })
+
+  it('caps tracked baselines at MAX_TURN_BASES, evicting the least-recently captured', async () => {
+    stubReview({ revParse: vi.fn(async (cwd: string) => `sha-${cwd}`) })
+
+    // Start with the map already full of older baselines.
+    $reviewTurnBase.set(Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`/old-${i}`, `sha-${i}`])))
+
+    // A fresh turn in a ninth repo must evict the oldest (/old-0), not grow.
+    $sessionStates.set({ rt_cap: sessionState(true, '/new-repo') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const bases = $reviewTurnBase.get()
+    expect(Object.keys(bases)).toHaveLength(8)
+    expect(bases['/new-repo']).toBe('sha-/new-repo')
+    expect(bases['/old-0']).toBeUndefined()
+    expect(bases['/old-7']).toBeDefined()
+
+    // Re-capturing an existing cwd refreshes it without growing the map.
+    $sessionStates.set({ rt_recapture: sessionState(true, '/old-1') })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($reviewTurnBase.get()['/old-1']).toBe('sha-/old-1')
+    expect(Object.keys($reviewTurnBase.get())).toHaveLength(8)
+  })
 })
 
 // Minimal session state: the baseline capture only reads `busy` and `cwd`.

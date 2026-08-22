@@ -80,7 +80,43 @@ export const $reviewScope = persistentAtom<HermesReviewScope>(SCOPE_KEY, 'uncomm
 // repo — the baseRef for the 'lastTurn' scope. Keyed by cwd so a pinned tile
 // worktree or a background session gets its own baseline instead of inheriting
 // the foreground cwd's. Empty until a turn has been observed for a given cwd.
+//
+// Normalization contract: keys are written from `state.cwd.trim()` at capture
+// and read through `repoCwd()` (which trims too). Both sides ultimately carry
+// the same gateway-reported absolute path for a given repo, so they match
+// byte-for-byte; any other divergence (trailing slash, symlink, case) would
+// silently miss and degrade lastTurn to empty rather than mislead.
+//
+// Capture is best-effort and inherently racy: HEAD is resolved asynchronously
+// after `busy` flips, so a turn that commits immediately can beat the reply
+// and bake its own commits into the baseline (lastTurn then shows slightly
+// less than the turn changed). Accepted — the alternative is blocking turn
+// start on a git probe.
 export const $reviewTurnBase = atom<Record<string, string>>({})
+
+// Cap on tracked baselines. Bounded by repos-worked-in in practice, but a
+// long-lived session shouldn't hoard stale entries for abandoned worktrees:
+// beyond the cap, the least-recently-captured cwd is evicted.
+const MAX_TURN_BASES = 8
+
+function recordTurnBase(cwd: string, sha: string): void {
+  const prev = $reviewTurnBase.get()
+
+  if (prev[cwd] === sha) {
+    return
+  }
+
+  // Re-insert the cwd so object key order tracks recency (oldest first),
+  // then evict from the front beyond the cap.
+  const rest = Object.entries(prev).filter(([key]) => key !== cwd)
+
+  while (rest.length >= MAX_TURN_BASES) {
+    rest.shift()
+  }
+
+  rest.push([cwd, sha])
+  $reviewTurnBase.set(Object.fromEntries(rest))
+}
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])
 export const $reviewLoading = atom(false)
@@ -662,11 +698,13 @@ $sessionStates.subscribe(states => {
       const cwd = state.cwd?.trim()
 
       if (cwd) {
-        void desktopGit()?.review?.revParse(cwd, 'HEAD').then(sha => {
-          if (sha) {
-            $reviewTurnBase.set({ ...$reviewTurnBase.get(), [cwd]: sha })
-          }
-        })
+        void desktopGit()
+          ?.review?.revParse(cwd, 'HEAD')
+          .then(sha => {
+            if (sha) {
+              recordTurnBase(cwd, sha)
+            }
+          })
       }
     }
   }

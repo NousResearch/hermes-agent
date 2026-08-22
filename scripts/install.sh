@@ -703,8 +703,13 @@ attempt_install_git() {
             case "$DISTRO" in
                 ubuntu|debian)
                     log_info "Installing Git via apt..."
-                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
+                    # `sh -c` rather than `env VAR=…`: when this runs as root
+                    # $sudo_cmd is empty, so a shadowed `env` on PATH (see
+                    # install_browser_use_cli) would swallow the apt-get call
+                    # entirely. Under sudo it resolved correctly via secure_path,
+                    # which is why this only ever broke root installs.
+                    $sudo_cmd sh -c 'DEBIAN_FRONTEND=noninteractive apt-get update -qq' >/dev/null 2>&1 || true
+                    $sudo_cmd sh -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git' >/dev/null 2>&1 || true
                     ;;
                 fedora)
                     log_info "Installing Git via dnf..."
@@ -2492,8 +2497,17 @@ install_browser_use_cli() {
     log_info "Installing Browser Use CLI (default browser backend)..."
     # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir, where
     # the browser tool resolves it — no reliance on the user's PATH.
-    if run_with_timeout 600 env UV_NO_CONFIG=1 UV_TOOL_BIN_DIR="$HERMES_HOME/bin" \
-        "$UV_CMD" tool install browser-use >/dev/null 2>&1; then
+    #
+    # Export in a subshell rather than prefixing with `env`. uv's own installer
+    # writes ~/.local/bin/env — a PATH helper meant to be sourced, which ignores
+    # its arguments and exits 0. Anyone with ~/.local/bin ahead of /usr/bin (uv
+    # puts it there, and this installer installs uv) resolves `env` to that
+    # script, so `env VAR=… uv tool install` ran nothing, returned 0, and this
+    # branch logged "Browser Use CLI installed" for an install that never
+    # happened. Hardcoding /usr/bin/env is not an option either — Termux has no
+    # such path — so avoid `env` altogether.
+    if ( export UV_NO_CONFIG=1 UV_TOOL_BIN_DIR="$HERMES_HOME/bin"
+         run_with_timeout 600 "$UV_CMD" tool install browser-use >/dev/null 2>&1 ); then
         log_success "Browser Use CLI installed"
     else
         log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools."

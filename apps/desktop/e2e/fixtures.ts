@@ -20,13 +20,13 @@
  * Prerequisite: `npm run build` must have been run so that `dist/` exists.
  */
 
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { resolveElectronBinary } from './electron-binary'
 import { startMockServer, type MockServerOptions } from './mock-server'
 import { installErrorBannerGuard } from './test'
 
@@ -281,30 +281,18 @@ function assertDistBuilt(): void {
 
 /**
  * Find the Electron binary. In the nix devshell, `electron` is on PATH.
- * As a fallback, use the node_modules/.bin/electron from the desktop package.
+ * As a fallback, use the node_modules/electron install from either package.
  */
 export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
-
-  if (fs.existsSync(localElectron)) {
-    return localElectron
-  }
-
-  // Fall back to PATH
-  const result = spawnSync('which', ['electron'], {
-    encoding: 'utf8',
-  })
-
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim()
-  }
-
-  throw new Error(
-    'Electron binary not found. Run "npm install" from the repo root to install devDependencies.',
-  )
+  //
+  // The desktop package is searched first: npm workspaces only hoist
+  // `electron` to the repo root when nothing conflicts, so a workspace-local
+  // install is just as ordinary an outcome as a hoisted one. The rules live in
+  // ./electron-binary so they can be unit-tested per platform.
+  return resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT])
 }
 
 /**

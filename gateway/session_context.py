@@ -80,6 +80,10 @@ _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_ID_ALT: ContextVar = ContextVar("HERMES_SESSION_USER_ID_ALT", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+# Discord-specific authenticated guild provenance. Unlike scope_id, this is
+# deliberately not platform-neutral and must only be bound by the gateway from
+# a Discord SessionSource.
+_SESSION_GUILD_ID: ContextVar = ContextVar("HERMES_SESSION_GUILD_ID", default=_UNSET)
 # Platform-neutral scope discriminator (Discord guild / Slack workspace /
 # Matrix server) of the originating chat. Captured at session-bind time so
 # async producers (delegate_task background=True, terminal watchers) can
@@ -151,6 +155,7 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_ID_ALT": _SESSION_USER_ID_ALT,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
+    "HERMES_SESSION_GUILD_ID": _SESSION_GUILD_ID,
     "HERMES_SESSION_SCOPE_ID": _SESSION_SCOPE_ID,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
@@ -231,6 +236,7 @@ def set_session_vars(
     user_id: str = "",
     user_id_alt: str = "",
     user_name: str = "",
+    guild_id: str = "",
     scope_id: str = "",
     session_key: str = "",
     session_id: str = "",
@@ -277,6 +283,7 @@ def set_session_vars(
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_ID_ALT.set(user_id_alt),
         _SESSION_USER_NAME.set(user_name),
+        _SESSION_GUILD_ID.set(guild_id),
         _SESSION_SCOPE_ID.set(scope_id),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
@@ -318,6 +325,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_ID_ALT,
         _SESSION_USER_NAME,
+        _SESSION_GUILD_ID,
         _SESSION_SCOPE_ID,
         _SESSION_KEY,
         _SESSION_ID,

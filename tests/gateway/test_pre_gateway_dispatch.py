@@ -12,7 +12,8 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import SessionContext, SessionSource
+from gateway.session_context import get_session_env
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -118,3 +119,52 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_hook_and_handler_share_authenticated_source(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "*")
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            source = kwargs["event"].source
+            seen["hook"] = (source.guild_id, source.user_id, source.chat_id)
+            return [{"action": "allow"}]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        context = SessionContext(source=source, connected_platforms=[], home_channels={})
+        tokens = runner._set_session_env(context)
+        try:
+            seen["handler"] = (
+                get_session_env("HERMES_SESSION_GUILD_ID"),
+                get_session_env("HERMES_SESSION_USER_ID"),
+                get_session_env("HERMES_SESSION_CHAT_ID"),
+            )
+        finally:
+            runner._clear_session_env(tokens)
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.DISCORD)
+    runner._handle_message_with_agent = _capture
+    event = MessageEvent(
+        text="approve",
+        message_id="500",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            user_id="100",
+            chat_id="200",
+            chat_type="group",
+            guild_id="300",
+        ),
+    )
+
+    await runner._handle_message(event)
+
+    assert seen == {
+        "hook": ("300", "100", "200"),
+        "handler": ("300", "100", "200"),
+    }

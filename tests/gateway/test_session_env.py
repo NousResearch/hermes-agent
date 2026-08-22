@@ -273,3 +273,115 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
 
+
+
+def test_discord_guild_provenance_is_bound_and_cleared(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setenv("HERMES_SESSION_GUILD_ID", "stale")
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="200",
+        user_id="100",
+        guild_id="300",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    assert get_session_env("HERMES_SESSION_GUILD_ID") == "300"
+    runner._clear_session_env(tokens)
+    assert get_session_env("HERMES_SESSION_GUILD_ID") == ""
+
+
+def test_non_discord_scope_never_becomes_guild_provenance():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="200",
+        user_id="100",
+        scope_id="workspace",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_GUILD_ID") == ""
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_discord_guild_scope_disagreement_fails_closed():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="200",
+        user_id="100",
+        guild_id="300",
+    )
+    source.scope_id = "other"
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_GUILD_ID") == ""
+    finally:
+        runner._clear_session_env(tokens)
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_discord_guild_and_user_provenance():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="200",
+        user_id="100",
+        guild_id="300",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        result = await runner._run_in_executor_with_context(
+            lambda: (
+                get_session_env("HERMES_SESSION_GUILD_ID"),
+                get_session_env("HERMES_SESSION_USER_ID"),
+            )
+        )
+    finally:
+        runner._clear_session_env(tokens)
+        runner._shutdown_executor()
+
+    assert result == ("300", "100")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_discord_contexts_keep_guild_and_user_pairs_isolated():
+    results = {}
+
+    async def bind(name, guild_id, user_id, delay):
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=name,
+            user_id=user_id,
+            guild_id=guild_id,
+        )
+        context = SessionContext(source=source, connected_platforms=[], home_channels={})
+        tokens = runner._set_session_env(context)
+        try:
+            await asyncio.sleep(delay)
+            results[name] = (
+                get_session_env("HERMES_SESSION_GUILD_ID"),
+                get_session_env("HERMES_SESSION_USER_ID"),
+            )
+        finally:
+            runner._clear_session_env(tokens)
+
+    await asyncio.gather(
+        bind("a", "guild-a", "user-a", 0.02),
+        bind("b", "guild-b", "user-b", 0),
+    )
+
+    assert results == {
+        "a": ("guild-a", "user-a"),
+        "b": ("guild-b", "user-b"),
+    }

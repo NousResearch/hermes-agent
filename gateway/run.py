@@ -24614,6 +24614,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        source_guild_id = str(getattr(context.source, "guild_id", "") or "")
+        source_scope_id = str(getattr(context.source, "scope_id", "") or "")
+        guild_id = ""
+        if context.source.platform is Platform.DISCORD:
+            if source_guild_id and source_scope_id and source_guild_id != source_scope_id:
+                guild_id = ""
+            else:
+                guild_id = source_guild_id or source_scope_id
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -24625,6 +24633,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
+            guild_id=guild_id,
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",

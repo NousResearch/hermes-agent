@@ -374,6 +374,8 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.guild_id is None
+    assert event.source.scope_id is None
     assert "TestGuild" in event.source.chat_name
 
 
@@ -395,6 +397,8 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.guild_id is None
+    assert event.source.scope_id is None
     assert "TestGuild" in event.source.chat_name
 
 
@@ -602,3 +606,16 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     )
 
 
+
+
+def test_normal_discord_source_retains_authenticated_guild_and_user(adapter):
+    source = adapter.build_source(
+        chat_id="200",
+        chat_type="group",
+        guild_id="300",
+        user_id="100",
+    )
+
+    assert source.guild_id == "300"
+    assert source.scope_id == "300"
+    assert source.user_id == "100"

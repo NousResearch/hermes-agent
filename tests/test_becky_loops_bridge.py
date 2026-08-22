@@ -246,6 +246,28 @@ class FakeReplyGenerator:
         return str(outcome)
 
 
+class FakeAgentDispatcher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def dispatch(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        session_id: str,
+        text: str,
+        reply_to_message_id: str,
+    ) -> None:
+        self.calls.append({
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "session_id": session_id,
+            "text": text,
+            "reply_to_message_id": reply_to_message_id,
+        })
+
+
 class RevisionMutatingReplyGenerator(FakeReplyGenerator):
     def __init__(self, store: FakeStore) -> None:
         super().__init__(["Retained normalized answer."])
@@ -501,6 +523,7 @@ def reply_server(
     store: FakeStore | None = None,
     sender: FakeTopicSender | None = None,
     generator: FakeReplyGenerator | None = None,
+    agent_dispatcher: FakeAgentDispatcher | None = None,
 ) -> BeckyLoopsBridgeServer:
     return BeckyLoopsBridgeServer(
         config=config(topic_reply="bot_api_private_topic"),
@@ -508,6 +531,7 @@ def reply_server(
         summarizer=FakeSummarizer(),
         topic_sender=sender or FakeTopicSender(),
         reply_generator=generator or FakeReplyGenerator(),
+        agent_dispatcher=agent_dispatcher,
     )
 
 
@@ -1065,6 +1089,66 @@ async def test_bridge_accepts_a_five_thousand_character_comment() -> None:
 
     assert response["result"]["answer_state"] == "answered"
     assert generator.calls[0]["comment"] == "x" * 5_000
+
+
+@pytest.mark.asyncio
+async def test_bridge_dispatches_app_reply_into_the_real_agent_session() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    dispatcher = FakeAgentDispatcher()
+    server = reply_server(
+        sender=sender,
+        generator=generator,
+        agent_dispatcher=dispatcher,
+    )
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(text="Please turn on the porch light."),
+        })
+    )
+
+    assert response["result"]["answer_state"] == "answer_pending"
+    assert sender.calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "20197",
+            "text": "Please turn on the porch light.",
+            "reply_to_message_id": None,
+        }
+    ]
+    assert dispatcher.calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "20197",
+            "session_id": "session-1",
+            "text": "Please turn on the porch light.",
+            "reply_to_message_id": "101",
+        }
+    ]
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_does_not_dispatch_the_same_pending_reply_twice() -> None:
+    dispatcher = FakeAgentDispatcher()
+    server = reply_server(agent_dispatcher=dispatcher)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    first = await server._dispatch(request)
+    second = await server._dispatch(json.dumps({**json.loads(request), "id": 2}))
+
+    assert first["result"]["answer_state"] == "answer_pending"
+    assert second["result"]["answer_state"] == "answer_pending"
+    assert len(dispatcher.calls) == 1
 
 
 @pytest.mark.asyncio

@@ -128,6 +128,20 @@ class TopicSender(Protocol):
     ) -> TopicSendReceipt: ...
 
 
+class AgentReplyDispatcher(Protocol):
+    """Dispatch a dashboard comment through the real platform agent session."""
+
+    async def dispatch(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        session_id: str,
+        text: str,
+        reply_to_message_id: str,
+    ) -> None: ...
+
+
 class TopicController(Protocol):
     @property
     def is_connected(self) -> bool: ...
@@ -671,6 +685,7 @@ class BeckyLoopsBridgeServer:
         topic_sender: TopicSender | None = None,
         topic_controller: TopicController | None = None,
         reply_generator: ReplyGenerator | None = None,
+        agent_dispatcher: AgentReplyDispatcher | None = None,
     ) -> None:
         if not config.enabled:
             raise ValueError("Becky loops bridge is disabled")
@@ -686,6 +701,7 @@ class BeckyLoopsBridgeServer:
         self.topic_sender = topic_sender
         self.topic_controller = topic_controller
         self.reply_generator = reply_generator
+        self.agent_dispatcher = agent_dispatcher
         self._reply_attempts: dict[str, _ReplyAttempt] = {}
         self._reply_attempts_lock = asyncio.Lock()
         self._new_topic_answers: dict[
@@ -1303,6 +1319,34 @@ class BeckyLoopsBridgeServer:
                         raise _RemoteFailure("reply_send_failed") from None
                     attempt.comment_message_id = receipt.message_id
                     attempt.comment_sent_at = datetime.now(UTC).isoformat()
+                if self.agent_dispatcher is not None and attempt.answer is None:
+                    if attempt.state == "answer_pending":
+                        return self._reply_attempt_result(attempt)
+                    try:
+                        row, _, current_revision = self._current_topic(
+                            attempt.source_ref, attempt.expected_revision
+                        )
+                    except _RemoteFailure:
+                        attempt.state = "answer_pending"
+                        raise
+                    try:
+                        await self.agent_dispatcher.dispatch(
+                            chat_id=self.config.chat_id,
+                            thread_id=attempt.thread_id,
+                            session_id=str(row["session_id"]),
+                            text=attempt.comment,
+                            reply_to_message_id=attempt.comment_message_id,
+                        )
+                    except asyncio.CancelledError:
+                        attempt.state = "answer_pending"
+                        raise
+                    except Exception:
+                        attempt.state = "answer_unavailable"
+                        return self._reply_attempt_result(attempt)
+                    attempt.state = "answer_pending"
+                    result = self._reply_attempt_result(attempt)
+                    result["revision"] = current_revision
+                    return result
                 if attempt.answer is None:
                     try:
                         row, transcript, _ = self._current_topic(
@@ -1878,6 +1922,7 @@ async def start_becky_loops_bridge(
     topic_sender: TopicSender | None = None,
     topic_controller: TopicController | None = None,
     reply_generator: ReplyGenerator | None = None,
+    agent_dispatcher: AgentReplyDispatcher | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
     if config is None or not config.enabled:
@@ -1895,6 +1940,7 @@ async def start_becky_loops_bridge(
             ),
             topic_sender=topic_sender,
             topic_controller=topic_controller,
+            agent_dispatcher=agent_dispatcher,
             reply_generator=(
                 reply_generator
                 if reply_generator is not None

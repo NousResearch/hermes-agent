@@ -3000,6 +3000,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
 
+    async def _dispatch_becky_agent_reply(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        session_id: str,
+        text: str,
+        reply_to_message_id: str,
+    ) -> None:
+        """Queue an app-originated comment through the real Telegram agent.
+
+        The loop bridge has already delivered the visible ``Cory via Becky``
+        comment.  This synthetic event is the authenticated handoff into the
+        normal Telegram session pipeline, so the existing topic session,
+        tools, approvals, and transcript persistence all remain authoritative.
+        ``BasePlatformAdapter.handle_message`` intentionally returns after
+        scheduling the agent work; the resulting answer is delivered by the
+        ordinary Telegram adapter in the same topic.
+        """
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        handle_message = getattr(adapter, "handle_message", None)
+        if not callable(handle_message):
+            raise RuntimeError("Telegram agent adapter is unavailable")
+        chat_type = "group" if str(chat_id).startswith("-") else "dm"
+        import uuid as _uuid
+
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id),
+                chat_type=chat_type,
+                thread_id=str(thread_id),
+            ),
+            message_id=f"becky-dashboard-{_uuid.uuid4().hex}",
+            metadata={"becky_dashboard_reply": True},
+            internal=True,
+        )
+        session_store = getattr(self, "session_store", None)
+        lookup = getattr(session_store, "lookup_by_session_id", None)
+        session_entry = lookup(session_id) if callable(lookup) else None
+        if session_entry is not None:
+            try:
+                await asyncio.to_thread(
+                    self._record_telegram_topic_binding, source, session_entry
+                )
+            except Exception:
+                logger.debug(
+                    "Unable to bind dashboard reply to its source session",
+                    exc_info=True,
+                )
+        await handle_message(event)
+
     async def _start_becky_loops_bridge(self) -> None:
         """Start the opt-in loopback bridge over the gateway's read-only DB."""
         mtproto_controller = None
@@ -3057,6 +3111,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_store=getattr(self, "session_store", None),
                 topic_sender=topic_sender,
                 topic_controller=topic_controller,
+                agent_dispatcher=(
+                    self._dispatch_becky_agent_reply
+                    if topic_sender is not None
+                    else None
+                ),
             )
             if self._becky_loops_bridge is None and mtproto_controller is not None:
                 await mtproto_controller.stop()

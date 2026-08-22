@@ -105,6 +105,37 @@ async def test_lifecycle_stays_read_only_without_sender() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_dispatches_dashboard_reply_into_telegram_agent_pipeline() -> None:
+    class FakeTelegramAdapter:
+        def __init__(self) -> None:
+            self.events = []
+
+        async def handle_message(self, event) -> None:
+            self.events.append(event)
+
+    adapter = FakeTelegramAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    await runner._dispatch_becky_agent_reply(
+        chat_id="-1004476874933",
+        thread_id="3964",
+        session_id="session-1",
+        text="Please turn on the porch light.",
+        reply_to_message_id="101",
+    )
+
+    event = adapter.events[0]
+    assert event.text == "Please turn on the porch light."
+    assert event.source.platform is Platform.TELEGRAM
+    assert event.source.chat_id == "-1004476874933"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "3964"
+    assert event.message_id.startswith("becky-dashboard-")
+    assert event.internal is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("topic_reply", "adapter_present", "expect_sender"),
     [
@@ -147,8 +178,10 @@ async def test_runner_passes_only_a_connected_explicitly_proven_telegram_sender(
     if expect_sender:
         assert isinstance(sender, becky_loops.TelegramTopicSender)
         assert sender._adapter is adapter
+        assert callable(captured[0]["agent_dispatcher"])
     else:
         assert sender is None
+        assert captured[0]["agent_dispatcher"] is None
 
 
 @pytest.mark.asyncio

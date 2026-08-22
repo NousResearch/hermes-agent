@@ -10236,6 +10236,11 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+            # #91568 loud-failure gate: refuse docker workers whose task
+            # workspace cannot be host-backed (remote DOCKER_HOST + local
+            # path). Raising here funnels into _record_spawn_failure below,
+            # so the attempt error + event + auto-block bookkeeping fire.
+            _guard_docker_remote_workspace(claimed, str(workspace))
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -10363,6 +10368,10 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+            # #91568 loud-failure gate: same contract as the ready lane —
+            # refuse docker workers whose task workspace cannot be
+            # host-backed before the review worker can lose its commits.
+            _guard_docker_remote_workspace(claimed, str(workspace))
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -10704,6 +10713,217 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+
+
+# ---------------------------------------------------------------------------
+# Remote-Docker-daemon workspace guard (#91568)
+# ---------------------------------------------------------------------------
+#
+# With a remote DOCKER_HOST the Docker daemon runs on a DIFFERENT machine
+# from the Hermes dispatcher. A bind-mount source path is validated
+# client-side (os.path.isdir in tools/environments/docker.py) but RESOLVED on
+# the daemon host — and when the source directory does not exist there,
+# Docker silently auto-creates it as a fresh empty directory. A kanban worker
+# whose task workspace is bind-mounted that way therefore sees an empty
+# sandbox instead of the real task directory: every file it writes and every
+# git commit it makes vanishes when the container exits.
+#
+# This guard is the loud-failure slice of #91568: refuse to spawn rather than
+# lose work silently. The full fix (client → docker-host path translation)
+# remains open design work. Local daemons (unix socket / npipe / loopback
+# TCP) are untouched, and operators whose workspace genuinely lives on
+# storage shared with the daemon host (e.g. NFS mounted at the same path on
+# both sides) can set ``kanban.docker_remote_workspace_force: true`` to
+# downgrade the refusal to a one-line warning.
+
+_LOCAL_DOCKER_HOST_PREFIXES = ("unix://", "npipe://", "file://")
+
+
+def _docker_host_is_remote(docker_host: Optional[str]) -> bool:
+    """Classify a DOCKER_HOST value as pointing off-host.
+
+    Unset/empty means the Docker CLI's default socket (local). Unix sockets,
+    Windows named pipes, file paths, and loopback TCP endpoints are local.
+    Anything else — ``tcp://host:port``, ``ssh://user@host``,
+    ``http(s)://`` — is remote. Unrecognizable non-empty values fail
+    closed (treated as remote).
+    """
+    if not docker_host or not str(docker_host).strip():
+        return False
+    host = str(docker_host).strip()
+    if host.lower().startswith(_LOCAL_DOCKER_HOST_PREFIXES):
+        return False
+    match = re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://([^/?#]+)", host)
+    if match is None:
+        # Path-like values without a scheme are local socket paths;
+        # anything else is unrecognized — fail closed.
+        return not host.startswith(("/", "\\\\"))
+    authority = match.group(1)
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    if authority.startswith("["):
+        # Bracketed IPv6 literal: [::1]:2375
+        end = authority.find("]")
+        hostname = (
+            authority[1:end] if end > 0 else authority.lstrip("[]")
+        ).lower()
+    else:
+        hostname = authority.split(":", 1)[0].lower()
+    if hostname in ("localhost", "::1") or hostname.startswith("127."):
+        return False
+    return True
+
+
+def _workspace_path_is_network_shared(workspace: str) -> bool:
+    """True for UNC-style paths that plausibly exist on both machines.
+
+    ``\\\\server\\share\\...`` (or its POSIX spelling ``//server/share/...``)
+    names its own host, so the same network share can be mounted by both the
+    dispatcher machine and the Docker daemon host. Everything else — drive
+    letters, plain POSIX absolute paths — cannot be verified remotely and is
+    treated as unshared.
+    """
+    path = (workspace or "").strip()
+    return path.startswith("\\\\") or path.startswith("//")
+
+
+def _docker_remote_workspace_refusal_reason(
+    workspace: str,
+    docker_host: Optional[str],
+) -> Optional[str]:
+    """Return a human-readable refusal reason, or None when safe to proceed.
+
+    Pure decision core of the #91568 guard so tests can cover the matrix
+    without touching config or env. The message front-loads the issue
+    reference and both identifiers because ``last_failure_error`` is
+    truncated to 500 chars on the task row.
+    """
+    if not _docker_host_is_remote(docker_host):
+        return None
+    if _workspace_path_is_network_shared(workspace):
+        return None
+    return (
+        f"(#91568) refusing docker kanban spawn: DOCKER_HOST='{docker_host}' "
+        f"is remote but task workspace '{workspace}' is local to the Hermes "
+        f"host; bind-mount sources resolve on the daemon host, which "
+        f"auto-creates missing dirs, so commits would be lost on container "
+        f"exit. To proceed, share the workspace at an identical network path "
+        f"on both hosts and set kanban.docker_remote_workspace_force: true."
+    )
+
+
+def _assignee_docker_guard_config(assignee: Optional[str]) -> dict:
+    """Resolve the assignee profile's terminal backend + force-flag config.
+
+    Mirrors :func:`_resolve_worker_cli_toolsets`: the worker re-enters the
+    CLI with ``-p <assignee>``, so its terminal backend comes from the
+    profile's own config.yaml, not the dispatching process's. Returns {}
+    on any resolution failure — the guard must never break dispatch on
+    exotic setups (same posture as toolset resolution).
+
+    Note: ``force`` is the deep-merged value for the PROFILE (defaults fill
+    it with False, not None). The caller therefore treats it as "profile
+    explicitly opted in" only when truthy and consults the dispatcher's own
+    config as well — either side acknowledging shared storage enables the
+    warning mode.
+    """
+    if not assignee:
+        return {}
+    try:
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.config import load_config
+        from hermes_cli.profiles import (
+            normalize_profile_name,
+            resolve_profile_env,
+        )
+
+        token = set_hermes_home_override(
+            resolve_profile_env(normalize_profile_name(assignee))
+        )
+        try:
+            cfg = load_config()
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:
+        _log.debug(
+            "kanban dispatch: docker remote-workspace guard skipped for "
+            "assignee %r (%s)",
+            assignee,
+            exc,
+        )
+        return {}
+    term = cfg.get("terminal") or {}
+    return {
+        "backend": str(term.get("backend") or "").strip().lower(),
+        "mount_cwd": bool(term.get("docker_mount_cwd_to_workspace")),
+        "force": bool(
+            (cfg.get("kanban") or {}).get("docker_remote_workspace_force")
+        ),
+    }
+
+
+def _guard_docker_remote_workspace(task: Task, workspace: str) -> None:
+    """Loud-failure gate for docker workers with unverifiable workspaces.
+
+    Called at spawn-time workspace resolution in :func:`_dispatch_once_locked`
+    (both lanes). Raises :class:`ValueError` when the dangerous combination is
+    detected — the caller funnels that into ``_record_spawn_failure`` so the
+    dispatch attempt error + task event + auto-block circuit breaker all fire.
+    Downgrades to a one-line warning when the operator set
+    ``kanban.docker_remote_workspace_force: true`` — checked in the worker
+    profile's config AND in the dispatcher's own config (either side may
+    acknowledge genuinely shared storage).
+
+    No-op unless ALL of these hold: the assignee's terminal backend is
+    ``docker``, ``terminal.docker_mount_cwd_to_workspace`` is enabled (the
+    configuration that promises the real workspace is visible in the
+    container), DOCKER_HOST points off-host, and the workspace path is not
+    plausibly shared with the daemon host.
+    """
+    gc = _assignee_docker_guard_config(task.assignee)
+    if not gc:
+        return
+    if gc.get("backend") != "docker":
+        return
+    # Without the cwd→/workspace mount there is no bind whose source path
+    # the daemon resolves; the container runs an isolated tmpfs/sandbox
+    # workspace BY DESIGN (the mount flag is documented explicit opt-in).
+    if not gc.get("mount_cwd"):
+        return
+    docker_host = os.environ.get("DOCKER_HOST")
+    reason = _docker_remote_workspace_refusal_reason(
+        str(workspace), docker_host
+    )
+    if reason is None:
+        return
+    force = bool(gc.get("force"))
+    if not force:
+        try:
+            from hermes_cli.config import load_config
+
+            force = bool(
+                (load_config().get("kanban") or {}).get(
+                    "docker_remote_workspace_force"
+                )
+            )
+        except Exception:
+            force = False
+    if force:
+        _log.warning(
+            "kanban dispatch: task %s workspace %r is not guaranteed to be "
+            "host-backed (DOCKER_HOST=%r); commits would be lost on "
+            "container exit — proceeding because "
+            "kanban.docker_remote_workspace_force is enabled",
+            task.id,
+            workspace,
+            docker_host,
+        )
+        return
+    _log.error("kanban dispatch: task %s spawn refused: %s", task.id, reason)
+    raise ValueError(reason)
 
 
 def _default_spawn(

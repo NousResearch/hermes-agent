@@ -2688,6 +2688,17 @@ DEFAULT_CONFIG = {
         # so stale rows don't accumulate and get scanned on every notifier
         # tick forever. Set 0 to disable the sweep.
         "done_sub_retention_days": 30,
+        # Fail-closed workspace guard (#91568): when a docker-backend worker's
+        # DOCKER_HOST points at a remote daemon (tcp:// / ssh://) and its task
+        # workspace is a plain local path, the dispatcher refuses to spawn —
+        # bind-mount sources are validated client-side but resolved on the
+        # daemon host, which auto-creates missing dirs, so worker commits
+        # would silently vanish when the container exits. Set true ONLY when
+        # the workspace genuinely lives on storage shared with the Docker
+        # host (e.g. an NFS mount visible at the same path on both sides);
+        # this downgrades the refusal to a one-line warning at spawn. Local
+        # daemons (unix socket / npipe) are never affected by this guard.
+        "docker_remote_workspace_force": False,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

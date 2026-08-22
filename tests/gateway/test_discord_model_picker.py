@@ -71,7 +71,7 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
         edit_original_response=AsyncMock(side_effect=edit_original_response),
     )
 
-    await view._on_model_selected(interaction)
+    await view._model_button_clicked(interaction, "gpt-5.4")
 
     assert events == [
         ("initial-edit", "⚙ Switching Model", "Switching to `gpt-5.4`...", None),

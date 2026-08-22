@@ -9187,6 +9187,9 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
             self._selected_provider: str = ""
             self._pending_expensive_model: str = ""
+            self._model_page: int = 0
+            self._model_pages: int = 1
+            self._free_only: bool = True
 
             self._build_provider_select()
 
@@ -9231,15 +9234,16 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown(s) for a specific provider.
+            """Build the model picker as a paginated button grid.
 
-            Discord caps each ``discord.ui.Select`` at 25 options and a View at
-            5 action rows. We keep 2 rows for Back/Cancel, so partition the
-            model list across up to 3 select menus (75 slots) instead of
-            truncating at 25. This matters for providers like Nous whose
-            curated + Portal free-recommendation list exceeds 25 entries — the
-            tail (typically the ``:free`` Portal picks) was previously dropped
-            on Discord, so free-tier models never surfaced there.
+            A Discord View caps at 5 action rows, which a select-menu picker
+            spends on up to 3 partitioned dropdowns (75 models) plus Back/Cancel
+            — anything past that silently clips. Buttons fit 20 models per page
+            (4 rows × 5 columns) with a persistent 5th row for pagination and
+            actions, so providers with hundreds of models (e.g. NVIDIA NIM at
+            139) are fully reachable. Models are sorted alphabetically and
+            deduplicated — duplicate select/button values from flaky APIs (NIM
+            returns dupes) cause HTTP 400 on submit.
             """
             self.clear_items()
             provider = next(
@@ -9248,58 +9252,88 @@ def _define_discord_view_classes() -> None:
             if not provider:
                 return
 
-            models = provider.get("models", [])
+            # Free-only mode shows the provider's free subset when one is
+            # available (OpenRouter free picks, Portal recommendations).
+            has_free = bool(provider.get("free_models"))
+            models = (
+                provider["free_models"]
+                if self._free_only and has_free
+                else provider.get("models", [])
+            )
             if not models:
                 return
 
-            # Slice the model list into <= 25-option chunks across (up to) 3
-            # select rows: 3 selects + Back/Cancel = 5 rows, Discord's View cap.
-            # Providers past that would still clip, but none currently do.
-            chunks = [
-                models[
-                    i : i + _DISCORD_SELECT_MAX_OPTIONS
-                ]
-                for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
-            ][
-                : _DISCORD_SELECT_MAX_ROWS - 2
-            ]  # keep 2 rows for Back/Cancel
+            # Sort alphabetically (case-insensitive), then dedupe. Dedup after
+            # sort so the first occurrence of a repeated id wins deterministically.
+            sorted_models = sorted(models, key=lambda m: m.lower())
+            seen: set = set()
+            deduped = [m for m in sorted_models if not (m in seen or seen.add(m))]
 
-            placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
-            for idx, chunk in enumerate(chunks):
-                options = []
-                for model_id in chunk:
-                    short = model_id.split("/")[-1] if "/" in model_id else model_id
-                    options.append(
-                        discord.SelectOption(
-                            label=_truncate_discord_component_text(
-                                short,
-                                _DISCORD_SELECT_FIELD_LIMIT,
-                            ),
-                            value=_truncate_discord_component_text(
-                                model_id,
-                                _DISCORD_SELECT_FIELD_LIMIT,
-                            ),
-                        )
-                    )
-                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
-                select = discord.ui.Select(
-                    placeholder=f"{placeholder_base}{suffix}...",
-                    options=options,
-                    custom_id=f"model_model_select_{idx}",
+            per_page = 20  # 4 rows × 5 buttons; row 4 (0-indexed) is nav/actions
+            total_pages = max(1, (len(deduped) + per_page - 1) // per_page)
+            page = min(self._model_page, total_pages - 1)
+            self._model_page = page
+            self._model_pages = total_pages
+            page_models = deduped[page * per_page : (page + 1) * per_page]
+
+            row = 0
+            col = 0
+            for model_id in page_models:
+                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                btn = discord.ui.Button(
+                    label=_truncate_discord_component_text(
+                        short, _DISCORD_BUTTON_LABEL_LIMIT
+                    ),
+                    style=discord.ButtonStyle.secondary,
+                    row=row,
                 )
-                # All model selects resolve through the same handler — the
-                # selected value is the model id, identical across rows.
-                select.callback = self._on_model_selected
-                self.add_item(select)
+                mid = model_id
+                btn.callback = lambda i, m=mid: self._model_button_clicked(i, m)
+                self.add_item(btn)
+                col += 1
+                if col >= 5:
+                    col = 0
+                    row += 1
+
+            # Row 4: pagination + actions (always visible — no closing the
+            # view to flip pages).
+            row4 = 4
+            if total_pages > 1:
+                if page > 0:
+                    prev_btn = discord.ui.Button(
+                        label="◀ Prev", style=discord.ButtonStyle.grey, row=row4
+                    )
+                    prev_btn.callback = self._on_model_prev
+                    self.add_item(prev_btn)
+                if page < total_pages - 1:
+                    nxt_btn = discord.ui.Button(
+                        label="Next ▶", style=discord.ButtonStyle.grey, row=row4
+                    )
+                    nxt_btn.callback = self._on_model_next
+                    self.add_item(nxt_btn)
+
+            if has_free:
+                free_label = "🆓 Free" if self._free_only else "💳 All"
+                free_btn = discord.ui.Button(
+                    label=free_label,
+                    style=(
+                        discord.ButtonStyle.green
+                        if self._free_only
+                        else discord.ButtonStyle.grey
+                    ),
+                    row=row4,
+                )
+                free_btn.callback = self._on_free_toggle
+                self.add_item(free_btn)
 
             back_btn = discord.ui.Button(
-                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
+                label="◀ Back", style=discord.ButtonStyle.grey, row=row4
             )
             back_btn.callback = self._on_back
             self.add_item(back_btn)
 
             cancel_btn = discord.ui.Button(
-                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel2"
+                label="Cancel", style=discord.ButtonStyle.red, row=row4
             )
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
@@ -9348,6 +9382,7 @@ def _define_discord_view_classes() -> None:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
+            self._model_page = 0
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
@@ -9355,21 +9390,23 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
-            # `shown` counts models actually rendered across the partitioned
-            # select menus (up to 3×25 = 75); the old code hard-capped at 25
-            # and silently dropped the tail (e.g. Nous `:free` Portal picks).
-            total = provider.get("total_models", 0) if provider else 0
-            shown = (
-                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
-                if provider
-                else 0
-            )
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+            page_info = f" (page 1/{self._model_pages})" if self._model_pages > 1 else ""
+
+            filter_note = ""
+            if provider and provider.get("free_models"):
+                shown_total = len(provider.get("models", []))
+                free_total = len(provider["free_models"])
+                if self._free_only:
+                    filter_note = f"\n*Showing {free_total} free of {shown_total} models*"
+                else:
+                    filter_note = f"\n*All {shown_total} models*"
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    description=(
+                        f"Provider: **{pname}**{page_info}\nSelect a model:{filter_note}"
+                    ),
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -9420,7 +9457,11 @@ def _define_discord_view_classes() -> None:
                 view=None,
             )
 
-        async def _on_model_selected(self, interaction: discord.Interaction):
+        async def _model_button_clicked(
+            self, interaction: discord.Interaction, model_id: str
+        ):
+            """Handle a model button click — switch immediately (or confirm
+            when the model is unusually expensive)."""
             if self.resolved:
                 await interaction.response.send_message(
                     "Already resolved~", ephemeral=True
@@ -9432,7 +9473,6 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
-            model_id = interaction.data["values"][0]
             warning = await self._expensive_warning_for(model_id)
             if warning is not None:
                 self._build_expensive_confirm(model_id)
@@ -9447,6 +9487,73 @@ def _define_discord_view_classes() -> None:
                 return
 
             await self._switch_selected_model(interaction, model_id)
+
+        async def _render_model_page(self, interaction: discord.Interaction):
+            """Rebuild the model grid after a page/filter change and re-render."""
+            self._build_model_select(self._selected_provider)
+            provider = next(
+                (p for p in self.providers if p["slug"] == self._selected_provider),
+                None,
+            )
+            pname = (
+                provider.get("name", self._selected_provider)
+                if provider
+                else self._selected_provider
+            )
+            page_info = (
+                f" (page {self._model_page + 1}/{self._model_pages})"
+                if self._model_pages > 1
+                else ""
+            )
+
+            # Make the free filter self-explanatory: "showing N free of M".
+            filter_note = ""
+            if provider and provider.get("free_models"):
+                shown_total = len(provider.get("models", []))
+                free_total = len(provider["free_models"])
+                if self._free_only:
+                    filter_note = f"\n*Showing {free_total} free of {shown_total} models*"
+                else:
+                    filter_note = f"\n*All {shown_total} models*"
+
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=(
+                        f"Provider: **{pname}**{page_info}\nSelect a model:{filter_note}"
+                    ),
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_model_prev(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self._model_page = max(0, self._model_page - 1)
+            await self._render_model_page(interaction)
+
+        async def _on_model_next(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self._model_page = min(self._model_pages - 1, self._model_page + 1)
+            await self._render_model_page(interaction)
+
+        async def _on_free_toggle(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self._free_only = not self._free_only
+            self._model_page = 0
+            await self._render_model_page(interaction)
 
         async def _on_expensive_confirm(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):

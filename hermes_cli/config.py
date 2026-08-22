@@ -3611,6 +3611,61 @@ def apply_terminal_config_to_env(
     return target
 
 
+#: Keys recognized inside the top-level ``model:`` block. ``api_base``,
+#: ``base_url``, ``context_length``, ``default``, ``model``, ``name`` and
+#: ``provider`` are consumed by :func:`_normalize_root_model_keys`;
+#: ``timeout_seconds`` and ``stale_timeout_seconds`` are read in
+#: ``hermes_cli/timeouts.py``.
+_KNOWN_MODEL_KEYS = {
+    "api_base",
+    "base_url",
+    "context_length",
+    "default",
+    "model",
+    "name",
+    "provider",
+    "stale_timeout_seconds",
+    "timeout_seconds",
+}
+
+#: Dedup set for the model-block warning, mirroring
+#: ``_PROVIDER_NORMALIZE_WARNED``.
+_MODEL_NORMALIZE_WARNED: set = set()
+
+
+def _warn_unknown_model_keys(user_config: Any) -> None:
+    """Warn about unrecognized keys in the user's ``model:`` block.
+
+    ``providers.*`` already validates its keys and logs the ones it drops;
+    the ``model:`` block did not, so a misspelled or unsupported key there was
+    ignored in complete silence and the user had no way to tell it had not
+    taken effect.
+
+    Deliberately reads the USER's config rather than the merged result: the
+    merged config carries ``DEFAULT_CONFIG`` keys too, and warning about those
+    would be noise. Also deliberately not placed in
+    :func:`_normalize_root_model_keys`, which returns early when a config needs
+    no normalization -- a check there would skip exactly the already-canonical
+    configs it is supposed to cover.
+    """
+    if not isinstance(user_config, dict):
+        return
+    model_block = user_config.get("model")
+    if not isinstance(model_block, dict):
+        # ``model: "some/model-id"`` is a valid shorthand, not a block.
+        return
+    unknown = set(model_block.keys()) - _KNOWN_MODEL_KEYS
+    if not unknown:
+        return
+    signature = ",".join(sorted(unknown))
+    if signature in _MODEL_NORMALIZE_WARNED:
+        return
+    _MODEL_NORMALIZE_WARNED.add(signature)
+    logger.warning(
+        "model: unknown config keys ignored: %s", ", ".join(sorted(unknown))
+    )
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
@@ -3674,6 +3729,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
+
+                _warn_unknown_model_keys(user_config)
 
                 config = _deep_merge(config, user_config)
             except Exception as e:

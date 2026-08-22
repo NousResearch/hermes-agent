@@ -151,6 +151,15 @@ jobs:
         run: |
           ruff check .
 
+      - name: Fetch content_class contract (blocking)
+        # Every production fetch_with_fallback call must explicitly declare
+        # content_class= so the supply-chain decision (may a third-party
+        # mirror supply these bytes?) is visible at the call site. A call
+        # that omits it silently relies on the executed-content default —
+        # exactly the drift that caused the #81883 mirror-fallback finding.
+        run: |
+          python scripts/check_fetch_content_class.py
+
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
     # os.killpg, os.setsid, signal.SIGKILL without getattr fallback,

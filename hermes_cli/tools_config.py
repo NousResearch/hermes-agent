@@ -1521,6 +1521,7 @@ def _run_cua_driver_installer(
     system = _plat.system()
     is_windows = system == "Windows"
     is_linux = system == "Linux"
+    fetch_env: Optional[Dict[str, str]] = None  # set by the POSIX script-download path below
 
     if is_windows:
         # Mirror the one-liner printed by cua_driver_install_hint().
@@ -1553,28 +1554,87 @@ def _run_cua_driver_installer(
         manual_hint = f'/bin/bash -c "$(curl -fsSL {install_url})"'
         fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")
         os.close(fd)
+        # Fetch with the proxy-aware official-then-mirror strategy so the
+        # install script downloads on proxied/blocked networks too. The
+        # installer env (telemetry policy + detected proxy) is built once
+        # here and reused when executing the script below, so the script's
+        # own internal curl (which fetches the release tarball from GitHub)
+        # also goes through the proxy.
+        #
+        # Security: this script is executed via /bin/bash below, so it must
+        # NEVER be supplied by a third-party mirror. `content_class="executed"`
+        # (the default) permanently disables mirrors at the API level — even
+        # an accidental allow_mirrors=True is ignored — keeping the fetch
+        # official-only (explicit proxy → system proxy → direct), matching the
+        # documented "mirrors opt-in by default" contract. Mirror fallback is
+        # for non-executed payloads that opt in.
         try:
-            dl = subprocess.run(
-                ["curl", "-fsSL", "-o", script_path, install_url],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+            from hermes_cli.net_download import fetch_with_fallback, proxy_env_for
+        except ImportError:  # pragma: no cover - defensive; net_download is local
+            fetch_with_fallback = None
+            proxy_env_for = None
+        fetch_env = proxy_env_for(_cua_driver_env()) if proxy_env_for else _cua_driver_env()
+        if fetch_with_fallback is not None:
+            ok, detail = fetch_with_fallback(
+                install_url, script_path, timeout=120, env=fetch_env,
+                content_class="executed", allow_mirrors=False,
             )
-        except (subprocess.TimeoutExpired, OSError) as e:
-            _print_warning(f"    cua-driver installer download failed: {e}")
+            if not ok:
+                _print_warning(
+                    "    cua-driver installer download failed (official URL only; "
+                    "mirrors are disabled for executed scripts): "
+                    f"{detail[:300]}"
+                )
+                # Actionable failure UX: the user must be able to reproduce
+                # and fix the network problem in seconds, not guess.
+                _print_info(
+                    "    Retry manually: curl -fsSL --connect-timeout 10 --max-time 120 "
+                    f"'{install_url}' -o /tmp/cua-driver-install.sh"
+                )
+                if fetch_env:
+                    _proxy = (
+                        fetch_env.get("HTTPS_PROXY")
+                        or fetch_env.get("HTTP_PROXY")
+                        or fetch_env.get("ALL_PROXY")
+                    )
+                    if _proxy:
+                        _print_info(f"    Proxy in use: {_proxy} — verify it is up and allow GitHub")
+                    else:
+                        _print_info(
+                            "    No proxy detected — check your network/proxy and retry; "
+                            "on macOS enable it in System Settings or export HTTPS_PROXY"
+                        )
+                _print_info(
+                    "    Docs: https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md"
+                )
+                try:
+                    os.remove(script_path)
+                except OSError:
+                    pass
+                return False
+        else:  # pragma: no cover - defensive fallback to the old behaviour
             try:
-                os.remove(script_path)
-            except OSError:
-                pass
-            return False
-        if dl.returncode != 0:
-            _print_warning(
-                "    cua-driver installer download failed: "
-                f"{(dl.stderr or '').strip()[:200]}"
-            )
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
-            return False
+                dl = subprocess.run(
+                    ["curl", "-fsSL", "-o", script_path, install_url],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                _print_warning(f"    cua-driver installer download failed: {e}")
+                try:
+                    os.remove(script_path)
+                except OSError:
+                    pass
+                return False
+            if dl.returncode != 0:
+                _print_warning(
+                    "    cua-driver installer download failed: "
+                    f"{(dl.stderr or '').strip()[:200]}"
+                )
+                try:
+                    os.remove(script_path)
+                except OSError:
+                    pass
+                return False
         install_cmd = ["/bin/bash", script_path]
     use_shell = False
 
@@ -1585,7 +1645,17 @@ def _run_cua_driver_installer(
             _print_info(f"→ {label} cua-driver (Computer Use)...")
     driver_cmd = _cua_driver_cmd()
 
-    installer_env = _cua_driver_env()
+    # Reuse the proxy-aware env built during the script download (or build it
+    # here on the Windows path where no script was fetched): the upstream
+    # installer's own curl fetches the release tarball from GitHub, which must
+    # also go through the detected proxy / mirrors.
+    if "fetch_env" not in locals() or fetch_env is None:  # Windows / fallback
+        try:
+            from hermes_cli.net_download import proxy_env_for
+        except ImportError:  # pragma: no cover
+            proxy_env_for = None
+        fetch_env = proxy_env_for(_cua_driver_env()) if proxy_env_for else _cua_driver_env()
+    installer_env = dict(fetch_env)
     if pin_version:
         # Both upstream installers (install.sh and install.ps1) honour
         # CUA_DRIVER_RS_VERSION over their baked default.

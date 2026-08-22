@@ -22,9 +22,10 @@ cleanly on missing-arch assets, and the upgrade path uses
 from __future__ import annotations
 
 import json
+import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -109,6 +110,42 @@ class TestCuaDriverRuntimeContract:
         assert "serve --approve-capability-manifest" in state["reason"]
 
 
+def _downloading_run(cmd, **kwargs):
+    """Fake ``subprocess.run`` that actually writes the curl download target.
+
+    ``curl_download`` (hermes_cli/net_download.py) now verifies the output
+    file is non-empty after a successful exit; a mock that only returns
+    ``returncode=0`` without writing the file makes every POSIX install
+    appear to fail ("empty or missing output file"). This helper scans the
+    argv for ``-o <dest>`` and writes a byte so the size check passes.
+    """
+    m = MagicMock(returncode=0, stderr="", stdout="")
+    if isinstance(cmd, list):
+        try:
+            i = cmd.index("-o")
+            dest = cmd[i + 1]
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\necho ok\n")
+        except (ValueError, IndexError, OSError):
+            pass
+    return m
+
+
+def _which_side_effect(name):
+    """Fake ``shutil.which`` that distinguishes curl from cua-driver.
+
+    The POSIX install path now looks up curl via ``shutil.which("curl")``
+    (hermes_cli/net_download.py) in addition to the cua-driver binary; a
+    blanket ``return_value`` mock would make the download argv start with
+    the cua-driver path, breaking ``dl_cmd[0] == \"curl\"`` assertions.
+    """
+    if name == "curl":
+        return "/usr/bin/curl"
+    if name == "cua-driver":
+        return "/usr/local/bin/cua-driver"
+    return None
+
+
 class TestInstallCuaDriverUpgrade:
     # ``install_cua_driver`` supports macOS, Windows AND Linux. For everything
     # below except the two unsupported-platform cases, the Linux host takes a
@@ -185,16 +222,14 @@ class TestInstallCuaDriverUpgrade:
         fake_proc.returncode = 0
         fake_proc.communicate.return_value = ("", None)
 
-        with patch(
-                 "subprocess.run",
-                 return_value=MagicMock(returncode=0, stderr=""),
-             ), \
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.run", side_effect=_downloading_run), \
              patch("subprocess.Popen", return_value=fake_proc), \
              patch.object(
-                 tools_config.shutil,
-                 "which",
-                 return_value="/usr/local/bin/cua-driver",
-             ), \
+                tools_config.shutil,
+                "which",
+                side_effect=_which_side_effect,
+            ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_info") as info:
             assert tools_config._run_cua_driver_installer(
@@ -218,16 +253,14 @@ class TestInstallCuaDriverUpgrade:
         fake_proc.returncode = 0
         fake_proc.communicate.return_value = ("", None)
 
-        with patch(
-                 "subprocess.run",
-                 return_value=MagicMock(returncode=0, stderr=""),
-             ), \
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.run", side_effect=_downloading_run), \
              patch("subprocess.Popen", return_value=fake_proc), \
              patch.object(
-                 tools_config.shutil,
-                 "which",
-                 return_value="/usr/local/bin/cua-driver",
-             ), \
+                tools_config.shutil,
+                "which",
+                side_effect=_which_side_effect,
+            ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_info") as info:
             assert tools_config._run_cua_driver_installer(
@@ -885,7 +918,9 @@ class TestInstallerTimeoutKillsProcessGroup:
             killed["pgid"] = pgid
             killed["sig"] = sig
 
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(signal, "SIGKILL", sigkill, create=True), \
+             patch("subprocess.run", side_effect=_downloading_run), \
              patch("subprocess.Popen", return_value=fake_proc), \
              patch.object(
                  tools_config.os, "getpgid", return_value=99999, create=True
@@ -925,7 +960,8 @@ class TestInstallerTimeoutKillsProcessGroup:
             captured.update(kwargs)
             return fake_proc
 
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.run", side_effect=_downloading_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
@@ -1025,6 +1061,15 @@ class TestInstallerNoShell:
             m = MagicMock()
             m.returncode = download_rc
             m.stderr = "curl: (6) could not resolve" if download_rc else ""
+            # curl_download verifies a non-empty output file; write the
+            # download target so the size check passes on success.
+            if not download_rc and isinstance(cmd, list):
+                try:
+                    i = cmd.index("-o")
+                    with open(cmd[i + 1], "w", encoding="utf-8") as fh:
+                        fh.write("#!/bin/sh\necho ok\n")
+                except (ValueError, IndexError, OSError):
+                    pass
             return m
 
         def fake_popen(cmd, **kw):
@@ -1033,7 +1078,7 @@ class TestInstallerNoShell:
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
-             patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config.shutil, "which", side_effect=_which_side_effect), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
@@ -1047,9 +1092,12 @@ class TestInstallerNoShell:
         run_calls = [c for c in calls if c[0] == "run"]
         popen_calls = [c for c in calls if c[0] == "popen"]
         assert len(run_calls) == 1 and len(popen_calls) == 1
-        # Download: plain argv curl, no shell.
+        # Download: plain argv curl, no shell. The curl binary is resolved
+        # via shutil.which (net_download.curl_download), so assert the
+        # basename rather than a hardcoded argv[0] == "curl".
         dl_cmd = run_calls[0][1]
-        assert isinstance(dl_cmd, list) and dl_cmd[0] == "curl"
+        assert isinstance(dl_cmd, list)
+        assert os.path.basename(dl_cmd[0]) == "curl"
         # Exec: argv list ["/bin/bash", <mkstemp path>], shell=False.
         exec_cmd, exec_kw = popen_calls[0][1], popen_calls[0][2]
         assert isinstance(exec_cmd, list) and exec_cmd[0] == "/bin/bash"
@@ -1074,6 +1122,13 @@ class TestInstallerNoShell:
 
         def fake_run(cmd, **kw):
             m = MagicMock(); m.returncode = 0; m.stderr = ""
+            if isinstance(cmd, list):
+                try:
+                    i = cmd.index("-o")
+                    with open(cmd[i + 1], "w", encoding="utf-8") as fh:
+                        fh.write("#!/bin/sh\necho ok\n")
+                except (ValueError, IndexError, OSError):
+                    pass
             return m
 
         def fake_popen(cmd, **kw):
@@ -1082,7 +1137,7 @@ class TestInstallerNoShell:
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=fake_popen), \
-             patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
+             patch.object(tools_config.shutil, "which", side_effect=_which_side_effect), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
@@ -1199,6 +1254,13 @@ class TestRunInstallerPinEnv:
 
         def fake_run(cmd, **kw):
             m = MagicMock(); m.returncode = 0; m.stderr = ""
+            if isinstance(cmd, list):
+                try:
+                    i = cmd.index("-o")
+                    with open(cmd[i + 1], "w", encoding="utf-8") as fh:
+                        fh.write("#!/bin/sh\necho ok\n")
+                except (ValueError, IndexError, OSError):
+                    pass
             return m
 
         with patch("subprocess.run", side_effect=fake_run), \

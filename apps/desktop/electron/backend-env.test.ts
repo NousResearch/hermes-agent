@@ -186,6 +186,24 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
   assert.equal(env.Path.includes('/opt/homebrew/bin'), false)
 })
 
+test('Windows backend PATH keeps live host entries ahead of stale process extras', () => {
+  const env = buildDesktopBackendEnv({
+    hermesHome: 'C:\\Users\\test\\AppData\\Local\\hermes',
+    venvRoot: 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv',
+    currentEnv: {
+      Path: 'C:\\Stale\\Desktop\\bin;C:\\Windows\\System32'
+    },
+    hostPath: 'C:\\Windows\\System32;C:\\Host\\GitHubCLI;C:\\Host\\Git\\bin',
+    platform: 'win32',
+    pathModule: path.win32
+  })
+
+  const entries = env.Path.split(';')
+  assert.ok(entries.indexOf('C:\\Host\\GitHubCLI') >= 0)
+  assert.ok(entries.indexOf('C:\\Host\\GitHubCLI') < entries.indexOf('C:\\Stale\\Desktop\\bin'))
+  assert.equal(entries.filter(entry => entry.toLowerCase() === 'c:\\windows\\system32').length, 1)
+})
+
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {
   assert.equal(appendUniquePathEntries([':/a::/b', ['/a', '/c']], { delimiter: ':' }), '/a:/b:/c')
 })

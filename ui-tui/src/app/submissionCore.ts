@@ -11,7 +11,10 @@ export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_
 
 export interface SubmitPromptDeps {
   appendMessage: (msg: Msg) => void
-  enqueue: (text: string) => void
+  // Keyed by origin session: the requeue below fires from a `.catch` nested
+  // inside the `input.detect_drop` round-trip, so it can resolve two RPCs after
+  // the user switched sessions.
+  enqueueToSession: (sessionId: string, text: string) => void
   expand: (text: string) => string
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
@@ -94,7 +97,17 @@ export function submitPrompt(
         // the re-queue path as a safety net for any future/legacy gateway that
         // still errors, so a message is never silently dropped.
         if (isSessionBusyError(e)) {
-          deps.enqueue(submitText)
+          deps.enqueueToSession(liveSid, submitText)
+
+          // Both side effects below describe the ORIGIN session: the busy latch
+          // covers its in-flight turn, and the notice reports what landed in its
+          // queue. If the user has since switched away, applying them would mark
+          // an unrelated session busy and print a queue notice into a transcript
+          // whose queue never changed.
+          if (getUiState().sid !== liveSid) {
+            return
+          }
+
           patchUiState({ busy: true, status: 'queued for next turn' })
 
           return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)

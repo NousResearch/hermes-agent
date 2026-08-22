@@ -88,7 +88,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         text,
         {
           appendMessage,
-          enqueue: composerActions.enqueue,
+          enqueueToSession: composerActions.enqueueToSession,
           expand,
           gw,
           setLastUserMsg,
@@ -184,6 +184,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const live = getUiState()
       const mode = live.busyInputMode
 
+      // Synchronous path: no await between here and the write, so the active
+      // bucket is still the session the prompt was typed into.
       const enqueueText = () => {
         if (opts.fallbackToFront) {
           composerActions.prependQueue(item)
@@ -192,17 +194,26 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
-      const fallback = (note: string) => {
-        enqueueText()
-        sys(note)
-      }
-
       if (mode === 'queue') {
         return enqueueText()
       }
 
       if (mode === 'steer' && live.sid) {
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: item.text })
+        // The session this prompt was typed into. `session.steer` can be
+        // rejected (or fail) long after the user has switched sessions, so the
+        // requeue is keyed to this id instead of writing through the active
+        // bucket — otherwise A's prompt is appended to B and then sent into B.
+        const originSid = live.sid
+
+        const fallback = (note: string) => {
+          composerActions.enqueueToSession(originSid, item.text, {
+            display: item.display,
+            front: opts.fallbackToFront
+          })
+          sys(note)
+        }
+
+        gw.request<SessionSteerResponse>('session.steer', { session_id: originSid, text: item.text })
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 

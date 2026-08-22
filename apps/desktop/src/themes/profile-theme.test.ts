@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { modePref, skinPref } from './context'
 import { DEFAULT_SKIN_NAME } from './presets'
 
-// Skin and mode share one per-profile contract, so assert it once over both.
+// Skin and mode share the same per-profile storage contract for assignment and
+// inheritance. Validation differs intentionally: stored skin names are
+// late-bound, while mode values remain a closed enum.
 interface Pref {
   resolve: (profile: string) => string
   assign: (profile: string, value: string) => void
@@ -15,13 +17,12 @@ const cases = [
     pref: skinPref as unknown as Pref,
     fallback: DEFAULT_SKIN_NAME,
     a: 'ember',
-    b: 'catppuccin',
-    junk: 'nope'
+    b: 'catppuccin'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light', junk: 'dusk' }
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light' }
 ]
 
-describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
+describe.each(cases)('per-profile $name', ({ pref, fallback, a, b }) => {
   beforeEach(() => window.localStorage.clear())
 
   it('falls back to the default when unassigned', () => {
@@ -40,10 +41,37 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     pref.assign('default', a)
     expect(pref.resolve('never-themed')).toBe(a)
   })
+})
 
-  it('normalizes an unknown stored value back to the default', () => {
-    pref.assign('work', junk)
-    expect(pref.resolve('work')).toBe(fallback)
+describe('skin restart persistence', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('preserves an unresolved global skin name for late backend registration', () => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'trt')
+
+    expect(skinPref.resolve('default')).toBe('trt')
+  })
+
+  it('preserves an unresolved named-profile skin name for late SDK registration', () => {
+    window.localStorage.setItem('hermes-desktop-profile-themes-v1', JSON.stringify({ work: 'plugin-neon' }))
+
+    expect(skinPref.resolve('work')).toBe('plugin-neon')
+  })
+
+  it.each(['nous-light', 'default', 'gold'])('still migrates retired skin %s to the default', retired => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', retired)
+
+    expect(skinPref.resolve('default')).toBe(DEFAULT_SKIN_NAME)
+  })
+})
+
+describe('mode persistence validation', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('still normalizes an unknown stored mode back to the default', () => {
+    window.localStorage.setItem('hermes-desktop-profile-modes-v1', JSON.stringify({ work: 'dusk' }))
+
+    expect(modePref.resolve('work')).toBe('system')
   })
 })
 

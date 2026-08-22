@@ -6713,6 +6713,22 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    if sys.platform == "darwin" and len(existing) > 1:
+        # Multiple unpacked trees can coexist (e.g. a stale mac/ left behind by
+        # a cross-arch experiment next to the real mac-arm64/). Picking purely
+        # by mtime can then hand a wrong-architecture Hermes.app to the
+        # launcher, which macOS rejects with a silent no-window hang (#75612).
+        # On an arm64 host BOTH trees are "runnable" (x86_64 via Rosetta), so
+        # a mere runnability filter is a no-op — prefer the host's NATIVE arch
+        # first, then merely-runnable, then mtime when nothing parses.
+        native = _darwin_native_cpu_types()
+        preferred = [p for p in existing if _macho_cpu_types(p) & native]
+        if preferred:
+            existing = preferred
+        else:
+            runnable = [p for p in existing if _macho_matches_host_arch(p)]
+            if runnable:
+                existing = runnable
     if sys.platform == "win32" and len(existing) > 1:
         # Multiple unpacked trees can coexist (e.g. a stale win-arm64-unpacked
         # left behind by a cross-arch experiment next to the real win-unpacked).
@@ -6725,6 +6741,145 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── macOS arch guard (#75612) ─────────────────────────────────────────────
+#
+# Mach-O CPU type constants (see <mach/machine.h>).
+_MACHO_CPU_TYPE_X86_64 = 0x01000007
+_MACHO_CPU_TYPE_ARM64 = 0x0100000C
+
+# Mach-O magic constants (see <mach-o/loader.h> / <mach-o/fat.h>).
+_MH_MAGIC_64 = 0xFEEDFACF
+_MH_CIGAM_64 = 0xCFFAEDFE
+_FAT_MAGIC = 0xCAFEBABE
+_FAT_CIGAM = 0xBEBAFECA
+
+
+def _darwin_native_machine() -> str:
+    """The macOS host's NATIVE machine architecture, normalized lower.
+
+    ``platform.machine()`` reports the *process* architecture, which lies
+    under Rosetta: the desktop update chain can run an x86_64 Python (e.g.
+    from an x64-bundled runtime) on an Apple Silicon host, where
+    ``platform.machine()`` returns ``x86_64`` even though the OS is arm64.
+    An arch guard keyed to that lie would prefer the wrong-architecture
+    ``mac/`` build over the working ``mac-arm64/`` one (#75612).
+
+    The Rosetta-proof probe is ``sysctl.proc_translated``: it is ``1`` only
+    when the *current process* is x86_64 code translated onto an arm64 host,
+    so a translated process unambiguously means the native host is arm64.
+    Falls back to ``platform.machine()`` / ``hw.machine`` when not translated.
+    """
+    import platform
+    import subprocess
+
+    def _sysctl(name: str) -> Optional[str]:
+        try:
+            out = subprocess.check_output(
+                ["/usr/sbin/sysctl", "-n", name], stderr=subprocess.DEVNULL
+            )
+            return out.decode().strip() or None
+        except (OSError, subprocess.CalledProcessError):
+            return None
+
+    if _sysctl("sysctl.proc_translated") == "1":
+        return "arm64"
+    machine = platform.machine().lower()
+    if machine in ("arm64", "x86_64"):
+        return machine
+    return (_sysctl("hw.machine") or machine).lower()
+
+
+def _darwin_host_cpu_types() -> frozenset[int]:
+    """Return the set of Mach-O CPU types this macOS host can execute.
+
+    An arm64 host runs both arm64 and (under Rosetta) x86_64 binaries; an
+    x86_64 host runs only x86_64. Host detection uses the OS-native machine
+    (see ``_darwin_native_machine``), not the process architecture.
+    """
+    if _darwin_native_machine() == "arm64":
+        return frozenset({_MACHO_CPU_TYPE_ARM64, _MACHO_CPU_TYPE_X86_64})
+    return frozenset({_MACHO_CPU_TYPE_X86_64})
+
+
+def _darwin_native_cpu_types() -> frozenset[int]:
+    """Return only the host's NATIVE Mach-O CPU type — the preferred build.
+
+    Unlike ``_darwin_host_cpu_types`` (everything the host *can* run, which
+    on arm64 includes x86_64 via Rosetta), this is the single architecture
+    the launcher should prefer when several unpacked trees coexist. On an
+    arm64 host a stale x86_64 ``mac/`` tree is runnable but wrong; preferring
+    the native slice keeps the mtime race from reselecting it (#75612).
+    """
+    if _darwin_native_machine() == "arm64":
+        return frozenset({_MACHO_CPU_TYPE_ARM64})
+    return frozenset({_MACHO_CPU_TYPE_X86_64})
+
+
+def _macho_cpu_types(path: Path) -> frozenset[int]:
+    """Return the CPU types encoded in a Mach-O or fat/Universal binary.
+
+    Reads only the file header (and the fat header + arch records for
+    Universal binaries), never the whole file. Returns an empty set when
+    the file is not a recognized Mach-O layout or cannot be read.
+    """
+    import struct
+
+    try:
+        with path.open("rb") as fh:
+            magic_bytes = fh.read(4)
+            if len(magic_bytes) < 4:
+                return frozenset()
+            magic = struct.unpack(">I", magic_bytes)[0]
+
+            if magic in (_FAT_MAGIC, _FAT_CIGAM):
+                # Fat/Universal: 4-byte nfat_arch follows the magic.
+                nfat_bytes = fh.read(4)
+                if len(nfat_bytes) < 4:
+                    return frozenset()
+                nfat = struct.unpack(">I", nfat_bytes)[0]
+                cpu_types: set[int] = set()
+                for _ in range(nfat):
+                    # Each fat_arch record is 20 bytes: cputype(4), cpusubtype(4),
+                    # offset(4), size(4), align(4).
+                    record = fh.read(20)
+                    if len(record) < 20:
+                        break
+                    cpu_types.add(struct.unpack(">I", record[:4])[0])
+                return frozenset(cpu_types)
+
+            if magic in (_MH_MAGIC_64, _MH_CIGAM_64):
+                # 64-bit Mach-O: cputype is at offset 4. Every real macOS
+                # desktop binary (Intel or Apple Silicon) is little-endian on
+                # disk, so the header data fields are always read "<I". The
+                # magic constant only tells us this IS a 64-bit Mach-O; it
+                # does NOT select the data-field endianness — reading CIGAM as
+                # big-endian yields a garbage cputype (0x0c000001 instead of
+                # CPU_TYPE_ARM64 0x0100000c) and misclassifies the real arch.
+                cpu_bytes = fh.read(4)
+                if len(cpu_bytes) < 4:
+                    return frozenset()
+                return frozenset({struct.unpack("<I", cpu_bytes)[0]})
+
+            # 32-bit Mach-O and unknown formats are not launchable desktop
+            # targets on any supported macOS version.
+            return frozenset()
+    except OSError:
+        return frozenset()
+
+
+def _macho_matches_host_arch(path: Path) -> bool:
+    """Return ``True`` when ``path`` is a Mach-O executable this host can run.
+
+    Fat/Universal binaries match when *any* slice is executable. Non-Mach-O
+    files (read failures, wrong magic) conservatively return ``False`` so the
+    caller falls back to mtime ordering rather than trusting a broken parse.
+    """
+    cpu_types = _macho_cpu_types(path)
+    if not cpu_types:
+        return False
+    return bool(cpu_types & _darwin_host_cpu_types())
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────

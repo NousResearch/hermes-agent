@@ -147,6 +147,8 @@ class TestRegister:
         assert drain.LAST_SKIP_REASON == ""
         # The drain endpoint is now token-authable.
         assert token_auth.is_token_route(drain.DRAIN_ROUTE_PATH)
+        assert token_auth.is_token_route(drain.DRAIN_ROUTE_PATH, "POST")
+        assert not token_auth.is_token_route(drain.DRAIN_ROUTE_PATH, "GET")
 
     def test_config_scope_applied(self, drain, monkeypatch):
         s = _strong_secret()
@@ -158,6 +160,29 @@ class TestRegister:
         drain.register(ctx)
         provider = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert provider.verify_token(token=s).scopes == ("lifecycle",)
+        assert token_auth.is_token_route(drain.DRAIN_ROUTE_PATH, "POST")
+        assert not token_auth.is_token_route(drain.DRAIN_ROUTE_PATH, "GET")
+
+    def test_route_registration_failure_does_not_register_provider(
+        self, drain, monkeypatch
+    ):
+        secret = _strong_secret()
+        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", secret)
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
+
+        def fail_route_registration(*args, **kwargs):
+            raise ValueError("route conflict")
+
+        monkeypatch.setattr(
+            token_auth, "register_token_route", fail_route_registration
+        )
+        ctx = MagicMock()
+
+        drain.register(ctx)
+
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "route conflict" in drain.LAST_SKIP_REASON
+        assert not token_auth.is_token_route(drain.DRAIN_ROUTE_PATH)
 
     def test_config_min_secret_chars_can_reject_otherwise_ok_secret(
         self, drain, monkeypatch

@@ -1,0 +1,7 @@
+name: kanban-read-secret
+version: 1.0.0
+description: "Dashboard auth provider for exact loopback-only GET access to the native Kanban board projection. Uses HERMES_DASHBOARD_KANBAN_READ_SECRET, exposes the fixed kanban.read capability, and fails closed on weak or missing credentials."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_KANBAN_READ_SECRET

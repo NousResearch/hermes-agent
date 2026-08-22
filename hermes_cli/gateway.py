@@ -5345,7 +5345,20 @@ def launchd_restart():
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None
             if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+                # Reserve the final five seconds of the drain budget for the
+                # force-kill to take effect. A
+                # gateway whose event loop is wedged (e.g. synchronous session
+                # compression, #72707) cannot process SIGTERM, so the graceful
+                # drain never completes; without the force-kill the follow-up
+                # `launchctl kickstart -k` waits on a process that will not
+                # die, and `hermes update` hangs indefinitely after the 180s
+                # drain warning (#81642). force_after must be strictly below
+                # timeout: the wait loop exits at timeout, so an equal deadline
+                # makes its force-kill branch unreachable.
+                force_after = max(0.0, drain_timeout - 5.0)
+                exited = _wait_for_gateway_exit(
+                    timeout=drain_timeout, force_after=force_after
+                )
                 if not exited:
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"

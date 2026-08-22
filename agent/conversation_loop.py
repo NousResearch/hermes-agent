@@ -3279,6 +3279,65 @@ def run_conversation(
                             error_details.append("response.choices is empty")
 
                 if response_invalid:
+                    # Codex can emit a complete user-visible answer as a
+                    # ``phase=commentary`` item, which the continuation path
+                    # deliberately treats as incomplete and delivers
+                    # immediately.  If the requested continuation then comes
+                    # back as a successful but empty response, retrying cannot
+                    # improve the answer the user already saw.  Worse, the
+                    # terminal provider error replaces that transient bubble
+                    # and the commentary-only row can disappear on reload.
+                    #
+                    # Recover only text that this turn actually delivered.
+                    # Hidden reasoning/commentary must never be promoted to a
+                    # final answer, and failures before any visible progress
+                    # must retain the normal retry/fallback behaviour.
+                    _recovered_codex_commentary = False
+                    if (
+                        agent.api_mode == "codex_responses"
+                        and getattr(agent, "_codex_incomplete_retries", 0) > 0
+                    ):
+                        _tail = messages[-1] if messages else None
+                        if (
+                            isinstance(_tail, dict)
+                            and _tail.get("role") == "assistant"
+                            and _tail.get("finish_reason") == "incomplete"
+                        ):
+                            _visible = agent._interim_assistant_visible_text(_tail)
+                            if (
+                                _visible
+                                and agent._interim_text_was_delivered(_visible)
+                            ):
+                                _tail["content"] = _visible
+                                _tail["finish_reason"] = "stop"
+                                for _key in (
+                                    "reasoning",
+                                    "reasoning_content",
+                                    "reasoning_details",
+                                    "codex_reasoning_items",
+                                    "codex_message_items",
+                                    "api_content",
+                                ):
+                                    _tail.pop(_key, None)
+                                # The incomplete row may already have reached
+                                # SessionDB.  Force the final snapshot to
+                                # rewrite its now-durable content.
+                                _tail.pop("_db_persisted", None)
+                                agent._db_flush_scan_prefix = None
+                                agent._codex_incomplete_retries = 0
+                                agent._response_was_previewed = True
+                                final_response = _visible
+                                _turn_exit_reason = (
+                                    "codex_delivered_commentary_recovered_after_empty"
+                                )
+                                _recovered_codex_commentary = True
+                                logger.info(
+                                    "Recovered delivered Codex commentary as "
+                                    "the final response after an empty continuation"
+                                )
+                    if _recovered_codex_commentary:
+                        break
+
                     agent._invoke_api_request_error_hook(
                         task_id=effective_task_id,
                         turn_id=turn_id,
@@ -6553,6 +6612,9 @@ def run_conversation(
             agent.iteration_budget.refund()
             _retry.restart_with_redirected_messages = False
             continue
+
+        if _turn_exit_reason == "codex_delivered_commentary_recovered_after_empty":
+            break
 
         # If the API call was interrupted, skip response processing
         if interrupted:

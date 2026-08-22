@@ -142,7 +142,7 @@ function buildPosixCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot,
   const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`
 
   const lines = [
-    '#!/bin/bash',
+    '#!/usr/bin/env bash',
     'set -u',
     '# Wait (up to ~30s) for the desktop process to exit so the venv python',
     '# and the app bundle are no longer in use.',

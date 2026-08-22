@@ -185,7 +185,7 @@ lm_eval --model hf \
 每 N 个训练步骤评估一次：
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # eval_checkpoint.sh
 
 CHECKPOINT_DIR=$1
@@ -289,7 +289,7 @@ microsoft/phi-2
 **步骤 2：运行评估**
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # eval_all_models.sh
 
 TASKS="mmlu,gsm8k,hellaswag,truthfulqa"

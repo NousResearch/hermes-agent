@@ -22,7 +22,7 @@ class TestParserLimitRecovery:
         assert saved.exists()
         body = saved.read_text()
         assert cmd in body
-        assert body.startswith("#!/bin/bash")
+        assert body.startswith("#!/usr/bin/env bash")
         assert f"bash {saved}" in r["message"]
 
     def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):

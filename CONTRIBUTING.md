@@ -680,7 +680,8 @@ that touches the OS, assume *any* platform can hit your code path.
 
 > **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
 > common Windows-unsafe patterns in your diff. It's grep-based and cheap;
-> CI runs it on every PR too.
+> CI runs it on every PR too. The same goes for
+> `scripts/check-bash-shebangs.py` (hardcoded `/bin/bash`, see rule 16).
 
 ### Critical rules
 
@@ -830,6 +831,15 @@ that touches the OS, assume *any* platform can hit your code path.
     helpers and never cross them. See `hermes_cli/gateway_windows.py::
     _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
     pair.
+
+16. **Portable bash shebangs.** Every shell script uses
+    `#!/usr/bin/env bash`; hardcoded `/bin/bash` paths break on NixOS,
+    musl distros, and minimal containers where nothing exists there. The
+    `env` form resolves bash through `PATH`. This applies to markdown code
+    blocks too - users copy-paste them. The one allowed exception is a
+    script that must run before a usable `PATH` exists, and it needs an
+    inline `# shebang: ok <reason>` marker to pass CI
+    (`scripts/check-bash-shebangs.py`, blocking in `lint.yml`).
 
 ### Testing cross-platform
 

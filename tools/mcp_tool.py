@@ -4474,6 +4474,37 @@ def _reset_server_error(server_name: str) -> None:
     _server_breaker_opened_at.pop(server_name, None)
 
 
+class _RetryBudgetExhausted(Exception):
+    """Recovery retry skipped because the invocation's retry budget is spent."""
+
+
+class _RetryBudget:
+    """Per-invocation retry budget shared across recovery handlers.
+
+    A single user call chains several recovery handlers (OAuth, session
+    expiry, stale keep-alive connection).  Each handler wants to reconnect
+    and re-run the operation once; without a shared budget their retries
+    stack, so one user call can execute a non-idempotent tool two or three
+    times — each partial execution carrying real side effects (#91460
+    review).  Every recovery retry consumes one unit of the shared budget;
+    once spent, further retry attempts raise
+    :class:`_RetryBudgetExhausted` and the handler falls through to the
+    caller's generic error path instead of re-running the operation.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, limit: int = 1) -> None:
+        self.remaining = limit
+
+    def consume(self) -> None:
+        if self.remaining <= 0:
+            raise _RetryBudgetExhausted(
+                "per-invocation retry budget already spent"
+            )
+        self.remaining -= 1
+
+
 def _signal_reconnect(server: Any) -> bool:
     """Ask a server task to rebuild its transport, thread-safely.
 
@@ -4687,6 +4718,9 @@ def _handle_auth_error_and_retry(
     exc: BaseException,
     retry_call,
     op_description: str,
+    *,
+    deadline: Optional[float] = None,
+    retry_budget: Optional["_RetryBudget"] = None,
 ):
     """Attempt auth recovery and one retry; return None to fall through.
 
@@ -4711,12 +4745,27 @@ def _handle_auth_error_and_retry(
         retry_call: Zero-arg callable that re-runs the tool call, returning
             the same JSON string format as the handler.
         op_description: Human-readable name of the operation (for logs).
+        deadline: Optional ``time.monotonic()`` deadline of the calling
+            tool handler.  When given, the reconnect wait is capped at
+            the caller's remaining budget instead of the full 15s (#91460
+            review).
+        retry_budget: Optional shared :class:`_RetryBudget` for this
+            invocation.  When present and spent, the handler skips its
+            reconnect+retry entirely so stacked recovery handlers cannot
+            re-run the operation several times (#91460 review).
 
     Returns:
         A JSON string if auth recovery was attempted, or None to fall
         through to the caller's generic error path.
     """
     if not _is_auth_error(exc):
+        return None
+    if retry_budget is not None and retry_budget.remaining <= 0:
+        logger.info(
+            "MCP %s/%s recovery skipped: per-invocation retry budget "
+            "already spent.",
+            server_name, op_description,
+        )
         return None
 
     from tools.mcp_oauth_manager import get_manager
@@ -4739,11 +4788,16 @@ def _handle_auth_error_and_retry(
             srv = _servers.get(server_name)
         reconnected = False
         if srv is not None and hasattr(srv, "_reconnect_event"):
+            reconnect_timeout = 15.0
+            if deadline is not None:
+                reconnect_timeout = min(
+                    15.0, max(0.0, deadline - time.monotonic()),
+                )
             reconnected = _signal_reconnect_and_wait(
                 server_name,
                 srv,
                 op_description=f"{op_description} after OAuth recovery",
-                timeout=15,
+                timeout=reconnect_timeout,
             )
 
         # A successful OAuth recovery + transport reconnect is independent
@@ -4758,19 +4812,30 @@ def _handle_auth_error_and_retry(
 
         try:
             result = retry_call()
-            try:
-                parsed = json.loads(result)
-                if "error" not in parsed:
-                    _reset_server_error(server_name)
-                    return result
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)
-                return result
+        except _RetryBudgetExhausted:
+            logger.info(
+                "MCP %s/%s recovery retry skipped: per-invocation retry "
+                "budget already spent.",
+                server_name, op_description,
+            )
+            return None
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
                 server_name, op_description, retry_exc,
             )
+        else:
+            try:
+                parsed = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                # Unparseable payload after recovery: return the raw string
+                # but do not treat it as an unambiguous success signal
+                # (#91460 review — the reconnect above already reset the
+                # breaker when it succeeded).
+                return result
+            if "error" not in parsed:
+                _reset_server_error(server_name)
+                return result
 
     # No recovery available, or retry also failed: surface a structured
     # needs_reauth error. Bumps the circuit breaker so the model stops
@@ -4893,6 +4958,9 @@ def _handle_session_expired_and_retry(
     exc: BaseException,
     retry_call,
     op_description: str,
+    *,
+    deadline: Optional[float] = None,
+    retry_budget: Optional["_RetryBudget"] = None,
 ):
     """Trigger a transport reconnect and retry once on session expiry.
 
@@ -4910,14 +4978,31 @@ def _handle_session_expired_and_retry(
         retry_call: Zero-arg callable that re-runs the operation,
             returning the same JSON string format as the handler.
         op_description: Human-readable name of the operation (logs).
+        deadline: Optional ``time.monotonic()`` deadline of the calling
+            tool handler.  When given, the reconnect wait is capped at
+            the caller's remaining budget instead of the full 15s, so a
+            slow reconnect cannot stretch a short tool call past its own
+            timeout (#91460 review).
+        retry_budget: Optional shared :class:`_RetryBudget` for this
+            invocation.  When present and spent, the handler skips its
+            reconnect+retry entirely so stacked recovery handlers cannot
+            re-run the operation several times (#91460 review).
 
     Returns:
         A JSON string if reconnect + retry was attempted and produced
         a response, or ``None`` to fall through to the caller's
         generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        record, reconnect didn't ready in time, retry budget spent, or
+        retry also failed).
     """
     if not _is_session_expired_error(exc):
+        return None
+    if retry_budget is not None and retry_budget.remaining <= 0:
+        logger.info(
+            "MCP %s/%s recovery skipped: per-invocation retry budget "
+            "already spent.",
+            server_name, op_description,
+        )
         return None
 
     with _lock:
@@ -4935,37 +5020,274 @@ def _handle_session_expired_and_retry(
         server_name, op_description, exc,
     )
 
+    reconnect_timeout = 15.0
+    if deadline is not None:
+        reconnect_timeout = min(15.0, max(0.0, deadline - time.monotonic()))
+
     # Trigger the same reconnect mechanism the OAuth recovery path
     # uses, then wait briefly for the new session to come back ready.
     if not _signal_reconnect_and_wait(
         server_name,
         srv,
         op_description=op_description,
-        timeout=15,
+        timeout=reconnect_timeout,
     ):
         logger.warning(
-            "MCP server '%s': reconnect did not ready within 15s after "
+            "MCP server '%s': reconnect did not ready within %.1fs after "
             "session-expired error; falling through to error response.",
-            server_name,
+            server_name, reconnect_timeout,
         )
         return None
 
     try:
         result = retry_call()
-        try:
-            parsed = json.loads(result)
-            if "error" not in parsed:
-                _reset_server_error(server_name)
-                return result
-        except (json.JSONDecodeError, TypeError):
-            _reset_server_error(server_name)
-            return result
+    except _RetryBudgetExhausted:
+        logger.info(
+            "MCP %s/%s recovery retry skipped: per-invocation retry "
+            "budget already spent.",
+            server_name, op_description,
+        )
+        return None
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
             server_name, op_description, retry_exc,
         )
-    return None
+        return None
+    try:
+        parsed = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        # An unparseable payload after a reconnect is exactly the kind of
+        # half-broken state the circuit breaker exists to track: return
+        # the raw string (preserving prior behavior) but do NOT reset the
+        # error counter (#91460 review).
+        logger.warning(
+            "MCP server '%s': %s retry after reconnect returned an "
+            "unparseable payload; returning it without resetting the "
+            "circuit breaker.",
+            server_name, op_description,
+        )
+        return result
+    if "error" in parsed:
+        return None
+    _reset_server_error(server_name)
+    return result
+
+
+# Type names of exceptions the MCP SDK / httpcore2 stack raises when a
+# pooled keep-alive connection turns out to have been closed by the remote
+# (CDN idle kill, load-balancer drain, server restart, ...).  Checked by
+# name rather than isinstance because the exact classes differ between the
+# SDK's httpx2 stack and Hermes' own httpx, and either can be unreachable
+# for import at module load.
+_STALE_CONNECTION_TYPE_NAMES: frozenset = frozenset({
+    "RemoteProtocolError",
+    "ConnectionClosed",
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+})
+
+# Message markers for the same failure class.  These are phrased after
+# what the SDK actually emits: ``MCPError: Connection closed`` and
+# ``RemoteProtocolError: Server disconnected without sending a response``
+# (httpcore2 wraps the latter in the SDK's own transport errors).
+_STALE_CONNECTION_MARKERS: tuple = (
+    "server disconnected",
+    "connection reset",
+    "connection closed",
+    "peer closed connection",
+    "remote protocol error",
+)
+
+
+def _is_stale_connection_error(
+    exc: BaseException,
+    *,
+    allow_message_markers: bool = True,
+) -> bool:
+    """Return True if ``exc`` is a stale/dead-connection transport failure.
+
+    Distinct from :func:`_is_session_expired_error`: that classifier covers
+    server-side session GC (``Invalid or expired session``) plus AnyIO
+    stream closures.  This one covers the remote closing the underlying
+    keep-alive connection out from under us — the failure the user sees as
+    ``MCPError: Connection closed`` / ``RemoteProtocolError: Server
+    disconnected without sending a response`` when a CDN or proxy kills an
+    idle connection (#90166).  Both are transient transport conditions that
+    a rebuild-and-retry-once recovers from; neither is a credential or
+    config problem.
+
+    ``allow_message_markers`` gates the substring matching on exception
+    messages.  Marker phrases like ``"connection reset"`` / ``"connection
+    closed"`` also show up in *application-level* failures (a tool whose
+    own backend died mid-execution, surfaced as a JSON-RPC error containing
+    those words), and retrying ``tools/call`` after a partial execution can
+    duplicate real side effects.  Handlers for read-only operations
+    (``resources/*``) may keep marker matching; ``tools/call`` passes
+    ``allow_message_markers=False`` so only exact transport exception
+    type names (``RemoteProtocolError`` etc.) trigger a retry (#91460
+    review).
+
+    Uses the same bounded, identity-visited traversal as
+    :func:`_is_session_expired_error` so arbitrarily deep ExceptionGroup /
+    ``__cause__`` graphs terminate promptly.
+    """
+    stack: "list[BaseException | None]" = [exc]
+    seen: set[int] = set()
+    budget = _EXC_TRAVERSAL_MAX_NODES
+    while stack and budget > 0:
+        current = stack.pop()
+        if current is None:
+            continue
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        budget -= 1
+
+        if isinstance(current, InterruptedError):
+            return False
+        if type(current).__name__ in _STALE_CONNECTION_TYPE_NAMES:
+            return True
+        if allow_message_markers:
+            msg = str(current).lower()
+            if msg and any(marker in msg for marker in _STALE_CONNECTION_MARKERS):
+                return True
+
+        stack.extend(getattr(current, "exceptions", ()))
+        stack.append(getattr(current, "__cause__", None))
+        stack.append(getattr(current, "__context__", None))
+
+    return False
+
+
+def _handle_stale_connection_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+    *,
+    allow_message_markers: bool = True,
+    deadline: Optional[float] = None,
+    retry_budget: Optional["_RetryBudget"] = None,
+):
+    """Rebuild the transport and retry once on a stale-connection failure.
+
+    Mirrors :func:`_handle_session_expired_and_retry` (see #13383): signal
+    the server task's reconnect event so the dead transport is torn down
+    and a fresh ``streamablehttp_client`` + ``ClientSession`` pair is
+    built, wait for the new session to report ready, then re-run the
+    operation exactly once.  A CDN/load-balancer idle kill is transient —
+    the server itself is healthy — so surfacing ``Connection closed`` to
+    the model without a retry turns an invisible 300s-recoverable blip
+    into a visible tool failure (#90166).
+
+    Args:
+        server_name: Name of the MCP server that raised.
+        exc: The exception from the failed call.
+        retry_call: Zero-arg callable that re-runs the operation,
+            returning the same JSON string format as the handler.
+        op_description: Human-readable name of the operation (logs).
+        allow_message_markers: When False, only exact transport exception
+            type names count as stale-connection evidence.  ``tools/call``
+            passes False because marker phrases also occur in
+            application-level failures, and re-running a partially
+            executed tool duplicates side effects (#91460 review);
+            read-only handlers (``resources/*``) keep marker matching.
+        deadline: Optional ``time.monotonic()`` deadline of the calling
+            tool handler.  When given, the reconnect wait is capped at
+            the caller's remaining budget instead of the full 15s, so a
+            slow reconnect cannot stretch a short tool call past its own
+            timeout (#91460 review).
+        retry_budget: Optional shared :class:`_RetryBudget` for this
+            invocation.  When present and spent, the handler skips its
+            reconnect+retry entirely so stacked recovery handlers cannot
+            re-run the operation several times (#91460 review).
+
+    Returns:
+        A JSON string if reconnect + retry was attempted and produced a
+        response, or ``None`` to fall through to the caller's generic
+        error path (not a stale-connection error, no server record,
+        reconnect didn't ready in time, retry budget spent, or retry
+        also failed).
+    """
+    if not _is_stale_connection_error(
+        exc, allow_message_markers=allow_message_markers,
+    ):
+        return None
+    if retry_budget is not None and retry_budget.remaining <= 0:
+        logger.info(
+            "MCP %s/%s recovery skipped: per-invocation retry budget "
+            "already spent.",
+            server_name, op_description,
+        )
+        return None
+
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return None
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return None
+
+    logger.info(
+        "MCP server '%s': %s failed with stale-connection error (%s); "
+        "signalling transport reconnect and retrying once.",
+        server_name, op_description, exc,
+    )
+
+    reconnect_timeout = 15.0
+    if deadline is not None:
+        reconnect_timeout = min(15.0, max(0.0, deadline - time.monotonic()))
+
+    if not _signal_reconnect_and_wait(
+        server_name,
+        srv,
+        op_description=op_description,
+        timeout=reconnect_timeout,
+    ):
+        logger.warning(
+            "MCP server '%s': reconnect did not ready within %.1fs after "
+            "stale-connection error; falling through to error response.",
+            server_name, reconnect_timeout,
+        )
+        return None
+
+    try:
+        result = retry_call()
+    except _RetryBudgetExhausted:
+        logger.info(
+            "MCP %s/%s recovery retry skipped: per-invocation retry "
+            "budget already spent.",
+            server_name, op_description,
+        )
+        return None
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after stale-connection reconnect failed: %s",
+            server_name, op_description, retry_exc,
+        )
+        return None
+    try:
+        parsed = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        # An unparseable payload after a reconnect is exactly the kind of
+        # half-broken state the circuit breaker exists to track: return
+        # the raw string (preserving prior behavior) but do NOT reset the
+        # error counter (#91460 review).
+        logger.warning(
+            "MCP server '%s': %s retry after reconnect returned an "
+            "unparseable payload; returning it without resetting the "
+            "circuit breaker.",
+            server_name, op_description,
+        )
+        return result
+    if "error" in parsed:
+        return None
+    _reset_server_error(server_name)
+    return result
 
 
 # Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
@@ -5960,8 +6282,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     return json.dumps({"result": text_result}, ensure_ascii=False)
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
+        # Shared per-invocation retry budget: the OAuth / session-expired /
+        # stale-connection handlers each want to reconnect and re-run the
+        # operation once; the shared budget caps the total number of
+        # retry executions for this single user call, so a non-idempotent
+        # tool is never re-run several times by stacked recovery handlers
+        # (#91460 review).
+        retry_budget = _RetryBudget(limit=1)
+        deadline = None if tool_timeout is None else time.monotonic() + tool_timeout
+
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
+
+        def _call_with_retry_budget():
+            retry_budget.consume()
+            return _call_once()
 
         try:
             result = _call_once()
@@ -5973,7 +6308,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+                # Unparseable payload is not evidence of health: return it
+                # as-is (preserving prior behavior) but leave the circuit
+                # breaker counter untouched (#91460 review).
+                pass
             return result
         except InterruptedError:
             return _interrupted_call_result()
@@ -5982,8 +6320,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # reconnect if viable, retry once. Returns None to fall
             # through for non-auth exceptions.
             recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once,
+                server_name, exc, _call_with_retry_budget,
                 f"tools/call {tool_name}",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
@@ -5992,8 +6332,30 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # but skips OAuth recovery because the access token is
             # still valid — only the server-side session is stale.
             recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once,
+                server_name, exc, _call_with_retry_budget,
                 f"tools/call {tool_name}",
+                deadline=deadline,
+                retry_budget=retry_budget,
+            )
+            if recovered is not None:
+                return recovered
+
+            # Stale keep-alive connection (#90166): a CDN / load balancer
+            # closed an idle connection out from under us. Rebuild the
+            # transport and retry once instead of surfacing
+            # ``MCPError: Connection closed`` to the model. Marker
+            # phrases are disabled here: an application-level error whose
+            # message merely contains "connection closed" / "connection
+            # reset" must NOT trigger a retry, because tools/call may
+            # already have partially executed with real side effects
+            # (#91460 review). Only exact transport exception type names
+            # (RemoteProtocolError etc.) count.
+            recovered = _handle_stale_connection_and_retry(
+                server_name, exc, _call_with_retry_budget,
+                f"tools/call {tool_name}",
+                allow_message_markers=False,
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
@@ -6041,8 +6403,15 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 resources.append(entry)
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
+        retry_budget = _RetryBudget(limit=1)
+        deadline = None if tool_timeout is None else time.monotonic() + tool_timeout
+
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
+
+        def _call_with_retry_budget():
+            retry_budget.consume()
+            return _call_once()
 
         try:
             return _call_once()
@@ -6050,12 +6419,23 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once, "resources/list",
+                server_name, exc, _call_with_retry_budget, "resources/list",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once, "resources/list",
+                server_name, exc, _call_with_retry_budget, "resources/list",
+                deadline=deadline,
+                retry_budget=retry_budget,
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_stale_connection_and_retry(
+                server_name, exc, _call_with_retry_budget, "resources/list",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
@@ -6102,8 +6482,15 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(rendered or f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
+        retry_budget = _RetryBudget(limit=1)
+        deadline = None if tool_timeout is None else time.monotonic() + tool_timeout
+
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
+
+        def _call_with_retry_budget():
+            retry_budget.consume()
+            return _call_once()
 
         try:
             return _call_once()
@@ -6111,12 +6498,23 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once, "resources/read",
+                server_name, exc, _call_with_retry_budget, "resources/read",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once, "resources/read",
+                server_name, exc, _call_with_retry_budget, "resources/read",
+                deadline=deadline,
+                retry_budget=retry_budget,
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_stale_connection_and_retry(
+                server_name, exc, _call_with_retry_budget, "resources/read",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
@@ -6163,8 +6561,15 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                 prompts.append(entry)
             return json.dumps({"prompts": prompts}, ensure_ascii=False)
 
+        retry_budget = _RetryBudget(limit=1)
+        deadline = None if tool_timeout is None else time.monotonic() + tool_timeout
+
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
+
+        def _call_with_retry_budget():
+            retry_budget.consume()
+            return _call_once()
 
         try:
             return _call_once()
@@ -6172,12 +6577,16 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once, "prompts/list",
+                server_name, exc, _call_with_retry_budget, "prompts/list",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once, "prompts/list",
+                server_name, exc, _call_with_retry_budget, "prompts/list",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
@@ -6228,8 +6637,15 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 resp["description"] = result.description
             return json.dumps(resp, ensure_ascii=False)
 
+        retry_budget = _RetryBudget(limit=1)
+        deadline = None if tool_timeout is None else time.monotonic() + tool_timeout
+
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
+
+        def _call_with_retry_budget():
+            retry_budget.consume()
+            return _call_once()
 
         try:
             return _call_once()
@@ -6237,12 +6653,16 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once, "prompts/get",
+                server_name, exc, _call_with_retry_budget, "prompts/get",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered
             recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once, "prompts/get",
+                server_name, exc, _call_with_retry_budget, "prompts/get",
+                deadline=deadline,
+                retry_budget=retry_budget,
             )
             if recovered is not None:
                 return recovered

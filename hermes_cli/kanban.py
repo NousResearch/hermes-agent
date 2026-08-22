@@ -743,6 +743,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Permanently delete already-archived task ids from the board",
     )
 
+    p_unarchive = sub.add_parser(
+        "unarchive", help="Restore one or more archived tasks to the board",
+    )
+    p_unarchive.add_argument("task_ids", nargs="+",
+                             help="Archived task ids to restore (to 'todo')")
+
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
     p_tail.add_argument("task_id")
@@ -1135,6 +1141,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "unarchive": _cmd_unarchive,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -1200,6 +1207,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "unblock",
     "promote",
     "archive",
+    "unarchive",
     "dispatch",
     "daemon",
     "repair",
@@ -2595,6 +2603,27 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                 print(f"cannot archive {tid}", file=sys.stderr)
             else:
                 print(f"Archived {tid}")
+    return 0 if not failed else 1
+
+
+def _cmd_unarchive(args: argparse.Namespace) -> int:
+    """Restore archived tasks. Refuses (non-zero) on a non-archived id."""
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if not kb.unarchive_task(conn, tid):
+                failed.append(tid)
+                print(
+                    f"cannot unarchive {tid} (must be an archived task)",
+                    file=sys.stderr,
+                )
+            else:
+                status = kb.get_task(conn, tid).status
+                print(f"Unarchived {tid} -> {status}")
     return 0 if not failed else 1
 
 

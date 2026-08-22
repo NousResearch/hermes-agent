@@ -7539,6 +7539,45 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     return True
 
 
+def unarchive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Restore an archived task to the board.
+
+    The inverse of :func:`archive_task`, which is a pure status change —
+    nothing is deleted, so the restore is expressible. Comments, events and
+    runs are untouched.
+
+    The card is restored to ``todo``, never to its pre-archive status and
+    never to ``running``: ``todo`` is the only safe landing state because
+    dependency recomputation then decides whether it may promote to
+    ``ready``. A card whose parents are still incomplete stays in ``todo``.
+    No claim is re-created; the dispatcher owns claiming.
+
+    Returns False (without writing) when the task does not exist or is not
+    archived — an explicit refusal rather than a silent no-op.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "archived":
+            return False
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ?",
+            (task_id,),
+        )
+        _append_event(
+            conn, task_id, "unarchived", {"restored_status": "todo"},
+        )
+    # A restored card is no longer a satisfied ('archived') parent, so its
+    # children's readiness — and its own — must be recomputed. This is what
+    # promotes it to 'ready' if and only if its parents are genuinely done.
+    recompute_ready(conn)
+    return True
+
+
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Permanently remove an already-archived task and its related rows.
 

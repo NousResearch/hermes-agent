@@ -609,7 +609,8 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Absent on backends that predate ordered transcript paging. */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string

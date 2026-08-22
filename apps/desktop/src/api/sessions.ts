@@ -364,18 +364,26 @@ export function getLatestSessionMessages(id: string, profile?: string | null): P
     limit: LATEST_SESSION_MESSAGES_LIMIT,
     order: 'latest',
     includeCompacted: true
-  }).then(page => {
+  }).then(async page => {
+    // Backends predating `order` still return pagination metadata but silently
+    // serve the oldest page. The missing echo is the only reliable indication
+    // that latest-relative offsets are unsafe, so load their transcript through
+    // the bounded oldest-first compatibility path instead.
+    const transcript = page.pagination && page.pagination.order !== 'latest'
+      ? await getAllSessionMessages(id, profile)
+      : page
+
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    recordTranscriptTail(id, page, profile)
+    recordTranscriptTail(id, transcript, profile)
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, profile)
+    if (transcript.session_id && transcript.session_id !== id) {
+      recordTranscriptTail(transcript.session_id, transcript, profile)
     }
 
-    return page
+    return transcript
   })
 }
 

@@ -410,6 +410,33 @@ describe('Hermes REST helpers', () => {
     })
   })
 
+  it('falls back to the complete transcript when a legacy backend ignores latest ordering', async () => {
+    $transcriptTailBySessionId.set({})
+    api
+      .mockResolvedValueOnce({
+        messages: Array.from({ length: 120 }, (_, index) => ({ content: `oldest-${index}`, id: index })),
+        pagination: { limit: 120, offset: 0, returned: 120 },
+        session_id: 'session-1'
+      })
+      .mockResolvedValueOnce({
+        messages: [{ content: 'oldest', id: 1 }, { content: 'newest', id: 870 }],
+        pagination: { limit: 500, offset: 0, returned: 2 },
+        session_id: 'session-1'
+      })
+
+    const result = await getLatestSessionMessages('session-1', 'xiaoxuxu')
+
+    expect(result).toEqual({
+      messages: [{ content: 'oldest', id: 1 }, { content: 'newest', id: 870 }],
+      session_id: 'session-1'
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest&include_compacted=true',
+      profile: 'xiaoxuxu'
+    })
+    expect(transcriptTailState('session-1')).toMatchObject({ possiblyTruncated: false })
+  })
+
   it('records tail truncation state under the requested and resolved session ids', async () => {
     $transcriptTailBySessionId.set({})
     api.mockResolvedValue({

@@ -25,7 +25,10 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.codex_responses_adapter import (
+    _summarize_user_message_for_log,
+    _TOOL_CALL_LEAK_PATTERN,
+)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -1182,6 +1185,19 @@ _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was "
     "included. Do not narrate a plan or restate intent — issue "
     "the actual tool call now to continue the task."
+)
+
+# Re-prompt sent when a Harmony-format model (gpt-oss family, served through a
+# generic chat-completions endpoint such as Ollama/vLLM) emits what should be a
+# structured tool call as leaked `to=functions.<name>` serialization text (see
+# the leak-recovery block at finalization). Named for the same reason as the
+# nudges above — its _harmony_leak_nudge metadata flag doesn't survive
+# SessionDB projection.
+_HARMONY_LEAK_NUDGE_CONTENT = (
+    "Your previous turn emitted a tool call as plain text instead "
+    "of a structured tool call. Do not narrate a plan or restate "
+    "intent — issue the actual tool call now, using the proper "
+    "structured tool-call format, to continue the task."
 )
 
 # Re-prompt sent when the model returns an empty response after executing tool
@@ -8080,10 +8096,83 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── Harmony tool-call leak recovery (gpt-oss on generic endpoints) ──
+                # gpt-oss family models emit their native Harmony/Codex tool-call
+                # serialization (`to=functions.<name> {...}`) even when served
+                # through generic OpenAI-compatible chat endpoints (Ollama, vLLM,
+                # ...). OpenAI's own ChatGPT Codex backend already recovers this
+                # leak inside codex_responses_adapter, but the chat_completions
+                # path never reached it — so the raw markup surfaced as a
+                # confident-looking text answer with no tool executed. Mirror the
+                # codex treatment here: discard the leaked text and re-prompt the
+                # model to emit a structured tool call. Bounded to 3 CONSECUTIVE
+                # leaks; the budget resets on any genuine turn end below
+                # (mirrors _dropped_toolcall_retries). Gated on the model family
+                # because the leak is model-level behavior, not backend-specific
+                # (see RunAgent._model_uses_harmony_format).
+                if (
+                    agent._model_uses_harmony_format(agent.model)
+                    and not assistant_message.tool_calls
+                    and final_response
+                    and _TOOL_CALL_LEAK_PATTERN.search(final_response)
+                ):
+                    _harmony_leak_retries = getattr(agent, "_harmony_leak_retries", 0)
+                    if _harmony_leak_retries < 3:
+                        agent._harmony_leak_retries = _harmony_leak_retries + 1
+                        logger.warning(
+                            "Harmony-format tool-call text leaked into assistant "
+                            "content for gpt-oss model (no structured tool_calls) "
+                            "— re-prompting to emit a structured call "
+                            "(retry %d/3, model=%s provider=%s)",
+                            agent._harmony_leak_retries, agent.model, agent.provider,
+                        )
+                        agent._emit_status(
+                            "↻ Model emitted a tool call as raw text — "
+                            f"re-prompting ({agent._harmony_leak_retries}/3)"
+                        )
+                        # Both halves of the re-prompt pair are ephemeral recovery
+                        # scaffolding (mirrors the dropped-tool-call nudge): the
+                        # interim assistant turn exists solely to keep role
+                        # alternation valid for the nudge, and the nudge exists
+                        # solely to drive the retry. The leaked markup is cleared
+                        # from the interim turn so the retry (and any later replay
+                        # or compression projection) never sees the garbage. Flag
+                        # both halves so the finalization pop below strips an
+                        # unanswered tail pair.
+                        final_msg["content"] = ""
+                        final_msg["_harmony_leak_nudge"] = True
+                        messages.append(final_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": _HARMONY_LEAK_NUDGE_CONTENT,
+                            "_harmony_leak_nudge": True,
+                        })
+                        agent._session_messages = messages
+                        final_response = None
+                        continue
+                    # Retry budget exhausted — never surface raw tool-call markup
+                    # as an answer. Deliver an explicit failure instead (mirrors
+                    # the codex "remained incomplete after 3 continuation
+                    # attempts" terminal).
+                    agent._harmony_leak_retries = 0
+                    logger.error(
+                        "gpt-oss model repeatedly emitted Harmony tool-call text "
+                        "instead of structured tool_calls (%d/3) — giving up. "
+                        "model=%s provider=%s",
+                        _harmony_leak_retries, agent.model, agent.provider,
+                    )
+                    final_msg["content"] = ""
+                    final_response = (
+                        "The model repeatedly emitted tool calls as raw text "
+                        "instead of structured tool calls, so no tools were "
+                        "executed."
+                    )
+
                 # Reached finalization without the dropped-tool-call mismatch —
                 # a genuine turn end. Clear the consecutive-stall budget so the
                 # next turn starts fresh.
                 agent._dropped_toolcall_retries = 0
+                agent._harmony_leak_retries = 0
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a
@@ -8098,6 +8187,7 @@ def run_conversation(
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
                         or messages[-1].get("_dropped_toolcall_nudge")
+                        or messages[-1].get("_harmony_leak_nudge")
                     )
                 ):
                     messages.pop()

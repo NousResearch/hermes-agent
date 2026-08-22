@@ -1598,6 +1598,22 @@ class AIAgent:
             in (getattr(self, "_base_url_lower", "") or "")
         )
 
+    @staticmethod
+    def _model_uses_harmony_format(model: str) -> bool:
+        """Return True for models that emit native Harmony/Codex tool-call syntax.
+
+        The gpt-oss open-weights family speaks Harmony natively regardless of
+        which backend serves it (Ollama, vLLM, a generic OpenAI-compatible
+        endpoint, or OpenAI's own ChatGPT Codex backend), so recovery of
+        leaked ``to=functions.<name>`` tool-call markup must be gated on the
+        *model*, not on ``_is_codex_backend()``.
+        """
+        m = (model or "").strip().lower()
+        # Strip vendor prefix (e.g. "ollama/gpt-oss:20b" → "gpt-oss:20b")
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        return m.startswith("gpt-oss")
+
     def _anthropic_prompt_cache_policy(
         self,
         *,

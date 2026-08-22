@@ -1418,10 +1418,18 @@ def run_doctor(args):
                 # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
                 "deepinfra",
             }
+            _user_provider_aggregator = False
+            if provider and _resolve_provider_full is not None and provider not in {"auto", "custom"}:
+                try:
+                    _pd = _resolve_provider_full(provider, user_providers, custom_providers)
+                    _user_provider_aggregator = bool(_pd is not None and getattr(_pd, "is_aggregator", False))
+                except Exception:
+                    _user_provider_aggregator = False
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
                 or provider_policy_id == "custom"
                 or provider_policy_id.startswith("custom:")
+                or _user_provider_aggregator
             )
             if (
                 default_model

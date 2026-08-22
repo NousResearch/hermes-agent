@@ -807,6 +807,40 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # MiniMax M3 — Anthropic-compatible endpoint. The existing
+    # ("fireworks", "minimax-m3") entry covers Fireworks-routed traffic;
+    # these two entries cover direct provider: minimax / provider: minimax-cn
+    # config which the live lookup (`if provider_name in {"minimax",
+    # "minimax-cn"}` in _lookup_pricing) actually keys off of.
+    #
+    # Cache write rate verified against the live API on 2026-08-19:
+    # MiniMax bills cache writes at input-equivalent (1.0x), unlike
+    # Anthropic's 1.25x convention. Source:
+    # https://platform.minimax.io/docs/guides/pricing-token-plan
+    (
+        "minimax",
+        "minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        cache_write_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-token-plan",
+        pricing_version="minimax-pricing-2026-08",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        cache_write_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-token-plan",
+        pricing_version="minimax-pricing-2026-08",
+    ),
     # Fireworks AI — serverless pricing for the models hermes typically routes
     # through when configured with provider="fireworks". Fireworks publishes a
     # cached_input rate per model alongside input/output, which maps to

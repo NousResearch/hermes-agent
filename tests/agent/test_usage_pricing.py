@@ -766,3 +766,54 @@ def test_normalize_usage_nested_details_win_over_qwen_flat_top_level():
 
     assert normalized.cache_read_tokens == 900
     assert normalized.input_tokens == 1100
+
+
+# =============================================================================
+# MiniMax M3 direct-provider pricing entries
+# =============================================================================
+
+from decimal import Decimal as _Decimal
+
+
+def test_minimax_direct_provider_m3_entry_resolves():
+    """`provider: minimax` + `model: minimax-m3` returns the new entry, not the
+    upstream Fireworks one and not the M2.7 entry (which has no cache fields)."""
+    entry = get_pricing_entry("minimax-m3", provider="minimax")
+    assert entry is not None, "minimax/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == _Decimal("0.30")
+    assert entry.output_cost_per_million == _Decimal("1.20")
+    assert entry.cache_read_cost_per_million == _Decimal("0.06")
+    # The whole point of this PR — the fireworks entry doesn't have this:
+    assert entry.cache_write_cost_per_million == _Decimal("0.30")
+
+
+def test_minimax_cn_direct_provider_m3_entry_resolves():
+    """`provider: minimax-cn` + `model: minimax-m3` returns the new cn entry, not the
+    upstream Fireworks one. (Same rate card; separate provider key for cn endpoints.)"""
+    entry = get_pricing_entry("minimax-m3", provider="minimax-cn")
+    assert entry is not None, "minimax-cn/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == _Decimal("0.30")
+    assert entry.output_cost_per_million == _Decimal("1.20")
+    assert entry.cache_read_cost_per_million == _Decimal("0.06")
+    assert entry.cache_write_cost_per_million == _Decimal("0.30")
+
+
+def test_minimax_m2_7_entry_unchanged():
+    """Adding the M3 entries must not perturb the existing M2.7 entry — its
+    rate is the same but it doesn't carry the cache_write field. Regression guard."""
+    entry = get_pricing_entry("minimax-m2.7", provider="minimax")
+    assert entry is not None
+    assert entry.input_cost_per_million == _Decimal("0.30")
+    assert entry.output_cost_per_million == _Decimal("1.20")
+    # M2.7 has no cache_write field — the M3 entry added it, the M2.7 entry didn't get it
+    assert entry.cache_write_cost_per_million is None
+
+
+def test_fireworks_m3_entry_still_resolves_independently():
+    """Adding direct-provider entries must not delete or shadow the existing
+    `("fireworks", "minimax-m3")` entry — Fireworks-routed traffic still works."""
+    entry = get_pricing_entry("minimax-m3", provider="fireworks")
+    assert entry is not None, "fireworks/minimax-m3 lookup returned None"
+    assert entry.input_cost_per_million == _Decimal("0.30")
+    assert entry.output_cost_per_million == _Decimal("1.20")
+    assert entry.cache_read_cost_per_million == _Decimal("0.06")

@@ -9,6 +9,7 @@ import pytest
 
 import acp
 from acp.agent.router import build_agent_router
+from agent.conversation_compression import MANUAL_TRIGGER_REASON
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -531,13 +532,16 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
+        def _compress_context(
+            messages, system_prompt, *, approx_tokens, task_id, force, trigger_reason
+        ):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
             assert task_id == state.session_id
             assert force is True
+            assert trigger_reason == MANUAL_TRIGGER_REASON
             return [{"role": "user", "content": "summary"}], "new-system"
 
         state.agent._compress_context = MagicMock(side_effect=_compress_context)
@@ -566,6 +570,7 @@ class TestSlashCommands:
             approx_tokens=40,
             task_id=state.session_id,
             force=True,
+            trigger_reason=MANUAL_TRIGGER_REASON,
         )
         mock_save.assert_called_once_with(state.session_id)
 

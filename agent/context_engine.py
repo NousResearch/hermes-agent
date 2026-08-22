@@ -66,6 +66,11 @@ def automatic_compaction_status_message(
     ``emit_automatic_compaction_status = False`` or customize it by defining
     ``get_automatic_compaction_status_message(...)``. Empty strings and
     ``None`` mean "do not emit a lifecycle status".
+
+    CONTRACT NOTE: ``default_message`` arrives already carrying the compaction
+    trigger attribution (the "— triggered by ..." clause). A custom formatter
+    that discards ``default_message`` also discards the attribution the
+    automatic arms rely on — preserve or re-append it.
     """
     if not getattr(engine, "emit_automatic_compaction_status", True):
         return None

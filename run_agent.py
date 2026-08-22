@@ -8002,6 +8002,7 @@ class AIAgent:
         task_id: str = "default",
         focus_topic: str = None,
         force: bool = False,
+        trigger_reason: str = None,
         defer_context_engine_notification: bool = False,
         commit_fence=None,
     ) -> tuple:
@@ -8011,6 +8012,11 @@ class AIAgent:
         so users can bypass the summary-failure cooldown after an
         auto-compress abort.  Auto-compress callers use the default
         ``force=False``.
+
+        ``trigger_reason`` names WHY this compaction fired (``threshold`` /
+        ``overflow_413`` / ``session_hygiene`` / ``manual_compress_command``
+        / ...) so the compression log line and the user-facing result can
+        attribute it instead of leaving the user asking why the turn paused.
         """
         from agent.conversation_compression import (
             CompressionCommitFence,
@@ -8067,6 +8073,7 @@ class AIAgent:
                     approx_tokens=approx_tokens, task_id=task_id,
                     focus_topic=focus_topic,
                     force=force,
+                    trigger_reason=trigger_reason,
                     defer_context_engine_notification=(
                         defer_context_engine_notification
                     ),

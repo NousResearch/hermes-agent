@@ -5318,6 +5318,7 @@ def _compress_session_history(
     text "here 3".
     """
     from agent.conversation_compression import (
+        MANUAL_TRIGGER_REASON,
         finalize_context_engine_compression_notification,
     )
     from agent.model_metadata import estimate_request_tokens_rough
@@ -5380,6 +5381,7 @@ def _compress_session_history(
             # boundary-aware forms).
             focus_topic=focus_topic or None,
             force=True,
+            trigger_reason=MANUAL_TRIGGER_REASON,
             defer_context_engine_notification=True,
         )
     except Exception:

@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 
 from agent.conversation_compression import (
+    MANUAL_TRIGGER_REASON,
     _queue_context_engine_compression_notification,
 )
 from cli import HermesCLI
@@ -37,6 +38,7 @@ class DummyAgent:
         approx_tokens=None,
         focus_topic=None,
         force=False,
+        trigger_reason=None,
         defer_context_engine_notification=False,
     ):
         self.calls.append(
@@ -46,6 +48,7 @@ class DummyAgent:
                 "approx_tokens": approx_tokens,
                 "focus_topic": focus_topic,
                 "force": force,
+                "trigger_reason": trigger_reason,
                 "defer_context_engine_notification": (
                     defer_context_engine_notification
                 ),
@@ -91,6 +94,9 @@ def test_manual_compress_does_not_pass_cached_system_prompt(monkeypatch):
     assert call["system_message"] is None
     assert call["system_message"] != cli.agent._cached_system_prompt
     assert call["focus_topic"] == "database schema"
+    # A user-fired /compress must attribute itself, or its compaction logs
+    # trigger=UNATTRIBUTED and its banner names no reason.
+    assert call["trigger_reason"] == MANUAL_TRIGGER_REASON
     assert cli.session_id == "new-session"
     assert cli._pending_title is None
     assert len(cli.agent.flush_calls) == 1

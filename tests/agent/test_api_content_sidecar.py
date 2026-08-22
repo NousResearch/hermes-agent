@@ -608,7 +608,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             get_active_compression_failure_cooldown=lambda: None,
         )
 
-        def _compress(messages, _system, approx_tokens=None, task_id=None):
+        def _compress(messages, _system, **_kwargs):
             # Emulate compress_context in in_place mode: archive_and_compact
             # already inserted these rows (api_content=NULL — the stamp has
             # not happened yet), fresh copies replace the live dicts.

@@ -4198,6 +4198,7 @@ class GatewaySlashCommandsMixin:
             summarize_compress_preview,
         )
         from agent.conversation_compression import (
+            MANUAL_TRIGGER_REASON,
             finalize_context_engine_compression_notification,
         )
         _raw_args = (event.get_command_args() or "").strip()
@@ -4367,6 +4368,7 @@ class GatewaySlashCommandsMixin:
                         approx_tokens=approx_tokens,
                         focus_topic=focus_topic,
                         force=True,
+                        trigger_reason=MANUAL_TRIGGER_REASON,
                         defer_context_engine_notification=True,
                     )
                 )

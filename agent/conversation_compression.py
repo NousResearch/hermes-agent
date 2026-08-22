@@ -103,6 +103,44 @@ COMPACTION_STATUS = (
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
+# Trigger attribution vocabulary. Every compaction names WHY it fired; these
+# are the labels callers pass as ``trigger_reason`` and the human wording each
+# renders. Producers and this map are pinned in lockstep by
+# tests/agent/test_compaction_trigger_coverage.py, which SOURCE-SCANS the call
+# sites so a new trigger cannot ship without a clause.
+MANUAL_TRIGGER_REASON = "manual_compress_command"
+_TRIGGER_REASON_CLAUSES = {
+    "threshold": "crossed the compaction threshold",
+    "pre_api_pressure": "context pressure before the API call",
+    "overflow_413": "the API rejected an oversize request — 413",
+    "overflow_context": "context length exceeded",
+    "output_cap": "the output cap did not fit the prompt",
+    "tier_reduction": "long-context tier window reduction",
+    "post_tool_threshold": "crossed the compaction threshold after tool output",
+    "idle_resume": "deferred maintenance on idle resume",
+    "engine_preflight_maintenance": "context-engine preflight maintenance",
+    "session_hygiene": "session-hygiene maintenance",
+    MANUAL_TRIGGER_REASON: "manual — you ran /compress",
+}
+
+
+def compaction_reason_clause(trigger_reason: Optional[str]) -> str:
+    """Render the parenthetical "why this fired" clause for a compaction.
+
+    Returns ``""`` only when the caller genuinely passed no reason. An
+    UNRECOGNIZED reason renders its raw label — never silence — because a
+    silent clause is exactly the "compaction with no reason stated" bug this
+    vocabulary exists to prevent, and the next trigger someone adds must
+    degrade to something readable rather than to nothing.
+    """
+    reason = (trigger_reason or "").strip()
+    if not reason:
+        return ""
+    described = _TRIGGER_REASON_CLAUSES.get(reason)
+    if described:
+        return f" ({described})"
+    return f" (trigger: {reason})"
+
 
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
@@ -2240,6 +2278,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    trigger_reason: Optional[str] = None,
     defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
@@ -2259,6 +2298,11 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        trigger_reason: Names WHY this compaction fired (``threshold``,
+            ``overflow_413``, ``session_hygiene``, ``manual_compress_command``,
+            ...) so the log line and the user-facing result can attribute it.
+            Every call site should pass one; ``None`` logs ``UNATTRIBUTED``
+            and warns.  See ``_TRIGGER_REASON_CLAUSES`` for the vocabulary.
         defer_context_engine_notification: Delay the existing context-engine
             hook until a manual host commits its outer history transaction.
         commit_fence: Optional cooperative fence for executor callers that
@@ -2393,13 +2437,32 @@ def compress_context(
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
+    # Attribution is load-bearing: a compaction whose cause is not recorded is
+    # a compaction nobody can explain afterwards. Every caller passes
+    # ``trigger_reason``; a missing one is a WIRING DEFECT in a new call site,
+    # so name it loudly rather than letting it read as normal.
+    _trigger_label = (trigger_reason or "").strip() or "UNATTRIBUTED"
+    if _trigger_label == "UNATTRIBUTED":
+        logger.warning(
+            "context compression has no trigger_reason (session=%s) — a caller "
+            "is not passing one; every compaction must name its arm",
+            agent.session_id or "none",
+        )
     logger.info(
-        "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
-        agent.session_id or "none", _pre_msg_count,
+        "context compression started: session=%s trigger=%s messages=%d "
+        "tokens=~%s model=%s focus=%r",
+        agent.session_id or "none", _trigger_label, _pre_msg_count,
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    _compaction_status = COMPACTION_STATUS
+    # The lifecycle status is the only user-facing surface an AUTOMATIC
+    # compaction has, so it must carry the attribution too — otherwise the
+    # turn visibly pauses and the user is left asking why. Appended as a
+    # SUFFIX: the gateway's noise filter and progress matcher
+    # (_TELEGRAM_NOISY_STATUS_RE / _COMPRESSION_PROGRESS_STATUS_RE) key on the
+    # leading literal wording, so inserting the clause mid-string would stop
+    # both from matching and leak routine chatter onto chat platforms.
+    _compaction_status = COMPACTION_STATUS + compaction_reason_clause(trigger_reason)
     if not force:
         _compaction_status = automatic_compaction_status_message(
             agent.context_compressor,
@@ -4430,6 +4493,8 @@ __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS_MARKER",
+    "MANUAL_TRIGGER_REASON",
+    "compaction_reason_clause",
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",

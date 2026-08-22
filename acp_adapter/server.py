@@ -2490,6 +2490,7 @@ class HermesACPAgent(acp.Agent):
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
+            from agent.conversation_compression import MANUAL_TRIGGER_REASON
             from agent.model_metadata import estimate_request_tokens_rough
 
             original_count = len(state.history)
@@ -2512,6 +2513,7 @@ class HermesACPAgent(acp.Agent):
                     approx_tokens=approx_tokens,
                     task_id=state.session_id,
                     force=True,
+                    trigger_reason=MANUAL_TRIGGER_REASON,
                 )
             finally:
                 agent._session_db = original_session_db

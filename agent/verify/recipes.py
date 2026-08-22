@@ -24,11 +24,91 @@ Layer ownership vs :mod:`agent.coding_context`:
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+# Python test file globs (PEP 8 module naming → file naming).
+_PY_TEST_PATTERNS = ("test_*.py", "*_test.py")
+
+
+def _find_python_test_files(root: Path) -> list[Path]:
+    """Collect real Python test files from *root* and ``root/tests/``.
+
+    Looks one level deep in each location for ``test_*.py`` /
+    ``*_test.py`` — the two shapes pytest/unittest discovery both eat.
+    Returns an ordered, deduped list (root tests first, then ``tests/``).
+    """
+    found: list[Path] = []
+    for base in (root, root / "tests"):
+        if not base.is_dir():
+            continue
+        try:
+            entries = sorted(base.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file() or entry.suffix != ".py":
+                continue
+            name = entry.name
+            if any(fnmatch.fnmatch(name, pat) for pat in _PY_TEST_PATTERNS):
+                found.append(entry)
+    return found
+
+
+def _classify_test_runner(files: list[Path]) -> str | None:
+    """Inspect test-file contents to choose pytest vs unittest.
+
+    Returns ``"pytest"`` when any file imports pytest or uses
+    pytest-only features (fixtures, marks), ``"unittest"`` when any
+    file imports/subclasses unittest, ``"pytest"`` as the permissive
+    fallback for test files that use neither explicitly (plain
+    ``test_*`` functions with bare asserts still run under pytest),
+    or ``None`` when *files* is empty (no test phase at all).
+    """
+    if not files:
+        return None
+
+    has_unittest = False
+    for path in files:
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Strong pytest signals — wins immediately.
+        if (
+            "import pytest" in content
+            or "from pytest" in content
+            or "@pytest." in content
+            or "pytest.fixture" in content
+            or "pytest.mark" in content
+        ):
+            return "pytest"
+        # Unittest signals — remember, but keep scanning for pytest.
+        if "import unittest" in content or "unittest.TestCase" in content:
+            has_unittest = True
+
+    return "unittest" if has_unittest else "pytest"
+
+
+def _python_test_command(root: Path) -> list[str]:
+    """Return the test command for a Python project, or ``[]``.
+
+    Inspects real test files — not directory shape — to decide the
+    runner, then emits ``python -m <runner>`` so the project's own
+    interpreter/env is used (never a bare ``pytest`` that may resolve
+    to the wrong env).
+    """
+    runner = _classify_test_runner(_find_python_test_files(root))
+    if runner is None:
+        return []
+    if runner == "pytest":
+        return ["python -m pytest"]
+    return ["python -m unittest discover"]
 
 
 @dataclass
@@ -279,7 +359,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
     elif pyproject and not requirements:
         install = "pip install -e ."
 
-    has_tests = (root / "tests").exists()
+    test = _python_test_command(root)
 
     if is_django:
         return Recipe(
@@ -308,7 +388,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
             name="FastAPI app",
             kind="fastapi",
             bootstrap=[install],
-            test=["pytest"] if has_tests else [],
+            test=test,
             start=f"uvicorn {app_module} --host 0.0.0.0 --port 8000",
             port=8000,
             evidence=["Detected Python project", "Detected FastAPI/Uvicorn dependency"],
@@ -325,7 +405,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
             name="Flask app",
             kind="flask",
             bootstrap=[install],
-            test=["pytest"] if has_tests else [],
+            test=test,
             start=f"flask --app {app_module} run --host 0.0.0.0 --port 5000",
             port=5000,
             evidence=["Detected Python project", "Detected Flask dependency"],
@@ -335,7 +415,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
         name="Python project",
         kind="python",
         bootstrap=[install],
-        test=["pytest"] if has_tests else ["python -m unittest discover"],
+        test=test,
         evidence=["Detected Python project"],
     )
 

@@ -143,13 +143,86 @@ class TestPythonDetection:
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         recipe = detect_recipe(tmp_path)
         assert recipe.bootstrap == ["pip install -e ."]
-        assert recipe.test == ["python -m unittest discover"]
+        assert recipe.test == []
 
     def test_pytest_when_tests_dir(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
         (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_core.py").write_text(
+            "import pytest\n\ndef test_thing():\n    assert True\n", encoding="utf-8"
+        )
         recipe = detect_recipe(tmp_path)
-        assert recipe.test == ["pytest"]
+        assert recipe.test == ["python -m pytest"]
+
+    def test_unittest_when_tests_use_unittest(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_thing.py").write_text(
+            "import unittest\n\nclass TestThing(unittest.TestCase):\n    def test_one(self):\n        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m unittest discover"]
+
+    def test_empty_tests_dir_no_tests(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == []
+
+    def test_no_tests_dir_no_tests(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == []
+
+    def test_pytest_plain_test_functions(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_stuff.py").write_text(
+            "def test_one():\n    assert 1 + 1 == 2\n", encoding="utf-8"
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m pytest"]
+
+    def test_pytest_wins_over_unittest(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text(
+            "import unittest\nclass A(unittest.TestCase):\n    def test_x(self):\n        pass\n", encoding="utf-8"
+        )
+        (tmp_path / "tests" / "test_b.py").write_text(
+            "import pytest\n\ndef test_y():\n    pass\n", encoding="utf-8"
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m pytest"]
+
+    def test_tests_at_root_level(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+        (tmp_path / "test_core.py").write_text(
+            "import pytest\n\ndef test_thing():\n    pass\n", encoding="utf-8"
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m pytest"]
+
+    def test_fastapi_with_tests(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
+        (tmp_path / "main.py").touch()
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_api.py").write_text(
+            "import pytest\n\ndef test_root():\n    pass\n", encoding="utf-8"
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m pytest"]
+
+    def test_flask_with_tests(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        (tmp_path / "app.py").touch()
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_app.py").write_text(
+            "import pytest\n\ndef test_index():\n    pass\n", encoding="utf-8"
+        )
+        recipe = detect_recipe(tmp_path)
+        assert recipe.test == ["python -m pytest"]
 
 
 class TestOtherEcosystems:

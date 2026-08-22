@@ -18896,6 +18896,108 @@ def _start_parent_death_watchdog() -> None:
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
 
 
+def _ssh_lock_watchdog_decision(
+    *,
+    seen_lock: bool,
+    lock_exists: bool,
+    lock_readable: bool,
+    lock_nonce: Optional[str],
+    our_nonce: str,
+    log_nlink: Optional[int],
+    missing_polls: int,
+) -> tuple[str, bool, int]:
+    """Decide whether the SSH lock/log watchdog should wait, continue, or exit."""
+    if lock_exists:
+        if not lock_readable:
+            return "continue", True, 0
+        if lock_nonce != our_nonce:
+            return "exit", True, 0
+        if log_nlink == 0:
+            return "exit", True, 0
+        return "continue", True, 0
+    if not seen_lock:
+        return "wait", False, 0
+    missing_polls += 1
+    if missing_polls >= 2:
+        return "exit", True, missing_polls
+    return "continue", True, missing_polls
+
+
+def _ssh_lock_snapshot(lock_path: str) -> tuple[bool, bool, Optional[str]]:
+    try:
+        with open(lock_path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return False, False, None
+    except OSError:
+        return True, False, None
+    try:
+        parsed = json.loads(raw)
+        nonce = parsed.get("spawnNonce") if isinstance(parsed, dict) else None
+        if not isinstance(nonce, str):
+            return True, False, None
+        return True, True, nonce
+    except (TypeError, ValueError):
+        return True, False, None
+
+
+def _ssh_log_is_unlinked(fd: int) -> bool:
+    try:
+        return os.fstat(fd).st_nlink == 0
+    except OSError:
+        return False
+
+
+def _start_ssh_lock_watchdog() -> None:
+    """Exit this isolated serve when Desktop drops our lock or unlinks the log.
+
+    Armed only when ``--ssh-owner-nonce`` was set. Missing lock at startup is
+    not an exit: Desktop writes the lock after spawn. No parent-pid, no
+    process-lifetime cutoff, no process-group kill.
+    """
+    our_nonce = _SSH_OWNER_NONCE
+    if not our_nonce:
+        return
+    lock_path = os.environ.get("HERMES_SSH_LOCKFILE") or ""
+    log_path = os.environ.get("HERMES_SSH_LOGFILE") or ""
+    if not lock_path:
+        return
+    try:
+        poll = max(0.5, float(os.environ.get("HERMES_SERVE_WATCHDOG_POLL_S", "2.0")))
+    except (TypeError, ValueError):
+        poll = 2.0
+
+    def _loop() -> None:
+        seen = False
+        missing = 0
+        log_fd: Optional[int] = None
+        while True:
+            exists, readable, nonce = _ssh_lock_snapshot(lock_path)
+            nlink: Optional[int] = None
+            if log_path:
+                try:
+                    if log_fd is None and os.path.exists(log_path):
+                        log_fd = os.open(log_path, os.O_RDONLY)
+                    if log_fd is not None:
+                        nlink = os.fstat(log_fd).st_nlink
+                except OSError:
+                    nlink = None
+            action, seen, missing = _ssh_lock_watchdog_decision(
+                seen_lock=seen,
+                lock_exists=exists,
+                lock_readable=readable,
+                lock_nonce=nonce,
+                our_nonce=our_nonce,
+                log_nlink=nlink,
+                missing_polls=missing,
+            )
+            if action == "exit":
+                os._exit(0)
+            time.sleep(poll)
+
+    threading.Thread(target=_loop, daemon=True, name="serve-ssh-lock-watchdog").start()
+
+
 def _demo() -> None:
     assert _is_serve_orphaned(999999999, pid_exists=lambda _pid: False) is True
     assert _is_serve_orphaned(42, pid_exists=lambda _pid: True) is False
@@ -19137,6 +19239,7 @@ def start_server(
             # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
+            _start_ssh_lock_watchdog()
 
             # Positive process identity: record (pid, create_time, purpose,
             # spawner) in the machine spawn ledger and — on Windows — attach

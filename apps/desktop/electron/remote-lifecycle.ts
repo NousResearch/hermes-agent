@@ -398,6 +398,118 @@ async function remotePidAlive(ssh, pid) {
   }
 }
 
+const SSH_PID_OWNED_PY = `"""Classify Desktop SSH dashboard argv. Stdlib only. Embedded by remote-lifecycle.ts."""
+
+from __future__ import annotations
+
+import os
+import shlex
+
+
+def _wrapper_exec_targets(hermes_path):
+    try:
+        with open(hermes_path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return []
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("#!"):
+        return []
+    interp = lines[0][2:].strip()
+    if not interp:
+        return []
+    name = os.path.basename(interp.split()[-1])
+    if name not in {"sh", "bash"}:
+        return []
+    exec_line = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("exec"):
+            exec_line = stripped
+    if not exec_line:
+        return []
+    try:
+        parts = shlex.split(exec_line)
+    except ValueError:
+        return []
+    if len(parts) != 4 or parts[0] != "exec" or parts[-1] != "$@":
+        return []
+    return [os.path.expanduser(parts[1]), os.path.expanduser(parts[2])]
+
+
+def classify_dashboard_argv(
+    args,
+    expected,
+    nonce,
+    hermes_home="",
+    token_path="",
+    profile="",
+    allow_spawn_proof=True,
+    include_repo_hermes_entry=True,
+    resolve_wrapper=True,
+):
+    expected = os.path.expanduser(expected or "")
+    hermes_home = os.path.expanduser(hermes_home) if hermes_home else ""
+    expected_token = os.path.expanduser(token_path) if token_path else ""
+    expected_profile = profile or ""
+    expected_entries = {expected} if expected else set()
+    if hermes_home:
+        expected_entries.add(
+            os.path.join(hermes_home, "hermes-agent", "venv", "bin", "hermes")
+        )
+        if include_repo_hermes_entry:
+            expected_entries.add(os.path.join(hermes_home, "hermes-agent", "hermes"))
+    if resolve_wrapper and expected:
+        expected_entries.update(_wrapper_exec_targets(expected))
+    try:
+        serve = args.index("serve")
+        owner = args.index("--ssh-owner-nonce", serve + 1)
+        token = args.index("--ssh-session-token-file", serve + 1) if expected_token else -1
+        isolated = args.index("--isolated", serve + 1)
+        profile_arg = args.index("--profile") if expected_profile else -1
+        serve_count = args.count("serve")
+        owner_count = args.count("--ssh-owner-nonce")
+        token_count = args.count("--ssh-session-token-file")
+        isolated_count = args.count("--isolated")
+        profile_count = args.count("--profile")
+        direct = bool(args) and args[0] in expected_entries
+        python_entry = (
+            len(args) > 1
+            and args[1] in expected_entries
+            and os.path.basename(args[0]).startswith("python")
+        )
+        token_ok = (not expected_token) or args[token + 1] == expected_token
+        isolated_ok = isolated_count == 1 and isolated > serve
+        if expected_profile:
+            profile_ok = (
+                profile_count == 1
+                and profile_arg < serve
+                and args[profile_arg + 1] == expected_profile
+            )
+        else:
+            profile_ok = profile_count == 0
+        spawn_proof = (
+            bool(allow_spawn_proof)
+            and bool(expected_token)
+            and owner_count == 1
+            and token_count == 1
+            and token_ok
+            and profile_ok
+        )
+        ok = (
+            (direct or python_entry or spawn_proof)
+            and serve_count == 1
+            and isolated_ok
+            and owner_count == 1
+            and args[owner + 1] == nonce
+            and token_ok
+            and profile_ok
+        )
+    except (ValueError, IndexError):
+        ok = False
+    return "OWNED" if ok else "FOREIGN"
+`
+
 // A pid is "provably ours" only if its remote cmdline carries our dashboard
 // args — never kill a pid we can't positively identify as our dashboard.
 async function pidIsOurDashboard(
@@ -414,18 +526,16 @@ async function pidIsOurDashboard(
   }
 
   try {
+    // SSH_PID_OWNED_PY is the exact sibling file. Extra lines only read
+    // argv and print OWNED/FOREIGN so packaged Desktop still ships one script.
     const script =
+      SSH_PID_OWNED_PY +
       'import os,shlex,subprocess,sys\n' +
       `pid=${Number(pid)}\n` +
       `expected=os.path.expanduser(${shq(hermesPath)})\n` +
-      // The installer-facing launcher is intentionally preserved for invocation
-      // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
-      // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
-      // token path + random nonce + exact profile below are the alternative proof.
+      // #74411 keeps hermesPath as the launcher; expected entries plus spawn_proof
+      // identify the post-exec python + hermes-agent/hermes argv shape.
       `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
-      'expected_entries={expected}\n' +
-      'if hermes_home:\n' +
-      ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
       `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
       `expected_profile=${shq(profile)}\n` +
       `nonce=${shq(spawnNonce)}\n` +
@@ -439,28 +549,7 @@ async function pidIsOurDashboard(
       '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
       '  print("FOREIGN");sys.exit(0)\n' +
       ' args=shlex.split(line)\n' +
-      'ok=False\n' +
-      'try:\n' +
-      ' serve=args.index("serve")\n' +
-      ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
-      ' isolated=args.index("--isolated",serve+1)\n' +
-      ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
-      ' serve_count=args.count("serve")\n' +
-      ' owner_count=args.count("--ssh-owner-nonce")\n' +
-      ' token_count=args.count("--ssh-session-token-file")\n' +
-      ' isolated_count=args.count("--isolated")\n' +
-      ' profile_count=args.count("--profile")\n' +
-      ' direct=args[0] in expected_entries\n' +
-      ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-      ' token_ok=not expected_token or args[token+1]==expected_token\n' +
-      ' isolated_ok=isolated_count==1 and isolated>serve\n' +
-      ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
-      ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
-      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
-      'except (ValueError,IndexError):pass\n' +
-      'print("OWNED" if ok else "FOREIGN")'
-
+      'print("OWNED" if classify_dashboard_argv(args,expected,nonce,hermes_home=hermes_home,token_path=expected_token,profile=expected_profile)=="OWNED" else "FOREIGN")'
     const out = await ssh.exec(`python3 -c ${shq(script)}`)
 
     return String(out || '').trim() === 'OWNED'
@@ -529,10 +618,14 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
+  const lockEnv =
+    opts.spawnNonce && opts.logPath
+      ? ` HERMES_SSH_LOCKFILE=${expandRemotePath(String(opts.logPath).replace(/[^/]+$/, 'backend.lock.json'))} HERMES_SSH_LOGFILE=${logPath}`
+      : ''
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${lockEnv} ${hermes} ${profileArgs}${subCmd}`
 
   return (
     `mkdir -p "$(dirname ${logPath})" && ` +

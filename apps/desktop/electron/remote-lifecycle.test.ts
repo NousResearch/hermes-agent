@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback, spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -469,6 +469,54 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+test('cleanupStale keeps lock and log when OWNED kill fails', async () => {
+  const killFail = new Error('kill refused')
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/kill 9\b/, killFail]
+  ])
+
+  await assert.rejects(
+    () =>
+      cleanupStale(ssh, OWNERSHIP_ID, {
+        pid: 9,
+        spawnNonce: SPAWN_NONCE,
+        hermesPath: '/x/hermes',
+        logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+      }),
+    (err: { kind?: string }) => err.kind === 'transient-transport-error'
+  )
+  assert.ok(ssh.calls.some(c => /kill 9\b/.test(c)))
+  assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), 'OWNED kill-fail must not drop lock or log')
+})
+
+test('buildSpawnCommand exports lock and log paths when spawn nonce is set', () => {
+  const logPath = spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    logPath,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.match(cmd, /HERMES_SSH_LOCKFILE=/)
+  assert.match(cmd, /HERMES_SSH_LOGFILE=/)
+  assert.match(cmd, /backend\.lock\.json/)
+  assert.match(cmd, /--ssh-owner-nonce/)
+})
+
+test('buildSpawnCommand does not export lock env without spawn nonce', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.doesNotMatch(cmd, /HERMES_SSH_LOCKFILE/)
+  assert.doesNotMatch(cmd, /HERMES_SSH_LOGFILE/)
+})
+
+test('remote-lifecycle embeds ssh_pid_owned.py verbatim', async () => {
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const py = await readFile(path.join(here, 'ssh_pid_owned.py'), 'utf8')
+  const ts = await readFile(path.join(here, 'remote-lifecycle.ts'), 'utf8')
+  assert.ok(ts.includes(py), 'pidIsOurDashboard must embed ssh_pid_owned.py verbatim')
+})
 
 test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])

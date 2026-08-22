@@ -1183,7 +1183,7 @@ class LineAdapter(BasePlatformAdapter):
         # postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153.
         if _is_system_bypass(content):
-            return await self._send_text_chunks(chat_id, content, force_push=False)
+            return await self._send_text_chunks(chat_id, content, force_push=True)
 
         # If the chat has a PENDING postback button outstanding, route the
         # response into the cache for the user to fetch via tap.
@@ -1192,7 +1192,7 @@ class LineAdapter(BasePlatformAdapter):
             self._cache.set_ready(pending_rid, content)
             return SendResult(success=True, message_id=pending_rid)
 
-        return await self._send_text_chunks(chat_id, content, force_push=False)
+        return await self._send_text_chunks(chat_id, content, force_push=True)
 
     async def _send_text_chunks(
         self,

@@ -370,6 +370,21 @@ DEFAULT_CONFIG = {
         # ``false`` keeps the historical strict-provider behavior (Mistral,
         # Groq, Cerebras reject the field with HTTP 400).
         "reasoning_echo": False,
+
+        # Cross-channel context digest for multiplex profiles.
+        # When enabled, a multiplex profile's session will see a compact
+        # read-only digest of its own recent activity from other channels
+        # (e.g., Telegram + Buzz) at session start. This does NOT merge
+        # session_ids or enable real-time sync — it's a one-time injection
+        # of recent context from sibling sessions sharing the same profile.
+        # Requires gateway.multiplex_profiles: true.
+        "cross_channel_context": {
+            "enabled": False,
+            # Maximum number of recent messages to include from each sibling session.
+            "max_messages_per_channel": 10,
+            # Maximum total characters for the digest (prevents prompt bloat).
+            "max_digest_chars": 4000,
+        },
     },
 
     "terminal": {

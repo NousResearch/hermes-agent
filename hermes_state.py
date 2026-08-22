@@ -6107,6 +6107,51 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def find_sessions_by_profile(
+        self,
+        profile_name: str,
+        *,
+        exclude_session_id: Optional[str] = None,
+        active_only: bool = True,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Find sessions belonging to a specific profile.
+
+        Returns sessions ordered by last activity (most recent first).
+        Useful for cross-channel context digest in multiplex profiles.
+
+        Args:
+            profile_name: The profile name to search for.
+            exclude_session_id: Optional session_id to exclude from results (e.g., current session).
+            active_only: If True, only return sessions that haven't ended.
+            limit: Maximum number of sessions to return.
+        """
+        if not profile_name:
+            return []
+
+        with self._lock:
+            query = f"""
+                SELECT s.*,
+                       COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
+                       {_sql_session_last_active("s")} AS last_active
+                FROM sessions s
+                LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
+                WHERE s.profile_name = ?
+            """
+            params: list = [profile_name]
+
+            if active_only:
+                query += " AND s.ended_at IS NULL"
+            if exclude_session_id:
+                query += " AND s.id != ?"
+                params.append(exclude_session_id)
+
+            query += " ORDER BY last_active DESC LIMIT ?"
+            params.append(limit)
+
+            rows = self._conn.execute(query, params).fetchall()
+            return [self._session_row_dict(r) for r in rows]
+
     # Children that carry a ``parent_session_id`` but are NOT compression
     # continuations: branches, delegate/subagent runs, and tool sessions.
     # A marker only disqualifies a child when it points at the parent being

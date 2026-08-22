@@ -101,6 +101,134 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dependency-block loop guard (backoff + escalation, 2026-08-19)
+# ---------------------------------------------------------------------------
+
+
+def test_dependency_block_without_task_link_does_not_repromote_immediately(
+    kanban_home: Path,
+) -> None:
+    """A dependency block with NO formal task_link must not be re-promoted
+    to ``ready`` on the very next ``recompute_ready`` tick (the loop
+    observed on t_ee5d85a4: 11 runs in 11 minutes, all outcome=blocked).
+
+    Before the fix, ``recompute_ready``'s "all parents done" check is
+    vacuously true over an empty parent set, so a task blocked purely by a
+    prose-only dependency (no ``kanban_link``) was re-promoted immediately.
+    """
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="waiting on X, no link", kind="dependency")
+        assert kb.get_task(conn, tid).status == "todo"
+        task = kb.get_task(conn, tid)
+        assert task.dependency_block_streak == 1
+        assert task.dependency_backoff_until is not None
+        # Immediate recompute_ready must NOT promote — backoff window active.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, tid).status == "todo"
+
+
+def test_dependency_block_backoff_expires_and_promotes(kanban_home: Path) -> None:
+    """Once the backoff window has elapsed, the task IS eligible again."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="waiting on X, no link", kind="dependency")
+        # Force the backoff window into the past instead of sleeping.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET dependency_backoff_until = ? WHERE id = ?",
+                (0, tid),
+            )
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        # Real progress clears the loop-guard streak.
+        assert task.dependency_block_streak == 0
+        assert task.dependency_backoff_until is None
+
+
+def test_dependency_block_with_real_link_never_backs_off(kanban_home: Path) -> None:
+    """A task with a genuine task_link is correctly parent-gated already —
+    it must never accumulate a dependency-loop streak or backoff, even
+    across repeated (re-)blocks while the real parent is still working."""
+    with kb.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = _running_task(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        for _ in range(3):
+            kb.block_task(conn, child, reason="still waiting", kind="dependency")
+            task = kb.get_task(conn, child)
+            assert task.status == "todo"
+            assert task.dependency_block_streak == 0
+            assert task.dependency_backoff_until is None
+            # Parent still not done -> recompute_ready must not promote.
+            assert kb.recompute_ready(conn) == 0
+            # claim_task correctly refuses ready->running while the real
+            # parent is undone, so drive the child straight back to
+            # running (bypassing claim_task's parent gate) to re-block it
+            # and prove the streak/backoff never engage across iterations.
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='running' WHERE id=?", (child,)
+                )
+
+
+def test_dependency_block_escalates_to_blocked_after_limit(kanban_home: Path) -> None:
+    """N consecutive same-cause dependency blocks with no formal link and no
+    intervening real promotion must stop returning to ``todo`` (where the
+    dispatcher would just re-promote and re-block it again) and instead
+    land in the human-visible ``blocked`` bucket."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        for i in range(kb.DEPENDENCY_BLOCK_ESCALATION_LIMIT):
+            kb.block_task(conn, tid, reason="phantom dependency", kind="dependency")
+            task = kb.get_task(conn, tid)
+            if i < kb.DEPENDENCY_BLOCK_ESCALATION_LIMIT - 1:
+                assert task.status == "todo", f"iteration {i}"
+                # Clear backoff so the next iteration's block_task call can
+                # re-claim/re-run without waiting on the exponential window.
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET dependency_backoff_until = NULL "
+                        "WHERE id = ?",
+                        (tid,),
+                    )
+                _make_running_again(conn, tid)
+            else:
+                assert task.status == "blocked", f"iteration {i}"
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "dependency_loop_detected"
+        ]
+        assert events, "expected a dependency_loop_detected event"
+        payload = events[-1].payload or {}
+        assert payload.get("streak") == kb.DEPENDENCY_BLOCK_ESCALATION_LIMIT
+        # Escalated dependency blocks must NOT be silently auto-recovered by
+        # recompute_ready (no sticky-block author, but the escalation is a
+        # deliberate human handoff) — they still sit in 'blocked' until a
+        # human/orchestrator adds the missing link or re-routes the task.
+        # (recompute_ready only promotes when parents are actually done;
+        # this task still has zero task_links so it stays put.)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_dependency_block_streak_resets_on_completion(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="dependency")
+        assert kb.get_task(conn, tid).dependency_block_streak == 1
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        kb.claim_task(conn, tid, claimer="worker")
+        kb.complete_task(conn, tid, result="done")
+        task = kb.get_task(conn, tid)
+        assert task.dependency_block_streak == 0
+        assert task.dependency_backoff_until is None
+
+
+# ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------
 

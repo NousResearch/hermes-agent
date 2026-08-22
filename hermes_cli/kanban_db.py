@@ -132,6 +132,38 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+
+# --- Dependency-block loop guard (2026-08-19) -----------------------------
+# ``dependency`` blocks route straight to ``todo`` and are re-promoted by
+# ``recompute_ready`` whenever every linked parent is done/archived. That
+# check is vacuously true for a task with ZERO ``task_links`` rows — e.g. a
+# worker cites a dependency only in the card body/reason text, with no
+# formal ``kanban_link`` to back it. Nothing then gates the re-promotion:
+# the dispatcher promotes todo->ready next tick (~60s), the worker
+# re-derives the identical block, and the cycle repeats indefinitely. Since
+# the outcome is ``blocked`` (not a failure), ``consecutive_failures`` never
+# increments and the ordinary circuit breaker never trips. Observed
+# 2026-08-19: t_ee5d85a4 ran 11 times in 11 minutes, all outcome=blocked.
+#
+# Fix, scoped to the same-cause repeat case (mirrors the existing
+# ``block_recurrences`` loop breaker used for needs_input/capability):
+#   1. Backoff — each consecutive same-reason dependency (re-)block with no
+#      real task_link progress pushes out a ``dependency_backoff_until``
+#      epoch (2min, 4min, 8min, ... capped) that ``recompute_ready`` honours
+#      before re-promoting the task, so the tick loop slows down instead of
+#      thrashing every dispatch_interval_seconds.
+#   2. Escalation — once the same-cause count reaches
+#      ``DEPENDENCY_BLOCK_ESCALATION_LIMIT``, the task stops returning to
+#      ``todo`` altogether and is routed to ``blocked`` (kind stays
+#      ``dependency``, but it now sits in the human-visible bucket a
+#      worker/orchestrator must act on: add the missing ``kanban_link`` or
+#      re-route the task) instead of looping forever unattended.
+# A task that has a genuine, resolving parent chain never triggers either
+# path: the first successful ``recompute_ready`` promotion clears the
+# streak (see ``block_task``'s dependency branch and ``recompute_ready``).
+DEPENDENCY_BLOCK_ESCALATION_LIMIT = 5
+DEPENDENCY_BACKOFF_BASE_SECONDS = 120       # 2 minutes
+DEPENDENCY_BACKOFF_CAP_SECONDS = 3600       # 1 hour
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -1141,6 +1173,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Dependency-block loop guard. See the column comment in SCHEMA_SQL and
+    # ``DEPENDENCY_BLOCK_ESCALATION_LIMIT``.
+    dependency_block_streak: int = 0
+    dependency_backoff_until: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1270,18 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            dependency_block_streak=(
+                int(row["dependency_block_streak"])
+                if "dependency_block_streak" in keys
+                and row["dependency_block_streak"] is not None
+                else 0
+            ),
+            dependency_backoff_until=(
+                int(row["dependency_backoff_until"])
+                if "dependency_backoff_until" in keys
+                and row["dependency_backoff_until"] is not None
+                else None
             ),
         )
 
@@ -1422,7 +1470,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Dependency-block loop guard (2026-08-19, DEPENDENCY_BLOCK_ESCALATION_LIMIT).
+    -- Consecutive same-cause ``kind='dependency'`` (re-)blocks with no real
+    -- task_link progress between them. Incremented by ``block_task``,
+    -- cleared the moment ``recompute_ready`` actually promotes the task
+    -- (real parent progress) or the task completes. Drives both the
+    -- exponential backoff (``dependency_backoff_until``) and the
+    -- escalate-to-``blocked`` threshold, mirroring ``block_recurrences``'
+    -- role for the needs_input/capability loop breaker.
+    dependency_block_streak   INTEGER NOT NULL DEFAULT 0,
+    -- Epoch seconds before which ``recompute_ready`` will NOT re-promote
+    -- this task out of a ``dependency`` block, even if the (vacuous / no
+    -- task_links) parent check passes. NULL = no backoff in effect.
+    dependency_backoff_until  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2677,6 +2738,25 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "dependency_block_streak" not in cols:
+        # Dependency-block loop guard counter (see DEPENDENCY_BLOCK_ESCALATION_LIMIT).
+        # Existing rows start at 0 — same "count from the first block after
+        # migration" semantics as block_recurrences above.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "dependency_block_streak",
+            "dependency_block_streak INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "dependency_backoff_until" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "dependency_backoff_until",
+            "dependency_backoff_until INTEGER",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4538,13 +4618,27 @@ def recompute_ready(
       2. caller-supplied ``failure_limit`` (the dispatcher passes the
          ``kanban.failure_limit`` config value through ``dispatch_once``)
       3. ``DEFAULT_FAILURE_LIMIT``
+
+    3. The task is ``todo`` via a ``dependency`` block with NO formal
+       ``task_link`` (an empty parent set trivially satisfies "all parents
+       done") AND its ``dependency_backoff_until`` epoch hasn't passed yet.
+       Without this guard a same-cause dependency-block loop respawns the
+       task every dispatch tick forever, since ``blocked`` isn't a failure
+       and never trips the ordinary circuit breaker — see
+       ``DEPENDENCY_BLOCK_ESCALATION_LIMIT`` / ``block_task``'s dependency
+       branch, which is what sets this column. A task promoted here (real
+       parent progress, or the backoff window elapsed) has its dependency
+       loop-guard counters cleared, since successful progress is exactly
+       what should reset the "is this ever resolving?" streak.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
+    now = int(time.time())
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, "
+            "block_kind, dependency_backoff_until "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -4562,6 +4656,15 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
+            if cur_status == "todo" and not parents and row["block_kind"] == "dependency":
+                # No formal task_link — the "all parents done" check below is
+                # vacuously true. Only let this promote once its exponential
+                # backoff window (set by block_task) has elapsed, so a
+                # same-cause dependency-block loop slows down instead of
+                # respawning every dispatch tick.
+                backoff_until = row["dependency_backoff_until"]
+                if backoff_until is not None and now < int(backoff_until):
+                    continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
@@ -4582,13 +4685,16 @@ def recompute_ready(
                     if failures >= effective_limit:
                         continue
                     conn.execute(
-                        "UPDATE tasks SET status = ? "
+                        "UPDATE tasks SET status = ?, dependency_block_streak = 0, "
+                        "dependency_backoff_until = NULL "
                         "WHERE id = ? AND status = 'blocked'",
                         (resume_status, task_id),
                     )
                 else:
                     conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                        "UPDATE tasks SET status = ?, dependency_block_streak = 0, "
+                        "dependency_backoff_until = NULL "
+                        "WHERE id = ? AND status = 'todo'",
                         (resume_status, task_id),
                     )
                 _append_event(
@@ -5450,7 +5556,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       dependency_block_streak = 0,
+                       dependency_backoff_until = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
@@ -5467,7 +5575,9 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       dependency_block_streak = 0,
+                       dependency_backoff_until = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
@@ -6285,7 +6395,8 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, "
+            "dependency_block_streak FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
@@ -6306,8 +6417,100 @@ def block_task(
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
+        # a dependency-wait as something to "unblock". BUT: when there is no
+        # formal ``task_link`` backing the cited dependency, that gate is
+        # vacuous (recompute_ready's "all parents done" check is trivially
+        # true over an empty parent set) and this task would be re-promoted
+        # to ready on the very next dispatch tick — see
+        # DEPENDENCY_BLOCK_ESCALATION_LIMIT for the full rationale. Apply the
+        # same same-cause loop-breaker pattern used for needs_input/
+        # capability below: track a streak, back off exponentially, and
+        # escalate to the human ``blocked`` bucket once the streak is long
+        # enough that this clearly isn't resolving itself.
         if kind == "dependency":
+            has_real_link = conn.execute(
+                "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone() is not None
+            prev_dep_streak = (
+                int(cur_row["dependency_block_streak"])
+                if "dependency_block_streak" in cur_row.keys()
+                and cur_row["dependency_block_streak"] is not None
+                else 0
+            )
+            # A real task_link means recompute_ready's gate is meaningful (it
+            # only promotes once the linked parent actually finishes) — no
+            # loop is possible there, so don't burn the escalation budget on
+            # a task that is correctly, formally gated.
+            same_cause = prev_kind == "dependency" and not has_real_link
+            dep_streak = prev_dep_streak + 1 if same_cause else (
+                0 if has_real_link else 1
+            )
+
+            if not has_real_link and dep_streak >= DEPENDENCY_BLOCK_ESCALATION_LIMIT:
+                # Loop detected: N consecutive dependency-blocks with no
+                # formal link and no intervening real promotion. Stop
+                # returning this to todo (where it would just get
+                # re-promoted and re-blocked again) — route to the human
+                # ``blocked`` bucket instead so a worker/orchestrator adds
+                # the missing kanban_link or re-routes the task.
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           dependency_block_streak  = ?,
+                           dependency_backoff_until = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                    (kind, dep_streak, task_id) if expected_run_id is None
+                    else (kind, dep_streak, task_id, int(expected_run_id)),
+                )
+                if cur.rowcount != 1:
+                    return False
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="blocked", status="blocked",
+                    summary=reason,
+                )
+                if run_id is None and reason:
+                    run_id = _synthesize_ended_run(
+                        conn, task_id, outcome="blocked", summary=reason,
+                    )
+                _append_event(
+                    conn, task_id, "dependency_loop_detected",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "streak": dep_streak,
+                        "limit": DEPENDENCY_BLOCK_ESCALATION_LIMIT,
+                        "source_status": source_status,
+                    },
+                    run_id=run_id,
+                )
+                _blocked_task = get_task(conn, task_id)
+                _fire_kanban_lifecycle_hook(
+                    "kanban_task_blocked",
+                    task_id,
+                    board=get_current_board(),
+                    assignee=_blocked_task.assignee if _blocked_task else None,
+                    run_id=run_id,
+                    reason=reason,
+                )
+                return True
+
+            backoff_until = None
+            if not has_real_link and dep_streak > 0:
+                delay = min(
+                    DEPENDENCY_BACKOFF_BASE_SECONDS * (2 ** (dep_streak - 1)),
+                    DEPENDENCY_BACKOFF_CAP_SECONDS,
+                )
+                backoff_until = int(time.time()) + delay
+
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -6315,12 +6518,14 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       dependency_block_streak  = ?,
+                       dependency_backoff_until = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (kind, dep_streak, backoff_until, task_id) if expected_run_id is None
+                else (kind, dep_streak, backoff_until, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -6339,6 +6544,9 @@ def block_task(
                     "reason": reason,
                     "kind": kind,
                     "source_status": source_status,
+                    "streak": dep_streak,
+                    "backoff_until": backoff_until,
+                    "has_real_link": has_real_link,
                 },
                 run_id=run_id,
             )

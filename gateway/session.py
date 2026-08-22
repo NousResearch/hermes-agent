@@ -773,6 +773,33 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
+def sanitize_reasoning_override(
+    override: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Return a copy of *override* containing only persistable keys.
+
+    The override is a plain ``{"enabled": bool, "effort": str}`` shape and
+    carries no credential today; restricting the persisted keys to that pair
+    is the structural guarantee that a future shape change cannot start
+    smuggling one into sessions.json.
+
+    Returns ``None`` when the input is empty/not a dict or no persistable
+    values remain, so callers can store the result directly on
+    ``SessionEntry.reasoning_override``.  ``{"enabled": False}`` (reasoning
+    explicitly disabled for the session) is a real override and is kept —
+    presence of the key, not truthiness of its value, decides.
+    """
+    if not isinstance(override, dict):
+        return None
+    cleaned: Dict[str, Any] = {}
+    if "enabled" in override:
+        cleaned["enabled"] = bool(override["enabled"])
+    effort = override.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        cleaned["effort"] = effort.strip()
+    return cleaned or None
+
+
 @dataclass
 class SessionEntry:
     """
@@ -871,6 +898,15 @@ class SessionEntry:
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
 
+    # Session-scoped /reasoning override ({"enabled": bool, "effort": str}).
+    # The runner's per-session override is in-memory, so before this field a
+    # gateway restart silently reverted /reasoning to the config default while
+    # a /model switch in the same session survived.  Unlike the model
+    # override this carries no credential, so nothing has to be re-resolved
+    # on rehydration (see sanitize_reasoning_override /
+    # SessionStore.set_reasoning_override).
+    reasoning_override: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -914,6 +950,11 @@ class SessionEntry:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.reasoning_override:
+            # Same defence-in-depth: only the known-safe keys reach disk.
+            result["reasoning_override"] = sanitize_reasoning_override(
+                self.reasoning_override
+            )
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -1003,6 +1044,9 @@ class SessionEntry:
             reset_had_activity=data.get("reset_had_activity", False),
             prev_session_id=data.get("prev_session_id"),
             model_override=sanitize_model_override(data.get("model_override")),
+            reasoning_override=sanitize_reasoning_override(
+                data.get("reasoning_override")
+            ),
         )
 
 
@@ -2292,9 +2336,11 @@ class SessionStore:
             entry.expiry_finalized = True
             if clear_model_override:
                 # Session finalization is a conversation boundary — drop the
-                # persisted /model override too so a later message doesn't
-                # rehydrate it after the in-memory override was popped.
+                # persisted /model and /reasoning overrides too so a later
+                # message doesn't rehydrate them after the in-memory
+                # overrides were cleared.
                 entry.model_override = None
+                entry.reasoning_override = None
             self._save()
         if self._db:
             setter = getattr(self._db, "set_expiry_finalized", None)
@@ -3048,6 +3094,36 @@ class SessionStore:
             if entry is None:
                 return None
             return dict(entry.model_override) if entry.model_override else None
+
+    def set_reasoning_override(
+        self, session_key: str, override: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist (or clear) the session-scoped /reasoning override.
+
+        Only the known-safe keys (enabled/effort — see
+        ``sanitize_reasoning_override``) are written.  Pass ``None`` (or a
+        dict with no persistable values) to clear the persisted override,
+        e.g. on /new.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            cleaned = sanitize_reasoning_override(override)
+            if entry.reasoning_override == cleaned:
+                return
+            entry.reasoning_override = cleaned
+            self._save()
+
+    def get_reasoning_override(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Return the persisted /reasoning override for *session_key*, if any."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            return dict(entry.reasoning_override) if entry.reasoning_override else None
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

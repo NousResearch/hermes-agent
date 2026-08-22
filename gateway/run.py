@@ -9472,6 +9472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         if resolved_session_key:
+            self._rehydrate_session_reasoning_override(resolved_session_key)
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
@@ -9491,6 +9492,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_state(session_key).conversation.reasoning_override = (
             None if reasoning_config is None else dict(reasoning_config)
         )
+        # Write through so the override survives a gateway restart, mirroring
+        # the /model leg.  Clearing (reasoning_config=None) nulls the
+        # persisted field too, so a conversation boundary can't be undone by
+        # a later rehydrate.
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+        try:
+            store.set_reasoning_override(session_key, reasoning_config)
+        except Exception:
+            logger.debug(
+                "Failed to persist session reasoning override", exc_info=True
+            )
 
     def _resolve_session_service_tier(
         self,
@@ -26309,6 +26323,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
+        )
+
+    def _rehydrate_session_reasoning_override(self, session_key: str) -> None:
+        """Lazily restore a persisted /reasoning override after a restart.
+
+        Mirrors :meth:`_rehydrate_session_model_override`.  The runner's
+        per-session reasoning override is in-memory, so before persistence a
+        gateway restart silently reverted ``/reasoning high`` to the config
+        default while a ``/model`` switch in the same session survived.
+
+        The override carries no credential ({"enabled": bool, "effort": str}),
+        so there is nothing to re-resolve — the persisted value is restored
+        verbatim.
+
+        No-op when an in-memory override already exists (live state wins) or
+        when the store has nothing persisted (e.g. the user ran /new, which
+        clears both the in-memory field and the persisted one).
+        """
+        _rehydrate_state = self._peek_session_state(session_key)
+        if (
+            _rehydrate_state is not None
+            and _rehydrate_state.conversation.reasoning_override is not None
+        ):
+            return
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+        try:
+            persisted = store.get_reasoning_override(session_key)
+            if not isinstance(persisted, dict) or not persisted:
+                return
+            restored = dict(persisted)
+        except Exception:
+            logger.debug(
+                "Failed to read persisted session reasoning override", exc_info=True
+            )
+            return
+        self._session_state(session_key).conversation.reasoning_override = restored
+        logger.info(
+            "Rehydrated persisted /reasoning override for session=%s: %s",
+            session_key, restored,
         )
 
     def _apply_session_model_override(

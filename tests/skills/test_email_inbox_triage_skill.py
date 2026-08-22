@@ -87,3 +87,13 @@ def test_mutation_boundary_is_default_safe():
     _, body = _frontmatter_and_body()
     assert "read + draft" in body, "scope step must default to read+draft, not send/delete"
     assert "does not imply permission" in body
+
+
+def test_voice_calibration_is_evidence_based():
+    """Drafting must calibrate against the user's own sent replies (Energy-inspired),
+    with an explicit fallback when the Sent folder is unavailable."""
+    _, body = _frontmatter_and_body()
+    assert "Calibrate the user's voice" in body
+    assert "sent replies" in body.lower()
+    assert "fall back to matching the incoming thread's register" in body
+    assert "generic-professional" in body

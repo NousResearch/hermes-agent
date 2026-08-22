@@ -3929,6 +3929,8 @@ def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    *,
+    monitor_last_output_hash: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -3961,6 +3963,12 @@ def _run_job_script(
             mutated, avoiding the global-side-effect bug where a cron
             job's ``os.chdir()`` leaks into concurrent gateway sessions
             (#69396).
+        cancel_event: Optional fire-ownership cancellation signal. When set,
+            the subprocess group is terminated if ownership is lost.
+        monitor_last_output_hash: For a monitor-script invocation, the exact
+            prior output hash from this run's immutable job snapshot. An empty
+            string means that no prior output exists. This invocation-scoped
+            value overrides any ambient variable of the same name.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -4059,6 +4067,8 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        if monitor_last_output_hash is not None:
+            env["HERMES_MONITOR_LAST_OUTPUT_HASH"] = monitor_last_output_hash
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into

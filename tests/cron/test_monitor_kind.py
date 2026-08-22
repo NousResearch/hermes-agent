@@ -250,6 +250,56 @@ def test_hash_is_exact_bytes(hermes_env):
     assert hash_monitor_output("a\nb") != hash_monitor_output("a\nb ")
 
 
+def test_monitor_script_receives_job_snapshot_last_output_hash(hermes_env, monkeypatch):
+    """A monitor script must see the hash from this run's job snapshot.
+
+    Another scheduler process can persist a newer monitor hash while this run's
+    source subprocess is still starting. Passing the snapshot hash lets a
+    single-flight adapter replay bytes that are unchanged for this exact run,
+    rather than guessing from mutable jobs.json state.
+    """
+    from cron.monitor import _run_monitor_source
+
+    expected = "a" * 64
+    _write_script(
+        hermes_env,
+        "snapshot_hash.py",
+        "import os\n"
+        "print(os.environ.get('HERMES_MONITOR_LAST_OUTPUT_HASH', '<missing>'))\n",
+    )
+    # Ambient state must never override the invocation-scoped job snapshot.
+    monkeypatch.setenv("HERMES_MONITOR_LAST_OUTPUT_HASH", "ambient-stale-value")
+    job = {
+        "id": "monitor-snapshot-test",
+        "monitor_script": "snapshot_hash.py",
+        "monitor_state": {"last_output_hash": expected},
+    }
+
+    ok, output = _run_monitor_source(job)
+
+    assert ok is True
+    assert output == expected
+
+
+def test_monitor_script_clears_ambient_snapshot_hash_on_first_run(
+    hermes_env, monkeypatch
+):
+    from cron.monitor import _run_monitor_source
+
+    _write_script(
+        hermes_env,
+        "first_run_hash.py",
+        "import os\nprint(repr(os.environ.get('HERMES_MONITOR_LAST_OUTPUT_HASH')))\n",
+    )
+    monkeypatch.setenv("HERMES_MONITOR_LAST_OUTPUT_HASH", "ambient-stale-value")
+    job = {"id": "monitor-first-run-test", "monitor_script": "first_run_hash.py"}
+
+    ok, output = _run_monitor_source(job)
+
+    assert ok is True
+    assert output == "''"
+
+
 def test_unified_diff_is_capped(hermes_env):
     from cron.monitor import MAX_DIFF_CHARS, build_monitor_diff
 

@@ -217,6 +217,12 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
+### Monitor-Script Snapshot Contract
+
+A `monitor_script` runs before change detection. Hermes strips outer whitespace, hashes the resulting stdout, and compares it with `monitor_state.last_output_hash` from that invocation's job snapshot. The script receives that same snapshot value in `HERMES_MONITOR_LAST_OUTPUT_HASH`; the variable is an empty string on the first run. Hermes sets it after sanitizing the child environment, so an ambient value cannot override the invocation snapshot.
+
+This matters for cross-process single-flight adapters. While the script is running, another scheduler process may persist a newer monitor hash. An adapter that suppresses an overlapping run must select cached stdout using `HERMES_MONITOR_LAST_OUTPUT_HASH`, not by rereading mutable `jobs.json` or replaying an uncommitted latest-cache value. If no byte-identical cached output exists for that hash, the adapter should fail closed rather than guess.
+
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:

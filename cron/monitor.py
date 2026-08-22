@@ -133,7 +133,15 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         from cron.scheduler import _run_job_script
 
         workdir = (job.get("workdir") or "").strip() or None
-        return _run_job_script(monitor_script, workdir=workdir)
+        raw_state = job.get("monitor_state")
+        state = raw_state if isinstance(raw_state, dict) else {}
+        last_hash = state.get("last_output_hash")
+        snapshot_hash = last_hash if isinstance(last_hash, str) else ""
+        return _run_job_script(
+            monitor_script,
+            workdir=workdir,
+            monitor_last_output_hash=snapshot_hash,
+        )
     monitor_url = (job.get("monitor_url") or "").strip()
     if monitor_url:
         return _fetch_monitor_url(monitor_url)

@@ -1225,6 +1225,91 @@ class TestInboundRoundTrip:
 
 
 # --------------------------------------------------------------------------
+# Multiplex-profile scoping: the HTTP handler thread has no ambient context
+# --------------------------------------------------------------------------
+
+@pytest.mark.integration
+class TestMultiplexProfileScoping:
+    def test_do_post_persists_under_own_profile_not_ambient_home(self, monkeypatch, tmp_path):
+        """ThreadingHTTPServer hands each connection to a fresh native thread,
+        which does not inherit the constructing coroutine's context — so
+        do_POST cannot re-derive "which profile am I" via get_hermes_home()
+        the way async code can. The adapter must capture its own profile home
+        at construction time (when it IS correctly scoped, inside
+        gateway/run.py's ``with _profile_runtime_scope(profile_home):``) and
+        hand it to the connection thread explicitly.
+
+        Simulates that exact shape: HERMES_HOME env (what a context-free
+        thread falls back to) points at a "wrong_home" the adapter must NOT
+        touch. The adapter itself is constructed under a context-local
+        override for a *different* directory ("profile_home") that is reset
+        again immediately after construction — by the time a real HTTP
+        request arrives, there is zero ambient context, exactly like the
+        real connection thread ThreadingHTTPServer spawns.
+        """
+        import hermes_constants
+
+        wrong_home = tmp_path / "wrong_home"
+        profile_home = tmp_path / "profile_home"
+        wrong_home.mkdir()
+        profile_home.mkdir()
+
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(wrong_home))
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        port = _free_port()
+        monkeypatch.setenv("A2A_PORT", str(port))
+
+        reset_token = hermes_constants.set_hermes_home_override(str(profile_home))
+        try:
+            adapter = A2AAdapter(PlatformConfig(enabled=True))
+        finally:
+            # By the time do_POST runs on its own connection thread, there is
+            # no override active at all — matching the real gap: a plain
+            # threading.Thread never inherits it in the first place.
+            hermes_constants.reset_hermes_home_override(reset_token)
+
+        assert adapter._profile_home == str(profile_home)
+
+        async def fake_handle_message(event):
+            # metadata['notify']=True marks a final, user-visible reply — the
+            # marker adapter.send() checks before resolving the pending
+            # JSON-RPC future (see A2AAdapter.send's docstring).
+            await adapter.send(event.source.chat_id, "ECHO: " + event.text, metadata={"notify": True})
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()
+
+        base = f"http://127.0.0.1:{port}"
+
+        async def run():
+            assert await adapter.connect() is True
+            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("hello"))
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+        assert (profile_home / "a2a_audit.jsonl").exists(), (
+            "audit log must land under the adapter's own profile home"
+        )
+        assert not (wrong_home / "a2a_audit.jsonl").exists(), (
+            "audit log must NOT fall back to the ambient HERMES_HOME env var"
+        )
+        conv_dir = profile_home / "a2a_conversations"
+        assert conv_dir.is_dir() and list(conv_dir.glob("*.jsonl")), (
+            "conversation persistence must land under the adapter's own profile home"
+        )
+        assert not (wrong_home / "a2a_conversations").exists(), (
+            "conversation persistence must NOT fall back to the ambient HERMES_HOME env var"
+        )
+
+
+# --------------------------------------------------------------------------
 # Push notifications end-to-end (inline config in message/send)
 # --------------------------------------------------------------------------
 

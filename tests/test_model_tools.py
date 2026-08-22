@@ -1,6 +1,8 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import ANY, call, patch
 
 
@@ -219,6 +221,56 @@ class TestHandleFunctionCall:
         [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
         assert post_call[1]["status"] == "blocked"
         assert post_call[1]["error_type"] == "edit_approval_denied"
+
+
+
+class TestResolvedToolNamesIsolation:
+    def test_concurrent_tool_resolution_does_not_change_execute_code_fallback(
+        self, monkeypatch
+    ):
+        """A turn's execute_code fallback must retain its own resolved names."""
+        import model_tools
+
+        model_tools._tool_defs_cache.clear()
+        alpha_resolved = Event()
+        beta_resolved = Event()
+        dispatched_enabled_tools = []
+
+        def definition(name):
+            return {"type": "function", "function": {"name": name}}
+
+        def compute(enabled_toolsets, *_args, **_kwargs):
+            resolved_names = [enabled_toolsets[0]]
+            # Mirror the existing compute boundary: resolution currently
+            # persists the names only in mutable module state.
+            model_tools._last_resolved_tool_names = resolved_names
+            return [definition(resolved_names[0])]
+
+        def dispatch(_name, _args, **kwargs):
+            dispatched_enabled_tools.append(kwargs.get("enabled_tools"))
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute)
+        monkeypatch.setattr(model_tools.registry, "dispatch", dispatch)
+
+        def alpha_turn():
+            model_tools.get_tool_definitions(["alpha"], quiet_mode=True)
+            alpha_resolved.set()
+            assert beta_resolved.wait(timeout=2)
+            return model_tools.handle_function_call("execute_code", {})
+
+        def beta_turn():
+            assert alpha_resolved.wait(timeout=2)
+            model_tools.get_tool_definitions(["beta"], quiet_mode=True)
+            beta_resolved.set()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            alpha = pool.submit(alpha_turn)
+            beta = pool.submit(beta_turn)
+            assert json.loads(alpha.result(timeout=2)) == {"ok": True}
+            beta.result(timeout=2)
+
+        assert dispatched_enabled_tools == [["alpha"]]
 
 
 # =========================================================================

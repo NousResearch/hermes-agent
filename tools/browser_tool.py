@@ -4834,8 +4834,41 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # in the LLM vision analysis, not the capture.  Deleting a valid
         # screenshot loses evidence the user might need.  The 24-hour cleanup
         # in _cleanup_old_screenshots prevents unbounded disk growth.
-        logger.warning("browser_vision failed: %s", e, exc_info=True)
-        error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
+        # Classify the failure the way vision_analyze_tool does.  Without this
+        # a model that simply has no vision hands the agent a raw
+        # ``Error code: 400 - {...}`` blob it cannot act on, while the very
+        # same rejection through ``vision_analyze`` produces a sentence
+        # (#89114).  Same auxiliary model, same route, same rejection -- the
+        # answer should not depend on which tool asked.
+        from tools.vision_tools import is_vision_capability_error
+
+        _err_str = str(e).lower()
+        if any(hint in _err_str for hint in (
+            "402", "insufficient", "payment required", "credits", "billing",
+        )):
+            reason = (
+                "Insufficient credits or payment required for the vision "
+                f"model. Top up your API provider account and try again. Error: {e}"
+            )
+        elif is_vision_capability_error(e):
+            reason = (
+                "The configured vision model does not support image inputs, so "
+                "the screenshot could not be analyzed. Point auxiliary.vision "
+                "in config.yaml at a multimodal model. "
+                f"Error: {e}"
+            )
+        else:
+            reason = None
+
+        # Same rule as vision_analyze_tool: a traceback for the surprises only.
+        if reason is None:
+            logger.warning("browser_vision failed: %s", e, exc_info=True)
+        else:
+            logger.warning("browser_vision failed: %s", e)
+        error_info = {
+            "success": False,
+            "error": reason or f"Error during vision analysis: {str(e)}",
+        }
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."

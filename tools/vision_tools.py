@@ -660,6 +660,27 @@ def _is_image_size_error(error: Exception) -> bool:
     ))
 
 
+def is_vision_capability_error(error: Exception) -> bool:
+    """True when a provider rejected the request because the model has no vision.
+
+    Providers word this differently -- "This model does not support image
+    inputs" (#89114), "multimodal", "unrecognized request argument:
+    image_url" -- but they all mean the same thing: the request was well
+    formed and the *model* cannot answer it.  That is an answer, not a
+    fault, and callers use it to say so instead of handing the agent a raw
+    ``Error code: 400 - {...}`` blob.
+
+    Public (no leading underscore) because ``tools.browser_tool`` imports it:
+    ``browser_vision`` reaches the same auxiliary vision model by the same
+    route, so it has to recognise the same rejection.
+    """
+    err_str = str(error).lower()
+    return any(hint in err_str for hint in (
+        "does not support", "not support image",
+        "multimodal", "unrecognized request argument", "image input",
+    ))
+
+
 def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
     """True if the image's longest side exceeds ``max_dimension`` px.
 
@@ -1563,11 +1584,11 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
         
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
         err_str = str(e).lower()
+        classified = True
         if any(hint in err_str for hint in (
             "402", "insufficient", "payment required", "credits", "billing",
         )):
@@ -1575,11 +1596,7 @@ async def vision_analyze_tool(
                 "Insufficient credits or payment required. Please top up your "
                 f"API provider account and try again. Error: {e}"
             )
-        elif any(hint in err_str for hint in (
-            "does not support", "not support image",
-            "content_policy", "multimodal",
-            "unrecognized request argument", "image input",
-        )):
+        elif is_vision_capability_error(e) or "content_policy" in err_str:
             analysis = (
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
@@ -1596,6 +1613,21 @@ async def vision_analyze_tool(
                 "There was a problem with the request and the image could not "
                 f"be analyzed. Error: {e}"
             )
+            classified = False
+
+        # A classified failure is an ANSWER, not a crash: the branches
+        # above already turned it into something the model can act on, and
+        # this function returns ``success: false`` rather than propagating.
+        # Logging it at ERROR with a full traceback made that
+        # indistinguishable from an unhandled exception -- #89114 was filed
+        # as "crashes with unhandled openai.BadRequestError", and the
+        # traceback quoted in it is this very log line.  Keep ERROR plus a
+        # traceback for the unclassified case, the one where a traceback
+        # earns its place.
+        if classified:
+            logger.warning("%s", error_msg)
+        else:
+            logger.error("%s", error_msg, exc_info=True)
         
         # Prepare error response
         result = {

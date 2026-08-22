@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: nocodb
+description: >-
+  Read and write records in your NocoDB bases.
+source: https://nocodb.com/docs/product-docs/developer-resources/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). NocoDB serves OAuth 2.1 discovery with DCR and
+# PKCE S256 at the instance root, so mcp_oauth_manager handles registration,
+# token exchange, and refresh with no client_id to paste.
+transport:
+  type: http
+  url: https://app.nocodb.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - nocodb
+  hosts:
+    - nocodb.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  NocoDB (or run `hermes mcp login nocodb`). Approve access, then
+  restart the session so tools load.
+
+  Scope: this server is record-level only — create, read, update, and
+  delete rows. It does not create tables, add fields, or make any other
+  schema change. For schema work, workspace/base administration, views,
+  filters, or attachments, install the `nocodb` skill instead
+  (`hermes skills install nocodb`), which drives the NocoDB v3 REST API.
+
+  Self-hosted instances: the OAuth metadata is served from your own
+  instance root, so point the URL at it after install —
+
+    hermes mcp configure nocodb
+
+  and set url to https://nocodb.example.com/mcp. The browser flow then
+  authorizes against that instance.
+
+  Per-base token alternative: NocoDB also exposes a scoped endpoint at
+  /mcp/<mcpTokenId> authenticated with an `xc-mcp-token` header instead
+  of OAuth. That custom header is not expressible in this manifest
+  format, so configure it directly in ~/.hermes/config.yaml:
+
+    mcp_servers:
+      nocodb:
+        url: https://app.nocodb.com/mcp/<mcpTokenId>
+        headers:
+          xc-mcp-token: "${NOCODB_MCP_TOKEN}"
+
+  Treat that token as full control over the base it is scoped to.

@@ -2532,6 +2532,78 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+
+def _is_broad_search_path(path: str | None, task_id: str = "default") -> bool:
+    """True when *path* is the default / broad search root (cwd or empty).
+
+    Explicit narrower directories (e.g. ``./src``, ``/tmp/job``) are not broad, so
+    pure wildcards remain allowed there for intentional scoped inventory.
+
+    Classification uses the task-aware resolver so spellings that normalize to
+    the workspace root (``./child/..``) or expand it (``..``) count as broad,
+    matching what the backend actually walks (#76628 review).
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return True
+    # Fast path for the common default spellings without filesystem work.
+    cleaned = raw.replace("\\", "/").rstrip("/")
+    if cleaned in {".", "./", ""}:
+        return True
+
+    try:
+        base = _resolve_base_dir(task_id)
+        resolved = _resolve_path_for_task(raw, task_id)
+        base_key = os.path.normpath(str(base))
+        resolved_key = os.path.normpath(str(resolved))
+        if sys.platform == "win32":
+            base_key = os.path.normcase(base_key)
+            resolved_key = os.path.normcase(resolved_key)
+        if base_key == resolved_key:
+            return True
+        # Resolved is an ancestor of the workspace root → expands search root.
+        try:
+            common = os.path.commonpath([base_key, resolved_key])
+        except ValueError:
+            # Different drives (Windows) — treat as an explicit elsewhere scope.
+            return False
+        if sys.platform == "win32":
+            common = os.path.normcase(common)
+        return common == resolved_key
+    except Exception:
+        # Fail closed: if we cannot classify, treat as broad.
+        return True
+
+
+def _is_unscoped_search_pattern(
+    pattern: str,
+    target: str,
+    path: str | None = ".",
+    task_id: str = "default",
+) -> bool:
+    """Return True when pure-splat *pattern* is used at a broad search root.
+
+    Models over-issue ``*`` / ``.*`` for inventory listing. At the default
+    cwd that defeats path scoping, walks protected home dirs (macOS TCC
+    popups), and burns seconds walking node_modules before ``limit`` trims
+    the page (#76628). The same pattern under an explicit narrow ``path=``
+    is allowed (scoped inventory).
+    """
+    if not _is_broad_search_path(path, task_id=task_id):
+        return False
+    p = (pattern or "").strip()
+    if not p:
+        return False
+    if target == "files":
+        # Pure globs with no path/name fragment.
+        normalized = p.replace("**", "*")
+        return normalized in {"*", "*.*", "*/*", "*/*/*"} or set(normalized) <= {"*", ".", "/"}
+    if target == "content":
+        # Regex that matches every line / every file contents.
+        return p in {".*", ".+", "^.*$", "^.+$", "(?s).*", "(?s).+"}
+    return False
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -2539,6 +2611,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        if _is_unscoped_search_pattern(pattern, target, path=path, task_id=task_id):
+            return tool_error(
+                "BLOCKED: pattern is an unscoped wildcard at the broad/default search root. "
+                "Narrow the pattern (e.g. a filename fragment or more specific regex) "
+                "or set path= to a smaller directory (pure '*' / '.*' are allowed only "
+                "when path= is already a bounded directory). Full-tree pure wildcards "
+                "defeat search scope and waste traversal cost.",
+                pattern=pattern,
+                target=target,
+                path=path,
+            )
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated

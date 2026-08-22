@@ -7,6 +7,8 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -56,14 +58,42 @@ class FactRetriever:
 
         Pipeline:
         1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Jaccard boost: Token overlap between query and fact content
-        3. Trust weighting: final_score = relevance * trust_score
-        4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
+        2. If FTS5 returns < limit candidates, supplement with Jaccard scan
+           of remaining facts (handles cross-sentence CJK queries).
+        3. Rerank with Jaccard + trust + optional HRR + temporal decay.
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+
+        # Stage 1b: FTS5 undershoot — supplement with Jaccard fallback.
+        if len(candidates) < limit:
+            existing_ids = {c["fact_id"] for c in candidates} if candidates else set()
+            needed = (limit * 3) - len(candidates)
+            jaccard_extras = self._jaccard_fallback(
+                query, category, min_trust, needed, exclude_ids=existing_ids,
+            )
+            if candidates:
+                candidates.extend(jaccard_extras)
+            else:
+                candidates = jaccard_extras
+
+        # Stage 1b: FTS5 undershoot — supplement with Jaccard fallback.
+        # Ordered bigram phrases can miss cross-sentence CJK matches
+        # (e.g. "한글입니다" vs "한글은 ...입니다") where intervening
+        # characters break bigram contiguity.  Jaccard handles these
+        # because it's order-independent set overlap.
+        if len(candidates) < limit:
+            existing_ids = {c["fact_id"] for c in candidates} if candidates else set()
+            needed = (limit * 3) - len(candidates)
+            jaccard_extras = self._jaccard_fallback(
+                query, category, min_trust, needed, exclude_ids=existing_ids,
+            )
+            if candidates:
+                candidates.extend(jaccard_extras)
+            else:
+                candidates = jaccard_extras
 
         if not candidates:
             return []
@@ -559,22 +589,180 @@ class FactRetriever:
 
         return results
 
+    def _jaccard_fallback(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+        exclude_ids: set[int] | None = None,
+    ) -> list[dict]:
+        """Jaccard-only candidate retrieval when FTS5 undershoots.
+
+        FTS5 ordered bigram phrases can miss cross-sentence CJK matches
+        where intervening characters break bigram contiguity.  This
+        fallback scans facts that FTS5 didn't return and ranks them by
+        pure Jaccard token overlap — order-independent, so ``한글입니다``
+        can match ``한글은 ...입니다`` across sentence boundaries.
+
+        Cost: ~13 µs / fact (tokenize + set intersection).  For a
+        typical 1 000-fact store this is ~13 ms — triggered only when
+        FTS5 returns fewer than ``limit`` candidates.
+        """
+        exclude_ids = exclude_ids or set()
+        conn = self.store._conn
+
+        params: list = []
+        wheres: list[str] = ["1=1"]
+
+        if category:
+            wheres.append("category = ?")
+            params.append(category)
+
+        wheres.append("trust_score >= ?")
+        params.append(min_trust)
+
+        if exclude_ids:
+            placeholders = ",".join("?" for _ in exclude_ids)
+            wheres.append(f"fact_id NOT IN ({placeholders})")
+            params.extend(exclude_ids)
+
+        sql = f"SELECT * FROM facts WHERE {' AND '.join(wheres)}"
+        rows = conn.execute(sql, params).fetchall()
+
+        if not rows:
+            return []
+
+        query_tokens = self._tokenize(query)
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            fact = dict(row)
+            content_tokens = self._tokenize(fact["content"])
+            tag_tokens = self._tokenize(fact.get("tags", ""))
+            all_tokens = content_tokens | tag_tokens
+
+            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+            if jaccard <= 0:
+                continue
+
+            # Normalize Jaccard into the same [0,1] range as fts_rank
+            fact["fts_rank"] = jaccard
+            scored.append((jaccard, fact))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [fact for _, fact in scored[:limit]]
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Simple whitespace tokenization with lowercasing.
+        """Tokenize text into a set of indexable terms.
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        English/ASCII: whitespace-split, lowercased, punctuation-stripped.
+        CJK (Chinese/Japanese/Korean): character 2-grams + standalone
+        alphanumeric substrings extracted from CJK runs.
+
+        This hybrid approach ensures both English keywords and Chinese
+        phrases are searchable with Jaccard overlap — without requiring
+        a segmenter or dictionary.
         """
         if not text:
             return set()
-        # Split on whitespace, lowercase, strip punctuation
-        tokens = set()
-        for word in text.lower().split():
+        # NFC-normalize: macOS pastes Hangul as NFD (e.g. 한 for 한),
+        # which would produce different bigrams than the indexed NFC form.
+        text = unicodedata.normalize("NFC", text)
+        tokens: set[str] = set()
+        # ── CJK 2-gram extraction ──
+        # Split into alternating runs: ASCII-or-digit spans vs CJK spans.
+        import re as _re
+        cjk = _re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+")
+        prev_end = 0
+        for m in cjk.finditer(text):
+            # Emit ASCII tokens before this CJK span (whitespace-split)
+            ascii_span = text[prev_end : m.start()]
+            for word in ascii_span.lower().split():
+                cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
+                if cleaned:
+                    tokens.add(cleaned)
+            # CJK run → character 2-grams
+            run = m.group()
+            for i in range(len(run) - 1):
+                tokens.add(run[i : i + 2])
+            # Also add single characters for short matches
+            for ch in run:
+                tokens.add(ch)
+            prev_end = m.end()
+        # Remaining ASCII after last CJK run
+        for word in text[prev_end:].lower().split():
             cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
             if cleaned:
                 tokens.add(cleaned)
         return tokens
+    # CJK ranges for FTS5 pre-tokenization — same ranges as _tokenize()
+    _CJK_RE = re.compile(
+        r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+        r"\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+"
+    )
 
+    # Regex for splitting ASCII tokens on letter↔digit and underscore
+    # boundaries.  "Python3.12" → "Python 3 12", "snake_case" → "snake case".
+    # Does NOT split camelCase (would break DeepSeek, GitHub, etc.).
+    _ASCII_BOUNDARY_RE = re.compile(r"([a-zA-Z])(\d)|(\d)([a-zA-Z])|_")
+
+    @staticmethod
+    def _split_ascii_for_fts(text: str) -> str:
+        """Split ASCII text on letter-digit and underscore boundaries.
+
+        FTS5's unicode61 treats ``Python3.12`` as one token.  Without
+        splitting, a query for ``Python`` cannot match it.  This helper
+        inserts spaces at boundaries so both the index and query sides
+        see ``Python``, ``3``, ``12`` as independent tokens.
+        """
+        # letter→digit  and  digit→letter
+        text = FactRetriever._ASCII_BOUNDARY_RE.sub(
+            lambda m: (m.group(1) or m.group(3)) + " " + (m.group(2) or m.group(4))
+            if m.group(1) or m.group(3) else " ",
+            text,
+        )
+        return text
+
+    @classmethod
+    def _cjk_to_fts5_bigrams(cls, text: str) -> str:
+        """Pre-tokenize CJK text for FTS5: single chars + character 2-grams.
+
+        SQLite FTS5's ``unicode61`` tokenizer treats a continuous run of CJK
+        characters as ONE indivisible token — a query for a substring (e.g.
+        ``배포`` inside ``배포는``, or ``刚才`` inside ``小明刚才说了什么``)
+        never matches.  This helper inserts spaces between character 2-grams
+        AND individual characters so FTS5 indexes both.  Single-character
+        tokens are needed so single-CJK-char queries (``书``, ``口``, ``日``)
+        match facts where the character appears only inside longer bigrams.
+
+        ASCII spans pass through unchanged.
+        """
+        if not text:
+            return text
+        # NFC-normalize: ensures the FTS5 index always stores composed
+        # forms, matching the normalization applied on the query side.
+        text = unicodedata.normalize("NFC", text)
+        prev_end = 0
+        parts: list[str] = []
+        for m in cls._CJK_RE.finditer(text):
+            if m.start() > prev_end:
+                # Split ASCII span at letter-digit / underscore boundaries
+                # so "Python3.12" → "Python 3 12" tokens in FTS5 index.
+                parts.append(cls._split_ascii_for_fts(text[prev_end : m.start()]))
+            run = m.group()
+            if len(run) >= 2:
+                # Emit single characters AND 2-grams so both
+                # single-char and multi-char queries match.
+                chars = [run[i] for i in range(len(run))]
+                bigrams = [run[i : i + 2] for i in range(len(run) - 1)]
+                parts.append(" " + " ".join(chars + bigrams) + " ")
+            else:
+                parts.append(" " + run + " ")
+            prev_end = m.end()
+        if prev_end < len(text):
+            parts.append(cls._split_ascii_for_fts(text[prev_end:]))
+        return "".join(parts).strip()
     # Stopwords dropped before FTS5 OR-expansion. Short English function
     # words that carry no retrieval signal and force false-negative AND
     # matches when left in the query.
@@ -596,40 +784,78 @@ class FactRetriever:
         "you", "your", "yours", "yourself", "yourselves",
     })
 
+
     @classmethod
     def _sanitize_fts_query(cls, query: str) -> str:
         """Convert a natural-language query to an FTS5-safe OR expression.
 
         FTS5 treats a multi-word MATCH argument as AND-joined by default,
         which tanks recall on prose queries. This helper:
-          - tokenizes the query
-          - drops stopwords and short (<2 char) tokens
-          - strips FTS5 special characters from each token
-          - OR-joins the survivors
 
-        If nothing remains (pathological query), falls back to the raw
-        query so the caller sees zero results instead of a SQL error.
+          - Splits CJK runs into character 2-gram prefix tokens so they
+            match bigram-spaced FTS5 content (see _cjk_to_fts5_bigrams).
+          - For ASCII spans: tokenizes, drops stopwords and short tokens,
+            strips FTS5 special characters.
+          - OR-joins all tokens.
+
+        If nothing remains, falls back to the raw query so the caller sees
+        zero results instead of a SQL error.
         """
         if not query:
             return ""
-        # Strip FTS5 operator characters from EACH token to avoid
-        # accidentally creating a malformed query.
-        _FTS_SPECIAL = '"()*^:-+'
+        # NFC-normalize: macOS pastes Hangul as NFD, which would
+        # produce queries that don't match the NFC-indexed content.
+        query = unicodedata.normalize("NFC", query)
+        _FTS_SPECIAL = '\"()*^:+'  # NOTE: '-' deliberately kept — safe inside phrase
+        # literals and needed for hyphenated terms (bong-u, verify-patches, etc.)
         tokens: list[str] = []
-        for raw in query.lower().split():
-            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
+
+        # Split into alternating CJK / non-CJK spans
+        prev_end = 0
+        for m in cls._CJK_RE.finditer(query):
+            # ASCII span before this CJK run — split at letter-digit and
+            # underscore boundaries so "Python3.12" → "Python 3 12".
+            ascii_span = cls._split_ascii_for_fts(query[prev_end : m.start()])
+            for raw in ascii_span.lower().split():
+                cleaned = raw.strip(".,;:!?\"'()[]{}#@<>").translate(
+                    str.maketrans("", "", _FTS_SPECIAL)
+                )
+                if len(cleaned) >= 1 and cleaned not in cls._FTS_STOPWORDS:
+                    # Prefix match for short ASCII tokens (≤6 chars):
+                    # "python"* matches Python3, Python3.12, python2.7, etc.
+                    if len(cleaned) <= 6 and cleaned.isascii() and cleaned.isalpha():
+                        tokens.append(f'"{cleaned}"*')
+                    else:
+                        tokens.append(f'"{cleaned}"')
+            # CJK run → ordered bigram phrase so FTS5 matches the
+            # run as a contiguous span.  OR-ing bigrams would
+            # collapse precision on languages where a single
+            # bigram (e.g. Korean ``한다``) terminates nearly
+            # every declarative verb.
+            run = m.group()
+            if len(run) >= 2:
+                bigrams = [run[i : i + 2] for i in range(len(run) - 1)]
+                tokens.append('"' + " ".join(bigrams) + '"')
+            elif len(run) == 1:
+                tokens.append(f'"{run}"')
+            prev_end = m.end()
+
+        # Trailing ASCII after last CJK run — split boundaries + prefix
+        trailing = cls._split_ascii_for_fts(query[prev_end:])
+        for raw in trailing.lower().split():
+            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>").translate(
                 str.maketrans("", "", _FTS_SPECIAL)
             )
-            if len(cleaned) < 2:
-                continue
-            if cleaned in cls._FTS_STOPWORDS:
-                continue
-            # FTS5 phrase-literal each token to ensure no special chars
-            # sneak through as operators.
-            tokens.append(f'"{cleaned}"')
+            if len(cleaned) >= 1 and cleaned not in cls._FTS_STOPWORDS:
+                if len(cleaned) <= 6 and cleaned.isascii() and cleaned.isalpha():
+                    tokens.append(f'"{cleaned}"*')
+                else:
+                    tokens.append(f'"{cleaned}"')
+
         if not tokens:
-            # Fallback: raw query (likely returns 0, but never crashes)
-            return query
+            # Fallback: quote the raw query so FTS5 never sees bare
+            # operator characters that would cause a parse error.
+            return f'"{query}"'
         return " OR ".join(tokens)
 
     @staticmethod

@@ -862,6 +862,10 @@ export const ar = defineLocale({
           label: 'توليد العناوين',
           hint: 'عناوين الجلسات'
         },
+        background_review: {
+          label: 'مراجعة الخلفية',
+          hint: 'مراجعة الذاكرة/المهارات بعد الدور'
+        },
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'

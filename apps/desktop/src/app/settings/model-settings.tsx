@@ -115,6 +115,8 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'approval' },
   { key: 'mcp' },
   { key: 'title_generation' },
+  // Post-turn memory/skill review fork — must match web_server _AUX_TASK_SLOTS (#84411).
+  { key: 'background_review' },
   { key: 'curator' }
 ]
 

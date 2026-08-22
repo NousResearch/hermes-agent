@@ -939,6 +939,7 @@ export const zhHant = defineLocale({
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
+        background_review: { label: '背景審查', hint: '回合後記憶/技能審查' },
         curator: { label: '策展器', hint: '技能使用審查' }
       }
     },

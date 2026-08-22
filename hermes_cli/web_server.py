@@ -6991,6 +6991,9 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "triage_specifier",
     "kanban_decomposer",
     "profile_describer",
+    # Post-turn memory/skill self-improvement fork (agent/background_review.py).
+    # Must stay listed so GET/set/bulk/reset/stale_aux cannot hide a paid pin (#84411).
+    "background_review",
     "curator",
 )
 

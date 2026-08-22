@@ -298,6 +298,8 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     expect(await screen.findByText('Vision')).toBeTruthy()
+    // #84411 — post-turn review pin must not be hidden from Desktop Settings.
+    expect(screen.getByText('Background review')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 

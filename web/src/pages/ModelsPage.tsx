@@ -61,6 +61,7 @@ const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "triage_specifier", label: "Triage Specifier", hint: "Kanban spec fleshing" },
   { key: "kanban_decomposer", label: "Kanban Decomposer", hint: "Task decomposition" },
   { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
+  { key: "background_review", label: "Background Review", hint: "Post-turn memory/skill review" },
   { key: "curator", label: "Curator", hint: "Skill-usage review" },
 ] as const;
 

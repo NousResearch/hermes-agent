@@ -1,10 +1,12 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
+from tools import process_registry as process_registry_module
 from tools.environments.local import LocalEnvironment
 
 
@@ -167,6 +169,56 @@ def test_terminal_output_transform_does_not_change_approval_or_exit_code_meaning
         "Command required approval (dangerous command) and was approved by the user."
     )
     assert result["exit_code_meaning"] == "No matches found (not an error)"
+
+
+def test_persistent_background_response_invokes_transform_hook(monkeypatch, tmp_path):
+    """The early persistent/background return must not skip the hook seam."""
+    config = _make_env_config(tmp_path)
+    dummy_env = SimpleNamespace(env={})
+    captured = {}
+    hook_returncodes = []
+
+    def fake_spawn_local(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="proc_transform", pid=1234)
+
+    monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool_module,
+        "_check_all_guards",
+        lambda *_args, **_kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(
+        process_registry_module.process_registry, "spawn_local", fake_spawn_local
+    )
+
+    def transform_hook(hook_name, **kwargs):
+        if hook_name != "transform_terminal_output":
+            return []
+        hook_returncodes.append(kwargs["returncode"])
+        return [f"TRANSFORMED: {kwargs['output']}"]
+
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        transform_hook,
+    )
+    monkeypatch.setitem(terminal_tool_module._active_environments, "default", dummy_env)
+    monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
+
+    result = json.loads(
+        terminal_tool_module.terminal_tool(
+            command="git log --oneline -20",
+            background=True,
+            task_id="task-persistent",
+        )
+    )
+
+    assert captured["task_id"] == "default"
+    assert captured["command"] == "git log --oneline -20"
+    assert hook_returncodes == [None]
+    assert result["output"] == "TRANSFORMED: Background process started"
+    assert result["session_id"] == "proc_transform"
 
 
 def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp_path):

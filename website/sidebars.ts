@@ -200,6 +200,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'devops',
+                  key: 'skills-bundled-devops',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/devops/devops-sandbox-runner',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'email',
                   key: 'skills-bundled-email',
                   collapsed: true,

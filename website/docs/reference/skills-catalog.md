@@ -52,6 +52,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) | Songwriting craft and Suno AI music prompts. | `creative/songwriting-and-ai-music` |
 | [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp) | Control TouchDesigner via twozero MCP. | `creative/touchdesigner-mcp` |
 
+## devops
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`sandbox-runner`](/docs/user-guide/skills/bundled/devops/devops-sandbox-runner) | Run untrusted code in disposable isolated sandboxes. | `devops/sandbox-runner` |
+
 ## email
 
 | Skill | Description | Path |

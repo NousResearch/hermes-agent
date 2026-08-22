@@ -17,7 +17,13 @@ import { sanitizeTextForSpeech } from './speech-text'
 const PLAYBACK_STALL_MS = 15_000
 
 let currentAudio: HTMLAudioElement | null = null
-let currentStop: (() => void) | null = null
+// Every live playback registers its barge-in stop here: streaming sessions
+// (kill the WebSocket + AudioContext) and data-URL audio elements (cut
+// playback). A single slot cannot represent two overlapping playbacks — the
+// overwritten session keeps its socket open, keeps scheduling buffers, and
+// its audio resurfaces on a later turn (#91991). Draining the whole set keeps
+// stopVoicePlayback() deterministic no matter how playbacks overlap.
+const liveStops = new Set<() => void>()
 let sequence = 0
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
@@ -71,8 +77,14 @@ export interface VoicePlaybackOptions {
 
 export function stopVoicePlayback() {
   sequence += 1
-  currentStop?.()
-  currentStop = null
+
+  // Drain EVERY live playback, not just the newest. Each stop is idempotent
+  // and unregisters itself; the snapshot keeps the iteration safe.
+  for (const stop of [...liveStops]) {
+    stop()
+  }
+
+  liveStops.clear()
 
   if (currentAudio) {
     currentAudio.pause()
@@ -163,6 +175,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
+  // stopVoicePlayback() → immediate barge-in: kill the socket (the server
+  // aborts synthesis on disconnect) and the audio context (cuts sound now).
+  const stop = () => settle('done')
+
   const done = new Promise<'done' | 'fallback'>(resolve => {
     settle = value => {
       if (settled) {
@@ -170,7 +186,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       }
 
       settled = true
-      currentStop = null
+      liveStops.delete(stop)
 
       try {
         ws.close()
@@ -194,9 +210,9 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
   }
 
-  // stopVoicePlayback() → immediate barge-in: kill the socket (the server
-  // aborts synthesis on disconnect) and the audio context (cuts sound now).
-  currentStop = () => settle('done')
+  // Registered until settle, so a barge always reaches this session even
+  // while another playback is live alongside it (#91991).
+  liveStops.add(stop)
 
   const finishWhenDrained = () => {
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
@@ -322,9 +338,16 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * whole-text `playSpeechText`.
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
+  const startSequence = sequence
   const wsUrl = await resolveSpeakStreamUrl()
 
   if (!wsUrl) {
+    return null
+  }
+
+  // A stop (barge-in, Stop button, another playback) landed while the stream
+  // URL was resolving — do not resurrect playback that was already stopped.
+  if (sequence !== startSequence) {
     return null
   }
 
@@ -332,9 +355,12 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
   setVoicePlaybackState(currentState('preparing', options))
 
   const session = openSpeechStream(wsUrl, options)
+  const sessionSequence = sequence
 
   void session.done.then(outcome => {
-    if (outcome === 'done') {
+    // A settled session must not reset the state of a NEWER playback — only
+    // write idle when no other playback started since this one was created.
+    if (outcome === 'done' && sessionSequence === sequence) {
       setVoicePlaybackState(currentState('idle'))
     }
   })
@@ -378,7 +404,7 @@ async function playSpeechDataUrl(
       audio.removeEventListener('ended', onEnded)
       audio.removeEventListener('error', onError)
       audio.removeEventListener('timeupdate', armStall)
-      currentStop = null
+      liveStops.delete(stop)
     }
 
     const armStall = () => {
@@ -402,10 +428,12 @@ async function playSpeechDataUrl(
       reject(new Error('Playback failed'))
     }
 
-    currentStop = () => {
+    const stop = () => {
       cleanup()
       resolve()
     }
+
+    liveStops.add(stop)
 
     audio.addEventListener('ended', onEnded, { once: true })
     audio.addEventListener('error', onError, { once: true })
@@ -481,7 +509,6 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
     return played
   } catch (error) {
     if (isCurrent()) {
-      currentStop = null
       currentAudio = null
       setVoicePlaybackState(currentState('idle'))
     }

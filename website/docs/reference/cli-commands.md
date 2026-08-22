@@ -1265,6 +1265,8 @@ The curator is an auxiliary-model background task that periodically reviews agen
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show curator status and skill stats |
+| `audit` | Report near-duplicate skill candidates (read-only, no LLM, no mutations) |
+| `audit --json` | Emit the duplicate report as JSON |
 | `run` | Trigger a curator review now (blocks until the LLM pass finishes) |
 | `run --background` | Start the LLM pass in a background thread and return immediately |
 | `run --dry-run` | Preview only — produce the review report with no mutations |

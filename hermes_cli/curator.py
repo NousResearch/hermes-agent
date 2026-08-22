@@ -65,6 +65,27 @@ def _print_unmanaged_summary() -> None:
     )
 
 
+def _print_registry_health() -> None:
+    """Summarize near-duplicate pressure without making the user diff directories.
+
+    Kept to counts here: the scan is lexical and its candidates need the
+    per-pair evidence to be judged, which is what `hermes curator audit` prints.
+    """
+    from tools import skills_duplicate_audit
+
+    try:
+        stats = skills_duplicate_audit.summarize(skills_duplicate_audit.scan_duplicates())
+    except Exception:
+        return
+    if not stats.get("possible_duplicate_pairs"):
+        return
+    print("\nregistry health:")
+    print(f"  possible duplicate pairs  {stats['possible_duplicate_pairs']}")
+    print(f"  high confidence           {stats['high_confidence_pairs']}")
+    print(f"  medium confidence         {stats['medium_confidence_pairs']}")
+    print("  run `hermes curator audit` for the per-pair evidence")
+
+
 def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
@@ -115,6 +136,9 @@ def _cmd_status(args) -> int:
     if not rows:
         print("\nno curator-managed skills")
         _print_unmanaged_summary()
+        # Duplicates live on disk, not in the usage record, so an unmanaged-only
+        # library still accumulates them.
+        _print_registry_health()
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
@@ -143,6 +167,7 @@ def _cmd_status(args) -> int:
 
     # Surface the curation blind spot on the managed path too.
     _print_unmanaged_summary()
+    _print_registry_health()
 
     # Show top 5 least-recently-active skills. Views and edits are activity too:
     # curator should not report a skill as "never used" right after skill_view()
@@ -767,6 +792,30 @@ def _cmd_list_archived(args) -> int:
     return 0
 
 
+def _cmd_audit(args) -> int:
+    """Report near-duplicate skill candidates. Read-only.
+
+    Deterministic and local: no model call, no network, and nothing is written
+    to the skill library. The output is a shortlist for a human, not a merge
+    plan — see tools/skills_duplicate_audit.py for what the signals mean.
+    """
+    import json as _json
+    from tools import skills_duplicate_audit
+
+    candidates = skills_duplicate_audit.scan_duplicates()
+
+    if getattr(args, "json", False):
+        payload = {
+            "summary": skills_duplicate_audit.summarize(candidates),
+            "candidates": [c._asdict() for c in candidates],
+        }
+        print(_json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(skills_duplicate_audit.format_duplicate_report(candidates))
+    return 0
+
+
 def _cmd_usage(args) -> int:
     """Show usage telemetry for ALL skills, with provenance.
 
@@ -842,6 +891,16 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_status = subs.add_parser("status", help="Show curator status and skill stats")
     p_status.set_defaults(func=_cmd_status)
+
+    p_audit = subs.add_parser(
+        "audit",
+        help="Report near-duplicate skill candidates (read-only, no LLM)",
+    )
+    p_audit.add_argument(
+        "--json", action="store_true",
+        help="Emit the full report as JSON instead of a table",
+    )
+    p_audit.set_defaults(func=_cmd_audit)
 
     p_usage = subs.add_parser(
         "usage",

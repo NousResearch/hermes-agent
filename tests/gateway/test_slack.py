@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
+import logging
 import os
 import socket
 import sys
@@ -439,6 +440,35 @@ class TestAppMentionHandler:
             }
         )
 
+        def _construct_app(**kwargs):
+            # The constructor must see the configured token even though the
+            # prebuilt client owns it; process-global env mutation is unsafe
+            # when profiles connect concurrently.
+            assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-env"
+            assert kwargs["token"] is None
+            assert kwargs["client"] is mock_web_client
+            duplicate = logging.LogRecord(
+                "slack_bolt.AsyncApp",
+                logging.WARNING,
+                __file__,
+                0,
+                "As you gave `client` as well, `token` will be unused.",
+                (),
+                None,
+            )
+            unrelated = logging.LogRecord(
+                "slack_bolt.AsyncApp",
+                logging.WARNING,
+                __file__,
+                0,
+                "another Bolt warning",
+                (),
+                None,
+            )
+            assert kwargs["logger"].filter(duplicate) is False
+            assert kwargs["logger"].filter(unrelated)
+            return mock_app
+
         created_handlers = []
 
         class FakeSocketModeHandler:
@@ -458,16 +488,23 @@ class TestAppMentionHandler:
         secret_scope.set_multiplex_active(True)
         try:
             with (
-                patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+                patch.object(_slack_mod, "AsyncApp", side_effect=_construct_app),
                 patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
                 patch.object(
                     _slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler
                 ),
-                patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-default"}),
+                patch.dict(
+                    os.environ,
+                    {
+                        "SLACK_APP_TOKEN": "xapp-default",
+                        "SLACK_BOT_TOKEN": "xoxb-env",
+                    },
+                ),
                 patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
                 patch("asyncio.create_task", side_effect=_fake_create_task),
             ):
                 result = await adapter.connect()
+                assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-env"
         finally:
             secret_scope.set_multiplex_active(False)
 

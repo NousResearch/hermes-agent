@@ -67,6 +67,18 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+
+class _SuppressBoltDuplicateTokenWarning(logging.Filter):
+    """Drop only Bolt's false duplicate-token warning for a prebuilt client."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage().replace("`", "")
+        return "As you gave client as well, token will be unused." not in message
+
+
+_bolt_logger = logging.getLogger(f"{__name__}.bolt")
+_bolt_logger.addFilter(_SuppressBoltDuplicateTokenWarning())
+
 # User-Agent prefix for outbound Slack API calls so platform partners can
 # identify HermesAgent traffic — matching other Hermes outbound surfaces
 # that already set ``HermesAgent/<version>`` for platform-partner attribution.
@@ -1955,7 +1967,15 @@ class SlackAdapter(BasePlatformAdapter):
                 token=primary_token,
                 user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
             )
-            self._app = AsyncApp(token=primary_token, client=primary_client)
+            # AsyncWebClient already owns the token. Slack Bolt implicitly
+            # reloads SLACK_BOT_TOKEN even when token=None, then warns that the
+            # duplicate is ignored. Suppress only that known warning with a
+            # dedicated logger; never mutate process-global credential state.
+            self._app = AsyncApp(
+                token=None,
+                client=primary_client,
+                logger=_bolt_logger,
+            )
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client

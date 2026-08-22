@@ -3241,9 +3241,32 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
+    def _discord_voice_channel_action_allowed(self, source, args: str) -> bool:
+        """Allow message voice modes while gating Discord VC actions."""
+        action = (args or "").strip().lower().split(maxsplit=1)[0:1]
+        if not action or action[0] not in {"join", "channel", "leave"}:
+            return True
+        if source.platform != Platform.DISCORD:
+            return True
+        adapter_resolver = getattr(self, "_adapter_for_source", None)
+        if not callable(adapter_resolver):
+            return False
+        try:
+            source_adapter = adapter_resolver(source)
+        except Exception:
+            logger.warning(
+                "Discord voice channel adapter resolution failed; denying VC action",
+                exc_info=True,
+            )
+            return False
+        return getattr(source_adapter, "_voice_channels_enabled", False) is True
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
+        if not self._discord_voice_channel_action_allowed(event.source, args):
+            return "Discord voice channels are disabled."
+
         chat_id = event.source.chat_id
         platform = event.source.platform
         voice_key = self._voice_key(platform, chat_id)

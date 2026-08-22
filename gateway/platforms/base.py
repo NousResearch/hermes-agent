@@ -145,6 +145,13 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
+    event_metadata = getattr(event, "metadata", None) or {}
+    if event_metadata.get("_hermes_no_reply_anchor"):
+        # Some synthetic events (for example Feishu bot-menu callbacks) have
+        # a stable event ID for deduplication but no platform message that can
+        # be replied to.  Treating that event ID as a reply anchor makes the
+        # outbound API reject the response as an invalid message ID.
+        return None
     if (
         platform == "slack"
         and isinstance(raw_message, dict)

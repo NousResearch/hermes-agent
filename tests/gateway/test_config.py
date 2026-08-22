@@ -93,6 +93,39 @@ class TestPlatformConfigRoundtrip:
         assert restored.typing_status_text == "chasing yarn…"
 
 
+    def test_loading_messages_roundtrip(self):
+        messages = [
+            "Consulting the office goldfish…",
+            "Convincing everything to make sense…",
+        ]
+        restored = PlatformConfig.from_dict(
+            PlatformConfig(enabled=True, loading_messages=messages).to_dict()
+        )
+        assert restored.loading_messages == messages
+
+
+    def test_loading_messages_absent_remains_compatible(self):
+        restored = PlatformConfig.from_dict({})
+
+        assert restored.loading_messages is None
+
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            [],
+            [""],
+            ["   "],
+            ["ok", 7],
+            [f"message-{index}" for index in range(11)],
+            "not-a-list",
+        ],
+    )
+    def test_loading_messages_reject_invalid_values(self, value):
+        with pytest.raises(ValueError, match="loading_messages"):
+            PlatformConfig.from_dict({"loading_messages": value})
+
+
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,
@@ -370,6 +403,59 @@ class TestLoadGatewayConfig:
         assert (
             config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
         )
+
+    def test_loading_messages_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            "    loading_messages:\n"
+            "      - Consulting the office goldfish…\n"
+            "      - Convincing everything to make sense…\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].loading_messages == [
+            "Consulting the office goldfish…",
+            "Convincing everything to make sense…",
+        ]
+
+    def test_top_level_loading_messages_null_fails_before_startup(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  loading_messages: null\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="loading_messages"):
+            load_gateway_config()
+
+    def test_nested_loading_messages_null_fails_before_startup(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            "    loading_messages: null\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="loading_messages"):
+            load_gateway_config()
 
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by

@@ -3439,11 +3439,18 @@ class SlackAdapter(BasePlatformAdapter):
                     _status = f"still working… ({_human})"
                 else:
                     _status = "is thinking..."
-            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
-                channel_id=chat_id,
-                thread_ts=thread_ts,
-                status=_status,
-            )
+            status_kwargs = {
+                "channel_id": chat_id,
+                "thread_ts": thread_ts,
+                "status": _status,
+            }
+            if self.config.loading_messages:
+                status_kwargs["loading_messages"] = list(
+                    self.config.loading_messages
+                )
+            await self._get_client(
+                chat_id, team_id=team_id
+            ).assistant_threads_setStatus(**status_kwargs)
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.

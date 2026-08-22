@@ -1978,6 +1978,53 @@ class TestSendTyping:
 
 
     @pytest.mark.asyncio
+    async def test_configured_loading_messages_are_forwarded(self):
+        messages = [
+            "Consulting the office goldfish…",
+            "Convincing everything to make sense…",
+        ]
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake-token",
+            loading_messages=messages,
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+            loading_messages=messages,
+        )
+
+
+    @pytest.mark.asyncio
+    async def test_clear_status_omits_loading_messages(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake-token",
+            loading_messages=["Consulting the office goldfish…"],
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+
+
+    @pytest.mark.asyncio
     async def test_custom_typing_status_text(self):
         # typing_status_text overrides the default status wording.
         config = PlatformConfig(

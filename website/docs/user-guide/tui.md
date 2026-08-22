@@ -283,13 +283,28 @@ See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
 ## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
+By default the TUI runs under a small **session orchestrator** that owns a durable gateway and treats the on-screen renderer as a disposable client. The renderer attaches to that gateway over a loopback WebSocket, so a renderer recycle/OOM/crash can't take the live session down with it — a fresh renderer re-attaches and resumes. You don't configure any of this; it's the default launch. (To opt out and go back to the classic single-process TUI, set `display.tui_orchestrator: false` in `~/.hermes/config.yaml`; see [Reverting to the classic behaviour](#reverting-the-orchestrator) below.)
 
-You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. It is an **internal wiring detail, not a user-facing remote-attach knob** — you never set it by hand. Two Hermes-internal surfaces inject it, and both point the renderer at a loopback `/api/ws` WebSocket owned by a gateway in the *same* local Hermes process tree, gated by a loopback-only internal credential:
 
-There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
+- **The TUI orchestrator** (`tui_gateway/orchestrator.py`, the default `hermes --tui` path). It spawns a minimal gateway ws-host (`tui_gateway/ws_host.py`, mounting just `/api/ws`) and the renderer as siblings and injects `HERMES_TUI_GATEWAY_URL` so the renderer attaches to that host over loopback.
+- **The web dashboard** (`hermes_cli/web_server.py`). When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over loopback.
+
+There is still no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404. The only gateways that serve `/api/ws` are the orchestrator's ws-host and the dashboard's embedded gateway, each loopback-bound and lifetime-scoped to its owning process with an internal credential.
 
 If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
+
+### Reverting the orchestrator {#reverting-the-orchestrator}
+
+The orchestrator is on by default and is the recommended mode. To disable it and launch the classic single-process TUI (the renderer spawns its own in-process gateway), set:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  tui_orchestrator: false
+```
+
+If the orchestrator's gateway ever fails to come up, the launcher automatically falls back once to the classic renderer for that launch, so a launch is never left dead.
 
 ## Reverting to the classic CLI
 

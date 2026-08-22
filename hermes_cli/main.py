@@ -2665,6 +2665,40 @@ def _apply_tui_python_env(env: dict) -> None:
         env["HERMES_PYTHON"] = sys.executable
 
 
+def _resolve_tui_orchestrator(env: "dict[str, str]") -> bool:
+    """Decide whether to launch the durable TUI orchestrator (default: on).
+
+    Precedence (per AGENTS.md: behavioural toggles live in config.yaml; the
+    HERMES_* env var is an internal override/bridge, not the user-facing knob):
+
+      1. HERMES_TUI_ORCHESTRATOR explicitly set (0/false/no/off => disable,
+         anything else truthy => enable). This is the per-shell escape hatch and
+         the value the launcher forwards to orchestrator children, so an explicit
+         setting must win.
+      2. config.yaml ``display.tui_orchestrator`` (bool), the documented
+         user-facing surface.
+      3. Baked-in default: enabled.
+
+    Fail-open to the default on any config read error — a malformed config must
+    never leave the user unable to launch the TUI.
+    """
+    raw = env.get("HERMES_TUI_ORCHESTRATOR")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw).strip().lower() not in ("0", "false", "no", "off")
+    try:
+        from hermes_cli.config import load_config
+
+        display_cfg = (load_config().get("display", {}) or {})
+        val = display_cfg.get("tui_orchestrator")
+        if val is not None:
+            return bool(val) if isinstance(val, bool) else (
+                str(val).strip().lower() not in ("0", "false", "no", "off", "")
+            )
+    except Exception:
+        pass
+    return True
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2810,12 +2844,68 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+
+    # ── TUI session orchestrator (durable gateway anchor + disposable renderer).
+    # DEFAULT BEHAVIOUR. Instead of spawning the bun renderer directly
+    # (renderer-as-parent — the inverted tree where the leaky/CPU-heavy renderer
+    # is the PARENT of the gateway+agent, so killing or recycling it kills the
+    # live session), we launch tui_gateway.orchestrator, which spawns the gateway
+    # ws-host and the renderer as SIBLINGS and supervises both: the session
+    # survives a renderer recycle/OOM/crash and a fresh renderer re-attaches to
+    # the live session. This is the structural fix for long-session TUI freezes /
+    # memory growth that previously could only be mitigated (history caps, char
+    # limits, /clear, restarts).
+    #
+    # It is ON by default. The user-facing surface is config.yaml
+    # (`display.tui_orchestrator: true|false`), per AGENTS.md — behavioural
+    # toggles live in config.yaml, not in a new user-facing HERMES_* env var.
+    # HERMES_TUI_ORCHESTRATOR remains as an INTERNAL/override bridge only (the
+    # per-shell escape hatch and the value the launcher forwards to children);
+    # when explicitly set it wins over config, otherwise config decides, and the
+    # baked-in default is on.
+    #
+    # The orchestrator's spawners read the same env we already set up
+    # (HERMES_PYTHON_SRC_ROOT for the dist/entry.js path, HERMES_BUN,
+    # HERMES_TUI_ACTIVE_SESSION_FILE, HERMES_TUI_RESUME, model/provider/toolsets,
+    # NODE_OPTIONS) and stamp HERMES_TUI_GATEWAY_URL on the renderer so it
+    # attaches over WebSocket rather than forking its own gateway. So this
+    # changes ONLY who the renderer's parent is; every other launch knob is
+    # preserved. The resolved renderer argv (bun/node/tsx) is handed over via
+    # HERMES_TUI_RENDERER_ARGV so --dev and runtime selection are honored.
+    _orchestrate = _resolve_tui_orchestrator(env)
+    _direct_argv = argv  # the bun/node/tsx renderer command, for fail-safe fallback
+    if _orchestrate:
+        env["HERMES_TUI_RENDERER_ARGV"] = json.dumps(argv)
+        argv = [
+            env.get("HERMES_PYTHON") or sys.executable,
+            "-m",
+            "tui_gateway.orchestrator",
+        ]
+        cwd = PROJECT_ROOT
+
     code: Optional[int] = None
     try:
         try:
             code = subprocess.call(argv, cwd=str(cwd), env=env)
         except KeyboardInterrupt:
             code = 130
+
+        # Fail-safe: the orchestrator returns EX_SOFTWARE (70) when its gateway
+        # never came up (e.g. ws-host import/bind failure). Because orchestration
+        # is the DEFAULT, fall back ONCE to the direct renderer so a launch can
+        # never be left dead — the user gets the classic renderer-parented TUI.
+        if _orchestrate and code == 70:
+            print(
+                "hermes: session orchestrator failed to start; "
+                "falling back to the direct renderer "
+                "(set HERMES_TUI_ORCHESTRATOR=0 to skip the orchestrator)",
+                file=sys.stderr,
+            )
+            env.pop("HERMES_TUI_RENDERER_ARGV", None)
+            try:
+                code = subprocess.call(_direct_argv, cwd=str(tui_dir), env=env)
+            except KeyboardInterrupt:
+                code = 130
 
         if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)

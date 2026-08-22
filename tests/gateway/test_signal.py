@@ -1333,3 +1333,107 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# SSE health monitor — hung stream vs daemon HTTP
+# ---------------------------------------------------------------------------
+
+class TestSignalSseHealthMonitor:
+    """Stale SSE must force reconnect even when daemon /check is still 200."""
+
+    @staticmethod
+    async def _run_one_health_cycle(adapter):
+        """Drive one monitor iteration then stop the loop."""
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect") as mock_reconnect:
+            await adapter._health_monitor()
+        return mock_reconnect
+
+    @pytest.mark.asyncio
+    async def test_forces_reconnect_when_daemon_healthy_but_sse_stale(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        call_order = []
+
+        async def fake_get(*args, **kwargs):
+            call_order.append("get")
+            return MagicMock(status_code=200)
+
+        def tracking_reconnect():
+            call_order.append("reconnect")
+
+        adapter.client.get = AsyncMock(side_effect=fake_get)
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200
+        stale_at = adapter._last_sse_activity
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect", side_effect=tracking_reconnect) as mock_reconnect:
+            await adapter._health_monitor()
+
+        adapter.client.get.assert_awaited_once_with(
+            "http://localhost:8080/api/v1/check", timeout=10.0
+        )
+        mock_reconnect.assert_called_once()
+        assert adapter._last_sse_activity == stale_at
+        assert call_order == ["reconnect", "get"]
+
+    @pytest.mark.asyncio
+    async def test_forces_reconnect_when_health_check_unhealthy(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=500))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200
+
+        mock_reconnect = await self._run_one_health_cycle(adapter)
+
+        mock_reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_forces_reconnect_when_health_check_raises(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(side_effect=OSError("connection refused"))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200
+
+        mock_reconnect = await self._run_one_health_cycle(adapter)
+
+        mock_reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_reconnect_when_sse_activity_is_fresh(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time()
+
+        mock_reconnect = await self._run_one_health_cycle(adapter)
+
+        adapter.client.get.assert_not_awaited()
+        mock_reconnect.assert_not_called()

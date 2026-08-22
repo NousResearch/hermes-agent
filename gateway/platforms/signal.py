@@ -501,22 +501,34 @@ class SignalAdapter(BasePlatformAdapter):
 
             elapsed = time.time() - self._last_sse_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
+                # Keepalives (":" comments ~every 15s) and data events both
+                # refresh _last_sse_activity. Crossing this threshold means the
+                # SSE stream itself is hung — daemon HTTP health is not proof
+                # the receive path is alive (see #3316). Reconnect first; /check
+                # is diagnostics only and must not delay cutting the hung stream.
+                logger.warning(
+                    "Signal: SSE idle for %.0fs (no events/keepalives); forcing reconnect",
+                    elapsed,
+                )
+                self._force_reconnect()
                 try:
                     resp = await self.client.get(
                         f"{self.http_url}/api/v1/check", timeout=10.0
                     )
                     if resp.status_code == 200:
-                        # Daemon is alive but SSE is idle — update activity to
-                        # avoid repeated warnings (connection may just be quiet)
-                        self._last_sse_activity = time.time()
-                        logger.debug("Signal: daemon healthy, SSE idle")
+                        logger.debug(
+                            "Signal: daemon healthy but SSE was stale "
+                            "(reconnect already requested)"
+                        )
                     else:
-                        logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
-                        self._force_reconnect()
+                        logger.warning(
+                            "Signal: health check failed (%d) during SSE stale reconnect",
+                            resp.status_code,
+                        )
                 except Exception as e:
-                    logger.warning("Signal: health check error: %s, forcing reconnect", e)
-                    self._force_reconnect()
+                    logger.warning(
+                        "Signal: health check error during SSE stale reconnect: %s", e
+                    )
 
     def _force_reconnect(self) -> None:
         """Force SSE reconnection by closing the current response."""

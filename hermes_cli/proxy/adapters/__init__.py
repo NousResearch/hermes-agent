@@ -8,15 +8,19 @@ token. See :class:`UpstreamAdapter` for the contract.
 from typing import Dict, Type
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter
+from hermes_cli.proxy.adapters.codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 # Registry of available adapter classes keyed by provider name as used on
 # the ``hermes proxy start --provider <name>`` CLI flag.
 ADAPTERS: Dict[str, Type[UpstreamAdapter]] = {
+    "openai-codex": OpenAICodexAdapter,
     "nous": NousPortalAdapter,
     "xai": XAIGrokAdapter,
 }
+
+_ALIASES = {"codex": "openai-codex"}
 
 
 def get_adapter(name: str) -> UpstreamAdapter:
@@ -26,6 +30,7 @@ def get_adapter(name: str) -> UpstreamAdapter:
         ValueError: if ``name`` is not a registered adapter.
     """
     key = (name or "").strip().lower()
+    key = _ALIASES.get(key, key)
     if key not in ADAPTERS:
         available = ", ".join(sorted(ADAPTERS)) or "(none)"
         raise ValueError(

@@ -12,6 +12,7 @@ from hermes_cli.proxy.server import (
     AIOHTTP_AVAILABLE,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    is_loopback_host,
     run_server,
 )
 
@@ -52,6 +53,13 @@ def cmd_proxy_start(args: Any) -> int:
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    if adapter.loopback_only and not is_loopback_host(host):
+        print(
+            f"Error: {adapter.display_name} proxy is loopback-only; "
+            f"refusing bind host {host!r}.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(
         f"Starting Hermes proxy for {adapter.display_name}\n"
@@ -121,7 +129,7 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
+        "  hermes proxy start [--provider codex|nous|xai] [--host 127.0.0.1] [--port 8645]\n"
         "      Run the proxy in the foreground.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"

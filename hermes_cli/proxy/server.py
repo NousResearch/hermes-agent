@@ -12,6 +12,7 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import signal
 from typing import Optional
@@ -19,10 +20,12 @@ from typing import Optional
 try:
     import aiohttp
     from aiohttp import web
+    from yarl import URL
     AIOHTTP_AVAILABLE = True
 except ImportError:
     aiohttp = None  # type: ignore[assignment]
     web = None  # type: ignore[assignment]
+    URL = None  # type: ignore[assignment,misc]
     AIOHTTP_AVAILABLE = False
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
@@ -56,6 +59,17 @@ DEFAULT_HOST = "127.0.0.1"
 MAX_REQUEST_BYTES = 10_000_000
 
 
+def is_loopback_host(host: str) -> bool:
+    """True only for explicit loopback literals or localhost."""
+    value = str(host or "").strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
     """Return an OpenAI-style error JSON response."""
     body = {"error": {"message": message, "type": code, "code": code}}
@@ -72,6 +86,38 @@ def _filter_request_headers(headers: "aiohttp.typedefs.LooseHeaders") -> dict:
     return out
 
 
+def _strip_owned_headers(headers: dict, owned_names: frozenset[str]) -> dict:
+    """Remove all client spellings of adapter-owned identity headers."""
+    owned = {str(name).strip().lower() for name in owned_names if str(name).strip()}
+    return {
+        key: value
+        for key, value in headers.items()
+        if str(key).lower() not in owned
+    }
+
+
+def _merge_adapter_headers(
+    headers: dict,
+    adapter_headers: dict[str, str],
+) -> dict:
+    """Overlay trusted adapter headers case-insensitively.
+
+    Client-controlled values with alternate casing must not survive alongside
+    Codex account/originator headers. Authorization remains owned exclusively
+    by the server's credential path.
+    """
+    merged = dict(headers)
+    for key, value in adapter_headers.items():
+        normalized = str(key).strip()
+        if not normalized or normalized.lower() in _HOP_BY_HOP_HEADERS:
+            continue
+        for existing in list(merged):
+            if str(existing).lower() == normalized.lower():
+                merged.pop(existing, None)
+        merged[normalized] = str(value)
+    return merged
+
+
 def _filter_response_headers(headers) -> dict:
     """Strip hop-by-hop headers from the upstream response."""
     out = {}
@@ -83,6 +129,73 @@ def _filter_response_headers(headers) -> dict:
             continue
         out[key] = value
     return out
+
+
+async def _open_upstream_request(
+    *,
+    method: str,
+    url,
+    body: bytes,
+    headers: dict,
+    timeout,
+):
+    """Open one upstream request and close its session on every failed setup."""
+    try:
+        session = aiohttp.ClientSession(timeout=timeout)
+    except Exception as exc:  # pragma: no cover - aiohttp setup issue
+        raise RuntimeError(f"proxy session init failed: {exc}") from exc
+
+    try:
+        response = await session.request(
+            method,
+            url,
+            data=body if body else None,
+            headers=headers,
+            allow_redirects=False,
+        )
+    except asyncio.CancelledError:
+        await session.close()
+        raise
+    except Exception:
+        await session.close()
+        raise
+    return session, response
+
+
+async def _stream_upstream_response(
+    request: "web.Request",
+    upstream_resp,
+    session,
+) -> "web.StreamResponse":
+    """Bridge one upstream response and always release transport resources."""
+    resp = web.StreamResponse(
+        status=upstream_resp.status,
+        headers=_filter_response_headers(upstream_resp.headers),
+    )
+    try:
+        # Cleanup ownership starts before prepare: downstream disconnects while
+        # sending headers must still release the already-open upstream response.
+        await resp.prepare(request)
+        try:
+            async for chunk in upstream_resp.content.iter_any():
+                if chunk:
+                    await resp.write(chunk)
+        except asyncio.CancelledError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning(
+                "proxy: upstream stream interrupted; aborting downstream: %s",
+                exc,
+            )
+            transport = request.transport
+            if transport is not None:
+                transport.abort()
+            raise
+        await resp.write_eof()
+        return resp
+    finally:
+        upstream_resp.release()
+        await session.close()
 
 
 def create_app(adapter: UpstreamAdapter) -> "web.Application":
@@ -137,35 +250,42 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
         async def _send_upstream(active_cred: UpstreamCredential):
             upstream_url = f"{active_cred.base_url.rstrip('/')}{rel_path}"
-            # Preserve query string verbatim.
-            if request.query_string:
-                upstream_url = f"{upstream_url}?{request.query_string}"
+            # Preserve the raw percent-encoded query. ``request.query_string``
+            # is decoded by aiohttp and corrupts values when interpolated into
+            # a new URL (for example %252f -> /). Never log query contents.
+            raw_path = str(request.raw_path or "")
+            if "?" in raw_path:
+                raw_query = raw_path.split("?", 1)[1]
+                if raw_query:
+                    upstream_url = f"{upstream_url}?{raw_query}"
 
             fwd_headers = _filter_request_headers(request.headers)
+            fwd_headers = _strip_owned_headers(
+                fwd_headers,
+                adapter.get_owned_upstream_header_names(),
+            )
+            fwd_headers = _merge_adapter_headers(
+                fwd_headers,
+                adapter.get_upstream_headers(active_cred),
+            )
             fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
 
             logger.debug(
-                "proxy: forwarding %s %s -> %s (body=%d bytes)",
-                request.method, rel_path, upstream_url, len(body),
+                "proxy: forwarding %s %s -> %s%s (body=%d bytes)",
+                request.method,
+                rel_path,
+                active_cred.base_url.rstrip("/"),
+                rel_path,
+                len(body),
             )
 
-            try:
-                session = aiohttp.ClientSession(timeout=timeout)
-            except Exception as exc:  # pragma: no cover - aiohttp setup issue
-                raise RuntimeError(f"proxy session init failed: {exc}") from exc
-
-            try:
-                upstream_resp = await session.request(
-                    request.method,
-                    upstream_url,
-                    data=body if body else None,
-                    headers=fwd_headers,
-                    allow_redirects=False,
-                )
-            except Exception:
-                await session.close()
-                raise
-            return session, upstream_resp
+            return await _open_upstream_request(
+                method=request.method,
+                url=URL(upstream_url, encoded=True),
+                body=body,
+                headers=fwd_headers,
+                timeout=timeout,
+            )
 
         async def _open_upstream(active_cred: UpstreamCredential):
             try:
@@ -215,25 +335,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                     return session_or_response
                 session = session_or_response
 
-        # Stream response back. Headers first, then chunked body.
-        resp = web.StreamResponse(
-            status=upstream_resp.status,
-            headers=_filter_response_headers(upstream_resp.headers),
-        )
-        await resp.prepare(request)
-
-        try:
-            async for chunk in upstream_resp.content.iter_any():
-                if chunk:
-                    await resp.write(chunk)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
-            logger.warning("proxy: streaming interrupted: %s", exc)
-        finally:
-            upstream_resp.release()
-            await session.close()
-
-        await resp.write_eof()
-        return resp
+        return await _stream_upstream_response(request, upstream_resp, session)
 
     # /health doesn't go through the upstream
     app.router.add_get("/health", handle_health)
@@ -256,6 +358,11 @@ async def run_server(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
             "aiohttp is required for `hermes proxy`. Run `hermes setup` to install it."
+        )
+
+    if adapter.loopback_only and not is_loopback_host(host):
+        raise RuntimeError(
+            f"{adapter.display_name} proxy is loopback-only; refusing bind host {host!r}."
         )
 
     app = create_app(adapter)

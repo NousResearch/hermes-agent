@@ -72,9 +72,41 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Currently shipped: `nous` (Nous Portal) and `xai` (xAI / Grok). More
-OAuth providers can be added by implementing the `UpstreamAdapter`
+Currently shipped:
+
+- `openai-codex` (`codex` alias) — OpenAI Codex / ChatGPT OAuth, Responses API only
+- `nous` — Nous Portal
+- `xai` — xAI / Grok OAuth
+
+More OAuth providers can be added by implementing the `UpstreamAdapter`
 interface in `hermes_cli/proxy/adapters/`.
+
+### OpenAI Codex / ChatGPT OAuth
+
+Start the proxy from the Hermes profile that owns the Codex OAuth credential:
+
+```bash
+hermes proxy start --provider codex
+```
+
+Codex forwards only `/v1/responses` and `/v1/models`. The adapter attaches the
+native Codex `originator`, `User-Agent`, and JWT-derived
+`ChatGPT-Account-ID` headers after stripping client-supplied values, so a
+loopback client cannot spoof account identity. A 401 refreshes the exact failed
+pool credential and rotates when refresh fails; a 429 marks the failed credential
+exhausted and rotates to another available account.
+
+Point a Responses-compatible client at:
+
+```text
+Base URL: http://127.0.0.1:8645/v1
+API key:  any non-empty placeholder
+Model:    a model available to your ChatGPT/Codex account
+Transport: OpenAI Responses API
+```
+
+Keep this proxy on `127.0.0.1`. It accepts any inbound bearer and spends the
+OAuth account owned by the profile that started it.
 
 ## Check status
 
@@ -172,6 +204,11 @@ hermes proxy start --host 0.0.0.0 --port 8645
 subscription. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
+
+The `openai-codex` adapter is stricter: it rejects every non-loopback bind,
+including `0.0.0.0`, because the proxy would otherwise expose a ChatGPT OAuth
+subscription to any reachable client. Codex must remain on `127.0.0.1`, `::1`,
+or `localhost`.
 
 ## Rate limits
 

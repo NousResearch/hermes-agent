@@ -6,8 +6,9 @@ import asyncio
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -229,8 +230,13 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web  # noqa: E402
+from yarl import URL  # noqa: E402
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import (  # noqa: E402
+    _open_upstream_request,
+    _stream_upstream_response,
+    create_app,
+)
 
 
 class FakeAdapter(UpstreamAdapter):
@@ -238,12 +244,16 @@ class FakeAdapter(UpstreamAdapter):
 
     def __init__(self, base_url: str, bearer: str = "test-bearer",
                  allowed=None, raise_on_credential=False,
-                 retry_bearer: str | None = None):
+                 retry_bearer: str | None = None,
+                 upstream_headers: dict[str, str] | None = None,
+                 owned_headers: set[str] | None = None):
         self._base_url = base_url
         self._bearer = bearer
         self._allowed = frozenset(allowed or ["/chat/completions"])
         self._raise = raise_on_credential
         self._retry_bearer = retry_bearer
+        self._upstream_headers = dict(upstream_headers or {})
+        self._owned_headers = frozenset(owned_headers or self._upstream_headers)
         self.calls = 0
         self.retry_calls = 0
 
@@ -266,6 +276,13 @@ class FakeAdapter(UpstreamAdapter):
             bearer=self._bearer, base_url=self._base_url,
             expires_at="2099-01-01T00:00:00Z",
         )
+
+    def get_owned_upstream_header_names(self):
+        return self._owned_headers
+
+    def get_upstream_headers(self, credential):
+        _ = credential
+        return dict(self._upstream_headers)
 
     def get_retry_credential(self, *, failed_credential, status_code):
         _ = failed_credential
@@ -296,7 +313,9 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
         captured["requests"].append({
             "method": request.method,
             "path": request.path,
+            "raw_path": request.raw_path,
             "auth": request.headers.get("Authorization"),
+            "headers": dict(request.headers),
             "body": body.decode("utf-8") if body else "",
         })
         return web.json_response({"echoed": True, "path": request.path})
@@ -313,6 +332,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
 
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", echo)
+    app.router.add_route("*", "/v1/responses", echo)
     app.router.add_route("*", "/v1/embeddings", echo)
     app.router.add_route("*", "/v1/sse", sse)
     return app
@@ -341,6 +361,100 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
 
 
 
+def _build_rate_limited_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def rate_limited(request):
+        captured["requests"].append(
+            {
+                "auth": request.headers.get("Authorization"),
+                "path": request.path,
+            }
+        )
+        return web.json_response({"error": "rate limited"}, status=429)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", rate_limited)
+    return app
+
+
+def _build_codex_sse_upstream(expected_chunks: list[bytes]) -> "web.Application":
+    async def responses(request):
+        await request.read()
+        resp = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "text/event-stream"},
+        )
+        await resp.prepare(request)
+        for chunk in expected_chunks:
+            await resp.write(chunk)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", responses)
+    return app
+
+
+def _build_truncated_sse_upstream() -> "web.Application":
+    async def responses(request):
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Content-Length": "512",
+            },
+        )
+        await resp.prepare(request)
+        await resp.write(b"event: response.output_text.delta\ndata: partial\n\n")
+        if request.transport is not None:
+            request.transport.abort()
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", responses)
+    return app
+
+
+def test_cancelled_upstream_request_closes_new_client_session():
+    session = SimpleNamespace(
+        request=AsyncMock(side_effect=asyncio.CancelledError()),
+        close=AsyncMock(),
+    )
+    with patch(
+        "hermes_cli.proxy.server.aiohttp.ClientSession",
+        return_value=session,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                _open_upstream_request(
+                    method="POST",
+                    url=URL("http://127.0.0.1:1/v1/responses", encoded=True),
+                    body=b"{}",
+                    headers={},
+                    timeout=None,
+                )
+            )
+    session.close.assert_awaited_once_with()
+
+
+def test_prepare_failure_releases_upstream_response_and_session():
+    upstream = MagicMock()
+    upstream.status = 200
+    upstream.headers = {}
+    session = SimpleNamespace(close=AsyncMock())
+    request = SimpleNamespace(transport=None)
+
+    with patch.object(
+        web.StreamResponse,
+        "prepare",
+        new=AsyncMock(side_effect=ConnectionResetError("downstream gone")),
+    ):
+        with pytest.raises(ConnectionResetError, match="downstream gone"):
+            asyncio.run(_stream_upstream_response(request, upstream, session))
+
+    upstream.release.assert_called_once_with()
+    session.close.assert_awaited_once_with()
+
+
 def test_server_strips_client_auth_header():
     """The client's Authorization header MUST NOT reach the upstream."""
     async def run():
@@ -358,6 +472,282 @@ def test_server_strips_client_auth_header():
                     await resp.read()
             assert captured["requests"][0]["auth"] == "Bearer ours"
             assert "SHOULD_NOT_LEAK" not in captured["requests"][0]["auth"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_retries_once_with_adapter_credential_after_401():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_retrying_fake_upstream(captured)
+        )
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="jwt-bearer",
+            retry_bearer="refreshed-bearer",
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "test"},
+                ) as resp:
+                    assert resp.status == 200
+                    await resp.read()
+            assert [row["auth"] for row in captured["requests"]] == [
+                "Bearer jwt-bearer",
+                "Bearer refreshed-bearer",
+            ]
+            assert adapter.retry_calls == 1
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_returns_429_when_adapter_has_no_rotation():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_rate_limited_fake_upstream(captured)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="only-bearer")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "test"},
+                ) as resp:
+                    assert resp.status == 429
+                    await resp.read()
+            assert len(captured["requests"]) == 1
+            assert adapter.retry_calls == 1
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_preserves_raw_query_and_does_not_log_it(caplog):
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        raw_query = "x=%252f&a=%2F&secret=do-not-log"
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = URL(f"{proxy_base}/v1/responses?{raw_query}", encoded=True)
+                async with session.post(url, json={"model": "gpt-5.6-sol"}) as resp:
+                    assert resp.status == 200
+                    await resp.read()
+            assert captured["requests"][0]["raw_path"] == (
+                f"/v1/responses?{raw_query}"
+            )
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    caplog.set_level("DEBUG", logger="hermes_cli.proxy.server")
+    asyncio.run(run())
+    assert "do-not-log" not in caplog.text
+    assert "%252f" not in caplog.text
+
+
+def test_server_preserves_codex_responses_body_bytes():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        payload = (
+            b'{"model":"gpt-5.6-sol","input":['
+            b'{"type":"function_call_output","call_id":"call_1",'
+            b'"output":"exact bytes"}],"stream":false}'
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/responses",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
+                    assert resp.status == 200
+                    await resp.read()
+            assert captured["requests"][0]["body"].encode() == payload
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_preserves_codex_responses_sse_bytes():
+    async def run():
+        chunks = [
+            b'event: response.output_item.added\ndata: {"type":"response.output_item.added"}\n\n',
+            b'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        ]
+        upstream_runner, upstream_base = await _start_runner(
+            _build_codex_sse_upstream(chunks)
+        )
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/responses",
+                    json={"model": "gpt-5.6-sol", "stream": True, "input": []},
+                ) as resp:
+                    assert resp.status == 200
+                    assert await resp.read() == b"".join(chunks)
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_aborts_downstream_on_truncated_upstream_sse():
+    async def run():
+        upstream_runner, upstream_base = await _start_runner(
+            _build_truncated_sse_upstream()
+        )
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                with pytest.raises(
+                    (
+                        aiohttp.ClientPayloadError,
+                        aiohttp.ServerDisconnectedError,
+                        aiohttp.ClientConnectionError,
+                    )
+                ):
+                    async with session.post(
+                        f"{proxy_base}/v1/responses",
+                        json={"model": "gpt-5.6-sol", "stream": True, "input": []},
+                    ) as resp:
+                        await resp.read()
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_codex_proxy_rejects_chat_completions():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses", "/models"],
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "gpt-5.6-sol"},
+                ) as resp:
+                    body = await resp.json()
+                    assert resp.status == 404
+                    assert body["error"]["code"] == "path_not_allowed"
+            assert captured["requests"] == []
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_strips_owned_account_header_when_adapter_has_no_value():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            allowed=["/responses"],
+            upstream_headers={
+                "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+                "originator": "codex_cli_rs",
+            },
+            owned_headers={"User-Agent", "originator", "ChatGPT-Account-ID"},
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/responses",
+                    json={"model": "gpt-5.6-sol", "input": []},
+                    headers={"chatgpt-account-id": "attacker"},
+                ) as resp:
+                    assert resp.status == 200
+                    await resp.read()
+            headers = {k.lower(): v for k, v in captured["requests"][0]["headers"].items()}
+            assert "chatgpt-account-id" not in headers
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_adapter_headers_override_spoofed_client_values():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="codex-token",
+            allowed=["/responses"],
+            upstream_headers={
+                "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+                "originator": "codex_cli_rs",
+                "ChatGPT-Account-ID": "acct-real",
+            },
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/responses",
+                    json={"model": "gpt-5.6-sol", "input": []},
+                    headers={
+                        "Authorization": "Bearer CLIENT",
+                        "User-Agent": "spoofed",
+                        "originator": "spoofed",
+                        "ChatGPT-Account-ID": "acct-spoofed",
+                    },
+                ) as resp:
+                    assert resp.status == 200
+                    await resp.read()
+            headers = {k.lower(): v for k, v in captured["requests"][0]["headers"].items()}
+            assert headers["authorization"] == "Bearer codex-token"
+            assert headers["user-agent"] == "codex_cli_rs/0.0.0 (Hermes Agent)"
+            assert headers["originator"] == "codex_cli_rs"
+            assert headers["chatgpt-account-id"] == "acct-real"
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

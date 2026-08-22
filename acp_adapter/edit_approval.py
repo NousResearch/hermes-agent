@@ -152,6 +152,49 @@ def _extract_v4a_patch_paths(patch_body: str) -> list[str]:
     return paths
 
 
+class _VirtualFileOps:
+    """Duck-typed file_ops for in-memory V4A simulation.
+
+    Mirrors the subset of the real interface that
+    ``patch_parser._validate_operations`` and hunk simulation touch:
+    ``read_file_raw``, ``write_file`` (capture only), ``delete_file``,
+    ``move_file``. Nothing ever touches the real filesystem.
+    """
+
+    def __init__(self, base: dict[str, str]):
+        self.files = dict(base)
+        self.results: list = []
+
+    class _R:
+        def __init__(self, content: str | None, error: str | None):
+            self.content = content
+            self.error = error
+
+    def read_file_raw(self, path: str):
+        if path in self.files:
+            return self._R(self.files[path], None)
+        return self._R(None, "file not found")
+
+    def write_file(self, path: str, content: str, **_kwargs):
+        self.files[path] = content
+        self.results.append(("write", path))
+        return self._R(content, None)
+
+    def delete_file(self, path: str):
+        if path not in self.files:
+            return self._R(None, "file not found")
+        del self.files[path]
+        self.results.append(("delete", path))
+        return self._R(None, None)
+
+    def move_file(self, src: str, dst: str):
+        if src not in self.files:
+            return self._R(None, "file not found")
+        self.files[dst] = self.files.pop(src)
+        self.results.append(("move", src, dst))
+        return self._R(None, None)
+
+
 def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     patch_body = arguments.get("patch")
     if not isinstance(patch_body, str) or not patch_body:
@@ -161,16 +204,43 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     if not paths:
         raise ValueError("no file paths found in V4A patch")
 
-    proposal_path = paths[0] if len(paths) == 1 else ", ".join(paths)
-    old_text = _read_text_if_exists(paths[0]) if len(paths) == 1 else None
+    multi = len(paths) > 1
+
+    # For a single-file patch we can do better than showing the raw patch
+    # body as the "new file": simulate the patch in memory (the exact same
+    # validate + hunk-application path the real tool uses, on a virtual
+    # filesystem) and hand the ACP client an honest before/after diff.
+    # Multi-file patches and parse/simulation failures fall back to the
+    # previous behavior: ACP carries only one diff payload per request, so
+    # we surface the raw patch body for the human to read.
+    new_text: str | None = None
+    old_text: str | None = None
+    if not multi:
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        old_text = _read_text_if_exists(paths[0])
+        operations, parse_error = parse_v4a_patch(patch_body)
+        if not parse_error and len(operations) == 1:
+            virtual = _VirtualFileOps({paths[0]: old_text or ""})
+            result = apply_v4a_operations(operations, virtual)
+            if result.success:
+                if paths[0] in virtual.files:
+                    new_text = virtual.files[paths[0]]
+                else:
+                    # Single-file DELETE: the honest preview is "file becomes
+                    # empty" (the ACP diff has no delete-file kind).
+                    new_text = ""
+
     return EditProposal(
         tool_name="patch",
-        path=proposal_path,
-        old_text=old_text,
-        # ACP only supports a single diff payload here.  Surface the exact V4A
-        # patch content before execution so patch-mode calls are permissioned
-        # and denied patches cannot mutate.
-        new_text=patch_body,
+        path=paths[0] if not multi else ", ".join(paths),
+        old_text=old_text if not multi else None,
+        # ACP only supports a single diff payload here.  For simulated
+        # single-file patches new_text is the honest post-patch content;
+        # otherwise surface the exact V4A patch content before execution so
+        # patch-mode calls are still permissioned and denied patches cannot
+        # mutate.
+        new_text=new_text if new_text is not None else patch_body,
         arguments=dict(arguments),
     )
 

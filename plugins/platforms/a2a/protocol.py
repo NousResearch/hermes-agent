@@ -30,7 +30,7 @@ from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 PROTOCOL_VERSION = "1.0"
 
@@ -748,14 +748,25 @@ class TaskStore:
             return page, next_offset, total
         return page, next_offset
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(
+        self,
+        timeout_seconds: int = 300,
+        timeout_for: Optional[Callable[[dict], float]] = None,
+    ) -> list[str]:
         with self._lock:
             now = time.time()
-            stale = [
-                tid for tid, rec in self._tasks.items()
-                if rec["state"] not in TERMINAL_STATES
-                and now - rec["created_at"] > timeout_seconds
-            ]
+            stale = []
+            for tid, rec in self._tasks.items():
+                if rec["state"] in TERMINAL_STATES:
+                    continue
+                limit = float(timeout_seconds)
+                if timeout_for is not None:
+                    try:
+                        limit = max(limit, float(timeout_for(rec)))
+                    except (TypeError, ValueError):
+                        pass
+                if now - rec["created_at"] > limit:
+                    stale.append(tid)
         failed = []
         for tid in stale:
             if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]"):

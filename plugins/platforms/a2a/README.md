@@ -19,6 +19,7 @@ gateway:
       enabled: true
       extra:
         port: 9900
+        reply_timeout: 900  # optional; default 300 seconds
 
 # peers you want to call (outbound):
 a2a_agents:
@@ -83,7 +84,7 @@ via `tasks/get`.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. |
+| `A2A_REPLY_TIMEOUT` | `300` | Legacy environment fallback for the reply timeout; prefer `gateway.platforms.a2a.extra.reply_timeout`. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

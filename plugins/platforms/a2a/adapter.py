@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -61,17 +62,24 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
 _ORPHAN_TIMEOUT = 300  # seconds before a pending task is considered orphaned
+_ORPHAN_GRACE = 60  # slack beyond reply/route deadlines
 _WATCHDOG_INTERVAL = 60  # seconds between orphaned task watchdog runs
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 
 
-def _reply_timeout() -> float:
-    """Seconds to wait for the agent to answer an inbound task."""
+def _parse_reply_timeout(value: Any, fallback: float = 300.0) -> float:
+    """Return a finite positive reply timeout or the safe fallback."""
     try:
-        return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
+        parsed = float(value)
     except (ValueError, TypeError):
-        return 300.0
+        return fallback
+    return parsed if math.isfinite(parsed) and parsed >= 1.0 else fallback
+
+
+def _reply_timeout() -> float:
+    """Legacy environment bridge for the inbound reply timeout."""
+    return _parse_reply_timeout(os.getenv("A2A_REPLY_TIMEOUT", "300"))
 
 
 def _default_agent_name() -> str:
@@ -344,6 +352,10 @@ class A2AAdapter(BasePlatformAdapter):
 
         extra = getattr(config, "extra", {}) or {}
         self.port = int(os.getenv("A2A_PORT") or extra.get("port", _DEFAULT_PORT))
+        self.reply_timeout = _parse_reply_timeout(
+            extra.get("reply_timeout", _reply_timeout()),
+            fallback=_reply_timeout(),
+        )
         self.host = security.resolve_bind_host()
         self.agent_name = _default_agent_name()
         self._advertised_toolsets = [
@@ -467,12 +479,28 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Orphaned task watchdog ─────────────────────────────────────────────
 
+    def _orphan_timeout_for(self, rec: dict) -> int:
+        """Keep orphan cleanup behind both inbound and routed deadlines."""
+        agent = self._agents.get(str(rec.get("agent_slug") or "")) or {}
+        try:
+            route_timeout = float(agent.get("timeout") or 0)
+        except (TypeError, ValueError):
+            route_timeout = 0
+        return int(max(
+            _ORPHAN_TIMEOUT,
+            self.reply_timeout + _ORPHAN_GRACE,
+            route_timeout + _ORPHAN_GRACE,
+        ))
+
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                for tid in self.tasks.fail_orphans(
+                    _ORPHAN_TIMEOUT,
+                    timeout_for=self._orphan_timeout_for,
+                ):
+                    logger.warning("A2A: orphaned task %s marked failed", tid)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
@@ -933,7 +961,7 @@ class A2AAdapter(BasePlatformAdapter):
         raises, the client is gone and we stop waiting.
         """
         fut: Future = pending["future"]
-        deadline = pending["started"] + _reply_timeout()
+        deadline = pending["started"] + self.reply_timeout
         while True:
             try:
                 return fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
@@ -1041,7 +1069,7 @@ class A2AAdapter(BasePlatformAdapter):
             if fut is None:
                 self._sse_write(handler, protocol.sse_done())
                 return
-            deadline = time.time() + _reply_timeout()
+            deadline = time.time() + self.reply_timeout
             while True:
                 try:
                     state, reply = fut.result(timeout=_SSE_KEEPALIVE)

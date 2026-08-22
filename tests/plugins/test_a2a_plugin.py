@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
@@ -24,7 +25,77 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugins.platforms.a2a import adapter as a2a_adapter
 from plugins.platforms.a2a import protocol, security, tools
+
+
+def test_reply_timeout_can_be_configured_without_environment(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": 900})
+    )
+
+    assert adapter.reply_timeout == 900.0
+
+
+def test_non_finite_reply_timeout_falls_back_safely(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": "inf"})
+    )
+
+    assert adapter.reply_timeout == 300.0
+
+
+def test_reply_wait_uses_configured_timeout(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(
+        PlatformConfig(enabled=True, extra={"reply_timeout": 900})
+    )
+
+    class CapturingFuture:
+        timeout = 0.0
+
+        def result(self, timeout):
+            self.timeout = timeout
+            return protocol.STATE_COMPLETED, "alive"
+
+    future = CapturingFuture()
+    state, reply = adapter._await_reply({"future": future, "started": time.time()})
+
+    assert (state, reply) == (protocol.STATE_COMPLETED, "alive")
+    assert 890 < future.timeout <= 900
+
+
+def test_orphan_watchdog_outlives_routed_agent_timeout(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    adapter = a2a_adapter.A2AAdapter(PlatformConfig(enabled=True, extra={
+        "reply_timeout": 900,
+        "agents": {"slow": {"profile": "slow", "timeout": 1800}},
+    }))
+
+    assert adapter._orphan_timeout_for({"agent_slug": "slow"}) > 1800
+
+
+def test_task_store_uses_per_task_orphan_timeout():
+    store = protocol.TaskStore()
+    store.create("task-slow", "ctx", "peer", agent_slug="slow")
+    store._tasks["task-slow"]["created_at"] = time.time() - 500
+
+    failed = store.fail_orphans(300, timeout_for=lambda rec: 1860)
+
+    assert failed == []
+    record = store.get("task-slow")
+    assert record is not None
+    assert record["state"] == protocol.STATE_SUBMITTED
 
 
 def _free_port() -> int:

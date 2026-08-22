@@ -258,6 +258,7 @@ import {
 } from './remote-liveness'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { runningAppBundle } from './running-app-bundle'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -3569,7 +3570,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
-    const targetApp = IS_MAC ? runningAppBundle() : null
+    const targetApp = IS_MAC ? runningAppBundle(app.getPath('exe')) : null
 
     if (targetApp) {
       updaterArgs.push('--target-app', targetApp)
@@ -3898,22 +3899,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) {
-    return null
-  }
-
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.dirname(dir)
-  } // -> .../X.app
-
-  return dir.endsWith('.app') ? dir : null
-}
-
 // ── Pre-flight state.db integrity guard (#68474) ─────────────────────
 // Take an emergency snapshot of state.db and verify the live copy is
 // intact before any update process mutates the install.  Runs in the
@@ -4054,7 +4039,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   // only a binary the rebuild replaced with a launchable sandbox helper —
   // replaying the original launch context (filtered args, cwd, sandbox
   // opt-out) so a deep-link or --no-sandbox launch survives the update.
-  const targetApp = IS_MAC ? runningAppBundle() : process.execPath
+  const targetApp = IS_MAC ? runningAppBundle(app.getPath('exe')) : process.execPath
 
   if (targetApp) {
     args.push('--relaunch-target', targetApp)

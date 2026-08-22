@@ -42,7 +42,7 @@ _FETCH_TIMEOUT = 10.0
 _MAX_INDEX_BYTES = 5 * 1024 * 1024  # refuse absurdly large index payloads
 
 SECURITY_FOOTER = (
-    "Indexed \u2260 audited: inclusion in the index is a metadata review only, "
+    "Indexed ≠ audited: inclusion in the index is a metadata review only, "
     "not a code audit. Review a plugin before enabling it."
 )
 
@@ -199,7 +199,11 @@ def _fetch_remote() -> Optional[List[PluginIndexEntry]]:
         _write_cache(text)
         return entries
     except Exception as exc:
-        logger.debug("plugin index: remote fetch failed (%s): %s", url, exc)
+        logger.warning(
+            "plugin index: remote fetch failed (%s): %s; will fall back to cached or bundled index",
+            url,
+            exc,
+        )
         return None
 
 
@@ -232,7 +236,6 @@ def load_index(*, refresh: bool = False, offline: bool = False) -> tuple[List[Pl
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
-
 def _score_entry(entry: PluginIndexEntry, term: str) -> float:
     """Fuzzy relevance score for *entry* against lowercase *term* (0 = no match)."""
     import difflib

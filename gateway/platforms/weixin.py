@@ -115,6 +115,9 @@ RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
+CONTEXT_TOKEN_ERROR_ERRMSG = "prepare failed"
+
+
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
@@ -124,6 +127,24 @@ def _is_stale_session_ret(
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
     return (errmsg or "").lower() == "unknown error"
+
+
+def _is_context_token_error_ret(
+    ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
+) -> bool:
+    """True when iLink returns ret=-2 / errcode=-2 with 'prepare failed',
+    which is a parameter error — missing/invalid context_token — rather
+    than a genuine rate limit.
+
+    The iLink protocol returns ``ret=-2`` for *any* bad-request condition
+    and disambiguates via ``errmsg``: "prepare failed" means the outbound
+    sendmessage did not carry a valid context_token (typically a fresh
+    account with no inbound message yet), "unknown error" means a stale
+    session (handled by :func:`_is_stale_session_ret`), and only the
+    remaining cases are genuine frequency limits."""
+    if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
+        return False
+    return (errmsg or "").strip().lower() == CONTEXT_TOKEN_ERROR_ERRMSG
 
 
 MEDIA_IMAGE = 1
@@ -1856,6 +1877,22 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
+                        # Missing/invalid context_token (ret=-2 with
+                        # errmsg="prepare failed") is a parameter error —
+                        # NOT a rate limit. Surface a descriptive error and
+                        # do NOT open the rate-limit circuit breaker, so the
+                        # real cause (fresh account with no inbound message
+                        # yet) isn't hidden behind a misleading "rate limited"
+                        # cooldown. Fail fast — retrying a deterministic
+                        # parameter error is pointless.
+                        if _is_context_token_error_ret(ret, errcode, resp.get("errmsg")):
+                            token_dir = self._token_store._root
+                            last_error = RuntimeError(
+                                "iLink sendmessage parameter error: prepare failed "
+                                "(missing/invalid context_token? — user must send an "
+                                f"inbound message first, or re-pair; check {token_dir}/*.context-tokens.json)"
+                            )
+                            break
                         # Rate limit (-2) — backoff and retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE

@@ -2053,6 +2053,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             provider_profile=_profile,
+            api_key=agent.api_key if isinstance(agent.api_key, str) else "",
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,

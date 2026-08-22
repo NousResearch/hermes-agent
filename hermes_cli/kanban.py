@@ -43,9 +43,18 @@ _STATUS_ICONS = {
 }
 
 
-def _fmt_ts(ts: Optional[int]) -> str:
+def _fmt_ts(ts: Optional[int | str]) -> str:
     if not ts:
         return ""
+    if isinstance(ts, str):
+        # Tolerate string timestamps: an ISO-8601 datetime (e.g. produced by a
+        # worker writing completed_at as a str) or an epoch encoded as a str.
+        # Only treat purely-numeric strings as epochs so a compact ISO form or
+        # a short/odd epoch isn't mis-parsed and rendered as a wrong year.
+        if ts.isdigit():
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts)))
+        iso = ts.replace("T", " ")
+        return iso[:16]
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 

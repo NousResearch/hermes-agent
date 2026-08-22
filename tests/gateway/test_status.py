@@ -884,7 +884,7 @@ class TestTakeoverMarker:
 
 
 class TestScopedLockTakeover:
-    """Cross-home takeover requires explicit, corroborated process identity."""
+    """Token-lock ``--replace`` takeover is same-HERMES_HOME only (#88521)."""
 
     @staticmethod
     def _owner_record(target_home: Path, *, pid: int = 4242, start_time: int = 123):
@@ -899,31 +899,57 @@ class TestScopedLockTakeover:
         (target_home / "gateway.pid").write_text(json.dumps(record))
         return record
 
-    def test_verified_distinct_home_handoff_marks_target_before_sigterm(
-        self, tmp_path, monkeypatch
-    ):
-        replacer_home = tmp_path / "replacer"
-        target_home = tmp_path / "target"
-        replacer_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
-        record = self._owner_record(target_home)
-
+    def _arm_live_owner(self, monkeypatch, *, start_time: int = 123):
         alive = iter([True, True, False])
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: start_time)
         monkeypatch.setattr(
             status,
             "_read_process_cmdline",
             lambda _pid: "python -m hermes_cli.main gateway run",
         )
+
+    def test_live_distinct_home_holder_is_not_terminated(
+        self, tmp_path, monkeypatch
+    ):
+        """#88521: a live sibling profile holding the token is not SIGTERM'd."""
+        replacer_home = tmp_path / "replacer"
+        target_home = tmp_path / "target"
+        replacer_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
+        record = self._owner_record(target_home)
+        self._arm_live_owner(monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        owner_pid = status.take_over_scoped_lock_holder(
+            record, graceful_attempts=1
+        )
+
+        assert owner_pid is None
+        assert calls == []
+        assert not (target_home / ".gateway-takeover.json").exists()
+        assert not (replacer_home / ".gateway-takeover.json").exists()
+
+    def test_same_home_handoff_marks_target_before_sigterm(
+        self, tmp_path, monkeypatch
+    ):
+        """Same-HERMES_HOME leftover holder is still taken over under --replace."""
+        home = tmp_path / "profile"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        record = self._owner_record(home)
+        self._arm_live_owner(monkeypatch)
         calls = []
 
         def terminate(pid, *, force=False):
-            marker_path = target_home / ".gateway-takeover.json"
+            marker_path = home / ".gateway-takeover.json"
             assert marker_path.exists()
             payload = json.loads(marker_path.read_text())
-            assert payload["target_hermes_home"] == str(target_home)
-            assert payload["replacer_hermes_home"] == str(replacer_home)
+            assert payload["target_hermes_home"] == str(home)
+            assert payload["replacer_hermes_home"] == str(home)
             calls.append((pid, force))
 
         monkeypatch.setattr(status, "terminate_pid", terminate)
@@ -934,8 +960,7 @@ class TestScopedLockTakeover:
 
         assert owner_pid == 4242
         assert calls == [(4242, False)]
-        assert not (target_home / ".gateway-takeover.json").exists()
-        assert not (replacer_home / ".gateway-takeover.json").exists()
+        assert not (home / ".gateway-takeover.json").exists()
 
     def test_handoff_rejects_uncorroborated_target_home(self, tmp_path, monkeypatch):
         target_home = tmp_path / "target"

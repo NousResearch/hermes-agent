@@ -6981,9 +6981,9 @@ def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
 
 
 def _desktop_backup_unpacked_dir(packaged_executable: Path) -> Path:
-    """The rollback tree before-pack.mjs preserves: ``<unpacked-dir>.bak``."""
+    """The rollback tree before-pack.mjs preserves: ``release/.rebuild-backup/<dirname>``."""
     unpacked = packaged_executable.parent
-    return unpacked.parent / (unpacked.name + ".bak")
+    return unpacked.parent / ".rebuild-backup" / unpacked.name
 
 
 def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
@@ -7061,6 +7061,55 @@ def _ensure_desktop_exe_launchable(
     print("    Run `hermes desktop --force-build` to rebuild, or re-run the Hermes")
     print("    installer to repair the install.")
     return None, False
+
+
+def _restore_desktop_backup(desktop_dir: Path) -> bool:
+    """Restore the pre-rebuild unpacked app backup on build failure.
+
+    When the build ultimately fails (returncode != 0) and no executable was
+    produced, this function iterates ``release/.rebuild-backup/`` and restores
+    every backup it finds, so the desktop shortcut keeps working.
+
+    Complements ``_ensure_desktop_exe_launchable``, which handles the case
+    where the build *succeeded* but produced a corrupt exe.
+
+    Best-effort: never raises. Returns ``True`` when any backup was restored.
+    """
+    release_dir = desktop_dir / "release"
+    backup_root = release_dir / ".rebuild-backup"
+    if not backup_root.is_dir():
+        return False
+    restored_any = False
+    now = _time.time()
+    for backup in sorted(backup_root.iterdir()):
+        if not backup.is_dir():
+            continue
+        original = release_dir / backup.name
+        try:
+            # Snapshot the backup's mtime before renaming it away.
+            age_sec = now - backup.stat().st_mtime
+            if original.exists():
+                shutil.rmtree(original, ignore_errors=True)
+            backup.rename(original)
+            restored_any = True
+
+            age_h = age_sec / 3600
+            age_str = (
+                f"{age_h:.0f}h" if age_h >= 1 else
+                f"{age_sec / 60:.0f}m" if age_sec >= 60 else
+                f"{age_sec:.0f}s"
+            )
+            stale = " (⚠ old — code may have changed since)" if age_h >= 24 else ""
+            print(f"  ✓ Restored backup: {original.name} (age: {age_str}){stale}")
+        except OSError:
+            continue
+    if restored_any:
+        try:
+            backup_root.rmdir()
+        except OSError:
+            pass
+        print("  → Previous build restored — desktop shortcut should work.")
+    return restored_any
 
 
 def _electron_download_cache_dirs() -> list[Path]:
@@ -7933,6 +7982,9 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
+            # Session marker so before-pack.mjs can distinguish retries
+            # within the same build from a stale backup left by a prior run.
+            env["HERMES_DESKTOP_BUILD_SESSION"] = str(_time.time())
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
@@ -7995,6 +8047,7 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
+                _restore_desktop_backup(desktop_dir)
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
@@ -8047,6 +8100,7 @@ def cmd_gui(args: argparse.Namespace):
                 sys.exit(1)
             print(f"✓ Desktop source build ready at {desktop_dir / 'dist'} (not launching; --build-only)")
         elif packaged_executable is None:
+            _restore_desktop_backup(desktop_dir)
             print(f"✗ --build-only produced no launchable app at: {desktop_dir / 'release'}")
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
@@ -8060,6 +8114,7 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
+        _restore_desktop_backup(desktop_dir)
         print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)

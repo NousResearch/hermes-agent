@@ -5,7 +5,12 @@ import type { HermesReadDirResult } from '@/global'
 import { $connection } from '@/store/session'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
-import { resetProjectTreeState, useProjectTree } from './use-project-tree'
+import {
+  isUnownedProjectTree,
+  readProjectTreeState,
+  resetProjectTreeState,
+  useProjectTree
+} from './use-project-tree'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 
@@ -268,5 +273,110 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.rootError).toBe('no-bridge'))
     expect(result.current.data).toEqual([])
+  })
+  it('reloads the root after a mid-flight reset instead of sticking on the skeleton', async () => {
+    // #90229. A gateway boot calls resetProjectTreeState() from
+    // useGatewayBoot({ beforeConnectionSwitch }), which can land while the
+    // first root read is still in flight. The completion is then correctly
+    // abandoned -- the store no longer owns this cwd -- but nothing re-armed a
+    // replacement, so the tree waited forever.
+    let release: (result: HermesReadDirResult) => void = () => {}
+
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          release = resolve
+        })
+    )
+    readDir.mockResolvedValue(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(1))
+    expect(result.current.rootLoading).toBe(true)
+
+    act(() => {
+      resetProjectTreeState()
+    })
+
+    await act(async () => {
+      release(ok([{ name: 'stale', path: '/p/stale', isDirectory: false }]))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(result.current.data.map(n => n.name)).toEqual(['src']))
+    // rootLoading feeds `disabled` on the sidebar's Refresh button, so a stuck
+    // `true` is what left the user with no way out.
+    expect(result.current.rootLoading).toBe(false)
+    expect(result.current.rootError).toBeNull()
+  })
+
+  it('reloads the root after a reset that lands once the tree is already loaded', async () => {
+    // Same defect without the race: the load effect depends only on
+    // [connectionKey, cwd], and a reset changes neither, so a reset at any
+    // moment orphaned the tree until one of those happened to change.
+    readDir.mockResolvedValue(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(1))
+
+    act(() => {
+      resetProjectTreeState()
+    })
+
+    await waitFor(() => expect(result.current.data.map(n => n.name)).toEqual(['src']))
+    expect(result.current.rootLoading).toBe(false)
+    expect(readDir).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not re-arm when a different cwd owns the store', async () => {
+    // The re-arm keys on the CLEARED store (cwd: ''), not on any mismatch. The
+    // atom is global, so two mounted consumers with different cwds would
+    // otherwise each keep re-claiming it and loop forever.
+    readDir.mockImplementation(async path => ok([{ name: `in-${path}`, path: `${path}/x`, isDirectory: false }]))
+
+    const first = renderHook(() => useProjectTree('/a'))
+
+    await waitFor(() => expect(first.result.current.data.length).toBe(1))
+
+    const second = renderHook(() => useProjectTree('/b'))
+
+    await waitFor(() => expect(second.result.current.data.length).toBe(1))
+
+    const settled = readDir.mock.calls.length
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    })
+
+    expect(readDir.mock.calls.length).toBe(settled)
+    expect(second.result.current.data.map(n => n.name)).toEqual(['in-/b'])
+  })
+})
+
+describe('the reset contract', () => {
+  // The re-arm effect fires on "the store is unowned". Nothing else in the
+  // module asserts that a reset actually PRODUCES an unowned store, so a
+  // change to how the reset represents that state would disarm the re-arm
+  // and every behavioural test above would still pass: they all reset first,
+  // so they would agree with each other about a broken shape.
+  it('leaves the store unowned', () => {
+    resetProjectTreeState()
+
+    expect(isUnownedProjectTree(readProjectTreeState())).toBe(true)
+  })
+
+  it('does not call a store owned by a live cwd unowned', async () => {
+    readDir.mockResolvedValue(ok([]))
+
+    const view = renderHook(() => useProjectTree('/repo'))
+
+    await waitFor(() => {
+      expect(view.result.current.rootLoading).toBe(false)
+    })
+
+    expect(readProjectTreeState().cwd).toBe('/repo')
+    expect(isUnownedProjectTree(readProjectTreeState())).toBe(false)
   })
 })

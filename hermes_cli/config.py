@@ -4847,8 +4847,18 @@ def edit_config():
         print(f"  {config_path}")
         return
     
+    try:
+        from hermes_cli._subprocess_compat import split_command_line
+        editor_argv = split_command_line(editor)
+    except ValueError:
+        # Unbalanced quotes — fall back to the literal string so the launch
+        # still happens (and surfaces the editor's own error) instead of ours.
+        editor_argv = [editor]
+    if not editor_argv:
+        editor_argv = [editor]
+
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
+    subprocess.run([*editor_argv, str(config_path)])
 
 
 def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:

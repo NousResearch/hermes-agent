@@ -1181,7 +1181,12 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
     files (review aid only — not a security gate; skills_guard.py verdicts
     are unchanged).
     """
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import (
+        HubLockFile,
+        SKILLS_DIR,
+        resolve_installed_skill_path,
+        find_installed_skill_dir_by_name,
+    )
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
@@ -1205,10 +1210,33 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
     for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
+        skill_path, repaired = resolve_installed_skill_path(entry, SKILLS_DIR, lock)
         if not skill_path.exists():
-            c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
+            # Distinguish an ambiguous recovery (a stale lock path that maps to
+            # more than one same-named skill on disk) from a truly missing one,
+            # so the operator knows the audit was skipped on purpose rather than
+            # silently repointed at another skill.
+            _found, ambiguous = find_installed_skill_dir_by_name(
+                entry.get("name", ""),
+                SKILLS_DIR,
+                expected_hash=entry.get("content_hash"),
+            )
+            if ambiguous:
+                c.print(
+                    f"[yellow]Warning:[/] {entry['name']} — stale path "
+                    f"{entry['install_path']!r} is ambiguous: multiple installed "
+                    f"skills share this name. Refusing to guess; reinstall or "
+                    f"remove the duplicate, then re-audit."
+                )
+            else:
+                c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
+
+        if repaired:
+            c.print(
+                f"[dim]Repaired hub path for {entry['name']}: "
+                f"{skill_path.relative_to(SKILLS_DIR).as_posix()}[/]"
+            )
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))

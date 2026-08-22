@@ -3798,6 +3798,167 @@ class HubLockFile:
             result.append({"name": name, **entry})
         return result
 
+    def update_install_path(self, name: str, install_path: str) -> bool:
+        """Repoint a stored ``install_path`` after a categorized skill moved on disk.
+
+        The new ``install_path`` is run through ``_normalize_lock_install_path``
+        (the same shape validator ``record_install`` uses) so a repair can never
+        write an entry that ``uninstall_skill`` would later resolve outside the
+        skills tree. Returns True only when the entry existed and its path
+        actually changed.
+        """
+        safe_name = _validate_skill_name(name)
+        safe_install_path = _normalize_lock_install_path(install_path, safe_name)
+        data = self.load()
+        entry = data.get("installed", {}).get(safe_name)
+        if not entry:
+            return False
+        if entry.get("install_path") == safe_install_path:
+            return False
+        entry["install_path"] = safe_install_path
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.save(data)
+        return True
+
+
+def _frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Read the YAML frontmatter ``name:`` from a SKILL.md without importing PyYAML."""
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    for line in text[3:end].splitlines():
+        if line.strip().startswith("name:"):
+            value = line.split(":", 1)[1].strip().strip("\"'")
+            return value or None
+    return None
+
+
+def find_installed_skill_dir_by_name(
+    name: str,
+    skills_dir: Optional[Path] = None,
+    *,
+    expected_hash: Optional[str] = None,
+) -> Tuple[Optional[Path], bool]:
+    """Find the unique local skill dir for ``name``, refusing to guess on ambiguity.
+
+    Returns ``(path, ambiguous)``:
+
+    * ``(dir, False)`` when exactly one provenance-compatible candidate exists.
+    * ``(None, True)`` when more than one candidate matches by directory or
+      frontmatter name and no ``expected_hash`` disambiguates to a single one.
+    * ``(None, False)`` when nothing matches.
+
+    A stale hub lock must never be silently repointed at *a* same-named skill;
+    the recovered directory has to be unambiguous. When the lock entry carries a
+    recorded ``content_hash`` (``expected_hash``), candidates whose on-disk hash
+    does not match are dropped first, which both narrows ambiguity and keeps the
+    repair provenance-compatible (a directory holding different content is not
+    the skill the lock recorded).
+    """
+    if not name:
+        return None, False
+
+    skills_dir = _skills_dir() if skills_dir is None else skills_dir
+
+    exact = skills_dir / name / "SKILL.md"
+    if exact.exists():
+        # A direct <skills_dir>/<name> hit is the canonical location; treat it as
+        # the unambiguous answer without scanning for shadow copies.
+        return exact.parent, False
+
+    candidates: List[Path] = []
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        try:
+            rel_parts = skill_md.relative_to(skills_dir).parts
+        except ValueError:
+            continue
+        if rel_parts and rel_parts[0] == ".hub":
+            continue
+        if skill_md.parent.name == name or _frontmatter_name(skill_md) == name:
+            candidates.append(skill_md.parent)
+
+    if not candidates:
+        return None, False
+
+    # Provenance filter: when the lock recorded a content hash, only a directory
+    # whose current content reproduces that hash is a legitimate repair target.
+    if expected_hash:
+        from tools.skills_guard import content_hash
+
+        hashed: List[Path] = []
+        for cand in candidates:
+            try:
+                if content_hash(cand) == expected_hash:
+                    hashed.append(cand)
+            except Exception:
+                continue
+        if hashed:
+            candidates = hashed
+
+    # Deduplicate (rglob + name/frontmatter can list the same dir twice).
+    unique = sorted({c.resolve(): c for c in candidates}.values(), key=str)
+    if len(unique) != 1:
+        # Zero (all filtered out) or more than one: refuse to guess.
+        return None, len(unique) > 1
+    return unique[0], False
+
+
+def resolve_installed_skill_path(
+    entry: dict,
+    skills_dir: Optional[Path] = None,
+    lock: Optional[HubLockFile] = None,
+) -> Tuple[Path, bool]:
+    """Resolve a hub lock entry to an existing skill dir, repairing stale paths.
+
+    Returns ``(path, repaired)``. ``repaired`` is True only when the stored
+    ``install_path`` was missing AND a single provenance-compatible local skill
+    directory was found by frontmatter/directory name AND the lock's stored path
+    was successfully updated through the lock-path validator.
+
+    When the stored path is missing and the recovered directory is ambiguous
+    (more than one same-named candidate) the original stored path is returned
+    unchanged with ``repaired=False`` so the caller reports "path missing"
+    rather than a stale lock being silently repointed at another skill.
+    """
+    skills_dir = _skills_dir() if skills_dir is None else skills_dir
+
+    raw_install_path = entry.get("install_path") or entry.get("name", "")
+    skill_path = skills_dir / raw_install_path
+    if skill_path.exists():
+        return skill_path, False
+
+    name = entry.get("name", "")
+    found, _ambiguous = find_installed_skill_dir_by_name(
+        name, skills_dir, expected_hash=entry.get("content_hash")
+    )
+    if found is None:
+        # Either nothing matched or the match was ambiguous; do not repair.
+        return skill_path, False
+
+    if lock is not None:
+        try:
+            rel = found.relative_to(skills_dir).as_posix()
+            # Route the repaired path through the same lock-path validator
+            # record_install/uninstall rely on. If the recovered directory's
+            # terminal component does not match the skill name (or otherwise
+            # fails the shape/escape checks) we refuse the repair rather than
+            # persist an entry uninstall could later resolve unsafely.
+            if lock.update_install_path(name, rel):
+                return found, True
+        except (ValueError, OSError):
+            return skill_path, False
+        # update_install_path returned False (no-op / entry gone): the on-disk
+        # dir is still valid to scan even though the lock was not rewritten.
+        return found, False
+
+    return found, True
+
 
 # ---------------------------------------------------------------------------
 # Taps management

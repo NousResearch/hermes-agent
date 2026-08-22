@@ -1359,7 +1359,45 @@ class TestContextLengthCache:
             save_context_length("test/model", "http://x", 32768)
             assert get_cached_context_length("test/model", "http://x") == 32768
 
+    @pytest.mark.parametrize("context_lengths", [["not a cache"], "not a cache", 32768])
+    def test_non_mapping_context_lengths_is_rebuilt(
+        self, tmp_path, monkeypatch, context_lengths
+    ):
+        """Parseable cache schema corruption must behave like a cache miss."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_file = tmp_path / "context_length_cache.yaml"
+        cache_file.write_text(
+            yaml.safe_dump({"context_lengths": context_lengths}), encoding="utf-8"
+        )
+        assert get_cached_context_length("test/model", "http://x") is None
+        save_context_length("test/model", "http://x", 32768)
+        assert get_cached_context_length("test/model", "http://x") == 32768
 
+    def test_invalid_context_cache_entries_are_dropped_on_rewrite(self, tmp_path, monkeypatch):
+        """A cache rewrite preserves valid rows but removes invalid schema entries."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_file = tmp_path / "context_length_cache.yaml"
+        valid_key = "known/model@http://known"
+        cache_file.write_text(
+            yaml.safe_dump(
+                {"context_lengths": {
+                    valid_key: 65536,
+                    None: 12345,
+                    "not-an-int": "65536",
+                    "boolean": True,
+                }},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        assert get_cached_context_length("known/model", "http://known") == 65536
+        save_context_length("new/model", "http://new", 32768)
+
+        with open(cache_file, encoding="utf-8") as f:
+            assert yaml.safe_load(f) == {"context_lengths": {
+                valid_key: 65536,
+                "new/model@http://new": 32768,
+            }}
 
     def test_idempotent_save(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"

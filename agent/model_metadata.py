@@ -1478,7 +1478,14 @@ def _load_context_cache() -> Dict[str, int]:
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get("context_lengths") or {}
+        context_lengths = data.get("context_lengths")
+        if not isinstance(context_lengths, dict):
+            return {}
+        return {
+            key: value
+            for key, value in context_lengths.items()
+            if isinstance(key, str) and type(value) is int
+        }
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}

@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import traceback
+import unicodedata
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -33,6 +34,11 @@ from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
 from agent.display import ToolPreview
+from plugins.platforms.discord.unicode_command_policy import (
+    _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+    _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
+    _APP_COMMAND_SCRIPT_RANGES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +487,67 @@ def discord_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     return DISCORD_AVAILABLE
+
+
+# Matches bounded Discord application-command mention candidates. Command path
+# tokens are validated separately against Discord's Unicode-aware CHAT_INPUT
+# name grammar before any text is rewritten. The path can contain at most three
+# 32-character tokens plus two literal spaces.
+_APP_COMMAND_MENTION_RE = re.compile(r"</([^<>:\r\n]{1,98}):([0-9]+)>")
+
+def _codepoint_in_ranges(codepoint: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Return membership in sorted, disjoint inclusive ranges."""
+    low = 0
+    high = len(ranges)
+    while low < high:
+        middle = (low + high) // 2
+        start, end = ranges[middle]
+        if codepoint < start:
+            high = middle
+        elif codepoint > end:
+            low = middle + 1
+        else:
+            return True
+    return False
+
+
+def _is_app_command_name_character(char: str) -> bool:
+    """Apply the pinned Unicode character class for one CHAT_INPUT name code point."""
+    if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
+        return True
+    codepoint = ord(char)
+    return _codepoint_in_ranges(
+        codepoint, _APP_COMMAND_LN_COMPATIBILITY_RANGES
+    ) or _codepoint_in_ranges(codepoint, _APP_COMMAND_SCRIPT_RANGES)
+
+
+def _is_valid_app_command_name(name: str) -> bool:
+    """Return whether one token follows Discord's CHAT_INPUT name grammar."""
+    if not 1 <= len(name) <= 32 or name.lower() != name:
+        return False
+
+    for char in name:
+        codepoint = ord(char)
+        # Python 3.11's UCD 14.0 does not know the lowercase mappings of
+        # capitals assigned later. Preserve Discord's lowercase rule explicitly.
+        if _codepoint_in_ranges(codepoint, _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES):
+            return False
+        if not _is_app_command_name_character(char):
+            return False
+    return True
+
+
+def _normalize_app_command_mentions(text: str) -> str:
+    """Convert valid ``</name:id>`` payloads back to plain slash text."""
+
+    def replace(match: re.Match) -> str:
+        path = match.group(1)
+        tokens = path.split(" ")
+        if 1 <= len(tokens) <= 3 and all(_is_valid_app_command_name(token) for token in tokens):
+            return "/" + path
+        return match.group(0)
+
+    return _APP_COMMAND_MENTION_RE.sub(replace, text)
 
 
 def check_discord_requirements() -> bool:
@@ -8105,6 +8172,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        # Clicked Discord slash-command suggestions arrive as `</cmd:id>` and
+        # must be normalised back to `/cmd` text before the command dispatch
+        # below; run after mention-stripping so the `</cmd:id>` payload is no
+        # longer adjacent to a bot mention.  See #29528.  The `</` substring
+        # check is a cheap pre-filter; only strip when the regex actually
+        # rewrote something so unrelated content (e.g. `</tag>` with leading
+        # whitespace) is left untouched.
+        if "</" in normalized_content:
+            rewritten = _normalize_app_command_mentions(normalized_content)
+            if rewritten != normalized_content:
+                normalized_content = rewritten.strip()
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

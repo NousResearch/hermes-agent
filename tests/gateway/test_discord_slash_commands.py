@@ -1,8 +1,10 @@
 """Tests for native Discord slash command fast-paths (thread creation & auto-thread)."""
 
+import json
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-import sys
 
 import pytest
 
@@ -75,7 +77,21 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.platforms.base import MessageType  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+    _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
+    _APP_COMMAND_SCRIPT_RANGES,
+    DiscordAdapter,
+    _is_app_command_name_character,
+    _is_valid_app_command_name,
+    _normalize_app_command_mentions,
+)
+from plugins.platforms.discord.unicode_command_policy import (  # noqa: E402
+    _APP_COMMAND_UNICODE_BASELINE_VERSION,
+    _APP_COMMAND_UNICODE_SOURCE_SHA256,
+    _APP_COMMAND_UNICODE_VERSION,
+)
 
 
 class FakeTree:
@@ -601,4 +617,388 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         f"point of this design is that it stays small regardless of skill count"
     )
 
+
+# ------------------------------------------------------------------
+# Application-command mention normalisation (clicked slash suggestions)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Bare top-level command, no surrounding text.
+        ("</status:123456789>", "/status"),
+        # Subcommand form: `</name sub:id>` -> `/name sub`.
+        ("</cron list:987654321098765432>", "/cron list"),
+        # Grouped-subcommand form: `</name group sub:id>` -> `/name group sub`.
+        ("</skill manage delete:111222333444555666>", "/skill manage delete"),
+        # Trailing user-typed arguments are preserved verbatim.
+        ("</skill search:42> ocr-and-documents", "/skill search ocr-and-documents"),
+        # Hyphens and underscores in command names are allowed by Discord.
+        ("</my-cmd_x:42>", "/my-cmd_x"),
+        # Discord's CHAT_INPUT grammar is Unicode-aware and permits apostrophes.
+        ("</café:42>", "/café"),
+        ("</नमस्ते:42>", "/नमस्ते"),
+        ("</\U0001e4d0:42>", "/\U0001e4d0"),
+        ("</rock'n_roll:42>", "/rock'n_roll"),
+        ("</café नमस्ते:42>", "/café नमस्ते"),
+        ("</café समूह नमस्ते:42>", "/café समूह नमस्ते"),
+        # Every path token is independently bounded and must use lowercase
+        # wherever Unicode defines a lowercase variant.
+        ("</STATUS:42>", "</STATUS:42>"),
+        (f"</{'a' * 33}:42>", f"</{'a' * 33}:42>"),
+        ("</status Café:42>", "</status Café:42>"),
+        # Punctuation outside Discord's explicit -_' set is rejected.
+        ("</status!:42>", "</status!:42>"),
+        # Discord separates command path tokens with literal spaces, not other
+        # whitespace. Tabs/newlines must not be normalized across boundaries.
+        ("</cron\tlist:42>", "</cron\tlist:42>"),
+        ("</cron\nlist:42>", "</cron\nlist:42>"),
+        ("</cron  list:42>", "</cron  list:42>"),
+        # Multiple application-command mentions in a single message all resolve.
+        ("</status:1> and </help:2>", "/status and /help"),
+        # No application-command mention: pass-through, no rewrites.
+        ("/status", "/status"),
+        ("hello world", "hello world"),
+        # Bot mention syntax is NOT a command mention and must be left alone.
+        ("<@1234567890> what's up", "<@1234567890> what's up"),
+    ],
+)
+def test_normalize_app_command_mentions(raw, expected):
+    assert _normalize_app_command_mentions(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "café",
+        "नमस्ते",
+        "สวัสดี",
+        "rock'n_roll",
+        "\u0970",
+        "\u0e4f",
+        "\ua8e0",
+        "\U00011b00",
+        "\U0001e4d0",  # Nag Mundari L/N assigned after the UCD 14 runtime floor.
+        "\u1c8a",  # Lowercase counterpart assigned after the UCD 14 runtime floor.
+        "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+        "\u0e47\u0e4f",
+    ],
+)
+def test_valid_app_command_name_accepts_discord_unicode_grammar(name):
+    assert _is_valid_app_command_name(name)
+
+
+_UNICODE_ORACLE = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "discord_chat_input_unicode_17.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+def _oracle_ranges(name):
+    return tuple((start, end) for start, end in _UNICODE_ORACLE[name])
+
+
+def _oracle_contains(codepoint, ranges):
+    low = 0
+    high = len(ranges)
+    while low < high:
+        middle = (low + high) // 2
+        start, end = ranges[middle]
+        if codepoint < start:
+            high = middle
+        elif codepoint > end:
+            low = middle + 1
+        else:
+            return True
+    return False
+
+
+def test_app_command_unicode_policy_and_oracle_share_pinned_official_sources():
+    assert _APP_COMMAND_UNICODE_BASELINE_VERSION == _UNICODE_ORACLE["baseline_unicode_version"]
+    assert _APP_COMMAND_UNICODE_VERSION == _UNICODE_ORACLE["unicode_version"]
+    assert _APP_COMMAND_UNICODE_SOURCE_SHA256 == _UNICODE_ORACLE["source_sha256"]
+    assert set(_APP_COMMAND_UNICODE_SOURCE_SHA256) == set(_UNICODE_ORACLE["source_urls"])
+    assert all(
+        len(digest) == 64 and not (set(digest) - set("0123456789abcdef"))
+        for digest in _APP_COMMAND_UNICODE_SOURCE_SHA256.values()
+    )
+
+
+def test_app_command_unicode_compatibility_ranges_are_canonical():
+    for ranges in (
+        _APP_COMMAND_LN_COMPATIBILITY_RANGES,
+        _APP_COMMAND_SCRIPT_RANGES,
+        _APP_COMMAND_LOWERCASE_COMPATIBILITY_RANGES,
+    ):
+        previous_end = -2
+        for start, end in ranges:
+            assert 0 <= start <= end <= sys.maxunicode
+            assert start > previous_end + 1
+            previous_end = end
+
+
+def test_app_command_unicode_17_full_table_oracle_has_no_missing_or_extra_codepoints():
+    """Compare official expected, embedded class, and validator over all Unicode."""
+    property_ranges = _oracle_ranges("property_ranges")
+    lowercase_disallowed = _oracle_ranges("lowercase_disallowed_ranges")
+    counts = {
+        "embedded_missing": 0,
+        "embedded_extra": 0,
+        "accepted_missing": 0,
+        "accepted_extra": 0,
+    }
+    samples = {name: [] for name in counts}
+    for codepoint in range(sys.maxunicode + 1):
+        char = chr(codepoint)
+        expected_property = _oracle_contains(codepoint, property_ranges)
+        expected_character = expected_property or char in "-_'"
+        target_has_lowercase = _oracle_contains(codepoint, lowercase_disallowed)
+        expected_valid = expected_character and not target_has_lowercase
+        embedded = _is_app_command_name_character(char)
+        accepted = _is_valid_app_command_name(char)
+
+        comparisons = (
+            ("embedded_missing", expected_character and not embedded),
+            ("embedded_extra", embedded and not expected_character),
+            ("accepted_missing", expected_valid and not accepted),
+            ("accepted_extra", accepted and not expected_valid),
+        )
+        for name, mismatched in comparisons:
+            if mismatched:
+                counts[name] += 1
+                if len(samples[name]) < 8:
+                    samples[name].append(f"U+{codepoint:04X}")
+
+    assert counts == {name: 0 for name in counts}, samples
+
+
+def test_app_command_unicode_17_property_range_boundaries():
+    property_ranges = _oracle_ranges("property_ranges")
+    for start, end in property_ranges:
+        assert _is_app_command_name_character(chr(start))
+        assert _is_app_command_name_character(chr(end))
+        if start:
+            before = start - 1
+            expected = _oracle_contains(before, property_ranges) or chr(before) in "-_'"
+            assert _is_app_command_name_character(chr(before)) is expected
+        if end < sys.maxunicode:
+            after = end + 1
+            expected = _oracle_contains(after, property_ranges) or chr(after) in "-_'"
+            assert _is_app_command_name_character(chr(after)) is expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "STATUS",
+        "a" * 33,
+        "status!",
+        "has space",
+        "tab\tname",
+        "\u1c89",  # Post-UCD-14 capital with a UCD 17 lowercase mapping.
+        "\u0301",  # Combining mark outside the permitted scripts.
+        "\u0e3f",  # Thai block, but Script=Common.
+        "\u0964",  # Gap between exact Devanagari script ranges.
+    ],
+)
+def test_valid_app_command_name_rejects_discord_boundaries(name):
+    assert not _is_valid_app_command_name(name)
+
+
+def _slash_click_message(channel, *, command_payload, bot_user=None, author_id=42, mention_bot=False):
+    if mention_bot:
+        assert bot_user is not None, "mention_bot=True requires bot_user"
+        content = f"<@{bot_user.id}> {command_payload}"
+        # discord.py mention-detection compares by identity (`user in mentions`);
+        # pass through the exact bot_user object so the strip path fires.
+        mentions = [bot_user]
+    else:
+        content = command_payload
+        mentions = []
+    return SimpleNamespace(
+        author=SimpleNamespace(id=author_id, display_name="Jezza", bot=False, name="jezza"),
+        content=content,
+        channel=channel,
+        attachments=[],
+        message_snapshots=[],
+        mentions=mentions,
+        reference=None,
+        created_at=None,
+        id=12345,
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        type=_discord_mod.MessageType.default,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypatch):
+    """A clicked `</status:id>` should reach handle_message as `/status` COMMAND."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="</status:123456789>")
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,expected_text,expected_type",
+    [
+        ("</café:101>", "/café", MessageType.COMMAND),
+        ("</नमस्ते:102>", "/नमस्ते", MessageType.COMMAND),
+        ("</rock'n_roll:103>", "/rock'n_roll", MessageType.COMMAND),
+        ("</café समूह नमस्ते:104>", "/café समूह नमस्ते", MessageType.COMMAND),
+        ("</\u0970:107>", "/\u0970", MessageType.COMMAND),
+        ("</\u0e4f:108>", "/\u0e4f", MessageType.COMMAND),
+        ("</\ua8e0:109>", "/\ua8e0", MessageType.COMMAND),
+        ("</\U00011b00:110>", "/\U00011b00", MessageType.COMMAND),
+        ("</\U0001e4d0:116>", "/\U0001e4d0", MessageType.COMMAND),
+        ("</\u1c8a:117>", "/\u1c8a", MessageType.COMMAND),
+        (
+            f"</{''.join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2))}:111>",
+            "/" + "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+            MessageType.COMMAND,
+        ),
+        ("</\u0e47\u0e4f:112>", "/\u0e47\u0e4f", MessageType.COMMAND),
+        ("</STATUS:105>", "</STATUS:105>", MessageType.TEXT),
+        (f"</{'a' * 33}:106>", f"</{'a' * 33}:106>", MessageType.TEXT),
+        ("</\u0301:113>", "</\u0301:113>", MessageType.TEXT),
+        ("</\u0e3f:114>", "</\u0e3f:114>", MessageType.TEXT),
+        ("</\u0964:115>", "</\u0964:115>", MessageType.TEXT),
+        ("</\u1c89:118>", "</\u1c89:118>", MessageType.TEXT),
+    ],
+)
+async def test_clicked_slash_suggestion_enforces_discord_name_grammar(
+    adapter,
+    monkeypatch,
+    command_payload,
+    expected_text,
+    expected_type,
+):
+    """The real ingress path rewrites only valid Unicode CHAT_INPUT names."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload=command_payload)
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == expected_text
+    assert captured[0].message_type == expected_type
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_with_args_preserves_args(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(), command_payload="</skill search:42> ocr-and-documents"
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/skill search ocr-and-documents"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_after_bot_mention_still_dispatches(adapter, monkeypatch):
+    """`<@bot> </status:id>` (auto-prepended mention) still arrives as `/status`."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(),
+        command_payload="</status:123456789>",
+        mention_bot=True,
+        bot_user=adapter._client.user,
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,mention_bot",
+    [
+        ("/help", False),
+        ("</help:123456789>", False),
+        ("</help:123456789>", True),
+    ],
+)
+async def test_dm_help_control_and_clicked_suggestions_dispatch_as_commands(
+    adapter, monkeypatch, command_payload, mention_bot
+):
+    """The real DM adapter path keeps literal and clicked `/help` routing aligned."""
+    class _FakeDMChannel:
+        id = 200
+
+    monkeypatch.setattr(_discord_mod, "DMChannel", _FakeDMChannel)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeDMChannel(),
+        command_payload=command_payload,
+        mention_bot=mention_bot,
+        bot_user=adapter._client.user if mention_bot else None,
+    )
+    msg.guild = None
+
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/help"
+    assert captured[0].message_type == MessageType.COMMAND
+    assert captured[0].source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_plain_text_with_lt_slash_substring_not_misinterpreted(adapter, monkeypatch):
+    """Literal `</` substrings in user text without an `:id>` suffix pass through."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="see </tag> in HTML")
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "see </tag> in HTML"
+    assert captured[0].message_type == MessageType.TEXT
 

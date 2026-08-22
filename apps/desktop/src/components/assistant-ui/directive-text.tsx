@@ -8,6 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
@@ -417,7 +418,20 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
       window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
-      .then(url => alive && url && setSrc(url))
+      .then(url => {
+        if (!alive) {
+          return
+        }
+
+        if (isReadFileErrorResult(url)) {
+          setFailed(true)
+          return
+        }
+
+        if (url) {
+          setSrc(url)
+        }
+      })
       .catch(() => alive && setFailed(true))
 
     return () => {

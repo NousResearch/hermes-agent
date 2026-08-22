@@ -2,6 +2,7 @@ import type { AppendMessage } from '@assistant-ui/react'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
@@ -388,6 +389,11 @@ export async function readImageForRemoteAttach(
   }
 
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
+
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
   return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
@@ -405,6 +411,10 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   }
 
   const dataUrl = await reader(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
 
   return dataUrl || null
 }

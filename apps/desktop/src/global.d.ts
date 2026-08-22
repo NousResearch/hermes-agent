@@ -198,15 +198,15 @@ declare global {
           title: string
         } | null
       } | null>
-      readFileDataUrl: (filePath: string) => Promise<string>
+      readFileDataUrl: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
-      readFileDataUrlForAttach?: (filePath: string) => Promise<string>
+      readFileDataUrlForAttach?: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
       dataUrlReadMax?: {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
-      readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      readFileText: (filePath: string) => Promise<HermesReadFileTextResult | HermesReadFileErrorResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       /** Native save dialog; returns the chosen path or null on cancel. */
       selectSavePath?: (options?: {
@@ -1152,6 +1152,19 @@ export interface HermesReadFileTextResult {
   path: string
   text: string
   truncated?: boolean
+}
+
+/** Structured failure for a preview read. The main process returns this (it
+ *  does NOT reject the IPC call) when the file is simply not on disk — a
+ *  restored preview tab or transcript reference pointing at a deleted/moved
+ *  file, or a path under a cleared /tmp, is an expected outcome that the
+ *  renderer already displays as "preview unavailable". Other errors still
+ *  reject as before. */
+export interface HermesReadFileErrorResult {
+  ok: false
+  error: string
+  message: string
+  path?: string
 }
 
 export interface HermesPreviewWatch {

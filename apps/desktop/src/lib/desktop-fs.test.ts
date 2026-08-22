@@ -16,8 +16,8 @@ import {
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
-const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
-const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
+const readFileText = vi.fn(async (): Promise<unknown> => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
+const readFileDataUrl = vi.fn(async (): Promise<unknown> => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 
@@ -234,5 +234,30 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a missing-file bridge result as a thrown error (not an object)', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    // The main process answers "file not on disk" with a structured result
+    // instead of rejecting the IPC call (so a restored preview tab pointing at
+    // a deleted file doesn't spam Electron's console). The facade converts it
+    // back into a rejection so every existing try/catch caller keeps working.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    readFileDataUrl.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.'
+    })
+
+    await expect(readDesktopFileDataUrl('/gone.png')).rejects.toThrow('Text preview failed: file does not exist.')
   })
 })

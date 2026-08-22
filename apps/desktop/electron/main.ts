@@ -170,6 +170,7 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  isMissingFileError,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -13929,11 +13930,24 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
 })
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
+  try {
+    return await readFileDataUrlForIpc(filePath, {
+      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
+      purpose: 'File preview'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return {
+        ok: false as const,
+        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+        message: error instanceof Error ? error.message : 'File does not exist.',
+        path: String(filePath ?? '')
+      }
+    }
+
+    throw error
+  }
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.
@@ -13941,38 +13955,69 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 // can exceed the default 16 MiB preview ceiling (and still fit the gateway
 // WebSocket frame limit after base64 expansion).
 ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
-    maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'Attachment upload' })),
-    purpose: 'Attachment upload'
-  })
+  try {
+    return await readFileDataUrlForIpc(filePath, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'Attachment upload' })),
+      purpose: 'Attachment upload'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return {
+        ok: false as const,
+        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+        message: error instanceof Error ? error.message : 'File does not exist.',
+        path: String(filePath ?? '')
+      }
+    }
+
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
-
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
-
   try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
+      maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+      purpose: 'Text preview'
+    })
 
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+    const ext = path.extname(resolvedPath).toLowerCase()
+    const handle = await fs.promises.open(resolvedPath, 'r')
+    const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+
+    try {
+      const buffer = Buffer.alloc(bytesToRead)
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+
+      return {
+        binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
+        byteSize: stat.size,
+        language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
+        mimeType: mimeTypeForPath(resolvedPath),
+        path: resolvedPath,
+        text: buffer.subarray(0, bytesRead).toString('utf8'),
+        truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      }
+    } finally {
+      await handle.close()
     }
-  } finally {
-    await handle.close()
+  } catch (error) {
+    // A preview probing a file that is gone (deleted, moved, or cleared from
+    // /tmp since the tab/transcript reference was written) is an expected
+    // outcome. Return a structured error instead of rejecting — Electron logs
+    // every rejected handler with a stack trace even though the renderer shows
+    // "preview unavailable" either way.
+    if (isMissingFileError(error)) {
+      return {
+        ok: false as const,
+        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+        message: error instanceof Error ? error.message : 'File does not exist.',
+        path: String(filePath ?? '')
+      }
+    }
+
+    throw error
   }
 })
 

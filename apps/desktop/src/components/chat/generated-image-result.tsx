@@ -7,6 +7,7 @@ import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-ima
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
 import { cn } from '@/lib/utils'
 
@@ -45,7 +46,13 @@ async function resolveImageSrc(path: string): Promise<string> {
     return mediaExternalUrl(path)
   }
 
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+  if (isReadFileErrorResult(dataUrl)) {
+    throw new Error(dataUrl.message || `Image file read failed: ${dataUrl.error}`)
+  }
+
+  return dataUrl
 }
 
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {

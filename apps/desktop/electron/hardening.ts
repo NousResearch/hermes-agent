@@ -528,6 +528,24 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+/** True when a read failed because the file (or its parent) is not on disk.
+ *  Preview reads routinely race a file's lifecycle — a restored preview tab or
+ *  a transcript reference can point at something that was deleted, moved, or
+ *  lived in a cleared /tmp. Those are expected outcomes, not crashes: IPC
+ *  handlers should answer them with a structured error result instead of
+ *  rejecting (Electron logs every rejected handler as a stack trace even when
+ *  the renderer handles the rejection gracefully). Everything else still
+ *  throws as before. */
+function isMissingFileError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const code = (error as { code?: unknown }).code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
 export {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
@@ -538,6 +556,7 @@ export {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  isMissingFileError,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,

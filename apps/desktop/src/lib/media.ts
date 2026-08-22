@@ -1,4 +1,4 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
@@ -90,7 +90,13 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
     return mediaExternalUrl(path)
   }
 
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+  if (isReadFileErrorResult(dataUrl)) {
+    throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
+  }
+
+  return dataUrl
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep

@@ -29,6 +29,7 @@
  */
 
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { notifyError } from '@/store/notifications'
 
 import { createPluginContext, type HermesPlugin } from './plugin'
@@ -302,7 +303,13 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   const prevId = entry.id
 
   try {
-    const { text } = await desktop.readFileText(entry.file)
+    const result = await desktop.readFileText(entry.file)
+
+    if (isReadFileErrorResult(result)) {
+      throw new Error(result.message || `Plugin read failed: ${result.error}`)
+    }
+
+    const { text } = result
 
     const id = await loadRuntimePlugin(text, entry.origin, {
       defaultEnabled: entry.defaultEnabled,
@@ -367,7 +374,11 @@ async function scanDiskPlugins(): Promise<void> {
         }
 
         try {
-          await desktop.readFileText(file)
+          const probe = await desktop.readFileText(file)
+
+          if (isReadFileErrorResult(probe)) {
+            continue // No entry file (yet) — not a plugin folder for this root.
+          }
         } catch {
           continue // No entry file (yet) — not a plugin folder for this root.
         }

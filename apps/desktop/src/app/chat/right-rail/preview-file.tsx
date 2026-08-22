@@ -26,6 +26,7 @@ import {
   desktopFileDiff,
   desktopFsCacheKey,
   desktopGitRoot,
+  isReadFileErrorResult,
   readDesktopFileDataUrl,
   readDesktopFileText,
   writeDesktopFileText
@@ -279,6 +280,11 @@ async function readTextPreview(filePath: string) {
   // Back-compat for a running Electron process whose preload hasn't been
   // restarted since readFileText was added. readFileDataUrl already existed.
   const dataUrl = await window.hermesDesktop.readFileDataUrl(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    throw new Error(dataUrl.message || `File read failed: ${dataUrl.error}`)
+  }
+
   const [, metadata = '', data = ''] = dataUrl.match(/^data:([^,]*),(.*)$/) || []
   const base64 = metadata.includes(';base64')
   const mimeType = metadata.replace(/;base64$/, '') || undefined

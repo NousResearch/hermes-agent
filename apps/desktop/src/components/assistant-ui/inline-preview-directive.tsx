@@ -6,6 +6,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { localPreviewTarget } from '@/lib/local-preview'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { isRemoteGateway } from '@/lib/media'
 
 /**
@@ -303,7 +304,12 @@ function InlineHtmlFrame({
           return
         }
 
-        if (!result || result.binary || !result.text) {
+        if (!result || isReadFileErrorResult(result)) {
+          setFailed(true)
+          return
+        }
+
+        if (result.binary || !result.text) {
           setFailed(true)
         } else {
           setDoc(result.text)

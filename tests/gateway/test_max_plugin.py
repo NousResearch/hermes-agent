@@ -13,6 +13,8 @@ presence) mirror the ntfy adapter tests — everything routes through the
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,11 +33,29 @@ _env_enablement = _max._env_enablement
 _standalone_send = _max._standalone_send
 MAX_MESSAGE_LENGTH = _max.MAX_MESSAGE_LENGTH
 DEDUP_WINDOW_SECONDS = _max.DEDUP_WINDOW_SECONDS
+prepare_outgoing_text = _max.prepare_outgoing_text
+markdown_to_max_html = _max.markdown_to_max_html
+strip_reasoning_block = _max.strip_reasoning_block
+SHOW_REASONING_ENV = _max.SHOW_REASONING_ENV
 
 
 def _run(coro):
     """Run an async coroutine synchronously (fresh event loop each call)."""
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def _clean_max_env(monkeypatch):
+    """Isolate every test from the developer's live MAX_* environment.
+
+    Importing ``gateway.*`` loads ``$HERMES_HOME/.env`` via python-dotenv,
+    so real credentials (MAX_BOT_TOKEN, MAX_OWNER_USER_ID, …) leak into
+    ``os.environ`` and break assertions that expect a clean slate. Each
+    test starts from a clean MAX_* slate; tests that need a value set it
+    explicitly.
+    """
+    for name in [n for n in os.environ if n.startswith("MAX_")]:
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1009,3 +1029,133 @@ class TestRegister:
         assert kwargs["max_message_length"] == MAX_MESSAGE_LENGTH
         assert kwargs["setup_fn"] is not None
         assert callable(kwargs["setup_fn"])
+
+
+# ---------------------------------------------------------------------------
+# 10. Reasoning stripping + Markdown→MAX-HTML (prepare_outgoing_text)
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningStripping:
+
+    def test_fenced_reasoning_removed_by_default(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        text = '💭 **Reasoning:**\n```\nмысли\n```\n\nОтвет.'
+        out, fmt = prepare_outgoing_text(text)
+        assert out == "Ответ."
+        assert fmt == "html"
+
+    def test_plain_text_still_html(self, monkeypatch):
+        """Markdown mode paints nothing inline on real clients — always html."""
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        out, fmt = prepare_outgoing_text("**Жирный** и *курсив*")
+        assert fmt == "html"
+        assert "<b>Жирный</b>" in out and "<i>курсив</i>" in out
+        assert "**" not in out and "*" not in out
+
+    def test_blockquote_reasoning_removed(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        text = '> 💭 **Reasoning:**\n> думаю\n> ещё\n\nОтвет тут'
+        out, _ = prepare_outgoing_text(text)
+        assert out == "Ответ тут"
+
+    def test_subtext_reasoning_removed(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        text = '-# 💭 Reasoning\n-# думаю\n-# ещё\n\nФинал'
+        out, _ = prepare_outgoing_text(text)
+        assert out == "Финал"
+
+    def test_bare_think_block_removed(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        text = "<think>\nмонолог\n</think>\nОтвет."
+        out, _ = prepare_outgoing_text(text)
+        assert out == "Ответ."
+
+    def test_opt_in_keeps_reasoning(self, monkeypatch):
+        monkeypatch.setenv(SHOW_REASONING_ENV, "true")
+        text = '💭 **Reasoning:**\n```\nмысли\n```\n\nВот код:\n```python\nprint(1)\n```'
+        out, fmt = prepare_outgoing_text(text)
+        assert "Reasoning" in out
+        # code fence still converts even when reasoning is kept
+        assert fmt == "html"
+
+    def test_opt_in_false_explicitly(self, monkeypatch):
+        monkeypatch.setenv(SHOW_REASONING_ENV, "false")
+        text = '💭 **Reasoning:**\n```\nмысли\n```\n\nОтвет.'
+        out, _ = prepare_outgoing_text(text)
+        assert out == "Ответ."
+
+    def test_clean_text_untouched(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        out, fmt = prepare_outgoing_text("Просто ответ")
+        assert out == "Просто ответ"
+        assert fmt == "html"
+
+
+class TestMarkdownToMaxHtml:
+
+    def test_code_fence_becomes_pre(self, monkeypatch):
+        monkeypatch.delenv(SHOW_REASONING_ENV, raising=False)
+        text = "До кода:\n```python\nx < 5 && y > 2\nprint('hi')\n```\nПосле."
+        out, fmt = prepare_outgoing_text(text)
+        assert fmt == "html"
+        assert '<blockquote><pre><code class="language-python">x &lt; 5 &amp;&amp; y &gt; 2\nprint(\'hi\')</code></pre></blockquote>' in out
+        assert out.startswith("До кода:\n")
+        assert out.endswith("После.")
+
+    def test_code_fence_without_lang(self, monkeypatch):
+        out = markdown_to_max_html("текст\n```\ncode line\n```")
+        assert "<blockquote><pre>code line</pre></blockquote>" in out
+
+    def test_unclosed_fence_at_eof(self):
+        out, _ = prepare_outgoing_text("текст\n```js\nlet x = 1;")
+        assert '<blockquote><pre><code class="language-js">let x = 1;</code></pre></blockquote>' in out
+
+    def test_inline_markup_converted(self):
+        out = markdown_to_max_html("`ls -la` и **жирный**, [доки](https://dev.max.ru)")
+        assert "<mark>ls -la</mark>" in out
+        assert "<b>жирный</b>" in out
+        assert '<a href="https://dev.max.ru">доки</a>' in out
+        assert "`" not in out and "**" not in out
+
+    def test_html_escaped_in_plain_text(self):
+        out = markdown_to_max_html("a < b > c & d")
+        assert "&lt;" in out and "&gt;" in out and "&amp;" in out
+
+    def test_send_payload_uses_html_for_code(self):
+        """send() must flip the payload format to html when code is present."""
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+
+        async def _noop(*a, **k):
+            pass
+
+        adapter._rate_limit_send = _noop
+        _run(adapter.send("123", "Вот код:\n```py\nprint(1)\n```", metadata={"user_id": "u1"}))
+        body = json.loads(adapter._http_client.post.call_args.kwargs.get(
+            "content",
+            adapter._http_client.post.call_args.args[1] if len(adapter._http_client.post.call_args.args) > 1 else "{}",
+        ))
+        assert body["format"] == "html"
+        assert "<pre>" in body["text"]
+
+    def test_send_payload_html_when_no_code(self):
+        """Even plain replies go out as html (MAX markdown paints nothing)."""
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+
+        async def _noop(*a, **k):
+            pass
+
+        adapter._rate_limit_send = _noop
+        _run(adapter.send("123", "Простой ответ", metadata={"user_id": "u1"}))
+        call = adapter._http_client.post.call_args
+        body = json.loads(call.kwargs.get("content") or call.args[1])
+        assert body["format"] == "html"
+        assert body["text"] == "Простой ответ"

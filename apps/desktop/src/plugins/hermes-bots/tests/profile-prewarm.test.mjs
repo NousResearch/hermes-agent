@@ -21,6 +21,13 @@ function activitySessionSource() {
   return sourceBetween('function botActivitySession(', '/** Bots that are working')
 }
 
+// The predicate both open paths share (BotRow + ActiveNowStrip): whether a
+// remote row may be opened on its own source, or stays @mention-only. Same
+// rule as above — extract the REAL helper instead of restating it here.
+function openOnOwnSourceSource() {
+  return sourceBetween('const ACTIVATABLE_SOURCE_KINDS', 'async function prepareBotSource(')
+}
+
 function renderBotRow(input = 'alpha') {
   const bot = typeof input === 'string' ? { name: input } : input
   const name = bot.name
@@ -99,7 +106,10 @@ function renderBotRow(input = 'alpha') {
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  vm.runInNewContext(
+    `${openOnOwnSourceSource()}\n${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`,
+    context
+  )
 
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
@@ -221,7 +231,10 @@ test('behavior: remote default does not open this-device chat when the source di
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  vm.runInNewContext(
+    `${openOnOwnSourceSource()}\n${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`,
+    context
+  )
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 

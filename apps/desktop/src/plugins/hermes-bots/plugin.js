@@ -4220,6 +4220,27 @@ async function openBotCanonicalChat(name) {
   return createCanonicalChat(name)
 }
 
+/** Sources cheap enough to activate on a click: HTTP gateways, and the local
+ *  source (every row becomes a thin one once another source is active). SSH is
+ *  deliberately absent — hopping the window onto an SSH tunnel is the
+ *  expensive switch that made remote rows @mention-only to begin with, and
+ *  nothing about that cost has changed. */
+const ACTIVATABLE_SOURCE_KINDS = new Set(['cloud', 'local', 'remote'])
+
+/** A remote row can be opened on its OWN source when it is source-scoped and
+ *  its source is one of the cheap kinds above: ensureGatewayAgent dials the
+ *  (connection, profile) backend and republishes the connection descriptor in
+ *  one frame, so the chat surface follows it without the user switching
+ *  gateways by hand.
+ *
+ *  Activation is opt-in on a POSITIVELY known kind. A row that never carried a
+ *  connectionKind keeps the @mention-only path: an unknown source could be an
+ *  SSH tunnel, and guessing wrong costs the user a window hop they did not
+ *  ask for. */
+function canOpenOnOwnSource(bot) {
+  return Boolean(bot?.sourceScoped) && ACTIVATABLE_SOURCE_KINDS.has(bot?.connectionKind)
+}
+
 async function prepareBotSource(bot) {
   if (!bot.sourceScoped) {
     return
@@ -6014,7 +6035,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     $groupChatWorkspace.set(null)
     $selectedBot.set(bot.name)
 
-    if (bot.remoteSource) {
+    if (bot.remoteSource && !canOpenOnOwnSource(bot)) {
       const handle = botHandle(bot.name, bot)
       host.notify?.({
         kind: 'info',
@@ -11076,7 +11097,7 @@ function BotsPane() {
           haptic('tap')
           $selectedBot.set(bot.name)
 
-          if (bot.remoteSource) {
+          if (bot.remoteSource && !canOpenOnOwnSource(bot)) {
             const handle = botHandle(bot.name, bot)
             host.notify?.({
               kind: 'info',

@@ -86,6 +86,7 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteOverrideSharedWithOtherScope,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -13492,14 +13493,23 @@ async function interceptSessionRequestForRemote(request) {
 
 const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 
-// A remote profile's session list, read from its remote host and tagged with the
-// desktop-facing profile name (the remote's /api/sessions doesn't know it).
+// A remote profile's session list, read from its remote host. Two shapes:
+//  - genuinely single-profile endpoint (one scope alone on its database): the
+//    remote's /api/sessions doesn't know the desktop-facing name, so rows are
+//    labeled with the selecting scope (legacy behavior);
+//  - shared multi-profile backend (several scopes, one URL — #64999): rows
+//    come from the backend's cross-profile aggregator already stamped with the
+//    REAL owning profile. That identity is authoritative — overwriting it with
+//    the local scope name is what silently misattributed sessions.
 async function remoteSessionList(profile, searchParams) {
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile)
+  const sharedEndpoint = remoteOverrideSharedWithOtherScope(readDesktopConnectionConfig(), profile)
+  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile, { sharedEndpoint })
 
-  for (const s of rowsOf(data)) {
-    s.profile = profile
-    s.is_default_profile = false
+  if (!sharedEndpoint) {
+    for (const s of rowsOf(data)) {
+      s.profile = profile
+      s.is_default_profile = false
+    }
   }
 
   return { ...(data as any), sessions: rowsOf(data) }

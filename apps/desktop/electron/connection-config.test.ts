@@ -28,6 +28,7 @@ import {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  groupRemoteOverrideScopesByEndpoint,
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
@@ -40,6 +41,8 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteOverrideEndpointKey,
+  remoteOverrideSharedWithOtherScope,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -213,6 +216,87 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride({}, 'coder'), null)
   assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
   assert.equal(profileRemoteOverride(null, 'coder'), null)
+})
+
+// --- shared multi-profile remote override endpoints (#64999) ---
+
+test('scopes pointing one URL at the same host share the endpoint', () => {
+  // Same backend, different URL spellings: trailing slash, scheme-less host,
+  // case — normalization must see through them.
+  const config = {
+    profiles: {
+      wife: { mode: 'remote', url: 'http://100.64.0.1:9119' },
+      dad: { mode: 'remote', url: '100.64.0.1:9119/' },
+      mom: { mode: 'cloud', url: 'HTTP://100.64.0.1:9119' }
+    }
+  }
+
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'wife'), true)
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'dad'), true)
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'mom'), true)
+
+  const groups = groupRemoteOverrideScopesByEndpoint(config)
+  assert.deepEqual([...groups.values()], [['wife', 'dad', 'mom']])
+})
+
+test('a scope alone on its endpoint is not shared', () => {
+  const config = {
+    profiles: {
+      wife: { mode: 'remote', url: 'https://family.example.com' },
+      localist: { mode: 'local', savedSsh: {} },
+      sshed: { mode: 'ssh', host: 'alice@box:2222' }
+    }
+  }
+
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'wife'), false)
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'localist'), false)
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'sshed'), false)
+})
+
+test('different credentials against one host are different endpoints', () => {
+  const config = {
+    profiles: {
+      wife: { mode: 'remote', url: 'https://host.example.com', token: { value: 'wife-token' } },
+      dad: { mode: 'remote', url: 'https://host.example.com', token: { value: 'dad-token' } }
+    }
+  }
+
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'wife'), false)
+  assert.equal(remoteOverrideSharedWithOtherScope(config, 'dad'), false)
+
+  // Identical credential material IS the same tenant.
+  const shared = {
+    profiles: {
+      wife: { mode: 'remote', url: 'https://host.example.com', authMode: 'token', token: { value: 't' } },
+      dad: { mode: 'remote', url: 'https://host.example.com/', authMode: 'token', token: { value: 't' } }
+    }
+  }
+
+  assert.equal(remoteOverrideSharedWithOtherScope(shared, 'dad'), true)
+  // The endpoint key itself is stable across URL formatting.
+  assert.equal(
+    remoteOverrideEndpointKey(profileRemoteOverride(shared, 'wife')),
+    remoteOverrideEndpointKey(profileRemoteOverride(shared, 'dad'))
+  )
+})
+
+test('shared-endpoint detection handles absent overrides and malformed URLs', () => {
+  assert.equal(remoteOverrideSharedWithOtherScope({}, 'wife'), false)
+  assert.equal(remoteOverrideSharedWithOtherScope({ profiles: {} }, 'wife'), false)
+  assert.equal(
+    remoteOverrideSharedWithOtherScope({ profiles: { wife: { mode: 'remote', url: '' } } }, 'wife'),
+    false
+  )
+
+  // Unparseable URLs still compare byte-for-byte instead of crashing.
+  const malformed = {
+    profiles: {
+      wife: { mode: 'remote', url: ':::' },
+      dad: { mode: 'remote', url: ':::' }
+    }
+  }
+
+  assert.equal(remoteOverrideSharedWithOtherScope(malformed, 'wife'), true)
 })
 
 test('SSH remains separate from URL-shaped remote modes and preserves an explicit remote profile', () => {

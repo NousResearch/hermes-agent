@@ -374,3 +374,126 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
   assert.equal(totals.default, 2) // untagged registry row counts under default
   assert.equal(totals.work, 1) // deduped row does not double-count
 })
+
+// --- shared multi-profile remote override endpoints (#64999) ---
+
+test('a shared endpoint reads the aggregator and keeps backend row identities', async () => {
+  const calls: Array<{ profile: string | null; path: string }> = []
+
+  const result = await fetchRemoteProfileSessions(
+    'dad-scope',
+    new URLSearchParams({ profile: 'all', limit: '20', offset: '0' }),
+    async (profile, path) => {
+      calls.push({ profile, path })
+
+      // The desktop scope label and the remote's real profiles are
+      // independent namespaces — the backend's stamps are authoritative.
+      return {
+        sessions: [
+          { id: 's-wife-remote', profile: 'hermes-claude', is_default_profile: false },
+          { id: 's-root', profile: 'default', is_default_profile: true }
+        ],
+        total: 2,
+        profile_totals: { 'hermes-claude': 1, default: 1 }
+      }
+    },
+    { sharedEndpoint: true }
+  )
+
+  // Scoped read through the cross-profile aggregator, keeping this scope.
+  assert.deepEqual(calls, [
+    { profile: 'dad-scope', path: '/api/profiles/sessions?profile=dad-scope&limit=20&offset=0' }
+  ])
+
+  // The backend's identities survive untouched — NOT overwritten with the
+  // selecting scope's name.
+  assert.deepEqual(
+    result.sessions.map(row => [(row as any).id, (row as any).profile, (row as any).is_default_profile]),
+    [
+      ['s-wife-remote', 'hermes-claude', false],
+      ['s-root', 'default', true]
+    ]
+  )
+})
+
+test('a single scope keeps the single-database read with no identity claim', async () => {
+  const calls: Array<{ profile: string | null; path: string }> = []
+  const rows = [{ id: 's-1', profile: 'whatever-the-launch-profile-was' }]
+
+  const result = await fetchRemoteProfileSessions(
+    'work-vps',
+    new URLSearchParams({ profile: 'work-vps', limit: '20' }),
+    async (profile, path) => {
+      calls.push({ profile, path })
+
+      return { sessions: rows, total: 1 }
+    }
+  )
+
+  // Legacy shape byte-for-byte: profile stripped, flat list endpoint, rows
+  // passed through as-is (main.ts labels them for exactly this path).
+  assert.deepEqual(calls, [{ profile: 'work-vps', path: '/api/sessions?limit=20' }])
+  assert.equal(result.sessions[0], rows[0])
+})
+
+test('a shared endpoint on an older remote falls back to the single-profile read and labeling', async () => {
+  const calls: string[] = []
+
+  const result = await fetchRemoteProfileSessions(
+    'wife',
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    async (_profile, path) => {
+      calls.push(path)
+
+      if (path.startsWith('/api/profiles/sessions')) {
+        throw new Error('404: No such API endpoint')
+      }
+
+      return { sessions: [{ id: 'legacy-1' }, { id: 'legacy-2' }], total: 2 }
+    },
+    { sharedEndpoint: true }
+  )
+
+  assert.deepEqual(calls, ['/api/profiles/sessions?limit=20&offset=0&profile=wife', '/api/sessions?limit=20&offset=0'])
+
+  // These rows cannot prove which remote profile they belong to, so they
+  // carry the selecting scope's label — exactly the legacy behavior.
+  assert.deepEqual(
+    result.sessions.map(row => [(row as any).id, (row as any).profile, (row as any).is_default_profile]),
+    [
+      ['legacy-1', 'wife', false],
+      ['legacy-2', 'wife', false]
+    ]
+  )
+})
+
+test('shared-endpoint windows page through the aggregator at its own cap', async () => {
+  const calls: string[] = []
+  const rows = Array.from({ length: 700 }, (_, index) => ({ id: `s-${index}`, profile: 'default' }))
+
+  const result = await fetchRemoteProfileSessions(
+    'wife',
+    new URLSearchParams({ limit: '700', offset: '0' }),
+    async (_profile, path) => {
+      calls.push(path)
+
+      const url = new URL(path, 'http://desktop.test')
+      const limit = Number(url.searchParams.get('limit'))
+      const offset = Number(url.searchParams.get('offset'))
+
+      if (!path.startsWith('/api/profiles/sessions') || limit > 500) {
+        throw new Error(`aggregator rejects ${path}`)
+      }
+
+      return { sessions: rows.slice(offset, offset + limit), total: rows.length }
+    },
+    { sharedEndpoint: true }
+  )
+
+  assert.deepEqual(calls, [
+    '/api/profiles/sessions?limit=500&offset=0&profile=wife',
+    '/api/profiles/sessions?limit=200&offset=500&profile=wife'
+  ])
+  assert.equal(result.sessions.length, 700)
+  assert.equal(result.total, 700)
+})

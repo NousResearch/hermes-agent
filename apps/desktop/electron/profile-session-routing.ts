@@ -273,25 +273,47 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
-export async function fetchRemoteProfileSessions(
-  profile: string,
-  searchParams: URLSearchParams,
-  fetchJsonForProfile: FetchJsonForProfile
-): Promise<SessionListResponse> {
-  const params = new URLSearchParams(searchParams)
-  params.delete('profile') // the remote serves its own database
+/** The cross-profile aggregator caps per-request pages at 500 (it fans the
+ *  query out across every profile's state.db — see web_routers/profiles.py). */
+const PROFILE_SESSIONS_PAGE_LIMIT = 500
 
+export interface RemoteProfileSessionReadOptions {
+  /** The endpoint serves more than one desktop scope (several profiles point
+   *  at the same URL — #64999), so it is a multi-profile backend: read THIS
+   *  scope through its cross-profile aggregator (?profile=<scope>), where
+   *  every row arrives stamped with the real owning profile. That identity is
+   *  authoritative and flows through untouched. An older remote without the
+   *  aggregator still serves one launch-profile database — that falls back to
+   *  the single-profile read AND its scope labeling, exactly as if the
+   *  endpoint had never been shared. */
+  sharedEndpoint?: boolean
+}
+
+type RemoteSessionPageReader = (query: string) => Promise<SessionListResponse>
+
+/**
+ * Shared windowing for both remote session endpoints: small requests stay on
+ * one call; oversized windows walk limit/offset pages of at most `pageLimit`
+ * (each endpoint caps its per-request page size), keeping ordinary rows in
+ * order and appending pinned rows that fell outside the window last — the same
+ * result one larger request would have produced.
+ */
+async function pageRemoteSessionWindow(
+  params: URLSearchParams,
+  pageLimit: number,
+  readPage: RemoteSessionPageReader
+): Promise<SessionListResponse> {
   const requestedLimit = Number(params.get('limit'))
   const requestedOffset = Number(params.get('offset') || '0')
 
   const needsPaging =
     Number.isInteger(requestedLimit) &&
-    requestedLimit > REMOTE_SESSION_PAGE_LIMIT &&
+    requestedLimit > pageLimit &&
     Number.isInteger(requestedOffset) &&
     requestedOffset >= 0
 
   if (!needsPaging) {
-    return (await fetchJsonForProfile(profile, `/api/sessions?${params}`)) as SessionListResponse
+    return readPage(params.toString())
   }
 
   const sessions: unknown[] = []
@@ -304,18 +326,20 @@ export async function fetchRemoteProfileSessions(
 
   while (pageOffset < targetOffset) {
     const pageParams = new URLSearchParams(params)
-    const pageLimit = Math.min(REMOTE_SESSION_PAGE_LIMIT, targetOffset - pageOffset)
-    pageParams.set('limit', String(pageLimit))
+    const pageLimitForCall = Math.min(pageLimit, targetOffset - pageOffset)
+    pageParams.set('limit', String(pageLimitForCall))
     pageParams.set('offset', String(pageOffset))
 
-    const page = (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+    const page = await readPage(pageParams.toString())
     firstPage ??= page
 
     const total = nonNegativeNumber(page.total)
     const pageRows = rowsOf(page)
 
     const windowedCount =
-      total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
+      total !== null
+        ? Math.min(pageLimitForCall, Math.max(0, total - pageOffset))
+        : Math.min(pageLimitForCall, pageRows.length)
 
     // /api/sessions appends pinned rows that fall outside the requested
     // window. Keep those aside until all ordinary pages have been joined so
@@ -353,7 +377,7 @@ export async function fetchRemoteProfileSessions(
       targetOffset = Math.min(targetOffset, total)
     }
 
-    pageOffset += pageLimit
+    pageOffset += pageLimitForCall
   }
 
   for (const row of backfilled) {
@@ -372,5 +396,59 @@ export async function fetchRemoteProfileSessions(
     total: total ?? sessions.length,
     limit: requestedLimit,
     offset: requestedOffset
+  }
+}
+
+/** One remote's OWN database (genuinely single-profile endpoint): strip the
+ *  profile param — it serves its state.db natively — and page at its API cap.
+ *  Rows are returned as-is; labeling them with the selecting scope is the
+ *  caller's call (main.ts does it for exactly this path). */
+async function fetchOwnDatabaseRemoteSessions(
+  profile: string,
+  searchParams: URLSearchParams,
+  fetchJsonForProfile: FetchJsonForProfile
+): Promise<SessionListResponse> {
+  const params = new URLSearchParams(searchParams)
+  params.delete('profile') // the remote serves its own database
+
+  return pageRemoteSessionWindow(params, REMOTE_SESSION_PAGE_LIMIT, query =>
+    fetchJsonForProfile(profile, `/api/sessions?${query}`) as Promise<SessionListResponse>
+  )
+}
+
+export async function fetchRemoteProfileSessions(
+  profile: string,
+  searchParams: URLSearchParams,
+  fetchJsonForProfile: FetchJsonForProfile,
+  options: RemoteProfileSessionReadOptions = {}
+): Promise<SessionListResponse> {
+  if (!options.sharedEndpoint) {
+    return fetchOwnDatabaseRemoteSessions(profile, searchParams, fetchJsonForProfile)
+  }
+
+  try {
+    // Multi-profile backend shared by several desktop scopes (#64999): ask its
+    // cross-profile aggregator for THIS scope's slice. Every row comes stamped
+    // by the backend with its real owning profile — that identity must reach
+    // the renderer untouched.
+    const params = new URLSearchParams(searchParams)
+    params.set('profile', profile)
+
+    return await pageRemoteSessionWindow(params, PROFILE_SESSIONS_PAGE_LIMIT, query =>
+      fetchJsonForProfile(profile, `/api/profiles/sessions?${query}`) as Promise<SessionListResponse>
+    )
+  } catch {
+    // Older remote without the aggregator: it still serves ONE launch-profile
+    // database whose rows cannot prove which remote profile they belong to —
+    // fall back to the single-profile read and its scope labeling.
+    const data = await fetchOwnDatabaseRemoteSessions(profile, searchParams, fetchJsonForProfile)
+
+    for (const s of rowsOf(data)) {
+      const session = s as Record<string, unknown>
+      session.profile = profile
+      session.is_default_profile = false
+    }
+
+    return data
   }
 }

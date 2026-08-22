@@ -507,6 +507,86 @@ function profileRemoteOverride(config, profile) {
   }
 }
 
+/**
+ * Stable identity of one per-profile remote override ENDPOINT: normalized base
+ * URL plus the auth material that selects the tenant behind it (#64999).
+ *
+ * Several desktop scopes pointing the SAME URL at one Hermes host are sharing
+ * a MULTI-PROFILE backend — its session reads must preserve the backend's own
+ * per-row profile identity instead of relabeling rows with whichever scope
+ * selected it. Different credentials against one host count as different
+ * tenants and keep single-profile semantics. Pure: compares raw stored
+ * secrets without decrypting them, so non-deterministic ciphertext errs
+ * toward "different endpoint" (the legacy behavior).
+ */
+function remoteOverrideEndpointKey(override) {
+  if (!override || typeof override.url !== 'string' || !override.url.trim()) {
+    return null
+  }
+
+  let url = override.url.trim().toLowerCase()
+
+  try {
+    url = normalizeRemoteBaseUrl(override.url).toLowerCase()
+  } catch {
+    // Not a parseable remote URL — compare byte-for-byte below instead.
+  }
+
+  return JSON.stringify([
+    url,
+    normAuthMode(override.authMode),
+    override.token ?? null,
+    normalizeRemoteHeaders(override.headers)
+  ])
+}
+
+/** Group every desktop scope's remote override by endpoint identity (see
+ *  remoteOverrideEndpointKey). Singletons are included so callers can tell a
+ *  shared endpoint from an alone-on-it one. */
+function groupRemoteOverrideScopesByEndpoint(config) {
+  const groups = new Map()
+
+  for (const name of Object.keys(config?.profiles || {})) {
+    const key = remoteOverrideEndpointKey(profileRemoteOverride(config, name))
+
+    if (!key) {
+      continue
+    }
+
+    const scopes = groups.get(key)
+
+    if (scopes) {
+      scopes.push(name)
+    } else {
+      groups.set(key, [name])
+    }
+  }
+
+  return groups
+}
+
+/** True when `profile`'s remote override shares its endpoint with at least one
+ *  OTHER desktop scope — the endpoint must be treated as profile-capable:
+ *  session reads go through its cross-profile aggregator and keep the
+ *  backend's row identities (#64999). A scope alone on its endpoint keeps
+ *  single-profile semantics: its database has no other profile to be right
+ *  about, so the caller's scope label stays authoritative there. */
+function remoteOverrideSharedWithOtherScope(config, profile) {
+  const override = profileRemoteOverride(config, profile)
+
+  if (!override) {
+    return false
+  }
+
+  const key = remoteOverrideEndpointKey(override)
+
+  if (!key) {
+    return false
+  }
+
+  return (groupRemoteOverrideScopesByEndpoint(config).get(key)?.length ?? 0) > 1
+}
+
 export interface ProfileRouteOptions {
   /** Profile name on a separately-scoped backend when it differs from the
    * desktop's local routing label (managed SSH `remoteProfile`). */
@@ -940,6 +1020,7 @@ export {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  groupRemoteOverrideScopesByEndpoint,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
   localProfileEntry,
@@ -955,6 +1036,8 @@ export {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteOverrideEndpointKey,
+  remoteOverrideSharedWithOtherScope,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,

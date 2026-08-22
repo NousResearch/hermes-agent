@@ -85,6 +85,17 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--ref",
+        default=None,
+        metavar="TAG_OR_SHA",
+        help=(
+            "Pin this checkout to a git tag or commit (detached HEAD) "
+            "instead of tracking a branch tip. Mutually exclusive with "
+            "--branch. Branch names are not pins; use --branch to follow "
+            "a branch."
+        ),
+    )
+    update_parser.add_argument(
         "--switch-branch",
         action="store_true",
         default=False,
@@ -110,5 +121,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         action="store_true",
         default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+    )
+    update_parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        default=False,
+        help="Skip restarting running gateway profiles after a successful update",
     )
     update_parser.set_defaults(func=cmd_update)

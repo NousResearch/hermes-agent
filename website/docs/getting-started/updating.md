@@ -29,7 +29,15 @@ When you run `hermes update`, the following steps occur:
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Pass `--no-restart` to skip restarting running gateway profiles after update.
+
+### Skip gateway restart: `--no-restart`
+
+```bash
+hermes update --no-restart
+```
+
+Dependency install and post-install hooks still run; only the fleet restart phase is skipped.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -41,6 +49,19 @@ hermes update --check --branch experimental   # preview behindness only
 ```
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
+
+### Pinning to a git tag or commit: `--ref`
+
+`--branch` tracks a branch tip. To pin the install to a specific git tag or commit (detached HEAD), use `--ref`:
+
+```bash
+hermes update --ref v2026.5.16
+hermes update --ref abc1234
+```
+
+`--ref` accepts a git tag or a 7-40 character commit SHA. After one fetch, a name that resolves only as a branch (for example `main`) is rejected; use `--branch` to track a branch. `--ref` and `--branch` cannot be combined. `--check` only compares branch tips and does not accept `--ref`.
+
+If HEAD is already at the pin, the command succeeds as already up to date and still refreshes dependencies, post-install hooks, and running gateways. `hermes update --branch main` later leaves the pin and returns to tracking `main`.
 
 ### Checkout parked on a feature branch
 

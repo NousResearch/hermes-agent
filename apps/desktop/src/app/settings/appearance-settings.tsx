@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
+import { THINKING_FONT_COPY } from '@/i18n/thinking-font-copy'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
@@ -22,6 +23,12 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import {
+  $thinkingFontSize,
+  setThinkingFontSize,
+  THINKING_FONT_SIZE_MAX,
+  THINKING_FONT_SIZE_MIN
+} from '@/store/thinking-font-size'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
@@ -341,12 +348,13 @@ function GlassRow({ children, label }: GlassRowProps) {
 }
 
 export function AppearanceSettings() {
-  const { t, isSavingLocale } = useI18n()
+  const { t, isSavingLocale, locale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const thinkingFontSize = useStore($thinkingFontSize)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -360,6 +368,7 @@ export function AppearanceSettings() {
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+  const thinkingCopy = THINKING_FONT_COPY[locale]
 
   // A pointer held on the intensity slider when this overlay closes (Escape
   // mid-drag) never delivers its pointerup here, which would strand the peek
@@ -575,6 +584,32 @@ export function AppearanceSettings() {
           />
 
           <TerminalFontSetting />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <input
+                  aria-label={thinkingCopy.ariaLabel}
+                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                  max={THINKING_FONT_SIZE_MAX}
+                  min={THINKING_FONT_SIZE_MIN}
+                  onChange={event => {
+                    triggerHaptic('selection')
+                    setThinkingFontSize(Number(event.target.value))
+                  }}
+                  step={1}
+                  style={{ accentColor: 'var(--dt-primary)' }}
+                  type="range"
+                  value={thinkingFontSize}
+                />
+                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {thinkingFontSize}px
+                </span>
+              </div>
+            }
+            description={thinkingCopy.description}
+            title={thinkingCopy.title}
+          />
 
           <ListRow
             action={

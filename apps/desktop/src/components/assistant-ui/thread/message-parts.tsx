@@ -1,3 +1,5 @@
+import '@/store/thinking-font-size'
+
 import {
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
@@ -203,7 +205,7 @@ const ThinkingDisclosure: FC<{
 
   return (
     <div
-      className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      className="text-[length:var(--conversation-tool-font-size,12px)] text-(--ui-text-tertiary)"
       data-conversation-scaffold=""
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
@@ -317,7 +319,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 
   return (
     <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
+      containerClassName="text-[length:var(--conversation-tool-font-size,12px)] leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}

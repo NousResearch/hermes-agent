@@ -954,6 +954,56 @@ class TestPasteCallbackReader:
 class TestWaitForCallbackPasteIntegration:
     """_wait_for_callback offers the paste prompt only when interactive."""
 
+    def test_paste_releases_fixed_callback_port(self, monkeypatch):
+        """A pasted redirect must stop the HTTP listener before returning."""
+        import socket
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        mod._oauth_port = port
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=pasted&state=state123\n"),
+        )
+
+        assert asyncio.run(_wait_for_callback()) == ("pasted", "state123")
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", port))
+        finally:
+            probe.close()
+
+    def test_consecutive_paste_flows_reuse_fixed_port(self, monkeypatch):
+        """A second flow on the same fixed port must bind after a paste.
+
+        This is the user-visible failure with a fixed ``oauth.redirect_port``:
+        on Linux, the previous flow's ``handle_request`` thread keeps the
+        closed listener's socket alive, so the next flow's own bind fails
+        with ``[Errno 98] Address already in use`` even though it sets
+        ``allow_reuse_address``. macOS does not reproduce this, so the
+        regression is only visible on Linux CI.
+        """
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+
+        mod._oauth_port = port
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=first&state=s1\n"),
+        )
+        assert asyncio.run(_wait_for_callback()) == ("first", "s1")
+
+        mod._oauth_port = port
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=second&state=s2\n"),
+        )
+        assert asyncio.run(_wait_for_callback()) == ("second", "s2")
+
     def test_paste_prompt_shown_on_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mod
         mod._oauth_port = _find_free_port()

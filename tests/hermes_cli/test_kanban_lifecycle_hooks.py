@@ -28,7 +28,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def captured_hooks(monkeypatch):
-    """Register capturing callbacks for the three kanban lifecycle hooks.
+    """Register capturing callbacks for the kanban lifecycle hooks.
 
     Patches the plugin manager's _hooks dict directly (the same registry
     invoke_hook reads) and restores it afterward.
@@ -36,7 +36,12 @@ def captured_hooks(monkeypatch):
     mgr = get_plugin_manager()
     events: list[tuple[str, dict]] = []
     saved = {k: list(v) for k, v in mgr._hooks.items()}
-    for hook in ("kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked"):
+    for hook in (
+        "kanban_task_claimed",
+        "kanban_task_completed",
+        "kanban_task_blocked",
+        "on_kanban_task_auto_blocked",
+    ):
         mgr._hooks.setdefault(hook, []).append(
             lambda _h=hook, **kw: events.append((_h, kw))
         )
@@ -44,6 +49,60 @@ def captured_hooks(monkeypatch):
         yield events
     finally:
         mgr._hooks = saved
+
+
+def test_circuit_breaker_fires_post_commit_auto_block_hook(
+    kanban_home, captured_hooks
+):
+    """The breaker observer sees the committed blocked state and cause."""
+    durable_statuses: list[str] = []
+    mgr = get_plugin_manager()
+
+    def _read_durable_state(**kw):
+        c2 = kb.connect()
+        try:
+            task = kb.get_task(c2, kw["task_id"])
+            durable_statuses.append(task.status if task else "missing")
+        finally:
+            c2.close()
+
+    mgr._hooks.setdefault("on_kanban_task_auto_blocked", []).append(
+        _read_durable_state
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker", max_retries=1)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+
+        assert kb._record_task_failure(
+            conn,
+            tid,
+            "worker failed",
+            outcome="spawn_failed",
+            failure_limit=5,
+            release_claim=True,
+            end_run=True,
+        )
+    finally:
+        conn.close()
+
+    fired = [
+        event for event in captured_hooks
+        if event[0] == "on_kanban_task_auto_blocked"
+    ]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == tid
+    assert kw["run_id"] == claimed.current_run_id
+    assert kw["outcome"] == "spawn_failed"
+    assert kw["error"] == "worker failed"
+    assert kw["error_fingerprint"]
+    assert kw["consecutive_failures"] == 1
+    assert kw["failure_limit"] == 1
+    assert kw["retry_status"] == "ready"
+    assert kw["status"] == "blocked"
+    assert durable_statuses == ["blocked"]
 
 
 

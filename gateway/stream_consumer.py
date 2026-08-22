@@ -21,6 +21,7 @@ import logging
 import queue
 import secrets
 import threading
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -39,6 +40,47 @@ from gateway.response_filters import (
 )
 
 logger = logging.getLogger("gateway.stream_consumer")
+
+# ── Secret redaction for streamed output ─────────────────────────────
+# Stateful redactor for the streaming path (P1 81097): deltas wired directly
+# to on_delta bypassed _sanitize_gateway_final_response, so a credential like
+# `xx中sk-...` leaked via the stream even though the non-streaming fallback
+# would redact.  The redactor is forced (ignores security.redact_secrets)
+# and preserves token fragments across deltas by holding a small tail that
+# may contain an incomplete credential prefix.
+
+_GATEWAY_STREAM_SECRET_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])xapp-\d+-[A-Za-z0-9\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])xox[baprs]-[A-Za-z0-9\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])hf_[A-Za-z0-9]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])glpat-[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])((?i:Bearer)\s+)[A-Za-z0-9._\-]{20,}(?![A-Za-z0-9_])"),
+)
+
+_STREAM_REDACT_TAIL = 40
+
+
+def _redact_stream_text(text: str) -> str:
+    """Forced secret redaction for gateway stream output.
+
+    Mirrors ``gateway.run._redact_gateway_user_facing_secrets`` without
+    importing it (avoids a circular import: run imports this module).
+    Delegates to the authoritative ``agent.redact.redact_sensitive_text``
+    first, then the fallback ASCII-lookaround patterns.
+    """
+    redacted = str(text or "")
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(redacted, force=True)
+    except Exception:
+        pass
+    for pattern in _GATEWAY_STREAM_SECRET_PATTERNS:
+        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+    return redacted
+
 
 # Sentinel to signal the stream is complete
 _DONE = object()
@@ -497,7 +539,7 @@ class GatewayStreamConsumer:
         if self._turn_split_delivery and self._stream_ledger:
             source = self._stream_ledger
         self._delivered_final_text = ensure_closed_code_fences(
-            self._clean_for_display(source)
+            self._sanitized_for_display(source)
         ).strip()
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:
@@ -520,7 +562,7 @@ class GatewayStreamConsumer:
           dedup is not regressed.
         """
         target = ensure_closed_code_fences(
-            self._clean_for_display(final_text or "")
+            self._sanitized_for_display(final_text or "")
         ).strip()
         if not target:
             return None
@@ -539,7 +581,7 @@ class GatewayStreamConsumer:
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
+        target = self._sanitized_for_display(text or "").strip()
         if not target:
             return False
         visible_prefix = self._visible_prefix().strip()
@@ -616,7 +658,7 @@ class GatewayStreamConsumer:
         # clearing ``_last_sent_text``, so ``has_delivered_text`` can still
         # match it after a segment break. (#65919 review)
         if self._last_sent_text:
-            finalized = self._clean_for_display(self._last_sent_text).strip()
+            finalized = self._sanitized_for_display(self._last_sent_text).strip()
             if finalized:
                 self._delivered_segment_texts.append(finalized)
         self._message_id = None
@@ -1177,29 +1219,51 @@ class GatewayStreamConsumer:
                         # multi-message delivery (#71643 record semantics).
                         self._turn_split_delivery = True
 
-                    display_text = self._accumulated
-                    if not got_done and not got_segment_break and commentary_text is None:
-                        display_text += self.cfg.cursor
-
-                    # Segment break: finalize the current message so platforms
-                    # that need explicit closure (e.g. DingTalk AI Cards) don't
-                    # leave the previous segment stuck in a loading state when
-                    # the next segment (tool progress, next chunk) creates a
-                    # new message below it.  got_done has its own finalize
-                    # path below so we don't finalize here for it.
-                    draft_final_fresh_send = (
-                        got_done
-                        and self._use_draft_streaming
-                        and self._message_id is None
-                    )
-                    current_update_visible = await self._send_or_edit(
-                        display_text,
-                        finalize=(got_done or got_segment_break),
-                        # A segment-break finalize closes a preamble, not the
-                        # turn-final answer — only got_done marks delivered (#29346).
-                        is_turn_final=got_done,
-                    )
-                    self._last_edit_time = time.monotonic()
+                    # Stateful secret redaction with fragment-aware tail hold-back.
+                    # Non-final streaming previews hold the last
+                    # _STREAM_REDACT_TAIL chars so a credential split across
+                    # deltas cannot leak before the next delta completes the
+                    # pattern.  Final/segment/commentary paths force the full
+                    # buffer to be sanitized.
+                    _is_streaming_preview = not got_done and not got_segment_break and commentary_text is None
+                    if _is_streaming_preview:
+                        _redacted = self._redacted_accumulated(is_final=False)
+                        if not _redacted.strip():
+                            display_text = ""
+                            current_update_visible = False
+                        else:
+                            display_text = _redacted + self.cfg.cursor
+                            current_update_visible = await self._send_or_edit(
+                                display_text,
+                                finalize=False,
+                                is_turn_final=False,
+                            )
+                            self._last_edit_time = time.monotonic()
+                        # Streaming preview handled; skip the outer send block
+                        # and fall through to got_done/commentary handling.
+                        # (draft_final_fresh_send keeps its loop-init False:
+                        # a preview tick is never the draft-final fresh send.)
+                    else:
+                        display_text = self._sanitized_for_display(self._accumulated)
+                        # Segment break: finalize the current message so platforms
+                        # that need explicit closure (e.g. DingTalk AI Cards) don't
+                        # leave the previous segment stuck in a loading state when
+                        # the next segment (tool progress, next chunk) creates a
+                        # new message below it.  got_done has its own finalize
+                        # path below so we don't finalize here for it.
+                        draft_final_fresh_send = (
+                            got_done
+                            and self._use_draft_streaming
+                            and self._message_id is None
+                        )
+                        current_update_visible = await self._send_or_edit(
+                            display_text,
+                            finalize=(got_done or got_segment_break),
+                            # A segment-break finalize closes a preamble, not the
+                            # turn-final answer — only got_done marks delivered (#29346).
+                            is_turn_final=got_done,
+                        )
+                        self._last_edit_time = time.monotonic()
 
                 if got_done:
                     if self._accumulated or self._message_id is not None or self._already_sent:
@@ -1441,6 +1505,77 @@ class GatewayStreamConsumer:
         """
         return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
+    @staticmethod
+    def _sanitized_for_display(text: str) -> str:
+        """Strip media directives and apply forced secret redaction.
+
+        Used for every adapter send and for the delivery bookkeeping that
+        the gateway compares against the sanitized final response.  The
+        forced redaction mirrors ``gateway.run._redact_gateway_user_facing_secrets``
+        without importing it (circular).  Idempotent: text already containing
+        ``[REDACTED]`` passes through unchanged.
+        """
+        cleaned = _BasePlatformAdapter.strip_media_directives_for_display(text or "")
+        return _redact_stream_text(cleaned)
+
+    def _redacted_accumulated(self, *, is_final: bool) -> str:
+        """Return the sanitized form of ``_accumulated`` for display.
+
+        When ``is_final`` is False the method holds back the last
+        ``_STREAM_REDACT_TAIL`` characters so a credential split across two
+        deltas (e.g. ``sk-`` at the boundary) cannot leak as visible text
+        before the next delta completes the pattern.  The tail is not discarded:
+        it will be part of the next call's ``safe`` prefix once more text
+        arrives, or of the final call where ``is_final=True`` forces the full
+        buffer to be redacted.  ``is_final`` is True for segment-breaks,
+        commentary boundaries, and the got_done finalize path.
+
+        To avoid delaying ordinary prose, the tail is only held when the
+        recent window contains a possible secret prefix (``sk-``, ``ghp_``,
+        ``Bearer ``, …).  Text without such a prefix is sent immediately.
+        """
+        raw = self._accumulated or ""
+        if is_final:
+            return _redact_stream_text(self._clean_for_display(raw))
+        # Fast path: no possible secret in recent window → send full
+        # immediately.  Look at the last 2*tail chars so a secret that starts
+        # just before the tail is still detected.
+        window = raw[-_STREAM_REDACT_TAIL * 2 :] if len(raw) > _STREAM_REDACT_TAIL * 2 else raw
+        lower_window = window.lower()
+        # Substrings that can start a gateway fallback secret or a common
+        # agent.redact prefix.  Kept short (prefix only) so we hold as soon
+        # as the model begins emitting a credential, not after it is complete.
+        _SECRET_HINTS = (
+            "sk-",
+            "ghp_",
+            "gho_",
+            "ghu_",
+            "ghs_",
+            "ghr_",
+            "xapp-",
+            "xox",
+            "hf_",
+            "glpat-",
+            "bearer ",
+            # A few high-value agent.redact prefixes that are not in the
+            # gateway fallback set but still must not leak via streaming.
+            "apikey",
+            "api_key",
+            "AIza",
+            "pplx-",
+            "fal_",
+            "hf_",
+            "gsk_",
+            "xai-",
+        )
+        has_hint = any(hint in lower_window for hint in _SECRET_HINTS)
+        if not has_hint:
+            return _redact_stream_text(self._clean_for_display(raw))
+        if len(raw) > _STREAM_REDACT_TAIL:
+            safe = raw[:-_STREAM_REDACT_TAIL]
+            return _redact_stream_text(self._clean_for_display(safe))
+        return ""
+
     async def _send_new_chunk(
         self,
         text: str,
@@ -1452,7 +1587,7 @@ class GatewayStreamConsumer:
 
         Returns the message_id so callers can thread subsequent chunks.
         """
-        text = self._clean_for_display(text)
+        text = self._sanitized_for_display(text)
         if not text.strip():
             return reply_to_id
         try:
@@ -1486,7 +1621,9 @@ class GatewayStreamConsumer:
         prefix = self._last_sent_text or ""
         if self.cfg.cursor and prefix.endswith(self.cfg.cursor):
             prefix = prefix[:-len(self.cfg.cursor)]
-        return self._clean_for_display(prefix)
+        # _last_sent_text is already sanitized; _sanitized_for_display is
+        # idempotent, so this also covers legacy callers that stored raw.
+        return self._sanitized_for_display(prefix)
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
@@ -1565,7 +1702,7 @@ class GatewayStreamConsumer:
 
         Retries each chunk once on flood-control failures with a short delay.
         """
-        final_text = self._clean_for_display(text)
+        final_text = self._sanitized_for_display(text)
         # Ensure balanced code fences before computing continuation,
         # so the closing fence reaches the user even when the fallback
         # only delivers the tail after mid-stream edits failed.
@@ -1998,7 +2135,7 @@ class GatewayStreamConsumer:
                 _md.setdefault("reply_to_message_id", self._initial_reply_to_id)
             await self.adapter.abandon_open_draft(
                 self.chat_id,
-                self._last_sent_text or self._clean_for_display(self._accumulated),
+                self._last_sent_text or self._sanitized_for_display(self._accumulated),
                 metadata=_md or None,
             )
         except Exception as e:
@@ -2023,7 +2160,7 @@ class GatewayStreamConsumer:
         tail = self._accumulated
         if visible and tail.startswith(visible):
             tail = tail[len(visible):].lstrip()
-        tail = self._clean_for_display(tail)
+        tail = self._sanitized_for_display(tail)
         if not tail.strip():
             return
         try:
@@ -2065,7 +2202,7 @@ class GatewayStreamConsumer:
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
-        text = self._clean_for_display(text)
+        text = self._sanitized_for_display(text)
         if not text.strip():
             return False
         try:
@@ -2338,10 +2475,13 @@ class GatewayStreamConsumer:
         ``finalize`` is True when this is the last edit in a streaming
         sequence.
         """
-        # Strip MEDIA: directives so they don't appear as visible text.
+        # Strip MEDIA: directives and apply forced secret redaction so
+        # streamed/interim text never reaches the adapter unredacted (P1).
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
-        text = self._clean_for_display(text)
+        # Use the sanitized helper so every send/edit path is covered even
+        # when callers pass raw ``_accumulated``.
+        text = self._sanitized_for_display(text)
         # Preserve the pre-fence-closed form for stream-is-the-message draft
         # frames: appending a closing ``` to a mid-code-block frame makes
         # frame N not a prefix of frame N+1, so the connector's append-only

@@ -1500,6 +1500,28 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
+    # Named custom providers also accept the compact triple form used by the
+    # model parser: ``custom:<provider-name>:<model-id>``.  Without this
+    # normalization, the CLI slash worker could report a successful switch
+    # while the Desktop gateway attempted to validate the entire triple as a
+    # model ID on the *previous* provider.  Keep unknown triples untouched so
+    # they retain the normal, useful validation error.
+    if not explicit_provider and new_model.lower().startswith("custom:"):
+        custom_spec = new_model[len("custom:") :]
+        custom_name, separator, custom_model = custom_spec.partition(":")
+        candidate_provider = f"custom:{custom_name.strip()}" if custom_name.strip() else ""
+        if separator and custom_model.strip() and candidate_provider:
+            try:
+                if resolve_provider_full(
+                    candidate_provider, user_providers, custom_providers
+                ) is not None:
+                    explicit_provider = candidate_provider
+                    new_model = custom_model.strip()
+            except Exception:
+                # Leave malformed/unresolvable input to the regular switch
+                # pipeline below, which owns the user-facing error copy.
+                pass
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================

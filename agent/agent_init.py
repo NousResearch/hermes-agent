@@ -775,6 +775,36 @@ def init_agent(
     except Exception:
         pass  # Non-fatal — transport may not exist for all modes yet
 
+    # Older Desktop sessions could persist a named custom route inside the
+    # model field as ``<provider-name>:<model>`` while retaining only the
+    # generic ``custom`` provider.  OpenAI-compatible endpoints receive the
+    # model field verbatim, so e.g. ``qwen-token-plan:qwen3.8-max`` reaches
+    # the Token Plan API and is rejected with HTTP 404 "Model not exist".
+    #
+    # Recover this legacy serialization only when the prefix matches the
+    # configured custom provider that owns the active endpoint.  This keeps
+    # genuine colon-bearing model IDs intact for other custom endpoints.
+    if agent.provider == "custom" and ":" in str(agent.model or ""):
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            legacy_prefix, legacy_model = str(agent.model).split(":", 1)
+            identity = canonical_custom_identity(
+                base_url=agent.base_url,
+                model=legacy_model,
+            )
+            if (
+                identity
+                and legacy_model.strip()
+                and identity.split(":", 1)[-1].lower() == legacy_prefix.strip().lower()
+            ):
+                agent.model = legacy_model.strip()
+                agent.provider = identity
+                if agent.requested_provider == "custom":
+                    agent.requested_provider = identity
+        except Exception:
+            pass
+
     try:
         from hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS,

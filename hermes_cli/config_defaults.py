@@ -3641,6 +3641,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # ACP host integration (Zed, Buzz, and other Agent Client Protocol hosts).
+    # tool_policy:
+    #   "hermes-acp" (default) - coding-focused ACP toolset for editor hosts.
+    #   "profile" - use this profile's local CLI tool configuration so a remote
+    #               ACP host gets the same capability surface as interactive
+    #               Hermes (skills, memory, cron, kanban, etc. as configured).
+    # Absent or invalid values preserve the hermes-acp default. No migration.
+    "acp": {
+        "tool_policy": "hermes-acp",
+    },
+
 
     # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
     # Auth is OAuth2 (short-lived access tokens minted from a service-account

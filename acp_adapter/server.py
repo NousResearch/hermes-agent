@@ -72,7 +72,11 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _expand_acp_enabled_toolsets,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -1128,8 +1132,23 @@ class HermesACPAgent(acp.Agent):
         state: SessionState,
         mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None,
     ) -> None:
-        """Register ACP-provided MCP servers and refresh the agent tool surface."""
+        """Register ACP-provided MCP servers and refresh the agent tool surface.
+
+        In ``acp.tool_policy: profile`` mode the host may not expand the
+        selected profile's capability set. Client-provided MCP servers are
+        ignored; profile-configured MCP remains whatever session construction
+        already resolved from Hermes config.
+        """
         if not mcp_servers:
+            return
+
+        if getattr(state.agent, "acp_tool_policy", "hermes-acp") == "profile":
+            logger.info(
+                "Session %s: ignoring %d host MCP server(s) under "
+                "acp.tool_policy=profile (profile owns tool policy)",
+                state.session_id,
+                len(mcp_servers),
+            )
             return
 
         try:
@@ -1165,7 +1184,7 @@ class HermesACPAgent(acp.Agent):
             from agent.memory_manager import inject_memory_provider_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+                getattr(state.agent, "enabled_toolsets", None),
                 mcp_server_names=[server.name for server in mcp_servers],
             )
             state.agent.enabled_toolsets = enabled_toolsets
@@ -2350,7 +2369,7 @@ class HermesACPAgent(acp.Agent):
             from agent.memory_manager import inject_memory_provider_tools
 
             toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+                getattr(state.agent, "enabled_toolsets", None)
             )
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             tool_view = SimpleNamespace(

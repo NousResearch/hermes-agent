@@ -1219,6 +1219,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "computer_use": "agent",
+    # `acp.tool_policy` is the only schema-surfaced ACP host field. Fold it
+    # into the agent tab rather than spawning a one-field orphan category.
+    "acp": "agent",
     # `telemetry.shared_metrics.enabled` is the only schema-surfaced telemetry
     # field — fold it into security alongside the other privacy-posture toggles.
     "telemetry": "security",

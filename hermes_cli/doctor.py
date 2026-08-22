@@ -1031,6 +1031,226 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+# ── Windows environment preflight (#91942) ──────────────────────────────
+# Probes are small and dependency-injectable so tests exercise failure
+# modes without faking the host OS; host-dependent assertions live under
+# @pytest.mark.windows_only.
+
+
+def _native_path_to_msys(path_str: str) -> str:
+    """Convert ``C:\\foo\\bar`` to the MSYS spelling ``/c/foo/bar``."""
+    p = str(path_str).replace("\\", "/")
+    if len(p) >= 2 and p[0].isalpha() and p[1] == ":":
+        return f"/{p[0].lower()}{p[2:]}"
+    return p
+
+
+def _windows_symlink_probe(base_dir=None, symlink_to=None):
+    """Create and delete a real file symlink. Returns ``(ok, detail)``.
+
+    ``detail`` is empty on success and carries a plain-language remedy
+    otherwise. ``symlink_to(target, link)`` is injectable so privilege
+    failures are testable on any host.
+    """
+    import tempfile
+
+    created_dir = base_dir is None
+    if created_dir:
+        base_dir = Path(tempfile.mkdtemp(prefix="hermes-doctor-symlink-"))
+    base_dir = Path(base_dir)
+    target = base_dir / "doctor_symlink_target.txt"
+    link = base_dir / "doctor_symlink_link"
+    try:
+        target.write_text("hermes doctor symlink probe", encoding="utf-8")
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if symlink_to is None:
+            link.symlink_to(target)
+        else:
+            symlink_to(target, link)
+        if not link.is_symlink():
+            return False, "symlink was not created (no error reported)"
+        return True, ""
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314 or "privilege" in str(exc).lower():
+            detail = (
+                "creating symlinks requires privilege "
+                "(enable Developer Mode under Settings > Privacy & security "
+                "> For developers, or run once from an elevated terminal)"
+            )
+        else:
+            detail = f"symlink probe failed: {exc}"
+        return False, detail
+    finally:
+        if created_dir:
+            shutil.rmtree(base_dir, ignore_errors=True)
+        else:
+            for probe_file in (link, target):
+                try:
+                    probe_file.unlink()
+                except OSError:
+                    pass
+
+
+def _classify_git_interactive_risk(env, credential_helper=""):
+    """Classify whether spawned git may block on a credential prompt.
+
+    Pure function taking the environment and the resolved
+    ``credential.helper`` value as data. Returns ``(level, detail)`` where
+    level is ``"ok"`` or ``"warn"``.
+    """
+    if env.get("GIT_TERMINAL_PROMPT") == "0":
+        return "ok", ""
+    helper_first = ""
+    for token in (credential_helper or "").split():
+        helper_first = token
+        break
+    fix_hint = "setx GIT_TERMINAL_PROMPT 0"
+    if not helper_first:
+        return "warn", (
+            "no credential.helper configured and GIT_TERMINAL_PROMPT is unset — "
+            "git spawned by background/gateway contexts falls back to an "
+            f"interactive prompt and hangs. Fix: {fix_hint}"
+        )
+    if helper_first.startswith("manager"):
+        return "warn", (
+            f"credential.helper '{helper_first}' may open an interactive UI "
+            f"that blocks background/gateway git operations. Fix: {fix_hint}"
+        )
+    return "ok", f"non-interactive credential helper ({helper_first})"
+
+
+def _windows_bash_path_roundtrip(bash_path, sample_native, sample_msys,
+                                 extra_env=None, run=subprocess.run):
+    """Echo both path spellings through bash; require byte-identical output.
+
+    With Hermes' MSYS opt-outs applied (``MSYS_NO_PATHCONV=1`` plus
+    ``MSYS2_ARG_CONV_EXCL=*``, see #56700), neither spelling may be
+    rewritten. A rewrite means argv conversion is active despite the
+    opt-outs, so native tools invoked from bash will mangle Windows paths.
+    """
+    env = dict(os.environ)
+    try:
+        from tools.environments.local import _apply_windows_msys_bash_env_defaults
+        _apply_windows_msys_bash_env_defaults(env)
+    except Exception:
+        pass
+    if extra_env:
+        env.update(extra_env)
+    seen = {}
+    for label, sample in (("C:/ form", sample_native), ("/c/ form", sample_msys)):
+        try:
+            proc = run(
+                [bash_path, "-c", 'printf "%s" "$1"', "--", sample],
+                capture_output=True, text=True, timeout=15, env=env,
+            )
+            seen[label] = proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"{label} probe failed to run: {exc}"
+    problems = []
+    if seen["C:/ form"] != sample_native:
+        problems.append(f"C:/ form was rewritten to '{seen['C:/ form']}'")
+    if seen["/c/ form"] != sample_msys:
+        problems.append(f"/c/ form was rewritten to '{seen['/c/ form']}'")
+    return (not problems), "; ".join(problems)
+
+
+def _read_long_paths_enabled(query=None):
+    """Read LongPathsEnabled from the registry. Returns ``(state, value)``.
+
+    state is ``"enabled"`` | ``"disabled"`` | ``None`` (unreadable).
+    """
+    def _query(key_path, value_name):
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+            value, _ = winreg.QueryValueEx(key, value_name)
+            return int(value)
+
+    query_fn = query or _query
+    try:
+        value = query_fn(r"SYSTEM\CurrentControlSet\Control\FileSystem",
+                         "LongPathsEnabled")
+    except OSError:
+        return None, None
+    return ("enabled" if value else "disabled"), value
+
+
+def _check_windows_environment(issues, manual_issues):
+    """Windows section checks (#91942). Called only on win32 hosts."""
+
+    # 1. Symlink privilege — predicts EPERM failures when anything stages
+    #    trees containing symlinks (test fixtures, installs).
+    ok, detail = _windows_symlink_probe()
+    if ok:
+        check_ok("Symlink creation allowed")
+    else:
+        check_fail("Symlink creation denied", f"({detail})")
+        issues.append(f"Symlinks cannot be created — {detail}")
+
+    # 2. Non-interactive git safety — spawned git must fail fast instead of
+    #    hanging silently on a credential prompt.
+    git_bin = _safe_which("git")
+    if git_bin:
+        level, detail = "ok", ""
+        try:
+            helper_result = subprocess.run(
+                [git_bin, "config", "--get-all", "credential.helper"],
+                capture_output=True, text=True, timeout=10,
+            )
+            helper_value = "\n".join((helper_result.stdout or "").split())
+            level, detail = _classify_git_interactive_risk(os.environ, helper_value)
+        except Exception:
+            level, detail = "ok", ""
+        if level == "ok":
+            check_ok("Background git safety", (f"({detail})" if detail else ""))
+        else:
+            check_warn("Spawned git may hang on a credential prompt", f"({detail})")
+
+    # 3. Bash/MSYS sanity — the shell the terminal toolchain expects exists
+    #    and passes both path spellings through untouched.
+    try:
+        from tools.environments.local import _find_bash
+    except Exception:
+        _find_bash = None
+    if _find_bash is None:
+        check_info("bash discovery unavailable — skipping shell round-trip check")
+    else:
+        try:
+            bash_path = _find_bash()
+        except RuntimeError as exc:
+            check_fail("Git Bash failed to start", f"({exc})")
+            manual_issues.append(f"Repair Git Bash: {exc}")
+        except Exception as exc:
+            check_info(f"shell round-trip skipped ({exc})")
+        else:
+            sample_native = str(PROJECT_ROOT).replace("\\", "/")
+            ok, detail = _windows_bash_path_roundtrip(bash_path, sample_native,
+                                                      _native_path_to_msys(PROJECT_ROOT))
+            if ok:
+                check_ok("Shell passes native paths through untouched", f"({bash_path})")
+            else:
+                check_warn("Shell rewrites path arguments", f"({detail})")
+                manual_issues.append(
+                    "bash rewrites path arguments despite Hermes' MSYS opt-outs — "
+                    "native tools invoked from bash will fail to resolve paths"
+                )
+
+    # 4. Long paths — deep checkouts (node_modules depth) hit MAX_PATH when
+    #    the policy is off.
+    state, value = _read_long_paths_enabled()
+    if state == "enabled":
+        check_ok("Long paths enabled (LongPathsEnabled=1)")
+    elif state == "disabled":
+        fix_cmd = ('reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" '
+                   "/v LongPathsEnabled /t REG_DWORD /d 1 /f")
+        check_fail("Long paths disabled",
+                   "(deep node_modules trees can exceed MAX_PATH)")
+        check_info(f"Fix (elevated): {fix_cmd}")
+        manual_issues.append(f"Enable Win32 long paths (elevated): {fix_cmd}")
+    else:
+        check_info("LongPathsEnabled unreadable — skipping long-path check")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -2056,6 +2276,10 @@ def run_doctor(args):
                         manual_issues.append(f"Add {_cmd_link_display} to your PATH")
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
+
+    if sys.platform == "win32":
+        _section("Windows Environment")
+        _check_windows_environment(issues, manual_issues)
 
     _section("External Tools")
     # Git

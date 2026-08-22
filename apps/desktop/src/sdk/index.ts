@@ -1034,6 +1034,9 @@ export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+/** Distinguish config-like fenced text (SSH, .env, INI) from prose without
+ *  duplicating the renderer's heuristics in plugins. */
+export { isLikelyStructuredText } from '@/lib/markdown-code'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors) + its translucent tag fill — so plugin-rendered identities read
  *  the same hue as everywhere else. */

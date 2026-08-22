@@ -75,6 +75,33 @@ const SkillsView = typeof sdk === 'undefined' ? undefined : sdk.SkillsView
 // so those builds keep the staged checklists for remote targets.
 const skillsViewRoutesConnections = Boolean(SkillsView && SkillsView.supportsFixedConnection)
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+const isLikelyStructuredText = typeof sdk === 'undefined' ? undefined : sdk.isLikelyStructuredText
+
+function GroupChatPre({ children, node: _node, ...props }) {
+  const code =
+    children &&
+    typeof children === 'object' &&
+    !Array.isArray(children) &&
+    children.type === 'code'
+      ? children
+      : null
+  const codeClass = typeof code?.props?.className === 'string' ? code.props.className : ''
+  const language = /(?:^|\s)language-([^\s]+)/.exec(codeClass)?.[1]
+  const body = typeof code?.props?.children === 'string' ? code.props.children : null
+  const shouldWrap =
+    language === 'text' &&
+    body !== null &&
+    typeof isLikelyStructuredText === 'function' &&
+    !isLikelyStructuredText(body)
+
+  return jsx('pre', {
+    ...props,
+    className: cn(props.className, shouldWrap ? 'whitespace-pre-wrap wrap-anywhere' : 'overflow-x-auto'),
+    children
+  })
+}
+
+const GROUP_CHAT_MARKDOWN_COMPONENTS = { pre: GroupChatPre }
 // Deterministic blob avatars (name → face). Feature-detected: older SDKs
 // without the export fall back to the legacy math-face shapes below.
 const blobatarSvg = typeof sdk === 'undefined' ? undefined : sdk.blobatarSvg
@@ -10314,11 +10341,13 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
                           }),
                           jsx('div', {
                             className:
-                              'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto',
+                              'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4',
                             // The app shell sets user-select: none globally; message bodies opt
                             // back in so drag-select and ⌘C work in group chat logs.
                             'data-selectable-text': 'true',
-                            children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
+                            children: Streamdown
+                              ? jsx(Streamdown, { components: GROUP_CHAT_MARKDOWN_COMPONENTS, children: entry.text })
+                              : entry.text
                           }),
                           // User attachments: what every responding bot was
                           // shown — image previews, or a named chip for

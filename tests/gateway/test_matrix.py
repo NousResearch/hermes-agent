@@ -12,6 +12,24 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
 
 
+@pytest.fixture(autouse=True)
+def _accept_mock_device_signatures(monkeypatch):
+    """Accept the unsigned mock device records used throughout this module.
+
+    Connect/verification tests here build mock server device records without
+    real Olm signatures; their subject is the connect and device-ID flow, not
+    cryptography. Cryptographic self-signature verification itself is covered
+    with real signed records in test_matrix_device_key_verification.py.
+    """
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    monkeypatch.setattr(
+        MatrixAdapter,
+        "_has_valid_device_self_signature",
+        staticmethod(lambda *args: True),
+    )
+
+
 def _make_fake_mautrix():
     """Create a lightweight set of fake ``mautrix`` modules.
 
@@ -947,11 +965,11 @@ class TestMatrixAccessTokenAuth:
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
-        mock_client.query_keys = AsyncMock(return_value={
-            "device_keys": {"@bot:example.org": {"DEV123": {
-                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
-            }}},
-        })
+        _verify_dev = MagicMock()
+        _verify_dev.keys = {"ed25519:DEV123": "fake_ed25519_key"}
+        _verify_resp = MagicMock()
+        _verify_resp.device_keys = {"@bot:example.org": {"DEV123": _verify_dev}}
+        mock_client.query_keys = AsyncMock(return_value=_verify_resp)
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -1166,11 +1184,11 @@ class TestMatrixDeviceId:
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
-        mock_client.query_keys = AsyncMock(return_value={
-            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
-                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
-            }}},
-        })
+        _verify_dev = MagicMock()
+        _verify_dev.keys = {"ed25519:WHOAMI_DEV": "fake_ed25519_key"}
+        _verify_resp = MagicMock()
+        _verify_resp.device_keys = {"@bot:example.org": {"WHOAMI_DEV": _verify_dev}}
+        mock_client.query_keys = AsyncMock(return_value=_verify_resp)
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -1545,11 +1563,11 @@ class TestMatrixDiagnostics:
         mock_client.add_event_handler = MagicMock()
         mock_client.add_dispatcher = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
-        mock_client.query_keys = AsyncMock(return_value={
-            "device_keys": {"@bot:example.org": {"DEV123": {
-                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
-            }}},
-        })
+        _verify_dev = MagicMock()
+        _verify_dev.keys = {"ed25519:DEV123": "fake_ed25519_key"}
+        _verify_resp = MagicMock()
+        _verify_resp.device_keys = {"@bot:example.org": {"DEV123": _verify_dev}}
+        mock_client.query_keys = AsyncMock(return_value=_verify_resp)
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_token"
         mock_client.api.session = MagicMock()
@@ -1669,11 +1687,11 @@ class TestMatrixEncryptedEventHandler:
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
         mock_client.handle_sync = MagicMock(return_value=[])
-        mock_client.query_keys = AsyncMock(return_value={
-            "device_keys": {"@bot:example.org": {"DEV123": {
-                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
-            }}},
-        })
+        _verify_dev = MagicMock()
+        _verify_dev.keys = {"ed25519:DEV123": "fake_ed25519_key"}
+        _verify_resp = MagicMock()
+        _verify_resp.device_keys = {"@bot:example.org": {"DEV123": _verify_dev}}
+        mock_client.query_keys = AsyncMock(return_value=_verify_resp)
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_token"
         mock_client.api.session = MagicMock()

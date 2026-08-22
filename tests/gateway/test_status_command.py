@@ -142,6 +142,47 @@ async def test_status_command_includes_live_agent_model_and_context():
 
 
 @pytest.mark.asyncio
+async def test_status_command_fallback_uses_routed_profile_config(tmp_path, monkeypatch):
+    """A fresh multiplexed session must not report the process default model."""
+    import gateway.run as gateway_run
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="u1",
+        chat_id="group-1",
+        user_name="tester",
+        chat_type="group",
+        profile="wa-omniroute",
+    )
+    session_entry = SessionEntry(
+        session_key="agent:wa-omniroute:whatsapp:group:group-1:u1",
+        session_id="sess-routed",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.WHATSAPP,
+        chat_type="group",
+    )
+    runner = _make_runner(session_entry, platform=Platform.WHATSAPP)
+    runner.config.multiplex_profiles = True
+    profile_home = tmp_path / "profiles" / "wa-omniroute"
+    profile_home.mkdir(parents=True)
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
+
+    def _scoped_config(config_path=None):
+        if config_path == profile_home / "config.yaml":
+            return {"model": {"default": "glm-4.7-flash", "provider": "zai"}}
+        return {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}}
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", _scoped_config)
+    event = MessageEvent(text="/status", source=source, message_id="m1")
+
+    result = await runner._handle_status_command(event)
+
+    assert "**Model:** `glm-4.7-flash` (zai)" in result
+    assert "gpt-5.6-sol" not in result
+
+
+@pytest.mark.asyncio
 async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
     """Persisted status must not combine a model and provider from different calls."""
     session_entry = SessionEntry(

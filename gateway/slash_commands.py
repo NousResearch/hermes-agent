@@ -692,7 +692,13 @@ class GatewaySlashCommandsMixin:
         user_config: dict[str, Any] = {}
         if not model_name or not provider_name or not context_total:
             try:
-                user_config = _load_gateway_config()
+                if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                    profile_home = self._resolve_profile_home_for_source(source)
+                    user_config = _load_gateway_config(
+                        config_path=profile_home / "config.yaml"
+                    )
+                else:
+                    user_config = _load_gateway_config()
             except Exception:
                 user_config = {}
         if not model_name:

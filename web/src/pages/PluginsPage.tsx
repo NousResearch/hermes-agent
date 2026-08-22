@@ -982,8 +982,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.disableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.disableRuntime, "success");
+                    const res = await api.disableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.disableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -996,8 +1001,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.enableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.enableRuntime, "success");
+                    const res = await api.enableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.enableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >

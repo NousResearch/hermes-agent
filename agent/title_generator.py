@@ -17,6 +17,7 @@ user typed. That ordering is the industry-standard one — Codex CLI encodes the
 same ``custom > ai > fallback`` precedence in its session importer.
 """
 
+import contextvars
 import json
 import logging
 import re
@@ -380,7 +381,15 @@ def generate_title(
             # Fail open: a broken validator must not disable titling.
             logger.debug("Title runtime validator raised; proceeding", exc_info=True)
 
-    user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
+    # Apply the exact-value gate to the complete disposable opening message
+    # before the title-input cap.  Otherwise a long credential beginning near
+    # the cap can be truncated into an unmatchable prefix and reach the
+    # auxiliary provider even though the later provider-copy gate sees only
+    # that prefix.
+    from agent.redact import redact_known_secret_values
+
+    safe_user_message = redact_known_secret_values(user_message)
+    user_snippet = _summarize_user_message(safe_user_message)[:MAX_TITLE_INPUT_CHARS]
     if not user_snippet.strip():
         return None
 
@@ -412,7 +421,14 @@ def generate_title(
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
         content = response.choices[0].message.content or ""
-        title = _clean_title(_extract_title_text(content))
+        title = _extract_title_text(content)
+        # Model output is untrusted provider text and may echo an exact active
+        # secret from its context. Mask before cleanup/truncation so a raw value
+        # can never become a durable session title. This respects the explicit
+        # global redaction opt-out, matching the provider-input boundary.
+        from agent.redact import redact_known_secret_values
+
+        title = _clean_title(redact_known_secret_values(title))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title
         # with many words is a model that ignored the task and answered
         # the user's message instead ("I don't have context on X — that's
@@ -511,9 +527,21 @@ def apply_instant_title(
     try:
         if not is_titleable_user_message(user_message):
             return None
-        title = derive_title(user_message)
+        # Mask the opening message before deriving so truncation cannot split
+        # a long credential and leave its prefix durable in the instant title.
+        # Keep this disposable copy separate from the caller-owned message.
+        from agent.redact import redact_known_secret_values
+
+        safe_user_message = redact_known_secret_values(user_message)
+        title = derive_title(safe_user_message)
         if not title:
             return None
+        # The instant title is durable session data just like the later model
+        # title.  Mask it before persistence so a profile-only credential in
+        # the opening message cannot bypass the title output boundary while
+        # the background upgrade is still pending.  Keep this lazy import to
+        # avoid the title-generator/redactor import cycle at module load.
+        title = redact_known_secret_values(title)
         persisted = _persist_session_title(
             session_db, session_id, title, source="derived", dedupe=False
         )
@@ -747,9 +775,14 @@ def maybe_auto_title(
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
 
+    # ``threading.Thread`` starts with a fresh Context. Capture the request's
+    # profile-scoped home and secret mappings now, before the agent loop resets
+    # them, so title input/output masking and persistence use the same profile
+    # as the exchange being titled.
+    request_context = contextvars.copy_context()
     thread = threading.Thread(
-        target=auto_title_session,
-        args=(session_db, session_id, user_message),
+        target=request_context.run,
+        args=(auto_title_session, session_db, session_id, user_message),
         kwargs={
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,

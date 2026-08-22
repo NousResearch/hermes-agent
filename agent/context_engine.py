@@ -28,7 +28,7 @@ Lifecycle:
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_known_secret_values, redact_sensitive_text
 
 
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -44,6 +44,10 @@ def sanitize_memory_context(memory_context: str) -> str:
         force=True,
         redact_url_credentials=True,
     )
+    # Memory-provider output is auxiliary-provider prompt input. Its text may
+    # contain an arbitrary active secret with no recognizable credential
+    # shape, so exact-value masking is mandatory even under the live opt-out.
+    sanitized = redact_known_secret_values(sanitized, force=True)
     if len(sanitized) <= MEMORY_CONTEXT_MAX_CHARS:
         return sanitized
     return (

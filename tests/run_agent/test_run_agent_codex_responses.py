@@ -1090,6 +1090,35 @@ def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monk
     assert "<｜start｜>" in captured["instructions"]
 
 
+def test_codex_harmony_preflight_reapplies_exact_secret_gate_at_dispatch(
+    monkeypatch,
+):
+    """Harmony neutralization cannot create a scoped secret after masking."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    secret = "<｜start｜>"
+    captured = {}
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+    token = set_secret_scope({"HARMONY_TOKEN": secret})
+    try:
+        result = agent.run_conversation("Read <|start|>")
+    finally:
+        reset_secret_scope(token)
+
+    assert result["completed"] is True
+    assert secret not in str(captured["input"])
+    assert "***" in str(captured["input"])
+
+
 def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
     """Other Responses-compatible providers remain byte-identical."""
     agent = _build_copilot_agent(monkeypatch)

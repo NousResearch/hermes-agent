@@ -629,13 +629,14 @@ def _extract_usage(response: Any) -> PluginLlmUsage:
 
 
 def _extract_text(response: Any) -> str:
-    """Pull the assistant text out of an OpenAI-shaped response object."""
+    """Pull and exact-mask visible text from an OpenAI-shaped response."""
+    text = ""
     try:
         msg = response.choices[0].message
         content = getattr(msg, "content", None)
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
+            text = content
+        elif isinstance(content, list):
             parts: List[str] = []
             for part in content:
                 if isinstance(part, dict):
@@ -645,10 +646,14 @@ def _extract_text(response: Any) -> str:
                     txt = getattr(part, "text", None)
                     if isinstance(txt, str):
                         parts.append(txt)
-            return "".join(parts)
+            text = "".join(parts)
     except (AttributeError, IndexError, TypeError):
         pass
-    return ""
+    # Sanitize only the extracted visible result. The provider response stays
+    # byte-exact, including any signed reasoning or issuer-sealed replay data.
+    from agent.redact import redact_known_secret_values
+
+    return redact_known_secret_values(text)
 
 
 def _resolve_attribution(

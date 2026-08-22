@@ -6011,6 +6011,34 @@ _PLATFORMS = [
     # dynamically via the platform registry entry registered by
     # plugins/platforms/matrix/adapter.py::register(). #41112.
     {
+        "key": "webhook",
+        "label": "Webhooks",
+        "emoji": "🪝",
+        "token_var": "WEBHOOK_ENABLED",
+        "vars": [
+            {
+                "name": "WEBHOOK_ENABLED",
+                "prompt": "Enable webhooks (true/false)",
+                "password": False,
+            },
+            {
+                "name": "WEBHOOK_HOST",
+                "prompt": "Webhook bind host (empty for all interfaces)",
+                "password": False,
+            },
+            {
+                "name": "WEBHOOK_PORT",
+                "prompt": "Webhook listener port",
+                "password": False,
+            },
+            {
+                "name": "WEBHOOK_SECRET",
+                "prompt": "Global HMAC secret",
+                "password": True,
+            },
+        ],
+    },
+    {
         "key": "mattermost",
         "label": "Mattermost",
         "emoji": "💬",
@@ -7126,6 +7154,7 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
+        "webhook": _s._setup_webhooks,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
         # whatsapp + dingtalk moved into plugins: setup_fn registered by

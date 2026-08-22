@@ -10,6 +10,7 @@ from hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
     _load_subscriptions,
+    _resolve_route_secret,
     _save_subscriptions,
     _subscriptions_path,
 )
@@ -18,10 +19,9 @@ from hermes_cli.webhook import (
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Default: webhooks enabled (most tests need this)
-    monkeypatch.setattr(
-        "hermes_cli.webhook._is_webhook_enabled", lambda: True
-    )
+    # Default: webhooks enabled through the same runtime env path used by
+    # production. Individual tests can override the effective resolver.
+    monkeypatch.setenv("WEBHOOK_ENABLED", "true")
 
 
 def _make_args(**kwargs):
@@ -58,12 +58,20 @@ class TestSubscribe:
         webhook_command(_make_args(
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
-        assert _load_subscriptions()["s"]["secret"] == "my-secret"
+        route = _load_subscriptions()["s"]
+        # Secrets are persisted by reference; the plaintext lives in the
+        # profile resolver, not the route JSON.
+        assert "secret" not in route
+        assert "secret_ref" in route
+        assert _resolve_route_secret(route) == "my-secret"
 
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
-        secret = _load_subscriptions()["s"]["secret"]
+        route = _load_subscriptions()["s"]
+        assert "secret" not in route
+        assert "secret_ref" in route
+        secret = _resolve_route_secret(route)
         assert len(secret) > 20
 
 
@@ -135,7 +143,6 @@ class TestWebhookEnabledGate:
         assert "not enabled" in out.lower()
 
     def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
         webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
         out = capsys.readouterr().out
         assert "Created" in out
@@ -152,4 +159,12 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
+
+    def test_env_only_runtime_config_enables_list(self, capsys, monkeypatch):
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        webhook_command(_make_args(webhook_action="list"))
+        out = capsys.readouterr().out
+        assert "not enabled" not in out.lower()
+        assert "No dynamic webhook subscriptions" in out
 

@@ -11,13 +11,10 @@ from typing import Callable
 
 def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     """Attach the ``webhook`` subcommand to ``subparsers``."""
-    # =========================================================================
-    # webhook command
-    # =========================================================================
     webhook_parser = subparsers.add_parser(
         "webhook",
         help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
+        description="Create, list, remove, and migrate webhook subscriptions for event-driven agent activation",
     )
     webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
 
@@ -51,20 +48,24 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_sub.add_argument(
         "--deliver-only",
         action="store_true",
-        help="Skip the agent — deliver the rendered prompt directly as the "
-        "message. Zero LLM cost. Requires --deliver to be a real target "
-        "(not 'log').",
+        help="Skip the agent — deliver the rendered prompt directly as the message. Zero LLM cost. Requires --deliver to be a real target (not 'log').",
     )
     wh_sub.add_argument(
         "--script",
         default="",
-        help="Filter/transform script under ~/.hermes/scripts/. The route "
-        "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
-        "nonzero exit code ignores the webhook.",
+        help="Filter/transform script under ~/.hermes/scripts/. The route payload is passed as JSON on stdin; empty stdout, [SILENT], or a nonzero exit code ignores the webhook.",
     )
 
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"
+    )
+
+    wh_migrate = webhook_subparsers.add_parser(
+        "migrate-secrets",
+        help="Move legacy plaintext webhook secrets into the profile secret backend",
+    )
+    wh_migrate.add_argument(
+        "--json", action="store_true", help="Emit value-free migration receipts as JSON"
     )
 
     wh_rm = webhook_subparsers.add_parser(

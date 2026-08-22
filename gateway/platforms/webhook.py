@@ -8,7 +8,8 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
-  - secret: HMAC secret for signature validation (REQUIRED)
+  - secret_ref: profile secret reference for signature validation (REQUIRED)
+  - secret: legacy HMAC secret, accepted only for incremental migration
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -63,6 +64,10 @@ from gateway.platforms.webhook_filters import (
     DEFAULT_SCRIPT_TIMEOUT_SECONDS,
     WebhookRouteProcessor,
 )
+from gateway.platforms.webhook_profile_admission import (
+    WebhookProfileAdmissionMixin,
+    _PROFILE_REJECTED,
+)
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -95,11 +100,6 @@ def _is_webhook_silence_response(content: Any) -> bool:
     path untouched.
     """
     return is_autonomous_silence_response(content)
-
-# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
-# names a profile this gateway does not serve (→ 404). Distinct from None
-# (no prefix / multiplexing off → handle as the default profile).
-_PROFILE_REJECTED = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
@@ -174,7 +174,7 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class WebhookAdapter(BasePlatformAdapter):
+class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
     # No human is present to answer a "session restored — what next?" prompt:
@@ -192,6 +192,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
+        self._global_secret_ref: str = str(config.extra.get("secret_ref", "") or "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
@@ -241,6 +242,40 @@ class WebhookAdapter(BasePlatformAdapter):
             script_timeout_seconds=self._script_timeout_seconds
         )
 
+    @staticmethod
+    def _resolve_secret_ref(secret_ref: object) -> str:
+        """Resolve a route reference from the active profile secret scope."""
+        if not isinstance(secret_ref, str) or not secret_ref.strip():
+            return ""
+        try:
+            from agent.secret_scope import get_secret
+            resolved = get_secret(secret_ref.strip(), "")
+            if resolved:
+                return str(resolved)
+            # Preserve legacy WEBHOOK_SECRET values during incremental
+            # migration; new route references never take this branch.
+            if secret_ref.strip() == "WEBHOOK_SECRET":
+                from gateway.webhook_config import resolve_effective_webhook_secret
+                return resolve_effective_webhook_secret()
+            return ""
+        except Exception:
+            return ""
+
+    def _route_secret(self, route: object) -> str:
+        """Resolve references first, retaining plaintext only for legacy routes."""
+        if isinstance(route, dict):
+            ref = route.get("secret_ref")
+            if ref:
+                return self._resolve_secret_ref(ref)
+            legacy = route.get("secret")
+            if isinstance(legacy, str):
+                return legacy
+        if self._global_secret_ref:
+            resolved = self._resolve_secret_ref(self._global_secret_ref)
+            if resolved:
+                return resolved
+        return self._global_secret
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -251,7 +286,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
-            secret = route.get("secret", self._global_secret)
+            secret = self._route_secret(route)
             if not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
@@ -503,9 +538,17 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
-        from hermes_constants import get_hermes_home
-        hermes_home = get_hermes_home()
-        subs_path = hermes_home / _DYNAMIC_ROUTES_FILENAME
+        from gateway.webhook_config import resolve_effective_webhook_config
+
+        subs_path = resolve_effective_webhook_config().routes_path
+        if subs_path.exists():
+            try:
+                from hermes_cli.migrations.webhook_secret_refs import migrate_webhook_routes
+                migrate_webhook_routes(subs_path)
+            except Exception as exc:
+                # Migration is fail-safe: source remains byte-identical before
+                # the atomic switch, so legacy routes may continue to resolve.
+                logger.warning("[webhook] secret-ref migration deferred: %s", exc)
         if not subs_path.exists():
             if self._dynamic_routes:
                 self._dynamic_routes = {}
@@ -527,7 +570,7 @@ class WebhookAdapter(BasePlatformAdapter):
             for k, v in data.items():
                 if k in self._static_routes:
                     continue
-                effective_secret = v.get("secret", self._global_secret)
+                effective_secret = self._route_secret(v)
                 if not effective_secret:
                     logger.warning(
                         "[webhook] Dynamic route '%s' skipped: 'secret' is "
@@ -559,65 +602,6 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
-
-    def _resolve_request_profile(self, request: "web.Request"):
-        """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
-
-        Returns:
-          - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored, request handled as the default profile).
-          - the profile name (str) when present, multiplexing is on, and the
-            profile is one this gateway serves.
-          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured (handler returns 404).
-        """
-        profile = (request.match_info.get("profile") or "").strip()
-        if not profile:
-            return None
-        runner = self.gateway_runner
-        cfg = getattr(runner, "config", None)
-        if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
-            # the single-profile gateway (don't 404 a would-be valid route).
-            return None
-        try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {
-                name
-                for name, _ in profiles_to_serve(
-                    multiplex=True,
-                    profile_allowlist=getattr(
-                        cfg, "multiplex_profile_allowlist", None
-                    ),
-                )
-            }
-        except Exception:
-            return _PROFILE_REJECTED
-        if profile not in served:
-            return _PROFILE_REJECTED
-        return profile
-
-    @staticmethod
-    def _route_allows_profile(
-        route_config: dict,
-        request_profile: Optional[str],
-    ) -> bool:
-        """Return whether a route is bound to the URL-selected profile.
-
-        Omitting ``profile`` keeps a route on the default profile. An explicit
-        null, blank, or non-string value is malformed and fails closed.
-        """
-        if "profile" not in route_config:
-            configured_profile = "default"
-        else:
-            configured_profile = route_config.get("profile")
-        if not isinstance(configured_profile, str):
-            return False
-        configured_profile = configured_profile.strip()
-        if not configured_profile:
-            return False
-        effective_profile = request_profile or "default"
-        return configured_profile == effective_profile
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -692,7 +676,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
         # not only during connect(), so direct handler reuse cannot turn a
         # network webhook route into an unauthenticated agent-dispatch surface.
-        secret = route_config.get("secret", self._global_secret)
+        secret = self._route_secret(route_config)
         if not secret:
             logger.error(
                 "[webhook] Route %s has no HMAC secret; refusing request",

@@ -3509,6 +3509,17 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     return cleaned.strip()
 
 
+def _prepare_queued_response_text_for_direct_send(response: str, adapter) -> str:
+    """Return queued fallback text safe for direct platform delivery."""
+    cleaned = _strip_response_attachments_for_direct_send(response, adapter)
+    if not cleaned:
+        return ""
+
+    from agent.agent_runtime_helpers import strip_think_blocks
+
+    return strip_think_blocks(None, cleaned).strip()
+
+
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive the /command slug and declared frontmatter name from a SKILL.md.
 
@@ -22440,7 +22451,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> None:
         """Deliver a queued response using the normal text+attachment split."""
         if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
+            text_content = _prepare_queued_response_text_for_direct_send(
+                response,
+                adapter,
+            )
             if text_content:
                 # Reconcile-by-edit first (live finding, 2026-08-16 canary):
                 # when the stream consumer delivered/sealed a message but its

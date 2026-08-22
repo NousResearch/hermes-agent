@@ -45,10 +45,24 @@ jobs:
               if indent == 6 and stripped.startswith('- '):
                   end = index
                   break
-          body = [
-              line[len(prefix):] if line.startswith(prefix) else line
-              for line in lines[start + 1:end]
-          ]
+
+          # The historical carrier embeds generated Python inside triple-quoted
+          # literals. Some literal payload lines intentionally begin with 10+
+          # spaces, so blindly stripping the YAML run-block prefix from every
+          # such line corrupts the generated program. Dedent only executable
+          # carrier lines; preserve literal payload indentation byte-for-byte.
+          body = []
+          in_triple_single = False
+          for line in lines[start + 1:end]:
+              normalized = line
+              if not in_triple_single and line.startswith(prefix):
+                  normalized = line[len(prefix):]
+              body.append(normalized)
+              if normalized.count("'''") % 2:
+                  in_triple_single = not in_triple_single
+          if in_triple_single:
+              raise SystemExit('unterminated triple-quoted carrier literal')
+
           while body and not body[-1].strip():
               body.pop()
 

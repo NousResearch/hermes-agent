@@ -44,7 +44,19 @@ export function createRemoteWsHeaderStore(limit = 100) {
     }
   }
 
-  const headersFor = (requestUrl: string): Record<string, string> => headersByUrl.get(String(requestUrl)) ?? {}
+  const headersFor = (requestUrl: string): Record<string, string> => {
+    const key = String(requestUrl)
+    const headers = headersByUrl.get(key)
+
+    if (!headers) {
+      return {}
+    }
+
+    headersByUrl.delete(key)
+    headersByUrl.set(key, headers)
+
+    return headers
+  }
 
   return { headersFor, remember }
 }

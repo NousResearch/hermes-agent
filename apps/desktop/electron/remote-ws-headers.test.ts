@@ -71,6 +71,40 @@ function expectNoHeadersForNearbyUrls(store: ReturnType<typeof createRemoteWsHea
 }
 
 describe('registry gateway WebSocket headers', () => {
+  it('evicts the least recently accessed exact URL', () => {
+    const store = createRemoteWsHeaderStore(2)
+    const firstUrl = 'wss://gateway.example/api/ws?token=first&profile=research'
+    const secondUrl = 'wss://gateway.example/api/ws?token=second&profile=research'
+    const thirdUrl = 'wss://gateway.example/api/ws?token=third&profile=research'
+
+    store.remember(firstUrl, accessHeaders)
+    store.remember(secondUrl, accessHeaders)
+    expect(store.headersFor('wss://gateway.example/api/ws?token=missing&profile=research')).toEqual({})
+    expect(store.headersFor(firstUrl)).toEqual(accessHeaders)
+
+    store.remember(thirdUrl, accessHeaders)
+
+    expect(store.headersFor(firstUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(secondUrl)).toEqual({})
+    expect(store.headersFor(thirdUrl)).toEqual(accessHeaders)
+  })
+
+  it('updates headers without changing insertion recency', () => {
+    const store = createRemoteWsHeaderStore(2)
+    const firstUrl = 'wss://gateway.example/api/ws?token=first'
+    const secondUrl = 'wss://gateway.example/api/ws?token=second'
+    const thirdUrl = 'wss://gateway.example/api/ws?token=third'
+
+    store.remember(firstUrl, { 'CF-Access-Client-Id': 'old-client-id' })
+    store.remember(secondUrl, accessHeaders)
+    store.remember(firstUrl, { 'CF-Access-Client-Id': 'updated-client-id' })
+    store.remember(thirdUrl, accessHeaders)
+
+    expect(store.headersFor(firstUrl)).toEqual({})
+    expect(store.headersFor(secondUrl)).toEqual(accessHeaders)
+    expect(store.headersFor(thirdUrl)).toEqual(accessHeaders)
+  })
+
   it('token path binds headers to the exact profile scoped URL', async () => {
     const { ensureBackend, handler, mintTicket, store } = createHarness({
       authMode: 'token',

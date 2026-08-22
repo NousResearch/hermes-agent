@@ -8129,9 +8129,16 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
+            # Also exempt the voice/stage channel's own built-in text chat: Discord
+            # rejects thread creation from messages posted there (400/50024 "Cannot
+            # execute action on this channel type"), which is a different channel id
+            # from whatever text channel `/voice join` was invoked in, so it isn't
+            # caught by the voice_linked_ids membership check alone.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
-            is_voice_linked_channel = current_channel_id in voice_linked_ids
+            is_voice_linked_channel = current_channel_id in voice_linked_ids or isinstance(
+                message.channel, (discord.VoiceChannel, discord.StageChannel)
+            )
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_keys & free_channels)

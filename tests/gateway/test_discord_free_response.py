@@ -22,6 +22,8 @@ def _ensure_discord_mock():
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.VoiceChannel = type("VoiceChannel", (), {})
+    discord_mod.StageChannel = type("StageChannel", (), {})
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
     discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
     discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
@@ -96,11 +98,30 @@ class FakeThread:
         return _iter()
 
 
+class FakeVoiceChannel:
+    """A Discord voice channel's own built-in text chat (distinct channel id
+    from whatever text channel `/voice join` was invoked in)."""
+
+    def __init__(self, channel_id: int = 1, name: str = "General", guild_name: str = "Hermes Server"):
+        self.id = channel_id
+        self.name = name
+        self.guild = SimpleNamespace(name=guild_name)
+        self.topic = None
+
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        async def _iter():
+            return
+            yield
+        return _iter()
+
+
 @pytest.fixture
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "VoiceChannel", FakeVoiceChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "StageChannel", type("StageChannel", (), {}), raising=False)
 
     # Clear DISCORD_* env vars the test file exercises so tests don't leak
     # process-env state from the contributor's shell into per-test behaviour.
@@ -273,6 +294,41 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "follow-up from voice text chat"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_voice_channel_native_chat_skips_auto_thread(adapter, monkeypatch):
+    """Typing in a voice channel's own built-in text chat must not attempt
+    auto-thread creation.
+
+    Discord rejects thread creation for messages posted in a voice/stage
+    channel (400/50024 "Cannot execute action on this channel type"). That
+    channel has its own id, distinct from whatever text channel `/voice
+    join` was invoked in — so the ``_voice_text_channels`` membership check
+    alone doesn't catch it; the exemption must also key off the channel's
+    actual type.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    # /voice join was invoked in a different, bound text channel (456);
+    # the user is typing directly in the voice channel's own chat (789).
+    adapter._voice_text_channels[111] = 456
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeVoiceChannel(channel_id=789),
+        content="typed in the voice channel's own chat",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "typed in the voice channel's own chat"
     assert event.source.chat_type == "group"
 
 

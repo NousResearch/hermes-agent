@@ -53,15 +53,26 @@ def _flatten_choice(c) -> str:
 
     Dict unwrap order is the canonical LLM tool-call user-facing keys:
     ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
-    are deliberately excluded — they're component-shaped fields that could
-    carry raw enum values or short identifiers, not human-readable labels. A
-    dict with none of the canonical keys is dropped (returns ""), since a
-    garbage label is worse than no choice at all.
+    are deliberately excluded — they are component-shaped fields that may carry
+    raw enum values or short identifiers, not human-readable labels. A dict with
+    no accepted key is dropped (returns ""), since a garbage label is worse than
+    no choice at all.
     """
     if c is None:
         return ""
     if isinstance(c, str):
-        return c.strip()
+        text = c.strip()
+        # Some model/tool bridges serialize object-shaped choices before they
+        # reach the tool, e.g. '{"value": "Use OAuth"}'. Parse that
+        # representation so JSON does not leak onto UI labels.
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                return _flatten_choice(parsed)
+        return text
     if isinstance(c, dict):
         for key in ("label", "description", "text", "title"):
             v = c.get(key)

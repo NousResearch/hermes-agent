@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
+    _rg_native_path,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -898,3 +899,117 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+# =========================================================================
+# _rg_native_path — Windows drive paths for the rg-backed searches
+# =========================================================================
+
+class TestRgNativePath:
+    """_rg_native_path must hand a Windows-native rg.exe ``D:/...`` paths.
+
+    Hermes disables MSYS argv conversion by default
+    (``MSYS2_ARG_CONV_EXCL=*`` / ``MSYS_NO_PATHCONV=1``), so the Git Bash
+    ``/d/...`` form that ``_bash_safe_path`` produces is never converted
+    back for a Windows-native ``rg.exe`` — it resolves to ``C:\\d\\...``
+    and fails with os error 3. Regression: search_files returned empty
+    results for every absolute Windows path.
+    """
+
+    def test_msys_drive_form_converted_to_native(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _rg_native_path("/d/projects/foo") == "D:/projects/foo"
+
+    def test_bare_msys_drive_converted(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _rg_native_path("/d") == "D:/"
+
+    def test_backslash_native_form_normalized(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _rg_native_path("D:\\projects\\foo") == "D:/projects/foo"
+
+    def test_forward_slash_native_form_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _rg_native_path("D:/projects/foo") == "D:/projects/foo"
+
+    def test_relative_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _rg_native_path("src/components") == "src/components"
+
+    def test_noop_off_windows(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
+        assert _rg_native_path("/d/projects/foo") == "/d/projects/foo"
+        assert _rg_native_path("D:/projects/foo") == "D:/projects/foo"
+
+
+class TestSearchFilesRgWindowsDrivePath:
+    """The rg-backed search commands must embed native ``D:/...`` paths."""
+
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+        env.execute.return_value = {"output": "", "returncode": 0}
+        return env
+
+    def test_file_search_command_uses_native_drive_path(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        ops._search_files_rg("*.log", "D:\\projects\\foo", limit=50, offset=0)
+        cmd = env.execute.call_args.args[0]
+        assert "D:/projects/foo" in cmd
+        assert "/d/projects/foo" not in cmd
+
+    def test_content_search_command_uses_native_drive_path(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        ops._search_with_rg("error", "D:\\projects\\foo", None, 50, 0, "content", 0)
+        cmd = env.execute.call_args.args[0]
+        assert "D:/projects/foo" in cmd
+        assert "/d/projects/foo" not in cmd
+
+    def test_file_search_surfaces_rg_error_instead_of_empty(self):
+        """rg os error 3 must be reported, not silently swallowed.
+
+        The old ``2>/dev/null`` made a broken search indistinguishable
+        from an empty directory; pipefail + exit-code check now surface
+        the diagnostic.
+        """
+        env = self._make_env()
+        env.execute.return_value = {
+            "output": (
+                "rg: /d/projects/foo: IO error for operation on "
+                "/d/projects/foo: 系统找不到指定的路径。 (os error 3)"
+            ),
+            "returncode": 2,
+        }
+        ops = ShellFileOperations(env)
+        result = ops._search_files_rg("*.log", "D:/projects/foo", limit=50, offset=0)
+        assert result.error is not None
+        assert "os error" in result.error
+        assert result.files == []
+        assert result.total_count == 0
+
+    def test_zero_match_probe_commands_use_native_drive_path(self, monkeypatch):
+        """_zero_match_probe must route paths through _quote_rg_path too.
+
+        The three rg invocations inside _zero_match_probe (case-insensitive,
+        hidden/no-ignore, and fixed-string) use the same shell-command form
+        as _search_files_rg and _search_with_rg. If they keep using
+        _escape_shell_arg, a Windows-native rg.exe receives the MSYS /d/...
+        form and fails with os error 3 — the probe silently returns None (no
+        exit-code check) and the search loses its steering hints on exactly
+        the platform this fix targets. Regression guard.
+        """
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        ops._command_cache = {"rg": True}
+        # Use a pattern with regex metacharacters so probe runs all three
+        # rg invocations (CI → hidden → fixed-string).
+        ops._zero_match_probe("lookup[key+1]", "D:\\projects\\foo", None)
+        cmds = [call.args[0] for call in env.execute.call_args_list]
+        assert len(cmds) == 3
+        for cmd in cmds:
+            assert "D:/projects/foo" in cmd, f"Command lacks native path: {cmd!r}"
+            assert "/d/projects/foo" not in cmd, f"Command still has MSYS path: {cmd!r}"

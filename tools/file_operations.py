@@ -357,6 +357,37 @@ class ExecuteResult:
 _SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
 
 
+def _rg_native_path(path: str) -> str:
+    """Return *path* in the form a Windows-native ``rg`` executable accepts.
+
+    ``_escape_shell_arg`` rewrites ``D:\\...`` / ``D:/...`` to the Git Bash
+    ``/d/...`` form via ``_bash_safe_path`` — correct for MSYS-built
+    programs (bash builtins, ``find``) but wrong for a Windows-native
+    ``rg.exe``: Hermes disables MSYS argv conversion by default
+    (``MSYS2_ARG_CONV_EXCL=*`` + ``MSYS_NO_PATHCONV=1``, set in
+    ``tools/environments/local.py``), so a literal ``/d/...`` reaches rg
+    and is resolved as ``C:\\d\\...`` — "system cannot find the path
+    specified" (os error 3). Windows-native rg accepts ``D:/...``
+    directly, so rg commands must use that form on Windows and skip the
+    MSYS rewrite. No-op off Windows and for relative / non-drive paths.
+    """
+    from tools.environments.local import _IS_WINDOWS
+
+    if not _IS_WINDOWS or not path:
+        return path
+    # MSYS drive form "/d/rest" -> "D:/rest" (also covers bare "/d").
+    m = re.match(r"^/([A-Za-z])(?:/(.*))?$", path)
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2) or ""
+        return f"{drive}:/{rest}" if rest else f"{drive}:/"
+    # Native Windows forms: normalize backslashes, keep forward slashes.
+    path = path.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", path):
+        return path
+    return path
+
+
 def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
     """Return stdout cleaned for parsing and a limit reason for search timeouts."""
     if result.exit_code == 124:
@@ -1172,6 +1203,18 @@ class ShellFileOperations(FileOperations):
         if _IS_WINDOWS and arg:
             arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _quote_rg_path(self, path: str) -> str:
+        """Quote *path* for an ``rg`` invocation using the native form rg reads.
+
+        Like :meth:`_escape_shell_arg` but keeps Windows drive paths in the
+        ``D:/...`` form a Windows-native ``rg.exe`` understands instead of
+        rewriting them to the MSYS ``/d/...`` form (which only MSYS-built
+        tools accept — see :func:`_rg_native_path`).
+        """
+        import shlex
+
+        return shlex.quote(_rg_native_path(path))
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
@@ -2913,7 +2956,7 @@ class ShellFileOperations(FileOperations):
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._quote_rg_path(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2930,7 +2973,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._quote_rg_path(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2944,7 +2987,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+                f"{self._escape_shell_arg(pattern)} {self._quote_rg_path(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -3060,26 +3103,40 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
-        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
+        rg_path = self._quote_rg_path(path)
+        # `set -o pipefail` so rg's exit status survives the `| head`
+        # truncation (mirrors _search_with_rg). `_exec` merges stderr into
+        # stdout, so diagnostics stay recoverable via _split_tool_diagnostics.
+        # Try mtime-sorted first (rg 13+); older rg exits 2 on the unknown
+        # --sortr flag, so fall back to unsorted when nothing came back.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_native_tool_arg(path)} 2>/dev/null "
-            f"| head -n {fetch_limit}"
+            f"set -o pipefail; rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
+            f"{rg_path} | head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.strip().split('\n') if f]
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+        all_files = [f for f in payload.strip().split('\n') if f]
 
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
-                f"| head -n {fetch_limit}"
+                f"set -o pipefail; rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"{rg_path} | head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
-            all_files = [f for f in stdout.strip().split('\n') if f]
+            diagnostics, payload = _split_tool_diagnostics(stdout)
+            all_files = [f for f in payload.strip().split('\n') if f]
+
+        # rg exit codes: 0=ok, 2=hard error (missing root, IO failure).
+        # Surface the diagnostics instead of silently returning "no files":
+        # the old `2>/dev/null` masked failures such as os error 3 on a
+        # Windows drive path, making a broken search indistinguishable from
+        # an empty directory.
+        if result.exit_code == 2 and not all_files:
+            error_msg = diagnostics.strip() or stdout.strip() or "rg exited with status 2"
+            return SearchResult(error=f"File search failed: {error_msg}", total_count=0)
 
         page = all_files[offset:offset + limit]
 
@@ -3156,7 +3213,8 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path (path via _quote_rg_path: Windows-native rg
+        # needs D:/... — the MSYS /d/... form yields os error 3).
         cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which

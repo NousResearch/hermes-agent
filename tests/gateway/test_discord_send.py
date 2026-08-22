@@ -418,3 +418,126 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
 
 
+def _handoff_adapter(parent, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    monkeypatch.setattr(
+        adapter,
+        "_client",
+        SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        ),
+    )
+    mark = MagicMock()
+    monkeypatch.setattr(adapter._threads, "mark", mark)
+    return adapter, mark
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_direct_creation_marks_once(monkeypatch):
+    thread = SimpleNamespace(id=9001)
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(return_value=thread),
+        send=AsyncMock(),
+    )
+    adapter, mark = _handoff_adapter(parent, monkeypatch)
+
+    thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+    assert thread_id == "9001"
+    mark.assert_called_once_with("9001")
+    parent.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_direct_mark_failure_returns_thread(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    thread = SimpleNamespace(id=9001)
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(return_value=thread),
+        send=AsyncMock(),
+    )
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    monkeypatch.setattr(
+        adapter,
+        "_client",
+        SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        ),
+    )
+    save = MagicMock(side_effect=OSError("disk full"))
+    monkeypatch.setattr(adapter._threads, "_save", save)
+
+    with caplog.at_level("WARNING"):
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+    assert thread_id == "9001"
+    save.assert_called_once_with()
+    assert "9001" in adapter._threads
+    parent.create_thread.assert_awaited_once()
+    parent.send.assert_not_awaited()
+    assert "Handoff thread 9001 was created" in caplog.text
+    assert "participation tracking failed" in caplog.text
+    assert "OSError: disk full" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_fallback_creation_marks_once(monkeypatch):
+    thread = SimpleNamespace(id=9002)
+    seed = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("direct denied")),
+        send=AsyncMock(return_value=seed),
+    )
+    adapter, mark = _handoff_adapter(parent, monkeypatch)
+
+    thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+    assert thread_id == "9002"
+    mark.assert_called_once_with("9002")
+    seed.create_thread.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_fallback_mark_failure_returns_thread(
+    caplog, monkeypatch
+):
+    thread = SimpleNamespace(id=9002)
+    seed = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("direct denied")),
+        send=AsyncMock(return_value=seed),
+    )
+    adapter, mark = _handoff_adapter(parent, monkeypatch)
+    mark.side_effect = OSError("disk full")
+
+    with caplog.at_level("WARNING"):
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+    assert thread_id == "9002"
+    mark.assert_called_once_with("9002")
+    parent.create_thread.assert_awaited_once()
+    parent.send.assert_awaited_once()
+    seed.create_thread.assert_awaited_once()
+    assert "Handoff thread 9002 was created" in caplog.text
+    assert "participation tracking failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_failure_does_not_mark(monkeypatch):
+    seed = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("fallback denied"))
+    )
+    parent = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("direct denied")),
+        send=AsyncMock(return_value=seed),
+    )
+    adapter, mark = _handoff_adapter(parent, monkeypatch)
+
+    thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+    assert thread_id is None
+    mark.assert_not_called()

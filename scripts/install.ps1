@@ -4404,6 +4404,25 @@ function Write-Completion {
     Write-Host "|              [OK] Installation Complete!                |" -ForegroundColor Green
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
     Write-Host ""
+
+    # $script:InstalledTier has been recorded at both install sites since the
+    # tiered cascade landed, and nothing ever read it, so a run that lost hash
+    # verification signed off exactly like a run that kept it (#90650, #82446).
+    if ($script:InstalledTier -ne "hash-verified (uv.lock)") {
+        $tierUsed = if ($script:InstalledTier) { $script:InstalledTier } else { "unknown" }
+        Write-Host "[!] Dependencies were installed WITHOUT hash verification" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "   Tier used: $tierUsed" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "   The hash-verified tier (uv sync --locked against uv.lock) did not"
+        Write-Host "   run, so package contents were not checked against the hashes this"
+        Write-Host "   release shipped. The install is usable; its supply-chain posture"
+        Write-Host "   is weaker than a verified one."
+        Write-Host ""
+        Write-Host "   Verify at any time:"
+        Write-Host "     cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        Write-Host ""
+    }
     
     # Show file locations
     Write-Host "* Your files:" -ForegroundColor Cyan

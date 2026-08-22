@@ -1475,6 +1475,31 @@ setup_venv() {
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
+# Which dependency tier actually installed. Set by install_deps() and read by
+# print_success() so the final banner cannot imply a verified install when the
+# hash-verified tier did not run.
+INSTALLED_DEP_TIER=""
+HASH_VERIFIED_DEP_TIER="hash-verified (uv.lock)"
+
+# Announce a fall back to the unverified PyPI resolve. The tiers below keep an
+# install working, which is why the fallback exists, but only the uv.lock tier
+# checks each package against a recorded SHA256. One passing log line was not
+# enough of a signal: the run still ends on a green "Installation Complete"
+# banner, so every install that quietly lost hash verification looked identical
+# to one that kept it (#90650, #82446).
+warn_unverified_dependency_resolve() {
+    local reason="$1"
+    echo ""
+    log_warn "Dependencies will NOT be hash-verified for this install."
+    log_warn "Reason: $reason"
+    log_info "The tiers below re-resolve every dependency fresh from PyPI. Nothing"
+    log_info "checks a package against the SHA256 recorded in uv.lock, so a"
+    log_info "compromised transitive would not be rejected."
+    log_info "To install with verification once the cause is resolved:"
+    log_info "    cd $INSTALL_DIR && UV_PROJECT_ENVIRONMENT=$INSTALL_DIR/venv $UV_CMD sync --extra all --locked"
+    echo ""
+}
+
 install_deps() {
     log_info "Installing dependencies..."
 
@@ -1614,13 +1639,16 @@ install_deps() {
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
         if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+            INSTALLED_DEP_TIER="hash-verified (uv.lock)"
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
         fi
         log_warn "uv.lock sync failed (see uv output above), falling back to PyPI resolve..."
+        warn_unverified_dependency_resolve "the uv.lock sync above failed"
     else
         log_info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+        warn_unverified_dependency_resolve "uv.lock is not present in this checkout"
     fi
 
     # Multi-tier fallback. The point of the tiers is that ONE compromised
@@ -1698,6 +1726,7 @@ PY
             log_success "Main package installed ($name)"
             _installed=true
             _tier_name="$name"
+            INSTALLED_DEP_TIER="$name"
             return 0
         fi
         log_warn "Tier '$name' failed. Top of pip output:"
@@ -2764,6 +2793,26 @@ print_success() {
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
     echo ""
+
+    # A degraded install has to say so where the user is actually looking. The
+    # warning at downgrade time scrolls away behind minutes of dependency
+    # output; this is the last thing on screen.
+    if [ "$INSTALLED_DEP_TIER" != "$HASH_VERIFIED_DEP_TIER" ]; then
+        echo -e "${YELLOW}${BOLD}⚠ Dependencies were installed WITHOUT hash verification${NC}"
+        echo ""
+        echo -e "   ${YELLOW}Tier used:${NC} ${INSTALLED_DEP_TIER:-unknown}"
+        echo ""
+        echo -e "   The hash-verified tier (uv sync --locked against uv.lock) did not"
+        echo -e "   run, so package contents were not checked against the hashes this"
+        echo -e "   release shipped. The install is usable; its supply-chain posture is"
+        echo -e "   weaker than a verified one."
+        echo ""
+        echo -e "   Verify at any time:"
+        echo -e "     cd $INSTALL_DIR && UV_PROJECT_ENVIRONMENT=$INSTALL_DIR/venv uv sync --extra all --locked"
+        echo ""
+        echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
+        echo ""
+    fi
 
     # Show file locations
     echo -e "${CYAN}${BOLD}📁 Your files:${NC}"

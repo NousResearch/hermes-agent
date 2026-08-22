@@ -188,6 +188,10 @@ SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
 # Dependencies
 # ============================================================================
 
+# Read by the completion banner below so a run that lost hash verification
+# does not sign off with an unqualified "Setup complete!" (#90650, #82446).
+HASH_VERIFIED_DEPS=false
+
 echo -e "${CYAN}→${NC} Installing dependencies..."
 
 if is_termux; then
@@ -252,6 +256,7 @@ else
         # Also: stream stderr through directly so the user sees uv's
         # progress UI instead of staring at a frozen prompt.
         if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
+            HASH_VERIFIED_DEPS=true
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
             echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
@@ -421,6 +426,13 @@ fi
 echo ""
 echo -e "${GREEN}✓ Setup complete!${NC}"
 echo ""
+if [ "$HASH_VERIFIED_DEPS" != true ]; then
+    echo -e "${YELLOW}⚠ Dependencies were installed WITHOUT hash verification.${NC}"
+    echo "  Package contents were not checked against the hashes in uv.lock."
+    echo "  Verify at any time:"
+    echo "    cd $SCRIPT_DIR && UV_PROJECT_ENVIRONMENT=$SCRIPT_DIR/venv uv sync --extra all --locked"
+    echo ""
+fi
 echo "Next steps:"
 echo ""
 if is_termux; then

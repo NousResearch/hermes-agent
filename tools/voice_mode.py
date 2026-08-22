@@ -2255,9 +2255,16 @@ def check_voice_requirements() -> Dict[str, Any]:
     from tools.transcription_tools import (
         _get_provider,
         _load_stt_config,
+        _recheck_package_availability,
         _resolve_command_stt_provider_config,
         is_stt_enabled,
     )
+    # Re-probe optional packages so a provider installed into the venv
+    # after gateway startup is picked up without a restart.  This is the
+    # status/wake-word path the UI polls; without the refresh the gateway
+    # keeps reporting the provider as unavailable until a manual restart
+    # even though the package is installed and importable (#81235).
+    _recheck_package_availability()
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)

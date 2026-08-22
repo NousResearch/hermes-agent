@@ -102,6 +102,30 @@ _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 _HAS_PILK = _safe_find_spec("pilk")
 
+
+def _recheck_package_availability() -> None:
+    """Re-probe optional STT packages against the current environment.
+
+    The module-level ``_HAS_*`` flags are set at import time and cached so
+    the hot transcription path never pays for repeated ``find_spec`` calls.
+    But a long-lived gateway process must also pick up packages installed
+    *after* startup: without this refresh, ``hermes doctor`` / the voice UI
+    keep reporting the provider as unavailable until a manual restart
+    (#81235).  Status/arming callers (``check_voice_requirements`` and
+    ``wake_word._stt_ready``) invoke this once per resolution — cheap
+    enough that the refresh itself is never on the audio path.
+    """
+    global _HAS_FASTER_WHISPER, _HAS_OPENAI, _HAS_MISTRAL, _HAS_PILK
+    try:
+        _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+        _HAS_OPENAI = _safe_find_spec("openai")
+        _HAS_MISTRAL = _safe_find_spec("mistralai")
+        _HAS_PILK = _safe_find_spec("pilk")
+    except Exception:
+        # Probe failure must never take the provider resolver down; the
+        # previous cached values stay in effect.
+        pass
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

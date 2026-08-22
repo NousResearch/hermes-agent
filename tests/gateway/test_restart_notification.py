@@ -215,6 +215,7 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     relay = MagicMock()
     relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
     relay.send_for_platform = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+    relay.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
     runner.adapters = {Platform.RELAY: relay}
     runner.config.platforms = {
         Platform.RELAY: PlatformConfig(enabled=True),
@@ -233,14 +234,110 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     delivered = await runner._send_home_channel_startup_notifications()
 
     assert delivered == {("slack", "D123", None)}
-    relay.send_for_platform.assert_awaited_once()
-    assert relay.send_for_platform.await_args.args[:3] == (
-        Platform.SLACK,
+    relay.send.assert_awaited_once()
+    assert relay.send.await_args.args[:2] == (
         "D123",
         "♻️ Gateway online — Hermes is back and ready.",
     )
-    assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
-    assert relay.send_for_platform.await_args.kwargs["metadata"]["scope_id"] == "T123"
+    assert relay.send.await_args.kwargs["metadata"]["user_id"] == "U123"
+    assert relay.send.await_args.kwargs["metadata"]["scope_id"] == "T123"
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_retries_transient_failure(
+    tmp_path, monkeypatch
+):
+    """Startup delivery waits out Telegram's initial send-path health gate."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    sleep = AsyncMock()
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(
+        side_effect=[
+            SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            ),
+            SendResult(success=True, message_id="online"),
+        ]
+    )
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    assert adapter.send.await_count == 2
+    sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notification_retry_respects_zero_wait_budget(monkeypatch):
+    """A persistently degraded adapter cannot hold gateway startup forever."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        )
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep)
+
+    result = await runner._send_lifecycle_message_with_retry(
+        adapter,
+        "home-42",
+        "Gateway online",
+        max_wait=0,
+    )
+
+    assert result is not None
+    assert result.success is False
+    adapter.send.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_notification_preserves_markers_after_transient_send_failure(
+    tmp_path, monkeypatch
+):
+    """The watcher must be able to retry once the platform send path heals."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    pending = tmp_path / ".update_pending.json"
+    pending.write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+    (tmp_path / ".update_exit_code").write_text("0")
+    (tmp_path / ".update_output.txt").write_text("Update complete")
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        )
+    )
+
+    notified = await runner._send_update_notification()
+
+    assert notified is False
+    assert pending.exists()
+    assert (tmp_path / ".update_exit_code").exists()
+    assert (tmp_path / ".update_output.txt").exists()
+
+    adapter.send.return_value = SendResult(success=True, message_id="update-done")
+    notified = await runner._send_update_notification()
+
+    assert notified is True
+    assert not pending.exists()
+    assert not (tmp_path / ".update_pending.claimed.json").exists()
+    assert not (tmp_path / ".update_exit_code").exists()
+    assert not (tmp_path / ".update_output.txt").exists()
 
 
 # ── _send_restart_notification ───────────────────────────────────────────
@@ -269,6 +366,7 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     relay.send_for_platform = AsyncMock(
         return_value=SendResult(success=True, message_id="restart")
     )
+    relay.send = AsyncMock(return_value=SendResult(success=True, message_id="restart"))
     runner.adapters = {Platform.RELAY: relay}
     runner.config.platforms = {
         Platform.RELAY: PlatformConfig(enabled=True),
@@ -278,9 +376,9 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     delivered_target = await runner._send_restart_notification()
 
     assert delivered_target == ("slack", "D123", None)
-    relay.send_for_platform.assert_awaited_once()
-    assert relay.send_for_platform.await_args.args[0:2] == (Platform.SLACK, "D123")
-    metadata = relay.send_for_platform.await_args.kwargs["metadata"]
+    relay.send.assert_awaited_once()
+    assert relay.send.await_args.args[0] == "D123"
+    metadata = relay.send.await_args.kwargs["metadata"]
     assert metadata["user_id"] == "U123"
     assert metadata["scope_id"] == "T123"
     assert not notify_path.exists()

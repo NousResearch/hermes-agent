@@ -3,6 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+import requests
+
 
 from tools.browser_camofox import (
     camofox_back,
@@ -112,6 +115,57 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
+
+    @pytest.mark.parametrize("gone_status", [404, 410])
+    @patch("tools.browser_camofox.requests.post")
+    def test_recovers_when_tab_is_gone(self, mock_post, monkeypatch, gone_status):
+        """A tab that stops existing is reopened, not retried forever.
+
+        404 is a garbage-collected tab; 410 is one the browser destroyed or
+        took down with it on a restart. Both leave a stale tab_id in the
+        session, and navigate is the only call that can replace it.
+        """
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        task_id = f"t_gone_{gone_status}"
+
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
+        assert json.loads(camofox_navigate("https://example.com", task_id=task_id))["success"] is True
+
+        gone = _mock_response(status=gone_status, json_data={"error": "Tab was destroyed."})
+        gone.raise_for_status.side_effect = requests.HTTPError(f"{gone_status} Error", response=gone)
+
+        def _post_side_effect(url, **kwargs):
+            # The dead tab refuses; opening a new one succeeds.
+            if url.endswith("/tabs"):
+                return _mock_response(json_data={"tabId": "tab2", "url": "https://example.com"})
+            return gone
+
+        mock_post.side_effect = _post_side_effect
+
+        result = json.loads(camofox_navigate("https://example.com", task_id=task_id))
+        assert result["success"] is True
+        assert any(c.args[0].endswith("/tabs") for c in mock_post.call_args_list[1:]), (
+            "expected a fresh tab to be created after the old one was gone"
+        )
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_other_http_errors_do_not_open_a_new_tab(self, mock_post, monkeypatch):
+        """Only 404/410 mean "gone" — a 500 is a real failure, not a dead tab."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        task_id = "t_server_error"
+
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
+        assert json.loads(camofox_navigate("https://example.com", task_id=task_id))["success"] is True
+
+        boom = _mock_response(status=500, json_data={"error": "internal"})
+        boom.raise_for_status.side_effect = requests.HTTPError("500 Error", response=boom)
+        mock_post.reset_mock()
+        mock_post.return_value = boom
+        mock_post.side_effect = None
+
+        result = json.loads(camofox_navigate("https://example.com", task_id=task_id))
+        assert result["success"] is False
+        assert not any(c.args[0].endswith("/tabs") for c in mock_post.call_args_list)
 
 
 # ---------------------------------------------------------------------------

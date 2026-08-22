@@ -439,6 +439,30 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     return session
 
 
+# Camofox reports a tab we still hold an id for as gone with two different
+# status codes, and they mean the same thing to us:
+#
+#   404  no such tab -- garbage collected, or an id this server never issued
+#   410  the tab was ours and the browser took it away. server.js returns this
+#        for `tab_destroyed`, `page_crashed` and `browser_restarted`, each with
+#        an explicit `recovery: "create_new_tab"` in the body
+#
+# 410 is the one that costs a whole run, because it is what a browser restart
+# looks like: every tab dies at once, so the session's cached tab_id is stale
+# and `navigate` -- the only call that can open a replacement -- was raising
+# instead of recovering. The agent then retries navigate, which fails the same
+# way, for as long as it is willing to keep trying.
+_TAB_GONE_STATUSES = (404, 410)
+
+
+def _is_tab_gone(exc: BaseException) -> bool:
+    """True when exc is Camofox saying the tab we hold no longer exists."""
+    if not isinstance(exc, requests.HTTPError):
+        return False
+    resp = getattr(exc, "response", None)
+    return resp is not None and resp.status_code in _TAB_GONE_STATUSES
+
+
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Remove and return session info."""
     task_id = task_id or "default"
@@ -521,7 +545,8 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             session = _ensure_tab(task_id, browser_url)
             data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab — recover from stale tab 404
+            # Navigate existing tab — recover from a tab that is gone, whether
+            # it was garbage collected (404) or destroyed with the browser (410)
             try:
                 data = _post(
                     f"/tabs/{session['tab_id']}/navigate",
@@ -529,11 +554,11 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     timeout=60,
                 )
             except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
+                if _is_tab_gone(e):
                     logger.warning(
-                        "Camofox tab %s returned 404 — tab was garbage collected. "
-                        "Creating a fresh tab.",
+                        "Camofox tab %s is gone (HTTP %s). Creating a fresh tab.",
                         session["tab_id"],
+                        getattr(e.response, "status_code", "?"),
                     )
                     session["tab_id"] = None
                     session = _ensure_tab(task_id, browser_url)

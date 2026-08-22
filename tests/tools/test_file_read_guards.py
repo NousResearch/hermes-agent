@@ -591,10 +591,12 @@ class TestDedupStubLoopGuard(unittest.TestCase):
 
         reset_file_dedup("loop")
 
-        # Fresh session — real read, no stub, no block
+        # Post-compression: block counters cleared — the unchanged file
+        # returns the lightweight dedup stub (dedup map survives), with
+        # no error and no hard block.
         r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertNotIn("error", r4)
-        self.assertNotIn("dedup", r4)
+        self.assertTrue(r4.get("dedup"))
 
 
 # ---------------------------------------------------------------------------
@@ -602,8 +604,9 @@ class TestDedupStubLoopGuard(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestDedupResetOnCompression(unittest.TestCase):
-    """reset_file_dedup should clear the dedup cache so post-compression
-    reads return full content."""
+    """reset_file_dedup should preserve the dedup mtime map so
+    post-compression reads of unchanged files still return the lightweight
+    stub (issue #84857)."""
 
     def setUp(self):
         _read_tracker.clear()
@@ -621,8 +624,8 @@ class TestDedupResetOnCompression(unittest.TestCase):
             pass
 
     @patch("tools.file_tools._get_file_ops")
-    def test_reset_clears_dedup(self, mock_ops):
-        """After reset_file_dedup, the same read returns full content."""
+    def test_reset_preserves_dedup(self, mock_ops):
+        """After reset_file_dedup, the same read still returns the stub."""
         mock_ops.return_value = _make_fake_ops(
             content="original content\n", file_size=18,
         )
@@ -636,10 +639,11 @@ class TestDedupResetOnCompression(unittest.TestCase):
         # Simulate compression
         reset_file_dedup("comp")
 
-        # Read again — should get full content
+        # Read again — unchanged file still dedups: no full re-send, so
+        # post-compaction re-reads don't re-inject the same content
         r_post = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
-        self.assertNotEqual(r_post.get("dedup"), True,
-                            "Post-compression read should return full content")
+        self.assertEqual(r_post.get("dedup"), True,
+                         "Post-compression read of unchanged file should stub")
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -655,13 +659,12 @@ class TestDedupResetOnCompression(unittest.TestCase):
 
         reset_file_dedup("loop")
 
-        # 3rd read — counter should still be at 2 from before reset
-        # (dedup was hit for read 2, but consecutive counter was 1 for that)
-        # After reset, this read goes through full path, incrementing to 2
+        # 3rd read — still deduped (lightweight stub), not blocked
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         # Should NOT be blocked or warned — counter restarted since dedup
         # intercepted reads before they reached the counter
         self.assertNotIn("error", r3)
+        self.assertTrue(r3.get("dedup"))
 
 
 # ---------------------------------------------------------------------------

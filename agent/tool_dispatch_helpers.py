@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+# Tools that block on a person: their own prompt owns the wait, so the generic
+# per-call deadline must not apply. `setup_mcp` holds a card open while someone
+# works through a cloud console, which routinely outlives the 420s default.
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "setup_mcp"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({

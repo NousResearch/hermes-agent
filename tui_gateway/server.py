@@ -6423,16 +6423,32 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
         # setup_mcp tool (desktop GUI): the renderer shows an inline consent
-        # card and walks the user through install/enable/OAuth via the REST
-        # endpoints, then answers mcp.setup.respond with the JSON outcome.
-        # Long timeout on purpose — the flow can include typing an API key or
-        # a browser OAuth round-trip. Same lifecycle as clarify: on timeout
+        # card with a switch per connector and walks the user through
+        # add/enable/key/OAuth via the REST endpoints, then answers
+        # mcp.setup.respond with the JSON outcome. Long timeout on purpose —
+        # the flow can include typing an API key or a browser OAuth
+        # round-trip, once per connector, and a catalog entry with setup steps
+        # sends the user off to somebody else's admin console first. Ten
+        # minutes did not cover that: creating a Google Cloud project, finding
+        # the credentials page, and downloading a client JSON is a quarter of
+        # an hour for someone who has not done it before, and the card
+        # expiring mid-console is the worst possible moment to lose it. The
+        # user is never trapped by the longer wait — Not now answers instantly
+        # and Esc dismisses every card. Same lifecycle as clarify: on timeout
         # the tool returns "unanswered" and a late answer is tolerated.
-        "setup_mcp_callback": lambda server, action, reason: _block(
+        # `server` is still sent alongside `servers` so an older renderer that
+        # only reads the scalar keeps working.
+        "setup_mcp_callback": lambda servers, action, reason, steps=(): _block(
             "mcp.setup.request",
             sid,
-            {"server": server, "action": action, "reason": reason},
-            timeout=600,
+            {
+                "server": servers[0] if servers else "",
+                "servers": list(servers),
+                "action": action,
+                "reason": reason,
+                "steps": list(steps),
+            },
+            timeout=1800,
         ),
         # tour tool (desktop GUI): the renderer drives driver.js — highlighting
         # elements in the app's own DOM or injecting the engine into the
@@ -6515,10 +6531,17 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
+    from tools.mcp_tool import set_elicitation_input_callback
     from tools.project_tools import set_project_workspace_callback
 
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
+
+    # An MCP server asking for a value mid-tool-call is the same interaction
+    # as the agent asking one, so it reuses the clarify prompt rather than
+    # introducing a second kind of question. Surfaces that don't wire this
+    # decline the request, which is what every surface did before.
+    set_elicitation_input_callback(lambda question, choices: _clarify_block(sid, question, choices))
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var}

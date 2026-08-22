@@ -19,6 +19,7 @@ import {
   DEFAULT_MANUAL_ONBOARDING_REASON,
   DEFAULT_ONBOARDING_REASON,
   dismissFirstRunOnboarding,
+  finishOnboardingConnectors,
   type OnboardingContext,
   peekPendingProviderOAuth,
   refreshOnboarding,
@@ -212,16 +213,25 @@ export function DesktopOnboardingOverlay({
       return
     }
 
-    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-
-    if (reduce) {
+    // Accepting the model isn't the end any more — the connector picker
+    // follows it. Advance in place; the cinematic exit belongs to the step
+    // that actually drops the user into chat.
+    if (onboarding.flow.status === 'confirming_model') {
       confirmOnboardingModel(ctx)
 
       return
     }
 
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (reduce) {
+      void finishOnboardingConnectors(ctx)
+
+      return
+    }
+
     setLeaving(true)
-    window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+    window.setTimeout(() => void finishOnboardingConnectors(ctx), ONBOARDING_EXIT_MS)
   }
 
   useEffect(() => {

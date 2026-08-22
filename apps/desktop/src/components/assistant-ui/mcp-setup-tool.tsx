@@ -8,70 +8,96 @@ import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Input } from '@/components/ui/input'
-import {
-  addMcpServer,
-  authMcpServer,
-  cancelMcpOAuthFlow,
-  getActionStatus,
-  getMcpCatalog,
-  getMcpOAuthFlow,
-  installMcpCatalogEntry,
-  type McpCatalogEntry,
-  removeMcpServer,
-  setMcpServerEnabled
-} from '@/hermes'
+import { ConnectorCard, ConnectorSummary, outcomeMeta } from '@/components/ui/connector-card'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AlertCircle, CheckCircle2, Loader2 } from '@/lib/icons'
-import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
-import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
-import { directoryEntry } from '@/lib/mcp-directory'
-import { prettyName } from '@/lib/text'
+import { AlertCircle, Loader2 } from '@/lib/icons'
+import {
+  connectConnector,
+  type Connector,
+  ConnectorCancelled,
+  ConnectorNeedsAuth,
+  type ConnectorResolution,
+  type ConnectorState,
+  connectorTitle,
+  type ConnectPhase,
+  invalidateConnectorCache,
+  loadConnectorStates,
+  resolveConnectors
+} from '@/lib/mcp-connectors'
+import { McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
-import { clearMcpSetupRequest, type McpSetupOutcome, sessionMcpSetupRequest } from '@/store/mcp-setup'
+import {
+  buildSetupOutcome,
+  clearMcpSetupRequest,
+  type McpConnectorOutcome,
+  type McpSetupOutcome,
+  sessionMcpSetupRequest
+} from '@/store/mcp-setup'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
 
-type SetupAction = 'authorize' | 'enable' | 'install'
+/**
+ * The inline connector cards.
+ *
+ * A task needing Jira *and* Figma offers both at once instead of blocking
+ * twice — one card per connector, because a connector IS the unit of state
+ * here: its own endpoint, its own sign-in, its own failure.
+ *
+ * Everything about *how* a connector connects — write config, flip enabled,
+ * probe, sign in — belongs to `lib/mcp-connectors`. These components own the
+ * consent surface and the phase presentation, nothing else. That's what lets
+ * a no-auth server connect with one click and an OAuth one open a browser
+ * tab from the same button, with no branching here.
+ *
+ * Each card also owns its own *recovery*. Three connectors is three OAuth
+ * flows against three servers — under the MCP auth spec a token is bound to
+ * one resource, so partial failure is a property of the protocol and the UI
+ * only gets to choose whether it represents it honestly. So a card that
+ * fails keeps its Retry while its siblings settle around it, and the tool
+ * answers once every card has either connected or been waved off.
+ *
+ * Consent vocabulary follows the approval bar: primary-tinted action with
+ * `⌘⏎`, ghost decline with `Esc`, clarify's focus stand-down so keystrokes
+ * meant for the composer are never eaten.
+ */
+
+type SetupAction = 'authorize' | 'connect' | 'enable' | 'install'
+
+type SetupCopy = ReturnType<typeof useI18n>['t']['assistant']['mcpSetup']
 
 interface SetupArgs {
-  server: string
+  servers: string[]
   action: SetupAction
   reason: string
 }
 
-const CATALOG_INSTALL_POLL_MS = 1500
-
-// Thrown by the in-flight flow when the user cancels — the declined respond
-// has already been sent, so the catch path must swallow this, not report it.
-const CANCELLED = Symbol('mcp-setup-cancelled')
-
 function readSetupArgs(args: unknown): SetupArgs {
   const row = parseMaybeObject(args)
-  const rawAction = typeof row.action === 'string' ? row.action : 'install'
+  const rawAction = typeof row.action === 'string' ? row.action : 'connect'
+
+  const listed = Array.isArray(row.servers)
+    ? row.servers.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+    : []
+
+  const single = typeof row.server === 'string' && row.server.trim() ? [row.server] : []
 
   return {
-    action: rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install',
+    action: rawAction === 'enable' || rawAction === 'authorize' || rawAction === 'install' ? rawAction : 'connect',
     reason: typeof row.reason === 'string' ? row.reason : '',
-    server: typeof row.server === 'string' ? row.server : ''
+    servers: [...new Set([...single, ...listed])]
   }
 }
 
 /** The tool's settled JSON — the card's outcome plus the tool-only
  *  `unanswered` status (timeout, no user action). */
 type SettledResult = Omit<Partial<McpSetupOutcome>, 'status'> & {
-  status?: McpSetupOutcome['status'] | 'unanswered'
+  status?: 'unanswered' | McpSetupOutcome['status']
   note?: string
-}
-
-function readSetupResult(result: unknown): SettledResult {
-  return parseMaybeObject(result) as SettledResult
 }
 
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
@@ -114,53 +140,39 @@ function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.mcpSetup
   const fromArgs = useMemo(() => readSetupArgs(args), [args])
-  const fromResult = useMemo(() => readSetupResult(result), [result])
+  const fromResult = useMemo(() => parseMaybeObject(result) as SettledResult, [result])
 
-  const server = fromResult.server || fromArgs.server
   const status = fromResult.status ?? 'error'
-  const displayName = prettyName(server)
 
-  const line =
-    status === 'installed'
-      ? copy.installed(displayName)
-      : status === 'enabled'
-        ? copy.enabled(displayName)
-        : status === 'authorized'
-          ? copy.authorized(displayName)
-          : status === 'declined'
-            ? copy.declined
-            : status === 'unanswered'
-              ? copy.unanswered
-              : copy.failed(displayName)
-
-  const ok = status === 'installed' || status === 'enabled' || status === 'authorized'
-  const neutral = status === 'declined' || status === 'unanswered'
-  const toolCount = Array.isArray(fromResult.tools) ? fromResult.tools.length : 0
-  const brand = brandFor(server)
+  // Older single-connector answers have no `connectors` array; synthesize one
+  // so the settled view reads identically for both shapes.
+  const connectors: McpConnectorOutcome[] = Array.isArray(fromResult.connectors)
+    ? fromResult.connectors
+    : [
+        {
+          server: fromResult.server || fromArgs.servers[0] || '',
+          status: status === 'connected' ? 'connected' : status === 'declined' ? 'declined' : 'error'
+        }
+      ]
 
   return (
-    <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="mcp-setup-inline">
-      <SetupLine
-        trailing={
-          ok ? (
-            <CheckCircle2 aria-hidden className={cn(ICON_CLASS, 'text-emerald-400')} />
-          ) : neutral && brand ? (
-            <brand.Icon aria-hidden className="mt-px size-4 shrink-0 opacity-60" style={brandGlyphStyle(brand)} />
-          ) : neutral ? (
-            <Codicon className={ICON_CLASS} name="plug" size="1rem" />
-          ) : (
-            <AlertCircle aria-hidden className={cn(ICON_CLASS, 'text-destructive')} />
-          )
-        }
-      >
-        <span className={cn('font-medium', neutral && 'italic text-(--ui-text-tertiary)')}>{line}</span>
-        {ok && toolCount > 0 && <span className="ml-2 text-(--ui-text-tertiary)">{copy.toolCount(toolCount)}</span>}
-        {!ok && !neutral && fromResult.detail ? (
-          <p className="mt-0.5 text-(--ui-text-secondary)">{fromResult.detail}</p>
-        ) : null}
-      </SetupLine>
+    <div className="my-1.5" data-slot="mcp-setup-inline">
+      {connectors.map(connector => (
+        <ConnectorSummary
+          connector={{ name: connector.server, title: connectorTitle(connector.server) }}
+          key={connector.server}
+          meta={outcomeMeta(connector, copy)}
+          tone={connector.status === 'error' ? 'error' : undefined}
+        />
+      ))}
     </div>
   )
+}
+
+/** One offered connector: what it is, and where it stands right now. */
+interface RowModel {
+  connector: Connector
+  state: ConnectorState
 }
 
 function McpSetupPending({ args }: ToolCallMessagePartProps) {
@@ -174,22 +186,88 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readSetupArgs(args), [args])
 
-  const server = fromArgs.server || request?.server || ''
-  const action: SetupAction = fromArgs.action ?? request?.action ?? 'install'
-  const reason = fromArgs.reason || request?.reason || ''
+  const names = useMemo(
+    () => (fromArgs.servers.length > 0 ? fromArgs.servers : (request?.servers ?? [])),
+    [fromArgs.servers, request?.servers]
+  )
 
-  const [working, setWorking] = useState(false)
+  const action: SetupAction = fromArgs.action ?? request?.action ?? 'connect'
+  const reason = fromArgs.reason || request?.reason || ''
+  const agentSteps = useMemo(() => request?.steps ?? [], [request?.steps])
+  // Names are the identity of this card's offer; join so the resolve effect
+  // doesn't re-run on every render just because the array is a new object.
+  const namesKey = names.join(',')
+
+  const [rows, setRows] = useState<null | RowModel[]>(null)
+  // Per-connector results. A card is finished when it has a `connected` entry
+  // or the user dismissed it; a failed entry keeps its card live and retryable.
+  const [results, setResults] = useState<Record<string, McpConnectorOutcome>>({})
+  const [dismissed, setDismissed] = useState<Record<string, boolean>>({})
+  const [inFlight, setInFlight] = useState<null | { name: string; phase: ConnectPhase }>(null)
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({})
-  const [entry, setEntry] = useState<McpCatalogEntry | null | undefined>(undefined)
-  const [envOpen, setEnvOpen] = useState(false)
+  const [envOpenFor, setEnvOpenFor] = useState<null | string>(null)
+  const [unresolved, setUnresolved] = useState<string[]>([])
   // Set when the user cancels mid-flight (a stuck OAuth tab, a hung install).
-  // The in-flight flow checks it at every poll boundary and aborts via the
-  // CANCELLED sentinel; the declined respond has already been sent by then.
+  // The in-flight pass checks it at every boundary and stops there; the
+  // respond carrying whatever had already landed has been sent by then.
   const cancelRef = useRef(false)
+  // `results`/`dismissed` are what render; these are what's true *right now*.
+  // Each card commits the moment it settles, so the "are we done" check and an
+  // Esc mid-connect both read live values rather than a stale closure.
+  const resultsRef = useRef<Record<string, McpConnectorOutcome>>({})
+  const dismissedRef = useRef<Record<string, boolean>>({})
+
+  const commitResult = useCallback((name: string, outcome: McpConnectorOutcome) => {
+    resultsRef.current = { ...resultsRef.current, [name]: outcome }
+    setResults(resultsRef.current)
+  }, [])
+
+  // Resolve the offered names down the connector ladder (catalog → curated
+  // directory → public registry) and read their current state, once.
+  useEffect(() => {
+    if (names.length === 0) {
+      return
+    }
+
+    let live = true
+
+    void (async () => {
+      const resolution = await resolveConnectors(names).catch((): ConnectorResolution => ({
+        connectors: [],
+        unresolved: names
+      }))
+
+      const states = await loadConnectorStates(resolution.connectors.map(entry => entry.name)).catch(
+        (): Record<string, ConnectorState> => ({})
+      )
+
+      if (!live) {
+        return
+      }
+
+      setUnresolved(resolution.unresolved)
+      setRows(
+        resolution.connectors.map(connector => ({
+          // A reviewed connector's own steps always win — those were checked
+          // by a human. The agent's only get a card when the connector came
+          // with none, which is every registry entry.
+          connector: connector.setup.length > 0 ? connector : { ...connector, setup: agentSteps },
+          // An explicit `authorize` is the agent saying it already saw a 401,
+          // which config alone can't tell us.
+          state: action === 'authorize' ? 'needs_auth' : (states[connector.name] ?? 'not_configured')
+        }))
+      )
+    })()
+
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- namesKey is the stable identity of `names`
+  }, [action, agentSteps, namesKey])
 
   // Race: tool.start fires a tick before mcp.setup.request — hold the buttons
   // until the gateway request is wired (same spinner rule as clarify).
-  const ready = Boolean(request?.requestId)
+  const ready = Boolean(request?.requestId) && rows !== null
 
   const respond = useCallback(
     async (outcome: McpSetupOutcome) => {
@@ -210,21 +288,21 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       // leave a live card that can be answered a second time.
       clearMcpSetupRequest(request.requestId, request.sessionId)
 
-      // A successful outcome changed mcp_servers — reload the live session
+      // Anything that landed changed mcp_servers — reload the live session
       // BEFORE unblocking the tool, or the agent resumes being told the
-      // server is ready while its tool snapshot still lacks it (the same
-      // write-through mcp-tab's silentReload does; consent was the card
-      // click, so no confirm prompt). Reload failure isn't outcome failure:
-      // the config landed, tools arrive next session — report it and move on.
-      if (outcome.status === 'installed' || outcome.status === 'enabled' || outcome.status === 'authorized') {
+      // connector is ready while its tool snapshot still lacks it. Reload
+      // failure isn't outcome failure: the config landed, tools arrive next
+      // session — report it and move on.
+      if (outcome.connectors.some(connector => connector.status === 'connected')) {
         try {
           await gateway.request('reload.mcp', { confirm: true, session_id: request.sessionId ?? undefined })
         } catch (error) {
           notifyError(error, copy.reloadFailed)
         }
 
-        // The just-set-up server must stop being suggested immediately.
+        // The just-connected servers must stop being suggested immediately.
         invalidateMcpSuggestionIndex()
+        invalidateConnectorCache()
       }
 
       try {
@@ -240,185 +318,132 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     [copy.gatewayDisconnected, copy.reloadFailed, copy.sendFailed, gateway, request]
   )
 
-  const decline = useCallback(() => {
-    // While a flow is in flight this is a CANCEL: answer declined right away
-    // and let the abandoned work notice via cancelRef at its next poll.
-    cancelRef.current = true
-    triggerHaptic('cancel')
-    void respond({ server, status: 'declined' })
-  }, [respond, server])
-
-  const approve = useCallback(async () => {
-    cancelRef.current = false
-    setWorking(true)
-
-    // Poll-boundary abort for the background-install loop; the OAuth flows
-    // carry their own cancel via completeMcpDesktopOAuth's `cancelled`.
-    const throwIfCancelled = <T,>(value: T): T => {
-      if (cancelRef.current) {
-        throw CANCELLED
-      }
-
-      return value
-    }
-
-    try {
-      if (action === 'enable') {
-        await setMcpServerEnabled(server, true)
-        triggerHaptic('submit')
-        await respond({ server, status: 'enabled' })
-
-        return
-      }
-
-      if (action === 'authorize') {
-        const flow = await completeMcpDesktopOAuth({
-          serverName: server,
-          start: authMcpServer,
-          status: getMcpOAuthFlow,
-          cancelled: () => cancelRef.current,
-          cancel: cancelMcpOAuthFlow,
-          openExternal: url => window.hermesDesktop.openExternal(url)
+  /** Answer the tool. Cards with no result were never connected — a card the
+   *  user dismissed, or walked away from, is a decline of that connector. */
+  const settle = useCallback(
+    async (final: Record<string, McpConnectorOutcome>) => {
+      await respond(
+        buildSetupOutcome({
+          names: (rows ?? []).map(row => row.connector.name),
+          results: final,
+          server: names[0] ?? ''
         })
-
-        triggerHaptic('submit')
-        await respond({ server, status: 'authorized', tools: (flow.tools ?? []).map(tool => tool.name) })
-
-        return
-      }
-
-      // Install: prefer the reviewed catalog entry when one exists; otherwise
-      // fall back to the desktop suggestion directory (official URL-only
-      // remotes), written through the same validated POST the dashboard's add
-      // form uses. Required catalog credentials get an inline prompt first
-      // (never pre-filled, never echoed back).
-      let resolved = entry
-
-      if (resolved === undefined) {
-        const catalog = await getMcpCatalog()
-        resolved = catalog.entries.find(candidate => candidate.name === server) ?? null
-        setEntry(resolved)
-      }
-
-      if (!resolved) {
-        const known = directoryEntry(server)
-
-        if (!known) {
-          await respond({ detail: copy.notInCatalog(server), server, status: 'error' })
-
-          return
-        }
-
-        // URL-only remote: add to config, then run the OAuth/probe flow so
-        // "Install" lands the user on a working server, not a 401. If the
-        // flow dies after the config write (cancel, closed OAuth tab), roll
-        // the write back — decline means "no server", not an unauthorized
-        // entry squatting in mcp_servers (authoritative-write rule).
-        await addMcpServer({ name: known.name, url: known.url })
-
-        let flow
-
-        try {
-          flow = await completeMcpDesktopOAuth({
-            serverName: known.name,
-            start: authMcpServer,
-            status: getMcpOAuthFlow,
-            cancelled: () => cancelRef.current,
-            cancel: cancelMcpOAuthFlow,
-            openExternal: url => window.hermesDesktop.openExternal(url)
-          })
-        } catch (error) {
-          await removeMcpServer(known.name).catch(() => {
-            // Rollback is best-effort; the primary error/cancel wins.
-          })
-          throw error
-        }
-
-        triggerHaptic('submit')
-        await respond({ server, status: 'installed', tools: (flow.tools ?? []).map(tool => tool.name) })
-
-        return
-      }
-
-      const required = resolved.required_env.filter(env => env.required)
-
-      if (required.some(env => !envDraft[env.name]?.trim())) {
-        // Reveal the credential fields; the user approves again once filled.
-        setEnvOpen(true)
-
-        return
-      }
-
-      const res = await installMcpCatalogEntry(server, envDraft)
-
-      // Git-backed entries clone in the background — poll to completion so a
-      // non-zero exit surfaces as a real failure instead of a false success.
-      if (res.background && res.action) {
-        for (;;) {
-          const status = throwIfCancelled(await getActionStatus(res.action, 1))
-
-          if (!status.running) {
-            if (status.exit_code !== 0) {
-              throw new Error(copy.failed(server))
-            }
-
-            break
-          }
-
-          await new Promise(resolve => setTimeout(resolve, CATALOG_INSTALL_POLL_MS))
-        }
-      }
-
-      triggerHaptic('submit')
-      await respond({ server, status: 'installed' })
-    } catch (error) {
-      // User cancel: the declined respond is already on the wire — the
-      // abandoned flow just stops, nothing to report.
-      if (error === CANCELLED || error instanceof McpOAuthCancelled) {
-        return
-      }
-
-      notifyError(error, copy.failed(server))
-      await respond({
-        detail: error instanceof Error ? error.message : String(error),
-        server,
-        status: 'error'
-      })
-    } finally {
-      setWorking(false)
-    }
-  }, [action, copy, entry, envDraft, respond, server])
-
-  const title =
-    action === 'enable'
-      ? copy.enableTitle(prettyName(server))
-      : action === 'authorize'
-        ? copy.authorizeTitle(prettyName(server))
-        : copy.installTitle(prettyName(server))
-
-  const actionLabel =
-    action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction
-
-  // What connecting actually means — the endpoint that will be contacted.
-  // VS Code's trust dialog links the config it's about to trust; same idea.
-  // Catalog entries carry their transport URL in the API response; the
-  // static directory remains a fallback rung for older backends.
-  const known = directoryEntry(server)
-  const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
-  const brand = brandFor(server)
-
-  const trailingIcon = brand ? (
-    <brand.Icon aria-hidden className="mt-px size-4 shrink-0" style={brandGlyphStyle(brand)} />
-  ) : (
-    <Codicon className={ICON_CLASS} name="plug" size="1rem" />
+      )
+    },
+    [names, respond, rows]
   )
 
-  // ⌘/Ctrl+Enter → approve, Esc → decline/cancel. Same accelerators, same
-  // guard shape as the approval bar (tool/approval.tsx). Unlike approve, Esc
-  // stays live while a flow is in flight — that's the cancel path. Stands
-  // down whenever a focusable control has focus (clarify's rule): a keystroke
-  // meant for the composer, a popover, or the card's own credential fields
-  // must never silently approve an install or throw away typed input.
+  /** Every card is finished when it either connected or was dismissed; a
+   *  failed card is NOT finished, because its Retry is still on offer. */
+  const finished = useCallback(
+    (name: string) => resultsRef.current[name]?.status === 'connected' || dismissedRef.current[name],
+    []
+  )
+
+  const settleIfDone = useCallback(async () => {
+    if ((rows ?? []).every(row => finished(row.connector.name))) {
+      await settle(resultsRef.current)
+    }
+  }, [finished, rows, settle])
+
+  /** Dismiss one card. The last one standing closes out the tool. */
+  const dismiss = useCallback(
+    (name: string) => {
+      dismissedRef.current = { ...dismissedRef.current, [name]: true }
+      setDismissed(dismissedRef.current)
+      triggerHaptic('cancel')
+      void settleIfDone()
+    },
+    [settleIfDone]
+  )
+
+  /** Esc — give up on everything still unfinished at once. Connectors that
+   *  already succeeded stay reported as connected. */
+  const dismissAll = useCallback(() => {
+    cancelRef.current = true
+    dismissedRef.current = Object.fromEntries((rows ?? []).map(row => [row.connector.name, true]))
+    setDismissed(dismissedRef.current)
+    triggerHaptic('cancel')
+    void settle(resultsRef.current)
+  }, [rows, settle])
+
+  const connect = useCallback(
+    async (row: RowModel) => {
+      const name = row.connector.name
+
+      // Credentials this connector declares but the user hasn't filled in yet
+      // — reveal its fields and wait for a second click.
+      if (
+        row.state === 'not_configured' &&
+        row.connector.requiredEnv.some(env => env.required && !envDraft[env.name]?.trim())
+      ) {
+        setEnvOpenFor(name)
+
+        return
+      }
+
+      cancelRef.current = false
+      setInFlight({ name, phase: 'adding' })
+
+      try {
+        const result = await connectConnector(row.connector, row.state, {
+          cancelled: () => cancelRef.current,
+          env: envDraft,
+          onPhase: phase => setInFlight(current => (current?.name === name ? { name, phase } : current))
+        })
+
+        commitResult(name, { server: name, status: 'connected', tools: result.tools })
+        triggerHaptic('submit')
+      } catch (error) {
+        // A closed sign-in tab is not a refusal — leave the card as it was so
+        // its Connect is still there.
+        if (!(error instanceof ConnectorCancelled) && !(error instanceof McpOAuthCancelled)) {
+          commitResult(name, {
+            detail: error instanceof Error ? error.message : String(error),
+            needsAuth: error instanceof ConnectorNeedsAuth,
+            server: name,
+            status: 'error'
+          })
+        }
+
+        // A refused credential is a wrong credential. Open the field that
+        // holds it so the correction is right there, rather than behind
+        // another click on a button that reads Grant access.
+        if (error instanceof ConnectorNeedsAuth && row.connector.requiredEnv.length > 0) {
+          setEnvOpenFor(name)
+        }
+
+        // The failure usually left the connector in config — an install that
+        // wrote its stanza, a sign-in that got a token too narrow to use. The
+        // row's state was read before any of that, so a retry against it would
+        // re-run the wrong half of the flow: re-installing what is installed,
+        // or adding what is already there instead of asking for access again.
+        const states = await loadConnectorStates([name]).catch((): Record<string, ConnectorState> => ({}))
+
+        setRows(
+          current =>
+            current?.map(entry =>
+              entry.connector.name === name ? { ...entry, state: states[name] ?? entry.state } : entry
+            ) ?? current
+        )
+      } finally {
+        setInFlight(null)
+      }
+
+      if (!cancelRef.current) {
+        await settleIfDone()
+      }
+    },
+    [commitResult, envDraft, settleIfDone]
+  )
+
+  // ⌘/Ctrl+Enter acts on the first unfinished card, Esc gives up on all of
+  // them. Same accelerators and the same guard shape as the approval bar
+  // (tool/approval.tsx). Esc stays live while a connect is in flight — that's
+  // the cancel path for a stuck OAuth tab. Stands down whenever a focusable
+  // control has focus (clarify's rule): a keystroke meant for the composer, a
+  // popover, or a card's credential field must never silently connect
+  // something or throw away typed input.
   useEffect(() => {
     if (!ready) {
       return
@@ -439,84 +464,87 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       }
 
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        if (!working) {
+        const next = (rows ?? []).find(row => !finished(row.connector.name))
+
+        if (next && !inFlight) {
           event.preventDefault()
-          void approve()
+          void connect(next)
         }
       } else if (event.key === 'Escape') {
         event.preventDefault()
-        decline()
+        dismissAll()
       }
     }
 
     window.addEventListener('keydown', onKeyDown, true)
 
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [approve, decline, ready, working])
+  }, [connect, dismissAll, finished, inFlight, ready, rows])
 
   if (!ready) {
     return (
       <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="mcp-setup-inline">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
-        <span className="text-(--ui-text-tertiary)">{title}</span>
+        <span className="text-(--ui-text-tertiary)">{copy.lookingUp(names.map(connectorTitle).join(', '))}</span>
       </div>
     )
   }
 
-  return (
-    <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="mcp-setup-inline">
-      <SetupLine trailing={trailingIcon}>
-        <span className="font-medium leading-(--conversation-line-height)">{title}</span>
-        {reason ? <p className="mt-0.5 text-(--ui-text-secondary)">{reason}</p> : null}
-        {sourceLine && <p className="mt-0.5 truncate text-[0.6875rem] text-(--ui-text-tertiary)">{sourceLine}</p>}
-      </SetupLine>
-      {envOpen && entry && entry.required_env.length > 0 && (
-        <div className="grid gap-2" data-slot="mcp-setup-env">
-          <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
-          {entry.required_env.map(env => (
-            <label className="grid gap-1" key={env.name}>
-              <span className="text-[0.6875rem] text-(--ui-text-secondary)">
-                {env.prompt || env.name}
-                {env.required ? ' *' : ''}
-              </span>
-              <Input
-                className="h-7 text-xs"
-                onChange={event => setEnvDraft(prev => ({ ...prev, [env.name]: event.currentTarget.value }))}
-                type="password"
-                value={envDraft[env.name] ?? ''}
-              />
-            </label>
-          ))}
-        </div>
-      )}
-      {/* Same strip as the tool approval bar (tool/approval.tsx): a bordered
-          primary-tinted action plus a quiet ghost decline, with the matching
-          keyboard hints. One consent vocabulary across the transcript. */}
-      <div className="flex items-center gap-2.5">
-        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+  // Every offered name failed to resolve — there is nothing to consent to,
+  // so say which ones and let the agent move on rather than showing a
+  // connect button that cannot work.
+  if (rows.length === 0) {
+    return (
+      <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="mcp-setup-inline">
+        <SetupLine trailing={<AlertCircle aria-hidden className={cn(ICON_CLASS, 'text-destructive')} />}>
+          <span className="font-medium">{copy.notFound(unresolved.map(connectorTitle).join(', '))}</span>
+        </SetupLine>
+        <div className="flex items-center gap-2.5">
           <Button
-            className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-            disabled={working}
-            onClick={() => void approve()}
+            className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
+            onClick={dismissAll}
             size="xs"
             variant="ghost"
           >
-            {working ? <Loader2 className="size-3 animate-spin" /> : actionLabel}
-            {!working && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+            {copy.dismiss}
+            <span className="text-[0.625rem] opacity-55">Esc</span>
           </Button>
         </div>
-        {/* Never disabled: while a flow is in flight this is the cancel —
-            a stuck OAuth tab or hung install must always have a way out. */}
-        <Button
-          className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-          onClick={decline}
-          size="xs"
-          variant="ghost"
-        >
-          {working ? t.common.cancel : copy.decline}
-          <span className="text-[0.625rem] opacity-55">Esc</span>
-        </Button>
       </div>
+    )
+  }
+
+  // One card per connector. A connector IS the unit of state here — its own
+  // auth, its own endpoint, its own failure — so it gets its own surface
+  // rather than a row inside a shared verdict.
+  return (
+    <div className="my-1.5 grid gap-2" data-slot="mcp-setup-inline">
+      {reason ? <p className="text-(--ui-text-secondary)">{reason}</p> : null}
+
+      {rows.map(row => (
+        <ConnectorCard
+          connector={row.connector}
+          copy={copy}
+          dismissed={dismissed[row.connector.name] ?? false}
+          envDraft={envDraft}
+          envOpen={envOpenFor === row.connector.name}
+          key={row.connector.name}
+          onConnect={() => void connect(row)}
+          onDismiss={() => dismiss(row.connector.name)}
+          onEnvChange={(key, value) => setEnvDraft(prev => ({ ...prev, [key]: value }))}
+          // One connect at a time: two OAuth tabs racing for focus is hostile.
+          otherBusy={inFlight !== null && inFlight.name !== row.connector.name}
+          outcome={results[row.connector.name]}
+          phase={inFlight?.name === row.connector.name ? copy.phase[inFlight.phase] : undefined}
+          state={row.state}
+        />
+      ))}
+
+      {unresolved.length > 0 && (
+        <p className="text-[0.6875rem] text-(--ui-text-tertiary)">
+          {copy.notFound(unresolved.map(connectorTitle).join(', '))}
+        </p>
+      )}
     </div>
   )
 }

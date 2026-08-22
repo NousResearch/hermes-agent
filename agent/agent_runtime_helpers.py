@@ -3311,7 +3311,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(
                 _setup_mcp_tool(
                     server=next_args.get("server", ""),
-                    action=next_args.get("action", "install"),
+                    servers=next_args.get("servers"),
+                    action=next_args.get("action", "connect"),
                     reason=next_args.get("reason", ""),
                     callback=getattr(agent, "setup_mcp_callback", None),
                 ),

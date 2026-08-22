@@ -137,14 +137,44 @@ class SuggestSpec:
 
 
 @dataclass
+class SetupStep:
+    """One thing only the user can do, before the connector can work.
+
+    Creating a Google Cloud project, enabling a plugin inside the Unreal
+    editor, generating a token in someone's admin console: work that happens
+    on another site or another app, that no amount of automation on our side
+    removes. The most a client can do is name it precisely and link straight
+    to the page.
+
+    ``text`` carries inline markdown links, because a real step routinely
+    points at more than one page ("enable the Docs API and the Drive API")
+    and a single ``url`` field would force that into two steps that read
+    like busywork.
+
+    Distinct from ``post_install``, which is the notes-after-the-fact field.
+    Setup steps block the connector working at all; post-install notes
+    describe what to do once it does.
+    """
+
+    text: str
+
+
+@dataclass
 class CatalogEntry:
     name: str
     description: str
     source: str
     transport: TransportSpec
     auth: AuthSpec
+    # The product's own site ("https://n8n.io"). Optional, and only ever an
+    # identity hint: UIs read its favicon so a connector without a bundled
+    # brand glyph still shows its own mark. `source` can't stand in for it —
+    # that points at the bridge's repo, so a third-party bridge to n8n would
+    # wear GitHub's logo.
+    homepage: str = ""
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
+    setup: List[SetupStep] = field(default_factory=list)
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
@@ -206,6 +236,9 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: 'description' required")
 
     source = str(data.get("source") or "").strip()
+    homepage = str(data.get("homepage") or "").strip()
+    if homepage and not homepage.startswith(("http://", "https://")):
+        raise CatalogError(f"{path}: 'homepage' must be an http(s) URL")
 
     transport_raw = data.get("transport") or {}
     if not isinstance(transport_raw, dict):
@@ -334,14 +367,21 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             bootstrap=[str(c) for c in bootstrap],
         )
 
+    setup_raw = data.get("setup") or []
+    if not isinstance(setup_raw, list):
+        raise CatalogError(f"{path}: 'setup' must be a list of steps")
+    setup = [SetupStep(text=text) for text in (str(s).strip() for s in setup_raw) if text]
+
     return CatalogEntry(
         name=name,
         description=description,
         source=source,
+        homepage=homepage,
         transport=transport,
         auth=auth,
         tools=tools_spec,
         install=install,
+        setup=setup,
         post_install=str(data.get("post_install") or ""),
         suggest=suggest,
         manifest_path=path,
@@ -569,8 +609,16 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-        if t.env:
-            cfg["env"] = dict(t.env)
+        env = dict(t.env) if t.env else {}
+        if entry.auth.type == "api_key":
+            # A stdio child's environment is allowlist-filtered
+            # (_build_safe_env), so a credential in .env reaches it only if
+            # the stanza names it. Referenced, not inlined: ${NAME} resolves
+            # at connect time, keeping config.yaml free of secrets.
+            for var in entry.auth.env:
+                env.setdefault(var.name, f"${{{var.name}}}")
+        if env:
+            cfg["env"] = env
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

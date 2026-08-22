@@ -677,6 +677,32 @@ DEFAULT_CONFIG = {
         # When disabled, the watcher still detects the change and prints
         # guidance to apply it deliberately via /reload-mcp.
         "auto_reload_on_config_change": True,
+
+        # Connectors the user said they use, from the desktop onboarding
+        # step (and editable in Capabilities). These are an INTENT list, not
+        # configured servers: nothing is written to mcp_servers and no
+        # credential is collected until the agent actually needs one, at
+        # which point setup_mcp raises the inline consent card. Names match
+        # catalog / registry connector names ("linear", "notion").
+        "connectors": [],
+
+        # Off-catalog discovery via the official MCP Registry. The reviewed
+        # optional-mcps/ catalog is unaffected and always ranks first; this
+        # only widens what the agent can PROPOSE, never what it can install
+        # without consent. Results are hosted endpoints only — a registry
+        # entry's package launcher (npx/uvx/docker) is never offered,
+        # because installing one is arbitrary code execution.
+        "registry": {
+            "enabled": True,
+            "url": "https://registry.modelcontextprotocol.io",
+            "timeout_seconds": 8,
+            "cache_ttl_minutes": 30,
+            # Include entries whose publisher namespace does NOT own the
+            # endpoint domain. They are labeled "community" and the consent
+            # card warns before connecting. Set false to hard-limit
+            # discovery to publisher-verified endpoints.
+            "allow_unverified": True,
+        },
     },
 
     # Tool-output truncation thresholds. When terminal output or a

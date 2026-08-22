@@ -1,4 +1,4 @@
-import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
+import type { McpCatalogResponse, McpRegistrySearchResponse, McpServerSummary } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
@@ -129,6 +129,21 @@ export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogRespons
   return window.hermesDesktop.api<McpCatalogResponse>({
     ...capabilityScoped(profile),
     path: '/api/mcp/catalog'
+  })
+}
+
+/** Search the public MCP registry for hosted connectors the reviewed catalog
+ *  doesn't carry. Results are remotes only and carry a `trust` label; the
+ *  backend owns both filters, so this is display data, not a capability. */
+export function searchMcpRegistry(
+  query: string,
+  limit = 12,
+  profile?: ProfileScope
+): Promise<McpRegistrySearchResponse> {
+  return window.hermesDesktop.api<McpRegistrySearchResponse>({
+    ...capabilityScoped(profile),
+    path: `/api/mcp/registry/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    timeoutMs: 20_000
   })
 }
 

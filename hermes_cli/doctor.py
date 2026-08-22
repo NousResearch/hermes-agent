@@ -494,6 +494,27 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     return lines
 
 
+def _wal_size_is_runaway(wal_size: int, configured_limit: int | None = None) -> bool:
+    """Return whether a WAL is materially above its retained high-water limit.
+
+    SessionDB intentionally retains up to 64 MiB for reuse. Treating that
+    bounded allocation as a missed checkpoint makes doctor report an issue
+    that ``doctor --fix`` cannot clear. Allow one MiB of frame/header slack
+    above the configured limit before classifying the WAL as runaway.
+    """
+    if configured_limit is None:
+        try:
+            from hermes_state import _WAL_SIZE_LIMIT_BYTES
+
+            configured_limit = _WAL_SIZE_LIMIT_BYTES
+        except (ImportError, AttributeError):
+            configured_limit = 64 * 1024 * 1024
+
+    warning_floor = 50 * 1024 * 1024
+    retained_high_water = max(0, configured_limit) + 1024 * 1024
+    return wal_size > max(warning_floor, retained_high_water)
+
+
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
@@ -1954,12 +1975,14 @@ def run_doctor(args):
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
-    # Check WAL file size (unbounded growth indicates missed checkpoints)
+    # Check WAL file size. SessionDB deliberately retains a bounded 64 MiB
+    # high-water allocation for reuse; only growth beyond that configured
+    # limit indicates missed checkpoints.
     wal_path = hermes_home / "state.db-wal"
     if wal_path.exists():
         try:
             wal_size = wal_path.stat().st_size
-            if wal_size > 50 * 1024 * 1024:  # 50 MB
+            if _wal_size_is_runaway(wal_size):
                 check_warn(
                     f"WAL file is large ({wal_size // (1024*1024)} MB)",
                     "(may indicate missed checkpoints)"

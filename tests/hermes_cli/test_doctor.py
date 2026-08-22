@@ -124,6 +124,18 @@ class TestDoctorToolAvailabilitySummary:
         ]
 
 
+class TestDoctorWalSizeClassification:
+    def test_configured_wal_high_water_mark_is_not_runaway(self):
+        limit = 64 * 1024 * 1024
+
+        assert not doctor._wal_size_is_runaway(limit, configured_limit=limit)
+
+    def test_wal_beyond_configured_limit_is_runaway(self):
+        limit = 64 * 1024 * 1024
+
+        assert doctor._wal_size_is_runaway(limit + 2 * 1024 * 1024, configured_limit=limit)
+
+
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
     Chinese locale (GBK) because `.env` was read with Path.read_text() which

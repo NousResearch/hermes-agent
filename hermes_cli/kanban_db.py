@@ -10706,6 +10706,23 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+def _clear_inherited_terminal_config_env(env: dict[str, str]) -> None:
+    """Drop terminal config bridged by the dispatcher's active profile.
+
+    A long-lived gateway mirrors its own ``terminal.*`` config into
+    ``TERMINAL_*`` variables. Kanban workers switch ``HERMES_HOME`` to the
+    assignee profile, so keeping those variables would let the gateway
+    profile override the worker's backend, container settings, and explicit
+    credential-forwarding allowlist. Clear only the canonical config bridge;
+    the child process will load the assignee profile's dotenv and config at
+    startup. Worker-specific cwd and timeout pins are applied afterwards.
+    """
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+
+    for env_var in TERMINAL_CONFIG_ENV_MAP.values():
+        env.pop(env_var, None)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -10756,9 +10773,9 @@ def _default_spawn(
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
-        # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    _clear_inherited_terminal_config_env(env)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -10782,7 +10799,7 @@ def _default_spawn(
     # fixes both: the workspace is where the task's work actually happens.
     # Only pin a real, absolute directory — file_tools rejects relative /
     # sentinel TERMINAL_CWD values, so a non-dir workspace must NOT be set
-    # here (leave the inherited value rather than write a meaningless one).
+    # here (leave it unset rather than write a meaningless one).
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:

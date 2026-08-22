@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -121,14 +122,14 @@ def test_legacy_string_context_and_injected_bytes_are_unchanged(monkeypatch):
     assert structured_text.encode("utf-8") == legacy_text.encode("utf-8")
 
 
-def test_structured_context_merge_and_exact_operation_event(monkeypatch):
+def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
     events = []
     _capture_hook(monkeypatch, events)
     manager = MemoryManager()
     first = StructuredMemoryProvider(
         name="builtin",
         result=MemoryPrefetchResult(
-            context="first",
+            context="first — résumé",
             observations=(_observation(),),
         ),
     )
@@ -144,13 +145,102 @@ def test_structured_context_merge_and_exact_operation_event(monkeypatch):
 
     result = manager.prefetch_all_result("question", session_id="session-a")
 
-    assert result.context == "first\n\nsecond"
+    expected_context = "first — résumé\n\nsecond"
+    expected_bytes = expected_context.encode("utf-8")
+    assert result.context == expected_context
     assert result.observations
     assert [item.provider for item in result.observations] == ["builtin", "external"]
-    assert events and events[0]["result"] is result
-    assert events[0]["query"] == "question"
-    assert events[0]["session_id"] == "session-a"
-    assert events[0]["result"].context == result.context
+    assert events
+    event = events[0]
+    assert set(event) == {
+        "query",
+        "session_id",
+        "observations",
+        "context_sha256",
+        "context_byte_length",
+    }
+    assert "result" not in event
+    assert event["observations"] is result.observations
+    assert event["query"] == "question"
+    assert event["session_id"] == "session-a"
+    assert event["context_sha256"] == hashlib.sha256(expected_bytes).hexdigest()
+    assert event["context_byte_length"] == len(expected_bytes)
+    assert event["context_byte_length"] != len(expected_context)
+    # The hook's return value is ignored; it cannot transform the public result.
+    assert result.context == expected_context
+
+
+def test_mixed_legacy_and_structured_context_keeps_legacy_bytes_out_of_hook(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    legacy_context = "legacy raw recall that must not cross the hook"
+    legacy = FakeMemoryProvider(name="builtin")
+    legacy._prefetch_result = legacy_context
+    structured = StructuredMemoryProvider(
+        name="external",
+        result=MemoryPrefetchResult(
+            context="structured recall",
+            observations=(_observation({"source": "explicit"}),),
+        ),
+    )
+    manager = MemoryManager()
+    manager.add_provider(legacy)
+    manager.add_provider(structured)
+
+    result = manager.prefetch_all_result("exact query", session_id="session-a")
+
+    assert result.context == f"{legacy_context}\n\nstructured recall"
+    assert len(events) == 1
+    event = events[0]
+    assert "result" not in event
+    assert legacy_context not in repr(event)
+    assert event["observations"] == result.observations
+    assert [item.provider for item in event["observations"]] == ["external"]
+
+
+def test_hook_receives_exact_clean_query(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    expanded_query = (
+        '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]\n\n"
+        "Large skill body that must not be sent to recall.\n\n"
+        "The user has provided the following instruction alongside the skill invocation: "
+        "exact clean query"
+    )
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="context",
+                observations=(_observation(),),
+            ),
+        )
+    )
+
+    manager.prefetch_all_result(expanded_query, session_id="session-a")
+
+    assert events[0]["query"] == "exact clean query"
+    assert "Large skill body" not in events[0]["query"]
+
+
+def test_structured_context_without_observation_does_not_emit(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(context="structured but undisclosed"),
+        )
+    )
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "structured but undisclosed"
+    assert result.observations == ()
+    assert events == []
 
 
 def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
@@ -226,8 +316,8 @@ def test_hook_callback_errors_are_isolated(monkeypatch):
     def broken(**kwargs):
         raise RuntimeError("observer failure")
 
-    def healthy(result, **kwargs):
-        seen.append(result)
+    def healthy(observations, **kwargs):
+        seen.append(observations)
 
     ctx = plugins.PluginContext(plugins.PluginManifest(name="fixture"), plugin_manager)
     ctx.register_hook("memory_prefetch", broken)
@@ -244,7 +334,7 @@ def test_hook_callback_errors_are_isolated(monkeypatch):
     result = manager.prefetch_all_result("question", session_id="session")
 
     assert result.context == "context"
-    assert seen == [result]
+    assert seen == [result.observations]
 
 
 def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
@@ -277,8 +367,12 @@ def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
         assert result.observations[0].payload["session_id"] == session_id
         matching = [event for event in events if event["session_id"] == session_id]
         assert len(matching) == 1
-        assert matching[0]["result"] is result
-        assert matching[0]["result"].observations[0].payload["session_id"] == session_id
+        event = matching[0]
+        assert "result" not in event
+        assert event["observations"][0].payload["session_id"] == session_id
+        encoded = result.context.encode("utf-8")
+        assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
+        assert event["context_byte_length"] == len(encoded)
 
 
 def test_invalid_provider_return_keeps_existing_provider_isolation(monkeypatch):

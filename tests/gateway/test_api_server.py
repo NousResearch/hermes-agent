@@ -2533,20 +2533,25 @@ class TestModelRoutesAgentCreation:
 
     def test_route_provider_resolves_provider_credentials(self, monkeypatch):
         captured = {}
+        resolved = {}
 
         class FakeAgent:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
-        monkeypatch.setattr(
-            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-            lambda provider: {
+        def resolve_provider(provider, *, target_model=None):
+            resolved["call"] = (provider, target_model)
+            return {
                 "provider": provider,
                 "api_key": f"sk-{provider}",
                 "base_url": f"https://{provider}.example/v1",
                 "api_mode": "chat_completions",
-            },
+            }
+
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            resolve_provider,
         )
         adapter = _make_routing_adapter(
             {"alias": {"model": "other/model", "provider": "otherprov"}}
@@ -2559,6 +2564,7 @@ class TestModelRoutesAgentCreation:
         assert captured["model"] == "other/model"
         assert captured["provider"] == "otherprov"
         assert captured["api_key"] == "sk-otherprov"
+        assert resolved["call"] == ("otherprov", "other/model")
 
 
     def test_session_model_override_beats_route(self, monkeypatch):

@@ -239,6 +239,7 @@ class ChronosCronScheduler(CronScheduler):
         adapters: Any = None,
         loop: Any = None,
         cancel_event: Any = None,
+        profile_adapters: Any = None,
     ) -> bool:
         job_id = claimed_job["id"]
         ran = super().fire_claimed(
@@ -246,6 +247,7 @@ class ChronosCronScheduler(CronScheduler):
             adapters=adapters,
             loop=loop,
             cancel_event=cancel_event,
+            profile_adapters=profile_adapters,
         )
         if ran:
             from cron.jobs import get_job

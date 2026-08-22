@@ -41,6 +41,109 @@ def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     assert [name for name, _home in homes] == ["default", "worker"]
 
 
+class _FakeRunner:
+    """Minimal GatewayRunner stand-in for _build_cron_start_kwargs tests."""
+
+    def __init__(self, profile_adapters=None, draining=False):
+        self.adapters = {"telegram": "default-telegram-adapter"}
+        self.config = GatewayConfig(multiplex_profiles=True)
+        self._profile_adapters = profile_adapters
+        self._draining = draining
+        self._external_drain_active = False
+
+
+class _ExternalProvider:
+    """A provider that is NOT the built-in in-process ticker (Chronos-like).
+
+    Its ``start`` mirrors the external provider contract:
+    ``start(stop_event, *, adapters, loop, interval)`` — no
+    ``profile_adapters``/``profile_homes``/``can_dispatch`` kwargs.
+    """
+
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+        pass
+
+
+def test_cron_start_kwargs_external_provider_gets_no_profile_kwargs():
+    """Review #83197 blocker 1: external providers (Chronos) must NEVER receive
+    ``profile_adapters`` (or the other in-process-only kwargs) in
+    ``cron_start_kwargs`` — their ``start()`` signature does not accept them
+    and a multiplex deployment would crash with a deterministic TypeError."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    runner = _FakeRunner(profile_adapters={"coder": {"telegram": "coder-adapter"}})
+    external = _ExternalProvider()
+
+    async def _build():
+        return gateway_run._build_cron_start_kwargs(
+            runner, external, multiplex_cron=True
+        )
+
+    kwargs = asyncio.run(_build())
+    assert "profile_adapters" not in kwargs
+    assert "profile_homes" not in kwargs
+    assert "can_dispatch" not in kwargs
+    assert "adapters" in kwargs
+    assert "loop" in kwargs
+
+
+def test_cron_start_kwargs_inprocess_gets_profile_adapters_under_multiplex():
+    """Review #1 blocker 1 positive path: when the resolved provider IS the
+    in-process scheduler and the runner has a per-profile adapter registry,
+    ``profile_adapters`` is injected (plus the multiplex profile homes and the
+    drain gate) so multiplex cron delivery routes through the owning profile's
+    bot/chat."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    pa = {"coder": {"telegram": "coder-telegram-adapter"}}
+    runner = _FakeRunner(profile_adapters=pa)
+    provider = InProcessCronScheduler()
+    gateway_run._multiplex_profile_homes = lambda config: [("default", None)]
+
+    async def run():
+        return gateway_run._build_cron_start_kwargs(
+            runner, provider, multiplex_cron=True
+        )
+
+    kwargs = asyncio.run(run())
+    assert kwargs["profile_adapters"] is pa
+    assert kwargs["profile_homes"] == [("default", None)]
+    assert callable(kwargs["can_dispatch"])
+    assert kwargs["can_dispatch"]() is True
+
+
+def test_cron_start_kwargs_inprocess_without_registry_omits_key():
+    """Review #1: an in-process provider whose gateway has NO per-profile
+    registry must simply omit ``profile_adapters`` — the key only exists when
+    there is an actual per-profile adapter map to thread through."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    runner = _FakeRunner(profile_adapters=None)
+    provider = InProcessCronScheduler()
+    gateway_run._multiplex_profile_homes = lambda config: []
+
+    async def run():
+        return gateway_run._build_cron_start_kwargs(
+            runner, provider, multiplex_cron=True
+        )
+
+    kwargs = asyncio.run(run())
+    assert "profile_adapters" not in kwargs
+    # No profile homes resolved -> the key is omitted entirely (matches the
+    # original start_gateway behavior: empty homes list never sets the kwarg).
+    assert "profile_homes" not in kwargs
+    assert callable(kwargs["can_dispatch"])
+
+
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 

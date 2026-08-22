@@ -154,6 +154,22 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def clone_profile(
+        self,
+        profile_name: str,
+        *,
+        source_dir,
+        profile_dir,
+        clone_all: bool = False,
+    ) -> object | None:
+        """Apply provider-owned state when Hermes clones a profile.
+
+        Providers that keep identity or connection state outside config.yaml
+        may override this hook. The default is intentionally a no-op so older
+        and third-party providers remain compatible.
+        """
+        return None
+
     def system_prompt_block(self) -> str:
         """Return text to include in the system prompt.
 

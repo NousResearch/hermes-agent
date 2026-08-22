@@ -18,6 +18,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 import yaml
 
+import plugins.memory.honcho.cli as honcho_cli
+
 from hermes_cli import profiles
 from hermes_cli.profiles import (
     normalize_profile_name,
@@ -150,6 +152,78 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_runs_memory_provider_profile_clone(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "honcho.json").write_text(json.dumps({
+            "apiKey": "***",
+            "shareAiPeerAcrossProfiles": True,
+            "hosts": {
+                "hermes": {
+                    "aiPeer": "shared-assistant",
+                    "peerName": "eri",
+                    "workspace": "shared",
+                },
+            },
+        }))
+        monkeypatch.setattr(
+            honcho_cli, "_ensure_peer_exists",
+            lambda host_key=None: True,
+        )
+
+        create_profile("coder", clone_config=True, no_alias=True)
+
+        honcho = json.loads((default_home / "honcho.json").read_text())
+        assert honcho["hosts"]["hermes_coder"]["aiPeer"] == "shared-assistant"
+
+    def test_clone_all_updates_copied_honcho_config(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        (default_home / "honcho.json").write_text(json.dumps({
+            "apiKey": "***",
+            "shareAiPeerAcrossProfiles": True,
+            "hosts": {
+                "hermes": {
+                    "aiPeer": "shared-assistant",
+                    "peerName": "eri",
+                    "workspace": "shared",
+                },
+            },
+        }))
+        monkeypatch.setattr(
+            honcho_cli, "_ensure_peer_exists",
+            lambda host_key=None, **kwargs: True,
+        )
+
+        profile_dir = create_profile(
+            "coder",
+            clone_from="default",
+            clone_all=True,
+            no_alias=True,
+        )
+
+        honcho = json.loads((profile_dir / "honcho.json").read_text())
+        assert honcho["hosts"]["hermes_coder"]["aiPeer"] == "shared-assistant"
+
+    def test_clone_preserves_legacy_global_honcho_integration(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        global_honcho = profile_env / ".honcho" / "config.json"
+        global_honcho.parent.mkdir()
+        global_honcho.write_text(json.dumps({
+            "apiKey": "***",
+            "shareAiPeerAcrossProfiles": True,
+            "hosts": {"hermes": {"aiPeer": "shared-assistant"}},
+        }))
+        monkeypatch.setattr(
+            honcho_cli, "_ensure_peer_exists",
+            lambda host_key=None: True,
+        )
+
+        create_profile("coder", clone_config=True, no_alias=True)
+
+        honcho = json.loads((default_home / "honcho.json").read_text())
+        assert honcho["hosts"]["hermes_coder"]["aiPeer"] == "shared-assistant"
 
 
 

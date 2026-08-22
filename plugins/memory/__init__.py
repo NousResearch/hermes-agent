@@ -39,7 +39,8 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple, TYPE_CHECKING
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config_readonly
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 if TYPE_CHECKING:
     from agent.memory_provider import MemoryProvider
@@ -364,6 +365,65 @@ def load_memory_provider(
     except Exception as e:
         logger.warning("Failed to load memory provider '%s': %s", name, e)
         return None
+
+
+def clone_memory_provider_profile(
+    profile_name: str,
+    *,
+    source_dir: Path,
+    profile_dir: Path,
+    clone_all: bool = False,
+) -> object | None:
+    """Run the cloned profile's configured memory-provider hook.
+
+    The active provider comes from the source config.yaml. Providers with
+    legacy out-of-band state may also declare ``profile_clone: true`` in
+    plugin.yaml so their hook can probe that state without coupling profile
+    creation to a provider-specific filename or resolver.
+    """
+    provider_names: list[str] = []
+    config_path = source_dir / "config.yaml"
+    if config_path.exists():
+        token = set_hermes_home_override(source_dir)
+        try:
+            config = load_config_readonly()
+            configured = cfg_get(config, "memory", "provider") or None
+            if configured:
+                provider_names.append(configured)
+        except Exception:
+            pass
+        finally:
+            reset_hermes_home_override(token)
+
+    for candidate, provider_dir in _iter_provider_dirs():
+        manifest_path = provider_dir / "plugin.yaml"
+        if not manifest_path.exists():
+            continue
+        try:
+            import yaml
+
+            manifest = yaml.safe_load(
+                manifest_path.read_text(encoding="utf-8-sig")
+            ) or {}
+        except Exception:
+            continue
+        if manifest.get("profile_clone") is True and candidate not in provider_names:
+            provider_names.append(candidate)
+
+    results = []
+    for provider_name in provider_names:
+        provider = load_memory_provider(provider_name, register_skills=False)
+        if provider is None:
+            continue
+        result = provider.clone_profile(
+            profile_name,
+            source_dir=source_dir,
+            profile_dir=profile_dir,
+            clone_all=clone_all,
+        )
+        if result is not None:
+            results.append(result)
+    return results or None
 
 
 def _load_provider_from_entry_point(

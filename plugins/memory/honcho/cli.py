@@ -15,7 +15,11 @@ from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_
 from hermes_cli.config import cfg_get
 
 
-def clone_honcho_for_profile(profile_name: str) -> bool:
+def clone_honcho_for_profile(
+    profile_name: str,
+    *,
+    config_path: Path | None = None,
+) -> bool:
     """Auto-clone Honcho config for a new profile from the default host block.
 
     Called during profile creation. If Honcho is configured on the default
@@ -24,7 +28,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
 
     Returns True if a host block was created, False if Honcho isn't configured.
     """
-    cfg = _read_config()
+    cfg = _read_config() if config_path is None else _read_config(config_path)
     if not cfg:
         return False
 
@@ -61,23 +65,50 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if peer_name:
         new_block["peerName"] = peer_name
 
-    # AI peer is profile-specific; workspace is shared so all profiles
-    # see the same user context, sessions, and project history.
-    # Use the bare profile name as the peer identity (not the host key)
-    # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
-    new_block["aiPeer"] = profile_name
+    # AI peers stay profile-specific unless the operator explicitly opted
+    # into one shared AI identity for cloned single-operator profiles.
+    if cfg.get("shareAiPeerAcrossProfiles") is True:
+        new_block["aiPeer"] = default_block.get("aiPeer") or cfg.get("aiPeer") or HOST
+    else:
+        # Use the bare profile name as the peer identity (not the host key)
+        # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
+        new_block["aiPeer"] = profile_name
     new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
     new_block["enabled"] = default_block.get("enabled", True)
 
     cfg.setdefault("hosts", {})[new_host] = new_block
-    _write_config(cfg)
+    if config_path is None:
+        _write_config(cfg)
+    else:
+        _write_config(cfg, path=config_path)
 
-    # Eagerly create the peer in Honcho so it exists before first message
-    _ensure_peer_exists(new_host)
+    # Eagerly create the peer in Honcho so it exists before first message.
+    # Preserve the historical one-argument call for ambient configs (and
+    # third-party monkeypatches); only bind a path for copied local configs.
+    if config_path is None:
+        _ensure_peer_exists(new_host)
+    else:
+        _ensure_peer_exists(new_host, config_path=config_path)
     return True
 
 
-def _ensure_peer_exists(host_key: str | None = None) -> bool:
+def cloned_profile_ai_peer(
+    profile_name: str,
+    *,
+    config_path: Path | None = None,
+) -> str | None:
+    """Return the AI peer stored for a cloned profile, if one exists."""
+    cfg = _read_config() if config_path is None else _read_config(config_path)
+    block = cfg.get("hosts", {}).get(profile_host_key(profile_name), {})
+    ai_peer = block.get("aiPeer") if isinstance(block, dict) else None
+    return ai_peer if isinstance(ai_peer, str) and ai_peer else None
+
+
+def _ensure_peer_exists(
+    host_key: str | None = None,
+    *,
+    config_path: Path | None = None,
+) -> bool:
     """Create the AI peer in Honcho if it doesn't already exist.
 
     Idempotent -- safe to call multiple times. Returns True if the peer
@@ -85,7 +116,13 @@ def _ensure_peer_exists(host_key: str | None = None) -> bool:
     """
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
-        hcfg = HonchoClientConfig.from_global_config(host=host_key)
+        if config_path is None:
+            hcfg = HonchoClientConfig.from_global_config(host=host_key)
+        else:
+            hcfg = HonchoClientConfig.from_global_config(
+                host=host_key,
+                config_path=config_path,
+            )
         if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
             return False
         client = get_honcho_client(hcfg)
@@ -260,8 +297,8 @@ def _local_config_path() -> Path:
     return get_hermes_home() / "honcho.json"
 
 
-def _read_config() -> dict:
-    path = _config_path()
+def _read_config(path: Path | None = None) -> dict:
+    path = path or _config_path()
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))

@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 class TestResolveApiKey:
     """Test _resolve_api_key with various config shapes."""
@@ -303,6 +305,39 @@ class TestCloneHonchoForProfile:
         assert "runtimePeerPrefix" not in new_block
         assert "pinUserPeer" not in new_block
         assert "pinPeerName" not in new_block
+
+    def test_opt_in_shares_default_ai_peer_with_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "shareAiPeerAcrossProfiles": True,
+            "hosts": {
+                "hermes": {
+                    "aiPeer": "shared-assistant",
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+
+        assert ok is True
+        assert written["cfg"]["hosts"]["hermes_coder"]["aiPeer"] == "shared-assistant"
+
+    @pytest.mark.parametrize("configured", [None, False])
+    def test_shared_ai_peer_is_opt_in(self, monkeypatch, tmp_path, configured):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"aiPeer": "shared-assistant"}},
+        }
+        if configured is not None:
+            cfg["shareAiPeerAcrossProfiles"] = configured
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+
+        assert ok is True
+        assert written["cfg"]["hosts"]["hermes_coder"]["aiPeer"] == "coder"
 
 
 class TestSetupWizardDeploymentShape:

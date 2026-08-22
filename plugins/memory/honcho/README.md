@@ -163,6 +163,7 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `workspace` | string | host key | Honcho workspace ID. Shared environment — all profiles in the same workspace can see the same user identity and related memories |
 | `peerName` | string | — | User peer identity |
 | `aiPeer` | string | host key | AI peer identity |
+| `shareAiPeerAcrossProfiles` | bool | `false` | Root-only opt-in. When cloning a Hermes profile, inherit the default host's `aiPeer` instead of creating a profile-specific AI peer |
 
 ### Identity Mapping (Gateway Multi-User)
 

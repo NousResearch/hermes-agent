@@ -275,6 +275,32 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
+    def clone_profile(
+        self,
+        profile_name: str,
+        *,
+        source_dir,
+        profile_dir,
+        clone_all: bool = False,
+    ) -> object | None:
+        """Clone Honcho identity state for a new Hermes profile."""
+        from plugins.memory.honcho.cli import (
+            clone_honcho_for_profile,
+            cloned_profile_ai_peer,
+        )
+
+        config_path = profile_dir / "honcho.json" if clone_all else None
+        if config_path is not None and not config_path.exists():
+            config_path = None
+        if not clone_honcho_for_profile(profile_name, config_path=config_path):
+            return None
+        return {
+            "ai_peer": cloned_profile_ai_peer(
+                profile_name,
+                config_path=config_path,
+            ),
+        }
+
     def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig

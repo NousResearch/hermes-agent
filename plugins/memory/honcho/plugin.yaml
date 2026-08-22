@@ -5,3 +5,4 @@ pip_dependencies:
   - honcho-ai
 hooks:
   - on_session_end
+profile_clone: true

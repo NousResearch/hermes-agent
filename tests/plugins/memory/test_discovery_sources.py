@@ -219,3 +219,51 @@ def test_activation_is_not_gated_on_plugins_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     assert memory_plugins.load_memory_provider("gatedmem") is not None
+
+
+def test_profile_clone_resolves_provider_through_canonical_config_loader(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "source"
+    profile_dir = tmp_path / "profile"
+    source_dir.mkdir()
+    profile_dir.mkdir()
+    (source_dir / "config.yaml").write_text(
+        "memory:\n  provider: ${CLONE_MEMORY_PROVIDER}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLONE_MEMORY_PROVIDER", "custommem")
+    monkeypatch.setattr(memory_plugins, "_iter_provider_dirs", lambda: [])
+
+    calls = []
+
+    class Provider:
+        def clone_profile(self, profile_name, **kwargs):
+            calls.append((profile_name, kwargs))
+            return "cloned"
+
+    monkeypatch.setattr(
+        memory_plugins,
+        "load_memory_provider",
+        lambda name, **kwargs: Provider() if name == "custommem" else None,
+    )
+
+    from hermes_constants import get_hermes_home
+
+    ambient_home = get_hermes_home()
+    result = memory_plugins.clone_memory_provider_profile(
+        "coder",
+        source_dir=source_dir,
+        profile_dir=profile_dir,
+    )
+
+    assert result == ["cloned"]
+    assert calls == [(
+        "coder",
+        {
+            "source_dir": source_dir,
+            "profile_dir": profile_dir,
+            "clone_all": False,
+        },
+    )]
+    assert get_hermes_home() == ambient_home

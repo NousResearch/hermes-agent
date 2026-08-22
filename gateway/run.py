@@ -284,31 +284,38 @@ def _record_hygiene_cooldown(
     cooldown_seconds: float,
     error: Optional[str] = None,
 ) -> None:
-    """Persist a session-hygiene compression-failure cooldown to the state DB.
-
-    Uses the same ``compression_failure_cooldown_until`` column and
-    ``record_compression_failure_cooldown`` method that the in-conversation
-    compression path (``agent/context_compressor.py``) already uses, so the
-    cooldown survives gateway restarts (#74136).
-
-    ``error`` is forwarded because the recorder writes
-    ``compression_failure_error`` UNCONDITIONALLY — omitting it clobbers to NULL
-    any reason the in-conversation path recorded, and readers surface that
-    reason to the user (falling back to "unknown error"). That matters more now
-    that an escalated cooldown can last up to an hour.
-    """
+    """Persist a hygiene-only compression-failure cooldown to the state DB."""
     import time as _time
     session_db = getattr(gateway, "_session_db", None)
     if session_db is None:
         return
     session_db = getattr(session_db, "_db", session_db)
-    recorder = getattr(session_db, "record_compression_failure_cooldown", None)
+    recorder = getattr(
+        session_db, "record_hygiene_compression_failure_cooldown", None
+    )
     if recorder is None:
         return
     try:
         recorder(session_id, _time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
+
+
+def _clear_hygiene_cooldown(gateway, session_id: str) -> None:
+    """Clear a recovered session's hygiene-only cooldown, best effort."""
+    session_db = getattr(gateway, "_session_db", None)
+    if session_db is None:
+        return
+    session_db = getattr(session_db, "_db", session_db)
+    clearer = getattr(
+        session_db, "clear_hygiene_compression_failure_cooldown", None
+    )
+    if clearer is None:
+        return
+    try:
+        clearer(session_id)
+    except Exception as exc:
+        logger.debug("session hygiene cooldown clear failed: %s", exc)
 
 
 def _status_template_to_regex(template: str) -> str:
@@ -19404,15 +19411,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
                 if _needs_compress:
-                    # Use the persistent DB-backed cooldown (same as the
-                    # in-conversation compression path in context_compressor.py)
-                    # so the cooldown survives gateway restarts. The in-memory
-                    # dict was reset on every restart, re-triggering the same
-                    # failing compression and wedging session storage (#74136).
+                    # Hygiene has its own persistent cooldown. It survives
+                    # gateway restarts without suppressing the live agent's
+                    # independent compressor, whose timeout budget may be
+                    # sufficient for the same long prefill (#86972).
                     _session_db = getattr(self, "_session_db", None)
                     if _session_db is not None:
                         _session_db = getattr(_session_db, "_db", _session_db)
-                        _getter = getattr(_session_db, "get_compression_failure_cooldown", None)
+                        _getter = getattr(
+                            _session_db,
+                            "get_hygiene_compression_failure_cooldown",
+                            None,
+                        )
                         if _getter is not None:
                             try:
                                 _cooldown_state = _getter(session_entry.session_id)
@@ -19869,6 +19879,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 _reset_hygiene_failure_streak,
                                                 self,
                                                 session_key,
+                                            )
+                                            _clear_hygiene_cooldown(
+                                                self, session_entry.session_id
                                             )
                                     if _hyg_aborted:
                                         if _hyg_failure_cooldown_seconds >= 0:

@@ -98,6 +98,49 @@ def _no_fts_rebuild_throttle(monkeypatch):
     monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
 
 
+class TestHygieneCompressionFailureCooldown:
+    def test_hygiene_and_agent_cooldowns_are_independent(self, db):
+        db.create_session("cooldown-isolation", source="telegram")
+        now = time.time()
+
+        db.record_hygiene_compression_failure_cooldown(
+            "cooldown-isolation", now + 120, "hygiene prefill timeout"
+        )
+
+        hygiene = db.get_hygiene_compression_failure_cooldown(
+            "cooldown-isolation"
+        )
+        assert hygiene is not None
+        assert hygiene["error"] == "hygiene prefill timeout"
+        assert db.get_compression_failure_cooldown("cooldown-isolation") is None
+
+        db.record_compression_failure_cooldown(
+            "cooldown-isolation", now + 60, "agent summary failure"
+        )
+        db.clear_hygiene_compression_failure_cooldown("cooldown-isolation")
+
+        assert (
+            db.get_hygiene_compression_failure_cooldown("cooldown-isolation")
+            is None
+        )
+        agent = db.get_compression_failure_cooldown("cooldown-isolation")
+        assert agent is not None
+        assert agent["error"] == "agent summary failure"
+
+    def test_hygiene_clear_is_best_effort_on_sqlite_error(self, db, caplog):
+        with mock.patch.object(
+            db,
+            "_execute_write",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            db.clear_hygiene_compression_failure_cooldown("cooldown-isolation")
+
+        assert (
+            "clear_hygiene_compression_failure_cooldown(cooldown-isolation) failed"
+            in caplog.text
+        )
+
+
 # =========================================================================
 # Connection lifecycle
 # =========================================================================

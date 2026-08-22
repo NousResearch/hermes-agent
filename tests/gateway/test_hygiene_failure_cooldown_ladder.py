@@ -263,16 +263,15 @@ class TestDegradedRunners:
 # ---------------------------------------------------------------------------
 
 class TestFailureReasonForwarded:
-    """`record_compression_failure_cooldown` writes compression_failure_error
-    UNCONDITIONALLY, so omitting the reason clobbers to NULL whatever the
-    in-conversation path recorded — and readers then show the user
-    "unknown error". Matters more now that a cooldown can last an hour."""
+    """Hygiene failure details stay in the hygiene-only cooldown state."""
 
     def _capture(self, *args):
         seen = {}
 
         class _DB:
-            def record_compression_failure_cooldown(self, sid, until, error=None):
+            def record_hygiene_compression_failure_cooldown(
+                self, sid, until, error=None
+            ):
                 seen.update(sid=sid, until=until, error=error)
 
         class _GW:
@@ -384,7 +383,9 @@ class TestRecordedCooldownEscalates:
         def __init__(self):
             self.calls = []
 
-        def record_compression_failure_cooldown(self, sid, until, error=None):
+        def record_hygiene_compression_failure_cooldown(
+            self, sid, until, error=None
+        ):
             self.calls.append((sid, until))
 
     class _GW:

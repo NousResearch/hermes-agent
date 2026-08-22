@@ -477,7 +477,9 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path):
+async def test_session_hygiene_timeout_continues_to_agent_with_isolated_cooldown(
+    monkeypatch, tmp_path
+):
     """A timed-out SessionDB-bound worker cannot compact after the live turn starts.
 
     The worker remains alive long enough to cross the old race window. The
@@ -492,8 +494,9 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     release_worker = threading.Event()
     cleanup_done = threading.Event()
     fake_db = MagicMock()
-    # The DB-backed cooldown check calls this before compressing; a bare
-    # MagicMock return would be truthy and skip compression entirely.
+    # The DB-backed hygiene cooldown check calls this before compressing; a
+    # bare MagicMock return would be truthy and skip compression entirely.
+    fake_db.get_hygiene_compression_failure_cooldown.return_value = None
     fake_db.get_compression_failure_cooldown.return_value = None
 
     class SlowCompressAgent:
@@ -516,7 +519,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
             self, messages, *_args, commit_fence=None, **_kwargs
         ):
             worker_started.set()
-            assert release_worker.wait(timeout=2)
+            assert release_worker.wait(timeout=10)
             if commit_fence is not None and not commit_fence.begin_commit():
                 return (messages, None)
             try:
@@ -605,17 +608,17 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     elapsed = time.monotonic() - started
 
     assert result == "ok"
-    # Loose wall-clock bound per flake policy: this asserts the handler did
-    # NOT block on the hygiene-compression timeout path (which would take
-    # multiple seconds), not a precise latency. 0.15s missed by ~1-8ms on
-    # busy CI shards twice on 2026-07-23.
-    assert elapsed < 2.0
+    # Loose wall-clock bound per flake policy: the worker waits up to 10s, so
+    # returning in under 5s proves the live turn did not join that worker.
+    assert elapsed < 5.0
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
-    # Cooldown must be persisted to the state DB (survives restart, #74136),
-    # not stashed in an in-memory dict.
-    assert fake_db.record_compression_failure_cooldown.called
-    _cd_args = fake_db.record_compression_failure_cooldown.call_args[0]
+    # The timeout must cool down only future pre-agent hygiene attempts. The
+    # live agent has a longer timeout budget and must not inherit this failure.
+    assert fake_db.record_hygiene_compression_failure_cooldown.called
+    fake_db.record_compression_failure_cooldown.assert_not_called()
+    assert fake_db.get_compression_failure_cooldown() is None
+    _cd_args = fake_db.record_hygiene_compression_failure_cooldown.call_args[0]
     assert _cd_args[0] == "sess-timeout"
     assert _cd_args[1] > time.time()
     timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
@@ -657,6 +660,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         "</memory_provider_context>"
     )
     fake_db = MagicMock()
+    fake_db.get_hygiene_compression_failure_cooldown.return_value = None
     fake_db.get_compression_failure_cooldown.return_value = None
     async_session_db = SimpleNamespace(
         _db=fake_db,
@@ -1143,11 +1147,12 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         assert streak_threads[0] != main_thread
 
         # The abort must have persisted a cooldown to the DB.
-        state = db.get_compression_failure_cooldown(session_id)
+        state = db.get_hygiene_compression_failure_cooldown(session_id)
         assert state is not None and state["remaining_seconds"] > 0, (
             "hygiene compression abort did not persist a cooldown to the "
             f"state DB; got {state!r}"
         )
+        assert db.get_compression_failure_cooldown(session_id) is None
 
         # --- simulate a gateway restart: brand-new runner, same DB ---
         del runner1

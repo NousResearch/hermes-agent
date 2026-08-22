@@ -1873,6 +1873,7 @@ def _build_child_agent(
     child_provider_require_parameters = getattr(
         parent_agent, "provider_require_parameters", False
     )
+    child_provider_quantizations = getattr(parent_agent, "provider_quantizations", None)
     child_provider_data_collection = getattr(
         parent_agent, "provider_data_collection", None
     ) or ""
@@ -1883,6 +1884,7 @@ def _build_child_agent(
         child_providers_order = None
         child_provider_sort = None
         child_provider_require_parameters = False
+        child_provider_quantizations = None
         child_provider_data_collection = ""
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
@@ -1964,6 +1966,7 @@ def _build_child_agent(
                 providers_order=child_providers_order,
                 provider_sort=child_provider_sort,
                 provider_require_parameters=child_provider_require_parameters,
+                provider_quantizations=child_provider_quantizations,
                 provider_data_collection=child_provider_data_collection,
                 request_overrides=(
                     dict(override_request_overrides or {})

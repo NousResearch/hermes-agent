@@ -6729,6 +6729,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "provider_quantizations": getattr(agent, "provider_quantizations", None),
         "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
@@ -7221,6 +7222,7 @@ def _make_agent(
         providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
+        provider_quantizations=_pr.get("quantizations"),
         provider_data_collection=_pr.get("data_collection"),
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,

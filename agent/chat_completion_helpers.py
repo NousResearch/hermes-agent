@@ -574,6 +574,9 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         preferences["sort"] = provider_sort
     if agent.provider_require_parameters:
         preferences["require_parameters"] = True
+    quantizations = getattr(agent, "provider_quantizations", None)
+    if quantizations:
+        preferences["quantizations"] = list(quantizations)
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
     return preferences

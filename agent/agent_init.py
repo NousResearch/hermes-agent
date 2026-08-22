@@ -535,6 +535,7 @@ def init_agent(
     providers_order: List[str] = None,
     provider_sort: str = None,
     provider_require_parameters: bool = False,
+    provider_quantizations: List[str] = None,
     provider_data_collection: str = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
@@ -923,6 +924,7 @@ def init_agent(
     agent.providers_order = providers_order
     agent.provider_sort = provider_sort
     agent.provider_require_parameters = provider_require_parameters
+    agent.provider_quantizations = provider_quantizations
     agent.provider_data_collection = provider_data_collection
     agent.openrouter_min_coding_score = openrouter_min_coding_score
 

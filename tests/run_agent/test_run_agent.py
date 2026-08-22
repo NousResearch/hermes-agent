@@ -1485,6 +1485,26 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
 
+    def test_provider_quantizations_injected(self, agent):
+        """provider_routing.quantizations reaches extra_body.provider.quantizations."""
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.provider_quantizations = ["fp16", "bf16"]
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["provider"]["quantizations"] == ["fp16", "bf16"]
+
+    def test_provider_quantizations_omitted_when_unset(self, agent):
+        """No quantization filter configured → no quantizations key on the wire."""
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.provider_quantizations = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        provider_obj = kwargs.get("extra_body", {}).get("provider", {})
+        assert "quantizations" not in provider_obj
+
+
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
         agent.provider = "openrouter"

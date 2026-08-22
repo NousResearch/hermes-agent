@@ -5340,6 +5340,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._providers_ignore = pr.get("ignore")
         self._providers_order = pr.get("order")
         self._provider_require_params = pr.get("require_parameters", False)
+        self._provider_quantizations = pr.get("quantizations")
         self._provider_data_collection = pr.get("data_collection")
 
         # OpenRouter Pareto Code router knob — coding-score floor (0.0-1.0).

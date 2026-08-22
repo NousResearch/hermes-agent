@@ -2240,6 +2240,7 @@ class CLICommandsMixin:
                     providers_order=self._providers_order,
                     provider_sort=self._provider_sort,
                     provider_require_parameters=self._provider_require_params,
+                    provider_quantizations=getattr(self, "_provider_quantizations", None),
                     provider_data_collection=self._provider_data_collection,
                     openrouter_min_coding_score=self._openrouter_min_coding_score,
                     fallback_model=self._fallback_model,

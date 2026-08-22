@@ -26,6 +26,7 @@ provider_routing:
   ignore: []              # Blacklist: never use these providers
   order: []               # Explicit provider priority order
   require_parameters: false  # Only use providers that support all parameters
+  quantizations: []       # Only use providers serving these quantization levels
   data_collection: null   # Control data collection ("allow" or "deny")
 ```
 
@@ -91,6 +92,25 @@ When `true`, OpenRouter will only route to providers that support **all** parame
 ```yaml
 provider_routing:
   require_parameters: true
+```
+
+### `quantizations`
+
+Restrict routing to providers serving a specific quantization level. Valid values: `int4`, `int8`, `fp4`, `mxfp4`, `nvfp4`, `fp6`, `fp8`, `mxfp8`, `fp16`, `bf16`, `fp32`, `unknown`.
+
+The right target is usually **parity with the model maker's own API**, not automatically the highest bit width. Many recent open-weight models are quantization-aware-trained: their official checkpoints are natively MXFP4/fp8 (DeepSeek-V4-Flash, for example), and the maker's own API serves exactly that. For such models an `fp8` endpoint is full precision, not a downgrade — filtering to `["fp16", "bf16"]` would only produce "no endpoints found" errors. True quality loss happens when a model ships at higher precision natively but hosts serve reduced-precision copies.
+
+:::tip
+Include `"unknown"` unless you specifically need to exclude undeclared endpoints. First-party endpoints (the model maker's own serving, e.g. xAI serving Grok) are typically reported as `unknown` and are the reference implementation.
+:::
+
+```yaml
+provider_routing:
+  # Full-precision models served at reduced precision by some hosts:
+  quantizations: ["fp16", "bf16"]
+
+  # Natively fp8/QAT models (match the maker's own serving, keep first-party):
+  quantizations: ["fp8", "mxfp8", "unknown"]
 ```
 
 ### `data_collection`
@@ -180,6 +200,7 @@ providers_ignored  ← from provider_routing.ignore
 providers_order    ← from provider_routing.order
 provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
+provider_quantizations      ← from provider_routing.quantizations
 provider_data_collection    ← from provider_routing.data_collection
 ```
 

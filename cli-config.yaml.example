@@ -270,6 +270,12 @@ model:
 #   # Require providers to support all parameters in your request
 #   # require_parameters: true
 #
+#   # Only route to providers serving these quantization levels. Valid values:
+#   # int4, int8, fp4, mxfp4, nvfp4, fp6, fp8, mxfp8, fp16, bf16, fp32, unknown.
+#   # Use ["fp16", "bf16"] to guarantee full-precision weights — models hosted
+#   # only at lower precision will be skipped.
+#   # quantizations: ["fp16", "bf16"]
+#
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
 

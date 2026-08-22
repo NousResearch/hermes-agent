@@ -16592,8 +16592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
             _quick_key = self._session_key_for_source(source)
-            _agent_busy_before = self.session_is_busy(_quick_key)
-            _agent_busy_after = self.session_is_busy(_quick_key)
+            _agent_busy = self.session_is_busy(_quick_key)
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -16605,20 +16604,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # hook must not fail dispatch over a missing attribute.
                     session_store=getattr(self, "session_store", None),
                     session_key=_quick_key,
-                    agent_busy_before=_agent_busy_before,
-                    agent_busy_after=_agent_busy_after,
+                    agent_busy=_agent_busy,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
-            if _agent_busy_before != _agent_busy_after:
-                logger.debug(
-                    "agent_busy changed during pre_gateway_dispatch: %s -> %s "
-                    "(session_key=%s)",
-                    _agent_busy_before,
-                    _agent_busy_after,
-                    _quick_key,
-                )
 
             for _result in _hook_results:
                 if not isinstance(_result, dict):

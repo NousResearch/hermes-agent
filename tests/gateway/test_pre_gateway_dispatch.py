@@ -121,13 +121,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hook_receives_agent_busy_before_when_busy(monkeypatch):
-    """When the session holds a running agent, agent_busy_before is True.
+async def test_hook_receives_agent_busy_when_busy(monkeypatch):
+    """When the session holds a running agent, agent_busy is True.
 
     Regression guard: if ``session_is_busy`` reads ``_running_agents`` with a
     plain attribute access (no getattr fallback), bare-runner tests built via
     ``object.__new__`` — which never set the attribute — raise and the hook
-    never fires. Plugins that depend on ``agent_busy_before`` to throttle or
+    never fires. Plugins that depend on ``agent_busy`` to throttle or
     reject duplicate sends silently stop working.
     """
     _clear_auth_env(monkeypatch)
@@ -137,7 +137,7 @@ async def test_hook_receives_agent_busy_before_when_busy(monkeypatch):
 
     def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
-            seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+            seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
             return [dict(action="allow")]
         return []
 
@@ -157,9 +157,9 @@ async def test_hook_receives_agent_busy_before_when_busy(monkeypatch):
 
     # busy path: _handle_message may return None (interrupt/queue short-circuit)
     # since an agent is already running — this test only verifies the hook
-    # received the correct agent_busy_before value, not the dispatch outcome.
+    # received the correct agent_busy value, not the dispatch outcome.
     await runner._handle_message(event)
-    assert seen.get("agent_busy_before") is True
+    assert seen.get("agent_busy") is True
 
 
 @pytest.mark.asyncio
@@ -193,8 +193,8 @@ async def test_hook_receives_session_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hook_receives_agent_busy_before_when_idle(monkeypatch):
-    """When the session is idle, agent_busy_before is False."""
+async def test_hook_receives_agent_busy_when_idle(monkeypatch):
+    """When the session is idle, agent_busy is False."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
@@ -202,7 +202,7 @@ async def test_hook_receives_agent_busy_before_when_idle(monkeypatch):
 
     def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
-            seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+            seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
             return [dict(action="allow")]
         return []
 
@@ -216,7 +216,7 @@ async def test_hook_receives_agent_busy_before_when_idle(monkeypatch):
 
     result = await runner._handle_message(_make_event("hi"))
     assert result == "ok"
-    assert seen.get("agent_busy_before") is False
+    assert seen.get("agent_busy") is False
 
 
 @pytest.mark.asyncio

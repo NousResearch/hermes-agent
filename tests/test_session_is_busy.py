@@ -99,11 +99,11 @@ class TestSessionIsBusyPublicAPI:
 
 
 class TestPreGatewayDispatchAgentBusyKwarg:
-    """Test that pre_gateway_dispatch hook receives agent_busy_before kwarg."""
+    """Test that pre_gateway_dispatch hook receives agent_busy kwarg."""
 
     @pytest.mark.asyncio
-    async def test_receives_agent_busy_before_when_idle(self, monkeypatch):
-        """When session is idle, agent_busy_before is False."""
+    async def test_receives_agent_busy_when_idle(self, monkeypatch):
+        """When session is idle, agent_busy is False."""
         _clear_auth_env(monkeypatch)
         monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
@@ -111,7 +111,7 @@ class TestPreGatewayDispatchAgentBusyKwarg:
 
         def _fake_hook(name, **kwargs):
             if name == "pre_gateway_dispatch":
-                seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
                 seen["session_key"] = kwargs.get("session_key", "MISSING")
             return [{"action": "allow"}]
 
@@ -126,12 +126,12 @@ class TestPreGatewayDispatchAgentBusyKwarg:
         event = _make_event("hi")
         await runner._handle_message(event)
 
-        assert seen.get("agent_busy_before") is False
+        assert seen.get("agent_busy") is False
         assert seen.get("session_key") != "MISSING"
 
     @pytest.mark.asyncio
-    async def test_receives_agent_busy_before_when_busy(self, monkeypatch):
-        """When session holds a running agent, agent_busy_before is True."""
+    async def test_receives_agent_busy_when_busy(self, monkeypatch):
+        """When session holds a running agent, agent_busy is True."""
         _clear_auth_env(monkeypatch)
         monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
@@ -139,7 +139,7 @@ class TestPreGatewayDispatchAgentBusyKwarg:
 
         def _fake_hook(name, **kwargs):
             if name == "pre_gateway_dispatch":
-                seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
                 seen["session_key"] = kwargs.get("session_key", "MISSING")
             return [{"action": "allow"}]
 
@@ -157,14 +157,14 @@ class TestPreGatewayDispatchAgentBusyKwarg:
 
         # busy path: _handle_message may return None (interrupt/queue short-circuit)
         # since an agent is already running — this test only verifies the hook
-        # received the correct agent_busy_before value, not the dispatch outcome.
+        # received the correct agent_busy value, not the dispatch outcome.
         await runner._handle_message(event)
-        assert seen.get("agent_busy_before") is True
+        assert seen.get("agent_busy") is True
         assert seen.get("session_key") != "MISSING"
 
     @pytest.mark.asyncio
-    async def test_receives_agent_busy_after_in_kwargs(self, monkeypatch):
-        """Hook can also observe agent_busy_after if it changes during hook execution."""
+    async def test_receives_agent_busy_in_kwargs(self, monkeypatch):
+        """Hook can also observe agent_busy if it changes during hook execution."""
         _clear_auth_env(monkeypatch)
         monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
@@ -172,7 +172,7 @@ class TestPreGatewayDispatchAgentBusyKwarg:
 
         def _fake_hook(name, **kwargs):
             if name == "pre_gateway_dispatch":
-                seen["before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["before"] = kwargs.get("agent_busy", "MISSING")
                 seen["session_key"] = kwargs.get("session_key", "MISSING")
                 # Hook itself doesn't change _running_agents, so before == after
                 # This test just confirms the kwarg is present in the signature
@@ -307,22 +307,21 @@ class TestSessionIsBusyEdgeCases:
         assert runner.session_is_busy(key) is True
 
 
-class TestAgentBusyAfterKwarg:
-    """Review fix #1: agent_busy_after must reach the hook callback, not just
+class TestAgentBusyKwarg:
+    """Review fix #1: agent_busy must reach the hook callback, not just
     a DEBUG log. Plugins rely on the documented contract."""
 
     @pytest.mark.asyncio
-    async def test_receives_agent_busy_after_in_kwargs(self, monkeypatch):
-        """pre_gateway_dispatch callback receives agent_busy_after kwarg."""
+    async def test_receives_agent_busy_in_kwargs(self, monkeypatch):
+        """pre_gateway_dispatch callback receives agent_busy kwarg."""
         _clear_auth_env(monkeypatch)
         monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
-        seen = {"before": None, "after": None, "session_key": None}
+        seen = {"agent_busy": None, "session_key": None}
 
         def _fake_hook(name, **kwargs):
             if name == "pre_gateway_dispatch":
-                seen["before"] = kwargs.get("agent_busy_before", "MISSING")
-                seen["after"] = kwargs.get("agent_busy_after", "MISSING")
+                seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
                 seen["session_key"] = kwargs.get("session_key", "MISSING")
             return [{"action": "allow"}]
 
@@ -337,8 +336,7 @@ class TestAgentBusyAfterKwarg:
         event = _make_event("hi")
         await runner._handle_message(event)
 
-        assert seen.get("before") is False
-        assert seen.get("after") is False
+        assert seen.get("agent_busy") is False
         assert seen.get("session_key") != "MISSING"
 
 
@@ -356,13 +354,13 @@ class TestStrictSignaturePluginCompat:
         _clear_auth_env(monkeypatch)
         monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
 
-        seen = {"event": None, "gateway": None, "agent_busy_before": "MISSING", "session_key": "MISSING"}
+        seen = {"event": None, "gateway": None, "agent_busy": "MISSING", "session_key": "MISSING"}
 
         def _legacy_hook(name, **kwargs):
             if name == "pre_gateway_dispatch":
                 seen["event"] = kwargs.get("event")
                 seen["gateway"] = kwargs.get("gateway")
-                seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["agent_busy"] = kwargs.get("agent_busy", "MISSING")
                 seen["session_key"] = kwargs.get("session_key", "MISSING")
             return [{"action": "allow"}]
 
@@ -372,14 +370,14 @@ class TestStrictSignaturePluginCompat:
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _legacy_hook)
 
         runner, _adapter = _make_runner(Platform.WHATSAPP)
-        # idle session: no running agent, so agent_busy_before is False
+        # idle session: no running agent, so agent_busy is False
         runner._handle_message_with_agent = _capture  # noqa: SLF001
 
         result = await runner._handle_message(_make_event("hi"))
         assert result is not None
         assert seen.get("event") is not None
         assert seen.get("gateway") is not None
-        assert seen.get("agent_busy_before") is False
+        assert seen.get("agent_busy") is False
         assert seen.get("session_key") != "MISSING"
 
     def test_invoke_hook_filters_additive_fields_from_narrow_callback(self, monkeypatch):
@@ -405,8 +403,7 @@ class TestStrictSignaturePluginCompat:
             gateway="G",
             session_store="S",
             session_key="K",
-            agent_busy_before=True,
-            agent_busy_after=False,
+            agent_busy=True,
             telemetry_schema_version=1,
         )
         assert out == [{"action": "allow"}]

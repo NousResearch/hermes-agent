@@ -230,7 +230,9 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store,
-    #   session_key: str, agent_busy_before: bool.
+    #   session_key: str, agent_busy: bool (whether the session has a running
+    #   agent at dispatch time; no before/after transition is observable here
+    #   because synchronous hooks cannot mutate the running-agent map).
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,

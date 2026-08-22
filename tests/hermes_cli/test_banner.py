@@ -19,6 +19,43 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
     assert capsys.readouterr().out == "fallback text\n"
 
 
+def test_deferred_update_notice_uses_prompt_toolkit_cprint(monkeypatch):
+    """Late update notices must not write raw Rich ANSI through patch_stdout."""
+    calls = []
+    monkeypatch.setattr(banner, "cprint", calls.append)
+
+    notice = banner._format_update_notice_ansi(89)
+    banner.cprint(notice)
+
+    assert calls == [notice]
+    assert "\x1b[1;33m⚠ 89 commits behind\x1b[0m" in calls[0]
+    assert "?[" not in calls[0]
+    assert "[bold yellow]" not in calls[0]
+
+
+def test_deferred_update_notice_path_does_not_use_rich_console(monkeypatch):
+    console = Console()
+
+    def fail_print(*_args, **_kwargs):
+        raise AssertionError("deferred update notice used Rich Console.print")
+
+    monkeypatch.setattr(console, "print", fail_print)
+    banner._deferred_update_notice_started = False
+    monkeypatch.setattr(banner, "_update_result", 89)
+    banner._update_check_done.set()
+
+    calls = []
+    monkeypatch.setattr(banner, "cprint", calls.append)
+
+    banner._defer_update_notice(console, max_wait=0.01)
+    import time
+    deadline = time.time() + 1
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert calls
+    assert "?[" not in calls[0]
+    banner._deferred_update_notice_started = False
 
 
 

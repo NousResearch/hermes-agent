@@ -692,7 +692,7 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 
 
 def _format_update_notice(behind: int) -> str:
-    """Render the update warning line for a non-zero ``behind`` result."""
+    """Render the update warning line for Rich Console output."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
     if behind > 0:
         commits_word = "commit" if behind == 1 else "commits"
@@ -707,6 +707,33 @@ def _format_update_notice(behind: int) -> str:
     line = "[bold yellow]⚠ update available[/]"
     if managed_cmd:
         line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
+    return line
+
+
+def _format_update_notice_ansi(behind: int) -> str:
+    """Render the deferred update warning as ANSI for prompt_toolkit.
+
+    ``patch_stdout(raw=False)`` replaces raw ESC bytes written through
+    stdout/stderr with ``?``.  Deferred update notices can fire after the
+    prompt_toolkit application starts, so they must be routed through
+    ``cprint()`` instead of Rich's ``Console.print()``.
+    """
+    from hermes_cli.config import get_managed_update_command, recommended_update_command
+    yellow_bold = "\033[1;33m"
+    yellow_dim = "\033[2;33m"
+    yellow_bold_dim = "\033[1;2;33m"
+    reset = "\033[0m"
+    if behind > 0:
+        commits_word = "commit" if behind == 1 else "commits"
+        return (
+            f"{yellow_bold}⚠ {behind} {commits_word} behind{reset}"
+            f"{yellow_dim} — run {yellow_bold_dim}{recommended_update_command()}{reset}"
+            f"{yellow_dim} to update{reset}"
+        )
+    managed_cmd = get_managed_update_command()
+    line = f"{yellow_bold}⚠ update available{reset}"
+    if managed_cmd:
+        line += f"{yellow_dim} — run {yellow_bold_dim}{managed_cmd}{reset}"
     return line
 
 
@@ -731,7 +758,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            cprint(_format_update_notice_ansi(behind))
         except Exception:
             pass  # never break the session over an update notice
 

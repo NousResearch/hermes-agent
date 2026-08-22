@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _scan_context_content
+from agent.runtime_cwd import _is_install_tree
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,18 @@ class SubdirectoryHintTracker:
             tool_result += hints  # append to the tool result string
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(
+        self,
+        working_dir: Optional[str] = None,
+        *,
+        allow_install_tree: Optional[bool] = None,
+    ):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # Explicit callers may deliberately use a Hermes checkout as their
+        # workspace. A fallback cwd must opt in explicitly (CLI/TUI only).
+        self.allow_install_tree = (
+            working_dir is not None if allow_install_tree is None else allow_install_tree
+        )
         self._loaded_dirs: Set[Path] = set()
         # Content digests already injected — prevents re-sending the same file
         # reachable through symlinks, hardlinks, or duplicated copies.
@@ -222,6 +233,8 @@ class SubdirectoryHintTracker:
             return False
         if path in self._loaded_dirs:
             return False
+        if _is_install_tree(path) and not self.allow_install_tree:
+            return False
         # Reject paths outside the working directory tree.
         # path.resolve() may differ from working_dir.resolve() due to symlinks,
         # but path.is_relative_to(working_dir) handles both absolute and
@@ -259,6 +272,9 @@ class SubdirectoryHintTracker:
         Only loads hints from directories within the working directory tree.
         """
         self._loaded_dirs.add(directory)
+
+        if _is_install_tree(directory) and not self.allow_install_tree:
+            return None
 
         # Reject paths outside the working directory tree.
         try:

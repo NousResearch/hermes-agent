@@ -60,6 +60,14 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def _gemini_model_resource_name(model: str) -> str:
+    """Return the Gemini REST resource name for a bare or native model id."""
+    model_name = bare_gemini_model_id(model)
+    if model_name.startswith(("models/", "tunedModels/")):
+        return model_name
+    return f"models/{model_name}"
+
+
 def _gemini_major_version(model: str) -> Optional[int]:
     """Extract the major version from a Gemini model id (``gemini-3.6-flash`` → 3)."""
     name = bare_gemini_model_id(model).lower()
@@ -120,7 +128,7 @@ def probe_gemini_tier(
     if normalized_base.lower().endswith("/openai"):
         normalized_base = normalized_base[: -len("/openai")]
 
-    url = f"{normalized_base}/models/{model}:generateContent"
+    url = f"{normalized_base}/{_gemini_model_resource_name(model)}:generateContent"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"maxOutputTokens": 1},
@@ -1144,7 +1152,7 @@ class GeminiNativeClient:
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
-        url = f"{self.base_url}/models/{model}:generateContent"
+        url = f"{self.base_url}/{_gemini_model_resource_name(model)}:generateContent"
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise gemini_http_error(response)
@@ -1160,7 +1168,7 @@ class GeminiNativeClient:
         return translate_gemini_response(payload, model=model)
 
     def _stream_completion(self, *, model: str, request: Dict[str, Any], timeout: Any = None) -> Iterator[_GeminiStreamChunk]:
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = f"{self.base_url}/{_gemini_model_resource_name(model)}:streamGenerateContent?alt=sse"
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 

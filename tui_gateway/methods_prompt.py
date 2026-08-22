@@ -1486,9 +1486,19 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "value", allow_expired=True)
 
 
+# The three approval RPCs resolve via _sess_building for the reason spelled out
+# in its docstring: they need the session RECORD and not the agent. Every one of
+# them reaches tools.approval's module-global _gateway_queues, which is keyed by
+# session_key alone and has no relationship to the agent build — so _sess's
+# _wait_agent bought nothing here and charged up to 30 seconds for it. None of
+# the three is in _LONG_HANDLERS, so that charge landed inline on the socket
+# reader thread, which is the surface _LONG_HANDLERS' own comment cites
+# approval.respond as the reason to protect. The desktop replays pending
+# approvals on gateway.ready / session.info (approvalReplaySessionId), i.e.
+# precisely while a cold resume's deferred build is still warming.
 @method("approval.pending")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     try:
@@ -1501,7 +1511,7 @@ def _(rid, params: dict) -> dict:
 
 @method("approval.received")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     request_id = params.get("request_id")
@@ -1520,7 +1530,7 @@ def _(rid, params: dict) -> dict:
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     try:

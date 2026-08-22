@@ -91,6 +91,48 @@ async def handle(event_type: str, context: dict):
 
 Handlers registered for `command:*` fire for any `command:` event (`command:model`, `command:reset`, etc.). Monitor all slash commands with a single subscription.
 
+#### Waterfall Handlers (around-middleware)
+
+Gateway hooks dispatch in three modes:
+
+| Mode | API | Handler signature | Return value |
+|------|-----|-------------------|--------------|
+| Observe | `emit` / `emit_collect` | `handle(event_type, context)` | Ignored / collected |
+| **Waterfall** | `emit_waterfall` | `handle(event_type, value, context, next_fn)` | Propagates |
+
+A **waterfall handler** is an around-middleware participant: it receives the current value plus a `next_fn` callback. Call `await next_fn(new_value=...)` to delegate to the next handler — optionally replacing the value for downstream listeners. Return without calling `next_fn` to **short-circuit**: later handlers do not run, and the handler's return value becomes the waterfall result.
+
+This mirrors the Cordis waterfall dispatch used by DeepSeek Harness for its tool execution pipeline (`tools/pre-execute` → `tools/execute` → `tools/post-execute`): cooperative listeners mutate a shared request and delegate, while a policy listener that owns a decision returns without delegating.
+
+```python
+# ~/.hermes/hooks/command-policy/HOOK.yaml
+name: command-policy
+description: Allow/deny/rewrite slash commands before dispatch
+events:
+  - command:*
+```
+
+```python
+# ~/.hermes/hooks/command-policy/handler.py
+async def handle(event_type: str, value, context: dict, next_fn):
+    command = context.get("command", "")
+    if command in {"dangerous", "wipe"}:
+        return {"decision": "deny", "message": f"/{command} is blocked by policy."}
+    # Delegate; downstream handlers see the value we pass along.
+    return await next_fn(new_value=value)
+```
+
+Waterfall semantics:
+
+- **Delegate** — `await next_fn()` runs the rest of the chain; `await next_fn(new_value=...)` also replaces the value.
+- **Short-circuit** — return without calling `next_fn`; the chain stops and your return value is the final result.
+- **Legacy compatibility** — existing two-argument handlers registered for the same event still run, in order, as observers: they cannot rewrite or short-circuit, their return values are ignored, and a throwing observer does not abort the chain.
+- **Fail-closed** — a throwing waterfall handler stops the chain (a policy handler that crashed did not delegate, so continuing would skip the remaining policy).
+
+:::tip DeepSeek Harness lineage
+`emit_waterfall` is the Hermes port of Cordis' around-middleware dispatch — the same primitive DeepSeek Harness uses so hooks can span tool families without coupling tools to a single policy service.
+:::
+
 :::tip Threaded replies
 A handler posting a follow-up message into the same Telegram forum topic should include `message_thread_id=int(thread_id)` when `chat_type == "forum"` and `thread_id` is non-empty.
 :::

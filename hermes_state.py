@@ -58,6 +58,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
+    _CONTINUATION_PARENT_REASONS,
+    _LIST_CONTINUATION_EDGE_SQL,
     _ephemeral_child_sql,
     _legacy_reset_child_sql,
     _shape_preview,
@@ -9216,6 +9218,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             current = child_id
         return current
 
+    def get_list_surface_tip(self, session_id: str) -> Optional[str]:
+        """Walk compression plus hidden reset children for the session list.
+
+        Same-key / ``_reset_from`` reset children stay independently listable.
+        CLI ``new_session`` children with no routing key are hidden, so the
+        list projects the stale root forward to the live tip (#84870).
+        Resume still uses :meth:`get_compression_tip` and does not cross reset.
+        """
+        current = session_id
+        seen = {current} if current else set()
+        for _ in range(100):
+            with self._lock:
+                cursor = self._conn.execute(
+                    f"""
+                    SELECT child.id
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.id = ?
+                      AND {_LIST_CONTINUATION_EDGE_SQL}
+                    ORDER BY
+                      CASE
+                        WHEN child.end_reason = 'compression' THEN 0
+                        WHEN child.ended_at IS NULL THEN 1
+                        ELSE 2
+                      END,
+                      {_sql_session_last_active("child")} DESC,
+                      child.started_at DESC,
+                      child.id DESC
+                    LIMIT 1
+                    """,
+                    (current,),
+                )
+                row = cursor.fetchone()
+            if row is None:
+                return current
+            child_id = row["id"]
+            if not child_id or child_id in seen:
+                return current
+            seen.add(child_id)
+            current = child_id
+        return current
+
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
     # routing fields and desktop sidebar fields like git_branch — stays, and
@@ -9474,10 +9518,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
+                    WHERE {_LIST_CONTINUATION_EDGE_SQL}
                 ),
                 chain_max AS (
                     SELECT
@@ -9593,9 +9634,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
             for s in sessions:
-                if s.get("end_reason") != "compression":
+                if s.get("end_reason") not in _CONTINUATION_PARENT_REASONS:
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = self.get_list_surface_tip(s["id"])
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
 

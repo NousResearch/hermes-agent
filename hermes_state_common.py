@@ -200,6 +200,20 @@ _RESET_END_REASONS = (
 )
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 
+# Listing projection follows these parent end_reasons to the live tip.
+# Compression is the original chain. Reset /new /idle/daily/etc. also
+# chain via parent_session_id but were left out of the CTE, so the
+# session list kept showing the stale root (#84870). CLI /new writes
+# ``new_session`` (not in the gateway reset set).
+#
+# Cross-surface coupling guard: ``new_session`` is CLI-specific today.
+# If a future change makes /new write into the gateway reset reasons
+# (or adds an intermediate end_reason that chains via parent_session_id),
+# it will silently join this continuation set. Do not add gateway-reset
+# reasons to _RESET_END_REASONS without revisiting this tuple — the
+# listing projection would fold deliberate resets into the lineage tip.
+_CONTINUATION_PARENT_REASONS = ("compression",) + _RESET_END_REASONS + ("new_session",)
+
 
 def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
     """Pre-marker reset-continuation heuristic.
@@ -228,6 +242,22 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 _RESET_CHILD_SQL = (
     "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
+)
+
+# Listing projection may follow compression plus *hidden* reset children
+# (CLI /new with no session_key). Same-key legacy reset children stay
+# independently listable. Resume uses get_compression_tip and must not
+# cross a reset boundary (#84870 vs test_resume_walker_does_not_cross_reset_boundary).
+_HIDDEN_RESET_PARENT_REASONS_SQL = _RESET_END_REASONS_SQL + ", 'new_session'"
+_LIST_CONTINUATION_EDGE_SQL = (
+    "(parent.end_reason = 'compression' OR ("
+    f"parent.end_reason IN ({_HIDDEN_RESET_PARENT_REASONS_SQL}) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+    f"AND NOT ({_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)})"
+    ")) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+    "AND COALESCE(child.source, '') != 'tool'"
 )
 
 

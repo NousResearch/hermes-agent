@@ -172,6 +172,7 @@ import {
 import { WorktreeDialog } from './projects/worktree-dialog'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { SessionStepNav } from './session-step-nav'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -708,6 +709,12 @@ export function ChatSidebar({
   // into the list here, so a drag ranks a row among its own day's chats
   // instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
+
+  // The ^/v steppers walk the chronological recents axis (the flat Sessions
+  // view). Pinned lives in its own section and the tree/browse views have no
+  // single honest up/down order, so the buttons render only in the flat view.
+  const showStepNav = !trimmedQuery && !showArchived && !showAllProfiles && !agentsGrouped
+  const stepSessionIds = useMemo(() => agentSessions.map(session => session.id), [agentSessions])
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -1567,13 +1574,24 @@ export function ChatSidebar({
 
         {showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
-            <SearchField
-              aria-label={s.searchAria}
-              inputRef={searchInputRef}
-              onChange={setSearchQuery}
-              placeholder={s.searchPlaceholder}
-              value={searchQuery}
-            />
+            <div className="flex items-center gap-0.5">
+              <div className="min-w-0 flex-1">
+                <SearchField
+                  aria-label={s.searchAria}
+                  inputRef={searchInputRef}
+                  onChange={setSearchQuery}
+                  placeholder={s.searchPlaceholder}
+                  value={searchQuery}
+                />
+              </div>
+              {showStepNav && (
+                <SessionStepNav
+                  activeId={activeSidebarSessionId}
+                  ids={stepSessionIds}
+                  onStep={onResumeSession}
+                />
+              )}
+            </div>
           </div>
         )}
 

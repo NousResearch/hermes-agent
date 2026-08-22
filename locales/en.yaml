@@ -212,6 +212,7 @@ gateway:
     display_off:               "off"
     display_set_on:            "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response on **{platform}**."
     display_set_off:           "🧠 ✓ Reasoning display: **OFF** for **{platform}**"
+    display_set_off_warn:       "Thinking is still running — use `/reasoning none` to disable it."
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change the global default."
     reset_done:                "🧠 ✓ Session reasoning override cleared; falling back to global config."
     unknown_arg:               "⚠️ Unknown argument: `{arg}`\n\n**Valid levels:** none, minimal, low, medium, high, xhigh, max, ultra\n**Display:** show, hide\n**Persist:** add `--global` to save beyond this session"

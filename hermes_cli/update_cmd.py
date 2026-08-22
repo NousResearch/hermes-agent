@@ -183,11 +183,24 @@ def _reload_config_modules() -> None:
     ``_subprocess_compat`` (e.g. ``bounded_probe_run``) is invisible to the
     cached module object, causing ``ImportError`` during the cleanup step
     that runs later in the same process.
+
+    ``hermes_cli.cli_output`` is reloaded for the same reason, one phase
+    later: the gateway auto-restart imports ``hermes_cli.gateway``, whose
+    import graph reaches modules that do a module-level
+    ``from hermes_cli.cli_output import line_input``
+    (``hermes_cli.plugins_cmd``, ``hermes_cli.bundles``). ``cli_output`` is
+    already in ``sys.modules`` from CLI startup, so an update that adds a
+    symbol to it makes the whole restart phase abort with
+    ``cannot import name 'line_input' from 'hermes_cli.cli_output'`` — and
+    every gateway keeps serving pre-update modules against the replaced
+    checkout, exactly the state #78574 made visible. It is reloaded first
+    because it sits below the config modules in the import graph.
     """
     import importlib
 
     importlib.invalidate_caches()
     for mod_name in (
+        "hermes_cli.cli_output",
         "hermes_cli.config_defaults",
         "hermes_cli.config",
         "hermes_cli.config_migrations",

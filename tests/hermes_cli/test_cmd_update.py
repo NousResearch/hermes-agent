@@ -438,6 +438,48 @@ class TestConfigVersionCheckUsesFreshModules:
 
         mock_reload.assert_called_once()
 
+    def test_reload_config_modules_includes_cli_output(self):
+        """cli_output must be reloaded before the gateway restart phase.
+
+        Regression: the gateway auto-restart imports hermes_cli.gateway,
+        whose import graph reaches modules that do a module-level
+        ``from hermes_cli.cli_output import line_input``
+        (hermes_cli.plugins_cmd, hermes_cli.bundles). cli_output is already
+        in sys.modules from CLI startup, so an update that ADDS a symbol to
+        it aborted the whole restart phase with
+
+            cannot import name 'line_input' from 'hermes_cli.cli_output'
+
+        leaving every gateway serving pre-update modules against the
+        replaced checkout (the #78574 failure state).
+        """
+        import sys
+        from unittest.mock import patch
+
+        import hermes_cli.update_cmd as update_cmd
+
+        # Ensure the module is cached, otherwise the loop skips it.
+        import hermes_cli.cli_output  # noqa: F401
+
+        reloaded = []
+
+        def fake_reload(mod):
+            reloaded.append(mod.__name__)
+            return mod
+
+        with patch("importlib.reload", side_effect=fake_reload), patch(
+            "importlib.invalidate_caches"
+        ):
+            update_cmd._reload_config_modules()
+
+        assert "hermes_cli.cli_output" in reloaded
+        # cli_output sits below the config modules in the import graph, so it
+        # must be reloaded before them.
+        for later in ("hermes_cli.config", "hermes_cli.dashboard_procs"):
+            if later in reloaded:
+                assert reloaded.index("hermes_cli.cli_output") < reloaded.index(later)
+        assert sys.modules["hermes_cli.cli_output"] is not None
+
 
 class TestCmdUpdateProfileSkillSync:
     """cmd_update syncs bundled skills to all profiles, including the active one.

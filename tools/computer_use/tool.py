@@ -49,6 +49,14 @@ import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.computer_use_provider import ComputerUseProvider
+from hermes_constants import hermes_home_key
+from agent.computer_use_registry import (
+    HOST_PROVIDER_NAME,
+    UnknownComputerUseProvider,
+    resolve_provider,
+)
+from tools.computer_use import host_provider  # noqa: F401 — registers the built-ins
 from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
@@ -303,6 +311,65 @@ def _config_preauthorized(action: str, args: Dict[str, Any]) -> bool:
         return False
 
 
+_provider_lock = threading.Lock()
+# Keyed by profile home, not one slot: under gateway.multiplex_profiles a
+# single process serves several profiles, and computer_use.provider is read
+# from each one's own config.yaml.
+_provider_cache: Dict[str, ComputerUseProvider] = {}
+
+
+def _configured_provider_name() -> str:
+    """Read ``computer_use.provider``, bridging the retired env override.
+
+    ``HERMES_COMPUTER_USE_BACKEND`` selected the backend class before this
+    key existed. It is non-secret behavior, so config.yaml is its home now
+    (root AGENTS.md); the env var still wins where it is set, once, loudly,
+    so a running deployment does not change which machine it clicks on
+    because it upgraded.
+    """
+    legacy = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").strip()
+
+    if legacy:
+        logger.warning(
+            "HERMES_COMPUTER_USE_BACKEND=%s is deprecated; set computer_use.provider "
+            "in config.yaml instead.",
+            legacy,
+        )
+        return legacy
+
+    try:
+        from hermes_cli.config import load_config
+
+        return str(((load_config() or {}).get("computer_use") or {}).get("provider") or "")
+    except Exception as exc:  # noqa: BLE001 — an unreadable config still gets the host
+        logger.debug("computer_use: provider config read failed: %s", exc)
+        return ""
+
+
+def active_computer_use_provider() -> ComputerUseProvider:
+    """The provider servicing this process, resolved once.
+
+    Cached because config cannot change mid-process and this is read on every
+    dispatch and every tool-registration pass. ``reset_backend_for_tests``
+    clears it.
+
+    Raises :class:`UnknownComputerUseProvider` when the configured name is not
+    registered — see the registry on why that is not a silent fallback.
+    """
+    key = hermes_home_key()
+
+    with _provider_lock:
+        cached = _provider_cache.get(key)
+
+        if cached is not None:
+            return cached
+
+        provider = resolve_provider(_configured_provider_name())
+        _provider_cache[key] = provider
+
+        return provider
+
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
     sid = str(session_id or "")
@@ -333,19 +400,9 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                 if sid == "":
                     _backend = None
             else:
-                backend_name = os.environ.get(
-                    "HERMES_COMPUTER_USE_BACKEND", "cua"
-                ).lower()
-                if backend_name in {"cua", "cua-driver", ""}:
-                    from tools.computer_use.cua_backend import CuaDriverBackend
-
-                    backend = CuaDriverBackend(permission_mode=permission_mode)
-                elif backend_name == "noop":  # pragma: no cover
-                    backend = _NoopBackend()
-                else:
-                    raise RuntimeError(
-                        f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}"
-                    )
+                backend = active_computer_use_provider().create_backend(
+                    sid, permission_mode
+                )
                 # Starting under the cache lock preserves the existing
                 # one-backend-per-session invariant. A concurrent mode toggle
                 # releases this backend before returning to its caller.
@@ -467,6 +524,18 @@ def _shutdown_backend_atexit() -> None:
         except Exception as e:
             logger.debug("cua-driver atexit teardown failed: %s", e)
 
+    # After the backends, because a provider's leases (containers, sandboxes)
+    # outlive the backend objects that drove them. Only a provider we actually
+    # resolved can own anything, so this never forces a resolution at exit.
+    with _provider_lock:
+        resolved = list(_provider_cache.values())
+
+    for provider in resolved:
+        try:
+            provider.emergency_cleanup()
+        except Exception as e:
+            logger.debug("computer_use provider %r cleanup failed: %s", provider.name, e)
+
 
 atexit.register(_shutdown_backend_atexit)
 
@@ -474,6 +543,8 @@ atexit.register(_shutdown_backend_atexit)
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     _shutdown_backend_atexit()
+    with _provider_lock:
+        _provider_cache.clear()
     _AUX_VISION_ROUTE_CACHE.clear()
 
 
@@ -601,6 +672,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     # Dispatch to backend.
     try:
         backend = _get_backend(session_id=session_id)
+    except UnknownComputerUseProvider as e:
+        # Its message already names the missing provider and how to fix it;
+        # the cua-driver hint below would send the user after the wrong thing.
+        return json.dumps({"error": str(e)})
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
@@ -1872,19 +1947,39 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def check_computer_use_requirements() -> bool:
-    """Return True iff computer_use can run on this host.
+    """Return True iff the active provider can run computer_use.
 
-    Conditions: macOS, Windows, or Linux + cua-driver binary installed (or
-    override via env). cua-driver runs on all three; the Linux path is
-    headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
-    upstream. Linux users see specific blocked checks via
+    For the default host provider this is what it always was: macOS, Windows,
+    or Linux + a cua-driver binary. cua-driver runs on all three; the Linux
+    path is headed/X11 today (Wayland via XWayland), pure-Wayland progress
+    tracked upstream. Linux users see specific blocked checks via
     `hermes computer-use doctor` if their session is incomplete (e.g. no
     DISPLAY set).
+
+    A provider answers for its own runtime, so the host platform gate is its
+    call to make — a container pool supplies displays a headless gateway does
+    not have, and would fail this check on the host's behalf for no reason.
+
+    A misconfigured provider keeps the tool: the dispatcher's error names what
+    is missing, where a tool stripped from the schema leaves the model with no
+    way to say why it cannot help.
     """
+    try:
+        provider = active_computer_use_provider()
+    except UnknownComputerUseProvider:
+        return True
+
+    if provider.name != HOST_PROVIDER_NAME:
+        try:
+            return bool(provider.is_available())
+        except Exception:  # noqa: BLE001 — a throwing provider is an absent one
+            logger.debug("computer_use provider availability check failed", exc_info=True)
+            return False
+
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+
+    return provider.is_available()
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

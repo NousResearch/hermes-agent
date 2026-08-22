@@ -2580,6 +2580,59 @@ class PluginContext:
         )
         return handle
 
+    # -- computer use provider registration -----------------------------------
+
+    @_serialized_replacement
+    def register_computer_use_provider(self, provider) -> Optional[PluginRegistration]:
+        """Register a source of computer-use backends.
+
+        ``provider`` must be an instance of
+        :class:`agent.computer_use_provider.ComputerUseProvider`. The
+        ``provider.name`` attribute is what ``computer_use.provider`` in
+        ``config.yaml`` matches against when routing ``computer_use`` tool
+        calls, and selection is explicit: registering does not activate.
+
+        This is how a runtime that owns its own display — a container pool, a
+        leased cloud sandbox, a bridge back to the desktop client — supplies
+        one without core knowing it exists. Mirrors
+        :meth:`register_browser_provider`, minus per-profile registration
+        scoping: resolution is already per-profile, so a provider a profile
+        never configures is never built.
+        """
+        from agent.computer_use_provider import ComputerUseProvider
+        from agent.computer_use_registry import (
+            register_provider as _register_cu_provider,
+            restore_registration,
+            snapshot_registration,
+        )
+
+        if not isinstance(provider, ComputerUseProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a computer_use provider that does "
+                "not inherit from ComputerUseProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return None
+
+        registry_name = provider.name.strip()
+        previous = snapshot_registration(registry_name)
+        _register_cu_provider(provider)
+        handle = self._track_replacement(
+            "computer_use_provider",
+            registry_name,
+            slot=("computer_use_provider", registry_name),
+            current=provider,
+            previous=previous,
+            restore=lambda replacement: restore_registration(
+                registry_name, provider, replacement
+            ),
+        )
+        logger.info(
+            "Plugin '%s' registered computer_use provider: %s",
+            self.manifest.name, registry_name,
+        )
+        return handle
+
     # -- secret source registration -------------------------------------------
 
     @_serialized_replacement

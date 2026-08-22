@@ -3486,6 +3486,14 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
+        # Which machine's keyboard and mouse computer_use drives.
+        #   local (default) — cua-driver on whatever host runs the gateway.
+        # A plugin can register others (a container pool, a leased cloud
+        # sandbox) via ctx.register_computer_use_provider(); name one here to
+        # activate it. Never inferred: an unrecognized name is an error, not a
+        # quiet fall back to driving the host's own desktop.
+        # Replaces the HERMES_COMPUTER_USE_BACKEND env var.
+        "provider": "local",
         # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
         # by default upstream. Hermes disables it for our users unless they
         # explicitly opt in here. When false (default), Hermes sets

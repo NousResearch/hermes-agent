@@ -35,6 +35,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 import pytest
@@ -351,3 +352,107 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def _page_targets(port: int) -> list:
+    """Every page-type target currently open in the test browser."""
+    import urllib.request
+
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=10) as r:
+        return [t for t in json.load(r) if t.get("type") == "page"]
+
+
+def _close_all_pages(port: int) -> None:
+    """Start from zero page targets, so 'no page to adopt' is the tested branch."""
+    import urllib.request
+
+    for t in _page_targets(port):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/json/close/{t['id']}", method="PUT"
+            )
+            urllib.request.urlopen(req, timeout=5).read()
+        except Exception:
+            pass
+    time.sleep(0.8)
+
+
+def test_supervisors_do_not_leak_tabs(chrome_cdp, supervisor_registry):
+    """Concurrent supervisors must not strand about:blank tabs (2026-08-11 regression).
+
+    ``_attach_initial_page`` creates a tab when the browser has no page target, and
+    nothing used to close it. Sequentially that is invisible — the next supervisor
+    adopts the orphan — but N supervisors starting at once all see zero pages and all
+    create one. On the shared local stealth Chrome that leaked ~37 renderers in 90s and
+    wedged the browser for 15h: the process stayed alive and kept ACCEPTing on :9222
+    while never answering another request, so launchd's PID-only KeepAlive never
+    restarted it and the tibiabj giveaway joiner silently stopped joining.
+
+    Pre-fix this test strands 7 of 10 tabs; the fix takes it to 0.
+    """
+    from tools.browser_supervisor import CDPSupervisor
+
+    cdp_url, port = chrome_cdp
+    _close_all_pages(port)
+    assert _page_targets(port) == []
+
+    supervisors: list = []
+    errors: list = []
+
+    def boot(i: int) -> None:
+        try:
+            s = CDPSupervisor(task_id=f"pytest-leak-{i}", cdp_url=cdp_url)
+            s.start(timeout=25)
+            supervisors.append(s)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=boot, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"supervisors failed to start: {errors[:2]}"
+    try:
+        # Never more than one tab per live supervisor, whatever the race did.
+        assert len(_page_targets(port)) <= len(supervisors)
+    finally:
+        for s in supervisors:
+            s.stop()
+    time.sleep(1.5)
+
+    leaked = _page_targets(port)
+    assert leaked == [], f"{len(leaked)} tab(s) leaked after every supervisor stopped"
+
+
+def test_supervisor_does_not_close_foreign_tabs(chrome_cdp, supervisor_registry):
+    """A tab the supervisor adopted rather than created must survive its stop().
+
+    The leak fix closes tabs on shutdown, so it has to be certain whose tab it is:
+    the stealth browser is shared with web-extract and the giveaway joiner, and
+    closing their page would trade a tab leak for lost work.
+    """
+    import urllib.request
+
+    from tools.browser_supervisor import CDPSupervisor
+
+    cdp_url, port = chrome_cdp
+    _close_all_pages(port)
+
+    urllib.request.urlopen(
+        urllib.request.Request(
+            f"http://127.0.0.1:{port}/json/new?about:blank", method="PUT"
+        ),
+        timeout=10,
+    ).read()
+    time.sleep(0.8)
+    before = len(_page_targets(port))
+    assert before == 1
+
+    supervisor = CDPSupervisor(task_id="pytest-foreign", cdp_url=cdp_url)
+    supervisor.start(timeout=25)
+    supervisor.stop()
+    time.sleep(1.0)
+
+    assert len(_page_targets(port)) == before, "supervisor closed a tab it did not create"

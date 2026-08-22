@@ -342,6 +342,9 @@ class CDPSupervisor:
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
+        # Target we created ourselves because the browser had no page target.
+        # Tracked so we can close it again — see _attach_initial_page.
+        self._own_target_id: Optional[str] = None
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
@@ -401,6 +404,11 @@ class CDPSupervisor:
             # raw in self._ws`` return cleanly, ``_run`` hits its ``finally``,
             # pending tasks get cancelled in order, THEN the thread exits.
             async def _close_ws():
+                # Give back the tab we created BEFORE dropping the socket — closing
+                # it is itself a CDP call, so it needs the connection still open.
+                # Without this, every supervisor that ever attached to a shared,
+                # long-lived browser left an about:blank tab behind forever.
+                await self._close_own_target()
                 ws = self._ws
                 self._ws = None
                 if ws is not None:
@@ -423,6 +431,26 @@ class CDPSupervisor:
             self._thread.join(timeout=timeout)
         with self._state_lock:
             self._active = False
+
+    async def _close_own_target(self) -> None:
+        """Close the tab this supervisor created, if it still owns one.
+
+        Best-effort and idempotent: a browser that is already gone, wedged, or has
+        closed the tab itself must not turn shutdown into an error. Clearing
+        ``_own_target_id`` first means a failed close is never retried against a
+        stale id on a later stop.
+        """
+        target_id = self._own_target_id
+        self._own_target_id = None
+        if not target_id or self._ws is None:
+            return
+        try:
+            await self._cdp("Target.closeTarget", {"targetId": target_id}, timeout=3.0)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "CDP supervisor %s: could not close own target %s: %s",
+                self.task_id, target_id[:16], _redact_cdp_error_text(e),
+            )
 
     def snapshot(self) -> SupervisorSnapshot:
         """Return an immutable snapshot of current state."""
@@ -739,15 +767,40 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+        """Find a page target, attach flattened session, enable domains, install dialog bridge.
+
+        Tab-leak guard (2026-08-11): this runs on EVERY reconnect, and the browser
+        we attach to may be shared and long-lived (the local stealth Chrome is used by
+        web-extract AND the tibiabj giveaway joiner). Creating a tab per reconnect
+        without ever closing one leaked ~37 renderers in 90s during a reconnect storm
+        and wedged Chrome for 15h — the process stayed alive and kept ACCEPTing on
+        :9222 while never answering another request, so launchd's PID-only KeepAlive
+        never noticed.
+
+        Two rules keep that from recurring:
+          * reuse the target we created on a previous attach when it's still around,
+            rather than minting a new one each cycle, and
+          * remember it so stop() can close it (see _close_own_target).
+        A pre-existing page target is never adopted as ours — closing a tab the user
+        or another client owns would be worse than leaking one.
+        """
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
+        page_targets = [t for t in targets if t.get("type") == "page"]
+
+        # Prefer the tab we already own, so a reconnect storm cannot fan out tabs.
+        mine = next(
+            (t for t in page_targets if t.get("targetId") == self._own_target_id), None
+        )
+        if mine is not None:
+            target_id = mine["targetId"]
+        elif page_targets:
+            self._own_target_id = None  # a tab that isn't ours; never close it
+            target_id = page_targets[0]["targetId"]
+        else:
             created = await self._cdp("Target.createTarget", {"url": "about:blank"})
             target_id = created["result"]["targetId"]
-        else:
-            target_id = page_target["targetId"]
+            self._own_target_id = target_id
 
         attach = await self._cdp(
             "Target.attachToTarget",

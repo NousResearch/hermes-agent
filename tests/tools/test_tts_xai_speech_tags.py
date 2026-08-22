@@ -63,6 +63,76 @@ def test_apply_xai_auto_speech_tags_single_paragraph_still_gets_first_sentence_p
     )
 
 
+@pytest.mark.parametrize(
+    "rewriter_output",
+    [
+        "<whisper>Welcome to the demo of our new product line.</whisper> "
+        "[pause] <soft>It has many features.</soft>",
+        "[sigh] Welcome to the demo of our new product line. "
+        "[pause] It has many features.",
+        "<slow><soft>Welcome to the demo of our new product line.</soft></slow> "
+        "[pause] It has many features.",
+        "<whisper>Welcome to the demo of our new product line.</whisper>"
+        "[pause]<soft>It has many features.</soft>",
+    ],
+    ids=["wrapping-and-inline", "inline", "nested-wrapping", "adjacent-tags"],
+)
+def test_apply_xai_auto_speech_tags_accepts_valid_rewrite(rewriter_output):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=rewriter_output))]
+    )
+
+    with patch("agent.auxiliary_client.call_llm", return_value=response):
+        result = _apply_xai_auto_speech_tags(
+            "Welcome to the demo of our new product line. It has many features."
+        )
+
+    assert result == rewriter_output
+
+
+@pytest.mark.parametrize(
+    "rewriter_output",
+    [
+        "[warmly] Welcome to the demo of our new product line. "
+        "[pause] It has many features.",
+        "[whisper]Welcome to the demo of our new product line.[/whisper] "
+        "[pause] It has many features.",
+        "<whisper>Welcome to the demo of our new product line. "
+        "[pause] It has many features.",
+        "<soft><whisper>Welcome to the demo of our new product line.</soft></whisper> "
+        "[pause] It has many features.",
+        "<whisper>Welcome to a different demo.</whisper> "
+        "[pause] It has many features.",
+        "<whisper>welcome to the demo of our new product line.</whisper> "
+        "[pause] It has many features.",
+        "<whisper>Welcome to the demo of our new product line!</whisper> "
+        "[pause] It has many features.",
+    ],
+    ids=[
+        "unknown-inline",
+        "square-wrapping",
+        "unclosed-wrapping",
+        "misnested-wrapping",
+        "changed-transcript",
+        "changed-capitalisation",
+        "changed-punctuation",
+    ],
+)
+def test_apply_xai_auto_speech_tags_rejects_invalid_rewrite(rewriter_output):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=rewriter_output))]
+    )
+
+    with patch("agent.auxiliary_client.call_llm", return_value=response):
+        result = _apply_xai_auto_speech_tags(
+            "Welcome to the demo of our new product line. It has many features."
+        )
+
+    assert result == (
+        "Welcome to the demo of our new product line. [pause] It has many features."
+    )
+
+
 def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     tmp_path, monkeypatch
 ):
@@ -76,7 +146,9 @@ def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     is "what the LLM said wins", so this test pins that down.
     """
     captured = {}
-    rewriter_output = "Bonjour Monsieur Talbot. [warmly] Ceci est un test. [soft laugh]"
+    rewriter_output = (
+        "<soft>Bonjour Monsieur Talbot.</soft> [pause] Ceci est un test."
+    )
 
     class FakeResponse:
         content = b"mp3"
@@ -222,8 +294,12 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     auxiliary rewriter with task='tts_audio_tags' and a system prompt
     that documents the xAI inline + wrapping tag vocabulary.
     """
+    rewriter_output = (
+        "<soft>Bonjour Monsieur Talbot.</soft> "
+        "[pause] Ceci est un test de réponse vocale."
+    )
     response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="[warmly] Hi."))]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=rewriter_output))]
     )
 
     with patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
@@ -231,7 +307,7 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
             "Bonjour Monsieur Talbot. Ceci est un test de réponse vocale."
         )
 
-    assert result == "[warmly] Hi."
+    assert result == rewriter_output
     mock_call.assert_called_once()
     call_kwargs = mock_call.call_args.kwargs
     assert call_kwargs["task"] == "tts_audio_tags"
@@ -254,9 +330,10 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         assert tag in system_prompt, (
             f"wrapping tag {tag!r} missing from system prompt"
         )
-    # The prompt must explicitly show the BBCode-style closing syntax so
-    # the rewriter uses [/tag] and not <tag>...</tag>.
-    assert "[/tag]" in system_prompt
+    assert "<tag>...</tag>" in system_prompt
+    assert "[/tag]" not in system_prompt
+    assert "laugh-speak" not in _XAI_WRAPPING_SPEECH_TAGS
+    assert "laugh-speak" not in system_prompt
 
     # The user message carries the locally pause-tagged transcript (the
     # conservative fallback the rewriter is asked to enrich).
@@ -268,7 +345,11 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
     """If the auxiliary model wraps its reply in ```...``` fences the
     function must strip them before returning.
     """
-    fenced = "```\n[warmly] Bonjour. [soft laugh]\n```"
+    rewriter_output = (
+        "<soft>Bonjour Monsieur Talbot.</soft> "
+        "[pause] Ceci est un test de réponse vocale."
+    )
+    fenced = f"```\n{rewriter_output}\n```"
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=fenced))]
     )
@@ -278,7 +359,7 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
             "Bonjour Monsieur Talbot. Ceci est un test de réponse vocale."
         )
 
-    assert result == "[warmly] Bonjour. [soft laugh]"
+    assert result == rewriter_output
 
 
 def test_generate_xai_tts_omits_text_normalization_when_explicit_false(

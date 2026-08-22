@@ -104,6 +104,52 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
+    def test_includes_non_curated_tool_capable_models(self, monkeypatch):
+        """Non-curated models that support tools must appear in the picker.
+
+        The curated list is a prioritization signal, not a filter — all
+        tool-capable models from the live catalog should be reachable.
+        """
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["temperature","tools","tool_choice"]},'
+                    b'{"id":"meta-llama/llama-4-maverick","pricing":{"prompt":"0.0000002","completion":"0.0000006"},'
+                    b'"supported_parameters":["tools","temperature"]},'
+                    b'{"id":"poolside/laguna-s-2.1","pricing":{"prompt":"0.000001","completion":"0.000003"},'
+                    b'"supported_parameters":["tools","temperature"]}'
+                    b']}'
+                )
+
+        # Only opus-4.6 is in the curated list; the other two are live-only.
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("anthropic/claude-opus-4.6", "recommended")],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        # Curated model appears first.
+        assert ids[0] == "anthropic/claude-opus-4.6"
+        # Non-curated tool-capable models are included.
+        assert "meta-llama/llama-4-maverick" in ids
+        assert "poolside/laguna-s-2.1" in ids
+        assert len(models) == 3
+
 
 
 class TestOpenRouterToolSupportHelper:
@@ -159,6 +205,19 @@ class TestDetectProviderForModel:
         detection must return None instead of switching to openai.
         """
         assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
+
+    def test_custom_provider_not_overridden_by_live_openrouter(self, monkeypatch):
+        """Custom providers must not be overridden by live OpenRouter matches.
+
+        With the expanded catalog, bare model names like 'laguna-s-2.1' now
+        match OpenRouter entries. Both bare 'custom' and 'custom:*' must be
+        protected.
+        """
+        monkeypatch.setattr(
+            _models_mod, "model_ids", lambda force_refresh=False: ["poolside/laguna-s-2.1"]
+        )
+        assert detect_provider_for_model("laguna-s-2.1", "custom:my_server") is None
+        assert detect_provider_for_model("laguna-s-2.1", "custom") is None
 
 
 

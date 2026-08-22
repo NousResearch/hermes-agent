@@ -59,6 +59,30 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
+            # Bitwarden plaintext disk cache — still live alongside the
+            # encrypted one (agent.secret_sources.bitwarden._DISK_CACHE), and
+            # read-blocked by get_read_block_error(). Left writable, a
+            # prompt-injected write could seed cached secret VALUES that the
+            # next process reads back as if they came from BSM.
+            str(hermes_home / "cache" / "bws_cache.json"),
+            str(hermes_root / "cache" / "bws_cache.json"),
+            # Google Workspace OAuth token store, also read-blocked by
+            # get_read_block_error(): overwriting it plants attacker-controlled
+            # refresh tokens that get loaded on the next run.
+            str(hermes_home / "auth" / "google_oauth.json"),
+            str(hermes_root / "auth" / "google_oauth.json"),
+            # LIVE Google Workspace OAuth token + in-flight exchange state,
+            # stored at the HERMES_HOME root (not under auth/) by the
+            # google-workspace skill: setup.py writes both, google_api.py
+            # rewrites the token on refresh, gws_bridge.py consumes it. Those
+            # trusted writes are direct file IO inside the skill's own scripts
+            # and never route through this guard, so denying model-facing
+            # writes here does not break setup/refresh. Same per-file set as
+            # gateway.platforms.base._ROOT_CREDENTIAL_FILES.
+            str(hermes_home / "google_token.json"),
+            str(hermes_root / "google_token.json"),
+            str(hermes_home / "google_oauth_pending.json"),
+            str(hermes_root / "google_oauth_pending.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),

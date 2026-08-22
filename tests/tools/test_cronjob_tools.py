@@ -388,6 +388,77 @@ class TestUnifiedCronjobTool:
         assert stored["deliver"] == "telegram"
 
 
+    def test_create_persists_attach_to_session_through_the_handler(self):
+        """A schema-declared flag must survive the registered handler.
+
+        Every other case in this class calls ``cronjob()`` directly, which is
+        not the path the agent takes: a tool call goes through the registered
+        handler, and only what that handler reads out of ``args`` reaches the
+        function.  This dispatches the way the agent does.
+        """
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "create",
+                    "prompt": "Daily briefing",
+                    "schedule": "every 1h",
+                    "name": "Briefing",
+                    "attach_to_session": True,
+                },
+            )
+        )
+        assert created["success"] is True
+        assert get_job(created["job_id"])["attach_to_session"] is True
+
+    def test_update_persists_attach_to_session_through_the_handler(self):
+        """update carrying only the flag must not fall through to a no-op.
+
+        With the flag dropped, ``updates`` stays empty and the tool answers
+        "No updates provided." — a false error on a valid call.
+        """
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {"action": "create", "prompt": "Check", "schedule": "every 1h"},
+            )
+        )
+        job_id = created["job_id"]
+        assert "attach_to_session" not in get_job(job_id)
+
+        updated = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {"action": "update", "job_id": job_id, "attach_to_session": True},
+            )
+        )
+        assert updated["success"] is True
+        assert get_job(job_id)["attach_to_session"] is True
+
+    def test_omitted_attach_to_session_leaves_the_key_absent(self):
+        """Absent flag keeps the key out of the record.
+
+        ``create_job`` only writes it when explicitly set, so an untouched job
+        keeps falling back to the global ``cron.mirror_delivery`` config.
+        """
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {"action": "create", "prompt": "Check", "schedule": "every 1h"},
+            )
+        )
+        assert "attach_to_session" not in get_job(created["job_id"])
+
+
 # =========================================================================
 # Agent-facing surface: per-job model pins are user-owned
 # =========================================================================

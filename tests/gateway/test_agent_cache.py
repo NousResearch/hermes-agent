@@ -38,6 +38,24 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-opus-4.6", runtime, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_skip_context_files_change_different_signature(self):
+        """Toggling context-file skipping must rebuild the cached agent."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature("m", runtime, [], "", skip_context_files=False)
+        sig2 = GatewayRunner._agent_config_signature("m", runtime, [], "", skip_context_files=True)
+        assert sig1 != sig2
+
+    def test_skip_memory_change_different_signature(self):
+        """Toggling memory skipping must rebuild the cached agent."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature("m", runtime, [], "", skip_memory=False)
+        sig2 = GatewayRunner._agent_config_signature("m", runtime, [], "", skip_memory=True)
+        assert sig1 != sig2
+
     def test_same_token_prefix_different_full_token_changes_signature(self):
         """Tokens sharing a JWT-style prefix must not collide."""
         from gateway.run import GatewayRunner
@@ -1061,4 +1079,3 @@ class TestCrossProcessInvalidationDefersCleanup:
         # Stale entry was popped, hard-teardown path never used.
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
-

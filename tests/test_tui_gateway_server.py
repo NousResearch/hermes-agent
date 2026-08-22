@@ -19907,3 +19907,80 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_make_agent_forwards_isolation_env(monkeypatch):
+    """TUI session agents honor HERMES_SAFE_MODE like HERMES_IGNORE_RULES."""
+    captured = {}
+
+    class FakeResolution:
+        used_fallback = False
+        selected_model = "m"
+        runtime = {
+            "provider": "p",
+            "base_url": "u",
+            "api_key": "k",
+            "api_mode": "m",
+            "command": None,
+            "args": None,
+        }
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_parse_tui_skills_env", lambda: [])
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("m", None))
+    monkeypatch.setattr(
+        server, "_resolve_runtime_with_fallback", lambda _kwargs: FakeResolution()
+    )
+    monkeypatch.setattr(server, "_load_provider_routing", lambda: {})
+    monkeypatch.setattr(server, "_cfg_max_turns", lambda _cfg, _default: 5)
+    monkeypatch.setattr(server, "_load_fallback_model", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda _sid: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent("sid", "key")
+
+    assert captured["skip_context_files"] is True
+    assert captured["skip_memory"] is True
+
+
+def test_background_agent_kwargs_inherits_isolation(monkeypatch):
+    """TUI background turns keep the parent session's isolation contract."""
+    from types import SimpleNamespace
+
+    parent = SimpleNamespace(
+        base_url="u",
+        api_key="k",
+        provider="p",
+        api_mode="m",
+        acp_command=None,
+        acp_args=None,
+        model="m",
+        enabled_toolsets=["terminal"],
+        ephemeral_system_prompt=None,
+        providers_allowed=None,
+        providers_ignored=None,
+        providers_order=None,
+        provider_sort=None,
+        provider_require_parameters=False,
+        provider_data_collection=None,
+        openrouter_min_coding_score=None,
+        reasoning_config=None,
+        service_tier=None,
+        request_overrides={},
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_fallback_model", lambda _agent: None)
+
+    kwargs = server._background_agent_kwargs(parent, "task-1")
+
+    assert kwargs["skip_context_files"] is True
+    assert kwargs["skip_memory"] is True

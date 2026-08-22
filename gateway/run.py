@@ -5536,7 +5536,15 @@ class TurnRunner:
             _platforms_gw_cfg = {}
         _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
         _skip_context = _plat_gw_cfg.get("skip_context_files")
-        skip_context_files = bool(_skip_context) if _skip_context is not None else False
+        platform_skip_context = bool(_skip_context) if _skip_context is not None else False
+
+        # Isolation contract: --ignore-rules / --safe-mode (normalized to
+        # HERMES_IGNORE_RULES / HERMES_SAFE_MODE at CLI startup) must behave
+        # like the CLI and TUI entries, composing with the per-platform
+        # latency opt-out (see _resolve_gateway_isolation_skip_flags).
+        skip_context_files, skip_memory = _resolve_gateway_isolation_skip_flags(
+            platform_skip_context
+        )
 
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
@@ -5550,6 +5558,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            skip_memory=skip_memory,
         )
         agent = None
         reused_cached_agent = False
@@ -5786,6 +5795,7 @@ class TurnRunner:
                 # Reload from disk — do not reuse the startup snapshot (#60955).
                 fallback_model=self._runner._refresh_fallback_model(),
                 skip_context_files=skip_context_files,
+                skip_memory=skip_memory,
                 # Keep the persona even with minimal context: soul identity is
                 # a single small file, not part of the expensive walk.
                 load_soul_identity=True,
@@ -6724,6 +6734,24 @@ class TurnRunner:
 # DB-backed commands and is how many suites construct a bare runner).  A plain
 # ``None`` cannot express both.  Mirrors ``gateway.session._DB_UNPINNED``.
 _SESSION_DB_UNPINNED = object()
+
+
+def _resolve_gateway_isolation_skip_flags(
+    platform_skip_context: bool,
+) -> tuple[bool, bool]:
+    """Resolve isolation skip flags for a gateway session.
+
+    Combines the shared isolation contract (``--ignore-rules`` /
+    ``--safe-mode`` via ``HERMES_IGNORE_RULES`` / ``HERMES_SAFE_MODE``) with
+    the per-platform latency opt-out: either one skips context-file
+    discovery, while memory skipping follows isolation alone.
+
+    Returns ``(skip_context_files, skip_memory)``.
+    """
+    from agent.isolation import resolve_agent_isolation
+
+    isolated = resolve_agent_isolation()
+    return isolated or bool(platform_skip_context), isolated
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -22693,6 +22721,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # Isolation contract: background gateway tasks honor the same
+            # --ignore-rules / --safe-mode policy as foreground turns.
+            skip_context_files, skip_memory = _resolve_gateway_isolation_skip_flags(
+                False
+            )
+
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
             enriched_prompt = prompt
@@ -22718,6 +22752,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    skip_context_files=skip_context_files,
+                    skip_memory=skip_memory,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
@@ -26393,6 +26429,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_id: str | None = None,
         user_id_alt: str | None = None,
         skip_context_files: bool = False,
+        skip_memory: bool = False,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -26451,6 +26488,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (context files in vs out) — a toggled config edit must
                 # rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                # skip_memory changes the memory injection state baked at
+                # construction; an isolation toggle must also rebuild.
+                bool(skip_memory),
             ],
             sort_keys=True,
             default=str,

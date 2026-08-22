@@ -6735,6 +6735,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "skip_context_files": getattr(agent, "skip_context_files", False),
+        "skip_memory": getattr(agent, "skip_memory", False),
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
@@ -7062,10 +7064,12 @@ def _make_agent(
     # harness. Both inline and compute-host paths construct through _make_agent,
     # leaving the process boundary as the only experimental variable.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
+    from agent.isolation import resolve_agent_isolation
 
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
+    isolated = resolve_agent_isolation()
 
     from run_agent import AIAgent
 
@@ -7228,8 +7232,8 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_context_files=isolated,
+        skip_memory=isolated,
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )

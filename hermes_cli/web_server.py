@@ -1746,11 +1746,14 @@ def _apply_main_model_assignment(
     if not isinstance(model_cfg, dict):
         model_cfg = {}
     prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    prev_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     new_provider = provider.strip().lower()
+    incoming_base_url = base_url.strip()
+    base_url_changed = bool(incoming_base_url) and incoming_base_url.rstrip("/") != prev_base_url
     model_cfg["provider"] = provider
     model_cfg["default"] = model
-    if base_url.strip():
-        model_cfg["base_url"] = base_url.strip()
+    if incoming_base_url:
+        model_cfg["base_url"] = incoming_base_url
     elif model_cfg.get("base_url") and new_provider != prev_provider:
         # Switching providers: the old URL belonged to the old provider, drop
         # it so the new provider's default endpoint is used. Same-provider
@@ -1763,12 +1766,15 @@ def _apply_main_model_assignment(
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
+    elif (model_cfg.get("api_key") or model_cfg.get("api")) and (
+        new_provider != prev_provider or base_url_changed
+    ):
         # A stale endpoint secret can live under the legacy ``api`` alias with
         # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
         # the switch-clears-the-key path must trigger on either field — else the
         # old endpoint's secret survives in config.yaml and contaminates a later
         # custom resolution. clear_model_endpoint_credentials scrubs both.
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
@@ -8305,13 +8311,21 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    url = base_url + "/models"
+    url, error = _provider_models_probe_url(base_url)
+    if error:
+        return {"ok": False, "reachable": True, "message": error, "models": []}
+    assert url is not None
+    block_reason = _provider_probe_block_reason(url)
+    if block_reason:
+        return {"ok": False, "reachable": False, "message": block_reason, "models": []}
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0), follow_redirects=False
+        ) as client:
             resp = await client.get(url, headers=headers)
     except Exception:
         return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
@@ -8322,6 +8336,43 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
 
     return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+
+
+def _provider_models_probe_url(base_url: str) -> tuple[str | None, str | None]:
+    raw = (base_url or "").strip()
+    if not raw:
+        return None, "Enter a value first."
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        _ = parsed.port
+    except ValueError:
+        return None, "Enter a valid provider endpoint URL."
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return None, "Provider endpoints must use http or https."
+    if not parsed.netloc or not parsed.hostname:
+        return None, "Provider endpoints must include a host."
+    if parsed.username or parsed.password:
+        return None, "Provider endpoint URLs must not include credentials."
+    return raw.rstrip("/") + "/models", None
+
+
+def _provider_probe_block_reason(url: str, *, strict_private: bool = False) -> str | None:
+    try:
+        from tools.url_safety import is_always_blocked_url, is_safe_url
+    except Exception:
+        _log.warning("Provider endpoint safety checks unavailable", exc_info=True)
+        return "Could not verify that provider endpoint safely."
+
+    if is_always_blocked_url(url):
+        return "Provider endpoints cannot target cloud metadata or link-local addresses."
+    if strict_private and not is_safe_url(url):
+        return (
+            "Private or local provider endpoints can only be validated from a "
+            "loopback dashboard session. Configure them locally or enable the "
+            "private URL opt-in first."
+        )
+    return None
 
 
 @app.post("/api/providers/validate")
@@ -8346,7 +8397,16 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
+        url, error = _provider_models_probe_url(value)
+        if error:
+            return {"ok": False, "reachable": True, "message": error}
+        assert url is not None
+        block_reason = _provider_probe_block_reason(
+            url,
+            strict_private=bool(getattr(request.app.state, "auth_required", False)),
+        )
+        if block_reason:
+            return {"ok": False, "reachable": False, "message": block_reason}
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.

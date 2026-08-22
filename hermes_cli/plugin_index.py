@@ -27,8 +27,11 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 # Canonical index location. Override via config key ``plugins.index_url``.
+# Temporarily served from Revell-ai/hermes-plugin-index — a community-run
+# seed offered as ecosystem infrastructure. See #87565. This URL should
+# transition to NousResearch-owned hosting whenever the org is ready.
 DEFAULT_INDEX_URL = (
-    "https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json"
+    "https://raw.githubusercontent.com/Revell-ai/hermes-plugin-index/main/index.json"
 )
 
 # Cache the fetched index for 24 hours; a stale cache is still preferred over

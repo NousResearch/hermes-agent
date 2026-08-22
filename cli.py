@@ -12809,6 +12809,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
+                process_registry.defer_unclaimed_delivery(event)
                 continue
             self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)

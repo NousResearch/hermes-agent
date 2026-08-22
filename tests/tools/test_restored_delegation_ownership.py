@@ -30,6 +30,7 @@ def _make_registry():
     reg._running = {}
     reg._finished = {}
     reg._lock = threading.Lock()
+    reg.completion_routing_lock = threading.RLock()
     reg.completion_queue = queue.Queue()
     reg._completion_consumed = set()
     reg._poll_observed = set()

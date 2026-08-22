@@ -16166,6 +16166,144 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_tui_claim_loss_does_not_leave_session_busy(monkeypatch):
+    """A competing durable consumer cannot strand the TUI in running state."""
+    import queue as _queue_mod
+
+    import tools.async_delegation as delegation_mod
+    import tools.process_registry as registry_mod
+    from tools.process_registry import process_registry
+
+    stop_poller = threading.Event()
+
+    class _StopOnGetQueue(_queue_mod.Queue):
+        def get(self, block=True, timeout=None):
+            item = super().get(block=block, timeout=timeout)
+            stop_poller.set()
+            return item
+
+    isolated_queue: _queue_mod.Queue = _StopOnGetQueue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(registry_mod, "format_process_notification", lambda _evt: "ready")
+    monkeypatch.setattr(delegation_mod, "claim_event_delivery", lambda *_args: None)
+    deferred = []
+    monkeypatch.setattr(
+        process_registry,
+        "defer_unclaimed_delivery",
+        lambda evt: deferred.append(evt) or True,
+    )
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    sid = "sid-tui-claim-loss"
+    sess = _session(running=False, session_key="session-tui-claim-loss")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-tui-claim-loss",
+        "delivery_event_key": "task:0",
+        "result_delivery": "after_turn",
+        "origin_ui_session_id": sid,
+        "session_key": "session-tui-claim-loss",
+    }
+    isolated_queue.put(event)
+    server._sessions[sid] = sess
+
+    try:
+        server._notification_poller_loop(stop_poller, sid, sess)
+
+        assert sess["running"] is False
+        assert deferred == [event]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop(sid, None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_tui_after_turn_coalesces_all_ready_batch_children(monkeypatch):
+    """The idle TUI starts one synthetic turn for the ready child set."""
+    import queue as _queue_mod
+
+    import tools.async_delegation as delegation_mod
+    from tools.process_registry import process_registry
+
+    stop_poller = threading.Event()
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    turns = []
+    claims = []
+    completions = []
+
+    def claim(event, consumer):
+        claims.append((event, consumer))
+        return "group-claim"
+
+    def complete(event, claim_id):
+        completions.append((event, claim_id))
+        return True
+
+    def run_prompt(_rid, _sid, current_session, text, **_kwargs):
+        turns.append(text)
+        with current_session["history_lock"]:
+            current_session["running"] = False
+        stop_poller.set()
+
+    monkeypatch.setattr(delegation_mod, "claim_event_delivery", claim)
+    monkeypatch.setattr(delegation_mod, "complete_event_delivery", complete)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    sid = "sid-tui-after-turn-group"
+    session_key = "session-tui-after-turn-group"
+    sess = _session(running=False, session_key=session_key)
+    base = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-tui-after-turn-group",
+        "result_delivery": "after_turn",
+        "origin_ui_session_id": sid,
+        "session_key": session_key,
+        "is_batch": True,
+        "batch_size": 3,
+        "goals": ["zero", "one", "two"],
+        "role": "leaf",
+        "model": "m",
+    }
+    for index in (0, 1):
+        isolated_queue.put(
+            {
+                **base,
+                "delivery_event_key": f"task:{index}",
+                "task_index": index,
+                "results": [
+                    {
+                        "task_index": index,
+                        "status": "completed",
+                        "summary": f"ready-{index}",
+                    }
+                ],
+            }
+        )
+    server._sessions[sid] = sess
+
+    try:
+        server._notification_poller_loop(stop_poller, sid, sess)
+
+        assert len(turns) == 1
+        assert "RESULTS READY" in turns[0]
+        assert "2/3" in turns[0]
+        assert "ready-0" in turns[0] and "ready-1" in turns[0]
+        assert len(claims) == 1
+        grouped = claims[0][0]
+        assert grouped["delivery_event_keys"] == ["task:0", "task:1"]
+        assert claims[0][1] == "tui-poller"
+        assert completions == [(grouped, "group-claim")]
+        assert isolated_queue.empty()
+    finally:
+        stop_poller.set()
+        server._sessions.pop(sid, None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
     """TUI /save (session.save RPC) must snapshot under the Hermes profile
     home — not the project/workspace CWD — and include the system prompt,

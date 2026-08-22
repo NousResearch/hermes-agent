@@ -42,6 +42,7 @@ import concurrent.futures
 import functools
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -173,16 +174,11 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
-# Whole-screen / desktop capture. cua-driver is a window-oriented driver —
-# its `get_window_state` / `screenshot` tools capture a single window (by
-# pid + window_id), and there is no MCP tool that captures the entire virtual
-# desktop or an arbitrary monitor as one image. But the OS shell surfaces
-# themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
-# that show up in `list_windows`, so "show me my screen" / "click the taskbar"
-# is reachable by targeting those windows. When `app` is one of these
-# sentinels, capture() resolves to the desktop/shell window instead of an
-# application window.
+# Whole-screen / desktop capture. Current cua-driver builds advertise
+# `get_desktop_state`; older builds remain window-oriented and resolve these
+# sentinels to a desktop/shell window from `list_windows` instead.
 _SCREEN_CAPTURE_SENTINELS = {"screen", "desktop", "fullscreen", "full screen", "all"}
+_PRIMARY_DESKTOP_TARGET = {"kind": "desktop", "display_id": "primary"}
 
 # Known shell/desktop window identifiers across platforms. Matched
 # case-insensitively as a substring against both the window's app_name and
@@ -205,6 +201,14 @@ _NON_APP_WINDOW_TITLE_PREFIXES = (
     "gnome-shell",
     "GNOME Shell",
 )
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    """Return a finite real value while rejecting booleans and malformed data."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 # Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
@@ -2200,6 +2204,7 @@ class _CuaDriverSession:
     # out of this set because a lost response does not prove they failed.
     _TRANSPORT_REPLAY_SAFE_TOOLS = frozenset({
         "get_cursor_position",
+        "get_desktop_state",
         "get_displays",
         "get_screen_size",
         "get_window_state",
@@ -2541,6 +2546,8 @@ class CuaDriverBackend(ComputerUseBackend):
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
+        self._active_desktop_display_id: Optional[str] = None
+        self._active_desktop_geometry: Optional[Dict[str, float]] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
         # Exact identity for capture_after. App names may be generic on Linux
         # (for example, multiple unrelated Qt windows can say Qt6Application).
@@ -2704,6 +2711,8 @@ class CuaDriverBackend(ComputerUseBackend):
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
         self._active_pid = None
         self._active_window_id = None
+        self._active_desktop_display_id = None
+        self._active_desktop_geometry = None
         self._last_app = None
         self._last_target = None
         self._snapshot_tokens = {}
@@ -2720,6 +2729,229 @@ class CuaDriverBackend(ComputerUseBackend):
             app="",
             window_title=message,
             png_bytes_len=0,
+        )
+
+    def _wayland_desktop_capture_available(self, app: Optional[str]) -> bool:
+        """Whether a screen sentinel should use cua-driver's desktop route."""
+        is_wayland_screen = bool(
+            sys.platform == "linux"
+            and os.environ.get("WAYLAND_DISPLAY")
+            and isinstance(app, str)
+            and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS
+        )
+        if not is_wayland_screen:
+            return False
+
+        # A backend may be used before start(), leaving tool discovery cold.
+        # One legacy-safe read starts the lazy session and fills capabilities.
+        if not self._session.capabilities_discovered:
+            try:
+                self._call_capture_tool(
+                    "list_windows",
+                    {"on_screen_only": True, "session": self._session_id},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "cua-driver Wayland desktop capability preflight failed: %s",
+                    exc,
+                )
+                return False
+
+        return self._session._has_tool("get_desktop_state")
+
+    def _capture_wayland_desktop(self, mode: str, app: str) -> CaptureResult:
+        """Capture primary-display pixels and record their logical CUA mapping."""
+        out = self._call_capture_tool(
+            "get_desktop_state",
+            {"session": self._session_id},
+        )
+        png_b64, image_mime_type = _image_from_tool_result(out)
+        if not png_b64:
+            return self._failed_capture(
+                mode,
+                "<cua-driver get_desktop_state returned no screenshot>",
+            )
+
+        width = height = 0
+        try:
+            raw = base64.b64decode(png_b64, validate=False)
+            png_bytes_len = len(raw)
+            width, height = _image_dimensions_from_bytes(raw)
+        except Exception:
+            png_bytes_len = len(png_b64) * 3 // 4
+
+        geometry: Optional[Dict[str, float]] = None
+        if self._session._has_tool("get_screen_size"):
+            try:
+                screen_out = self._call_capture_tool(
+                    "get_screen_size",
+                    {"session": self._session_id},
+                )
+            except Exception as exc:
+                logger.debug("cua-driver get_screen_size failed: %s", exc)
+                screen_out = {}
+            raw_screen = screen_out.get("structuredContent")
+            screen = raw_screen if isinstance(raw_screen, dict) else {}
+            logical_width = _finite_number(screen.get("width"))
+            logical_height = _finite_number(screen.get("height"))
+            if (
+                width > 0
+                and height > 0
+                and logical_width is not None
+                and logical_width > 0
+                and logical_height is not None
+                and logical_height > 0
+            ):
+                scale_x = width / logical_width
+                scale_y = height / logical_height
+                if (
+                    math.isfinite(scale_x)
+                    and scale_x > 0
+                    and math.isfinite(scale_y)
+                    and scale_y > 0
+                ):
+                    geometry = {
+                        "pixel_left": 0.0,
+                        "pixel_top": 0.0,
+                        "pixel_width": float(width),
+                        "pixel_height": float(height),
+                        "logical_left": 0.0,
+                        "logical_top": 0.0,
+                        "logical_width": logical_width,
+                        "logical_height": logical_height,
+                        "scale_x": scale_x,
+                        "scale_y": scale_y,
+                    }
+
+        self._active_pid = None
+        self._active_window_id = None
+        self._active_desktop_display_id = _PRIMARY_DESKTOP_TARGET["display_id"]
+        self._active_desktop_geometry = geometry
+        self._last_app = app
+        self._last_target = None
+        self._snapshot_tokens = {}
+        return CaptureResult(
+            mode=mode,
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=[],
+            app=app,
+            window_title="Desktop (primary)",
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+        )
+
+    def _desktop_input_target(self, tool: str) -> Optional[Dict[str, str]]:
+        """Return the sticky desktop target only when its schema advertises it."""
+        display_id = self._active_desktop_display_id
+        if not display_id or not self._session.supports_input_property(tool, "target"):
+            return None
+        return {"kind": "desktop", "display_id": display_id}
+
+    def _translate_wayland_desktop_point(
+        self,
+        x: Any,
+        y: Any,
+    ) -> Optional[Tuple[Any, Any]]:
+        """Map an in-bounds screenshot-pixel point to logical CUA coordinates."""
+        geometry = self._active_desktop_geometry
+        pixel_x = _finite_number(x)
+        pixel_y = _finite_number(y)
+        if not isinstance(geometry, dict) or pixel_x is None or pixel_y is None:
+            return None
+
+        values = {
+            key: _finite_number(geometry.get(key))
+            for key in (
+                "pixel_left",
+                "pixel_top",
+                "pixel_width",
+                "pixel_height",
+                "logical_left",
+                "logical_top",
+                "logical_width",
+                "logical_height",
+                "scale_x",
+                "scale_y",
+            )
+        }
+        if any(value is None for value in values.values()):
+            return None
+        pixel_left = values["pixel_left"]
+        pixel_top = values["pixel_top"]
+        pixel_width = values["pixel_width"]
+        pixel_height = values["pixel_height"]
+        logical_left = values["logical_left"]
+        logical_top = values["logical_top"]
+        logical_width = values["logical_width"]
+        logical_height = values["logical_height"]
+        scale_x = values["scale_x"]
+        scale_y = values["scale_y"]
+        assert None not in (
+            pixel_left,
+            pixel_top,
+            pixel_width,
+            pixel_height,
+            logical_left,
+            logical_top,
+            logical_width,
+            logical_height,
+            scale_x,
+            scale_y,
+        )
+        if not (
+            pixel_width > 0
+            and pixel_height > 0
+            and logical_width > 0
+            and logical_height > 0
+            and scale_x > 0
+            and scale_y > 0
+            and math.isclose(pixel_width / logical_width, scale_x)
+            and math.isclose(pixel_height / logical_height, scale_y)
+            and pixel_left <= pixel_x < pixel_left + pixel_width
+            and pixel_top <= pixel_y < pixel_top + pixel_height
+        ):
+            return None
+
+        logical_x = logical_left + ((pixel_x - pixel_left) / scale_x)
+        logical_y = logical_top + ((pixel_y - pixel_top) / scale_y)
+        if not (
+            logical_left <= logical_x < logical_left + logical_width
+            and logical_top <= logical_y < logical_top + logical_height
+        ):
+            return None
+
+        def _clean(value: float) -> Any:
+            rounded = round(value, 6)
+            return int(rounded) if rounded.is_integer() else rounded
+
+        return _clean(logical_x), _clean(logical_y)
+
+    @staticmethod
+    def _desktop_coordinate_mapping_invalid(action: str) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            action=action,
+            code="desktop_coordinate_mapping_invalid",
+            message=(
+                "Desktop pointer input was blocked because the latest capture "
+                "does not provide a valid in-bounds screenshot-pixel to "
+                "logical-coordinate mapping. Capture the desktop again with a "
+                "cua-driver that advertises valid get_screen_size dimensions."
+            ),
+        )
+
+    @staticmethod
+    def _desktop_input_unsupported(action: str) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            action=action,
+            code="desktop_target_unsupported",
+            message=(
+                f"The connected cua-driver {action} schema does not advertise "
+                "desktop targets. Capture and act through a window instead."
+            ),
         )
 
     def _call_capture_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2907,6 +3139,8 @@ class CuaDriverBackend(ComputerUseBackend):
                 "z_index": 0,
             }]
         else:
+            if self._wayland_desktop_capture_available(app):
+                return self._capture_wayland_desktop(mode, app or "screen")
             try:
                 windows = self._load_windows()
             except Exception:
@@ -2983,6 +3217,8 @@ class CuaDriverBackend(ComputerUseBackend):
         )
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
+        self._active_desktop_display_id = None
+        self._active_desktop_geometry = None
         # Tokens belong to the prior window snapshot. Disarm them before any
         # capture call so an exception cannot pair old tokens with this target.
         self._snapshot_tokens = {}
@@ -3309,8 +3545,50 @@ class CuaDriverBackend(ComputerUseBackend):
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
-            return ActionResult(ok=False, action="click",
-                                message="No active window — call capture() first.")
+            if not getattr(self, "_active_desktop_display_id", None):
+                return ActionResult(ok=False, action="click",
+                                    message="No active window — call capture() first.")
+
+            button_norm = (button or "left").lower()
+            if button_norm not in {"left", "right", "middle"}:
+                return ActionResult(
+                    ok=False,
+                    action="click",
+                    message=f"unknown button {button!r} — expected left, right, middle.",
+                )
+            if element is not None:
+                return ActionResult(
+                    ok=False,
+                    action="click",
+                    message="Desktop capture has no element indices; use x/y coordinates.",
+                )
+            if x is None or y is None:
+                return ActionResult(
+                    ok=False,
+                    action="click",
+                    message="click requires x/y after desktop capture.",
+                )
+            translated = self._translate_wayland_desktop_point(x, y)
+            if translated is None:
+                return self._desktop_coordinate_mapping_invalid("click")
+            target = self._desktop_input_target("click")
+            if target is None:
+                return self._desktop_input_unsupported("click")
+            args: Dict[str, Any] = {
+                "button": button_norm,
+                "x": translated[0],
+                "y": translated[1],
+                "target": target,
+            }
+            if click_count == 2:
+                if not self._session.supports_input_property("click", "count"):
+                    return self._desktop_input_unsupported("double_click")
+                args["count"] = 2
+            if modifiers:
+                args["modifier"] = modifiers
+            return self._run_input_action(
+                "click", args, delivery_mode, bring_to_front,
+            )
 
         # Choose tool by click_count only — single-vs-double — and pass the
         # button through to `click`'s `button` enum (Surface 5 of
@@ -3362,8 +3640,38 @@ class CuaDriverBackend(ComputerUseBackend):
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
-            return ActionResult(ok=False, action="drag",
-                                message="No active window — call capture() first.")
+            if not getattr(self, "_active_desktop_display_id", None):
+                return ActionResult(ok=False, action="drag",
+                                    message="No active window — call capture() first.")
+            if from_element is not None or to_element is not None:
+                return ActionResult(
+                    ok=False,
+                    action="drag",
+                    message="Desktop capture has no element indices; use coordinates.",
+                )
+            if from_xy is None or to_xy is None:
+                return ActionResult(
+                    ok=False,
+                    action="drag",
+                    message="drag requires coordinate pairs after desktop capture.",
+                )
+            translated_from = self._translate_wayland_desktop_point(*from_xy)
+            translated_to = self._translate_wayland_desktop_point(*to_xy)
+            if translated_from is None or translated_to is None:
+                return self._desktop_coordinate_mapping_invalid("drag")
+            target = self._desktop_input_target("drag")
+            if target is None:
+                return self._desktop_input_unsupported("drag")
+            args: Dict[str, Any] = {
+                "from_x": translated_from[0],
+                "from_y": translated_from[1],
+                "to_x": translated_to[0],
+                "to_y": translated_to[1],
+                "target": target,
+            }
+            return self._run_input_action(
+                "drag", args, delivery_mode, bring_to_front,
+            )
         args: Dict[str, Any] = {"pid": pid}
         if from_element is not None and to_element is not None:
             if self._active_window_id is None:
@@ -3398,8 +3706,38 @@ class CuaDriverBackend(ComputerUseBackend):
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
-            return ActionResult(ok=False, action="scroll",
-                                message="No active window — call capture() first.")
+            if not getattr(self, "_active_desktop_display_id", None):
+                return ActionResult(ok=False, action="scroll",
+                                    message="No active window — call capture() first.")
+            if element is not None:
+                return ActionResult(
+                    ok=False,
+                    action="scroll",
+                    message="Desktop capture has no element indices; use coordinates.",
+                )
+            if x is None or y is None:
+                return self._desktop_coordinate_mapping_invalid("scroll")
+            translated = self._translate_wayland_desktop_point(x, y)
+            if translated is None:
+                return self._desktop_coordinate_mapping_invalid("scroll")
+            target = self._desktop_input_target("scroll")
+            if target is None:
+                return self._desktop_input_unsupported("scroll")
+            if not (
+                self._session.supports_input_property("scroll", "x")
+                and self._session.supports_input_property("scroll", "y")
+            ):
+                return self._desktop_input_unsupported("scroll")
+            args: Dict[str, Any] = {
+                "direction": direction,
+                "amount": max(1, min(50, amount)),
+                "target": target,
+                "x": translated[0],
+                "y": translated[1],
+            }
+            return self._run_input_action(
+                "scroll", args, delivery_mode, bring_to_front,
+            )
         args: Dict[str, Any] = {
             "pid": pid,
             "direction": direction,

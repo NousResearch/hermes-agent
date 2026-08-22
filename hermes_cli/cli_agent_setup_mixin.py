@@ -637,6 +637,13 @@ class CLIAgentSetupMixin:
         except SessionResumeTooLargeError as exc:
             return str(exc)
         except Exception as exc:
+            # `logger` is not a module-level name here — every other method in
+            # this mixin imports it from `cli` locally. Without this import the
+            # handler raised NameError, which propagated instead of the
+            # documented fail-OPEN behaviour: an unexpected guard failure would
+            # abort the resume rather than let it proceed.
+            from cli import logger
+
             logger.warning(
                 "Resume safety check failed for %s (proceeding without guard): %s",
                 self.session_id, exc,

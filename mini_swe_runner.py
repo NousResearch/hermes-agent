@@ -33,11 +33,13 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import fire
+from hermes_cli.phase1_capability import phase1_capability_mode_enabled
 from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
 
 # Load environment variables
-load_dotenv()
+if not phase1_capability_mode_enabled():
+    load_dotenv()
 
 
 def _effective_temperature_for_model(

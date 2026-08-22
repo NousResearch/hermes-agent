@@ -81,6 +81,7 @@ import sys
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
+from hermes_cli import phase1_capability as _phase1_capability  # noqa: E402, F401
 from hermes_cli import _startup_fast  # noqa: E402
 
 # Early venv self-heal — MUST run before any third-party import below.  When
@@ -1015,6 +1016,14 @@ def _has_any_provider_configured() -> bool:
             provider_env_vars.update(pconfig.api_key_env_vars)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
+
+    if _phase1_capability.phase1_capability_mode_enabled():
+        if not isinstance(model_cfg, dict):
+            return False
+        return bool(
+            str(model_cfg.get("provider") or "").strip()
+            or str(model_cfg.get("base_url") or "").strip()
+        )
 
     # Check .env file for keys
     env_file = get_env_path()

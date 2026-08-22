@@ -28,6 +28,11 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
 
+from hermes_cli.phase1_capability import (
+    phase1_capability_mode_enabled,
+    require_persistent_credential_expansion_allowed,
+)
+
 
 # ── multiplex-active flag ────────────────────────────────────────────────
 # Process-global: set once at gateway startup when gateway.multiplex_profiles
@@ -255,6 +260,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     PowerShell ``Set-Content -Encoding UTF8``) does not prefix the first
     key as ``\\ufeffNAME`` and make ``get_secret('NAME')`` miss under scope.
     """
+    require_persistent_credential_expansion_allowed("profile dotenv")
     secrets: Dict[str, str] = {}
     try:
         text = env_path.read_text(encoding="utf-8-sig")
@@ -293,6 +299,9 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
     """
+    if phase1_capability_mode_enabled():
+        return dict(os.environ)
+
     home = Path(hermes_home)
     secrets = load_env_file(home / ".env")
 

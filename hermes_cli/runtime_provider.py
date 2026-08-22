@@ -641,6 +641,10 @@ def _try_resolve_from_custom_pool(
     provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return None
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
     if not pool_key:
         return None
@@ -699,12 +703,19 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Never log them.
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return
     extra_headers = normalize_extra_headers(entry.get("extra_headers"))
     if extra_headers:
         result["extra_headers"] = extra_headers
 
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    phase1_mode = phase1_capability_mode_enabled()
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
         return None
@@ -764,7 +775,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             ).strip()
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
-            if not resolved_api_key:
+            if not resolved_api_key and not phase1_mode:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
             display_name = entry.get("name", "")
@@ -781,6 +792,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    if key_env:
+                        result["key_env"] = key_env
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -789,7 +802,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # short-lived bearers instead of static keys. Propagated
                     # raw; wrapped in a per-request token provider at
                     # resolution.
-                    key_cmd = str(entry.get("key_cmd", "") or "").strip()
+                    key_cmd = (
+                        ""
+                        if phase1_mode
+                        else str(entry.get("key_cmd", "") or "").strip()
+                    )
                     if key_cmd:
                         result["key_cmd"] = key_cmd
                     # The v11→v12 migration writes the API mode under the new
@@ -832,7 +849,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": (
+                ""
+                if phase1_mode
+                else str(entry.get("api_key", "") or "").strip()
+            ),
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
@@ -1100,6 +1121,9 @@ def _resolve_named_custom_runtime(
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    phase1_mode = phase1_capability_mode_enabled()
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
     # directly so the alias's base_url actually takes effect.
@@ -1189,7 +1213,11 @@ def _resolve_named_custom_runtime(
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        (
+            ""
+            if phase1_mode
+            else str(custom_provider.get("api_key", "") or "").strip()
+        ),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
@@ -1206,7 +1234,9 @@ def _resolve_named_custom_runtime(
     # mid-session and 401. Both wire clients already accept a callable api_key
     # (the Entra ID contract) and invoke it per request. An explicit --api-key
     # still wins — it is the one-off recovery escape hatch.
-    key_cmd = str(custom_provider.get("key_cmd", "") or "").strip()
+    key_cmd = (
+        "" if phase1_mode else str(custom_provider.get("key_cmd", "") or "").strip()
+    )
     if key_cmd and not has_usable_secret((explicit_api_key or "").strip()):
         from agent.command_token_source import build_command_token_provider
 
@@ -1234,7 +1264,7 @@ def _resolve_named_custom_runtime(
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials — NEVER log them.
-    if custom_provider.get("extra_headers"):
+    if custom_provider.get("extra_headers") and not phase1_mode:
         result["extra_headers"] = dict(custom_provider["extra_headers"])
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
@@ -1288,12 +1318,15 @@ def _resolve_openrouter_runtime(
     model_cfg = _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
     cfg_api_key = ""
-    for k in ("api_key", "api"):
-        v = model_cfg.get(k)
-        if isinstance(v, str) and v.strip():
-            cfg_api_key = v.strip()
-            break
+    if not phase1_capability_mode_enabled():
+        for k in ("api_key", "api"):
+            v = model_cfg.get(k)
+            if isinstance(v, str) and v.strip():
+                cfg_api_key = v.strip()
+                break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
@@ -1507,6 +1540,15 @@ def _resolve_azure_foundry_runtime(
     # are identical — return the callable api_key and let the
     # downstream SDK wrapper handle the contract difference.
     if cfg_auth_mode == "entra_id":
+        from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+        if phase1_capability_mode_enabled() and not explicit_api_key:
+            raise AuthError(
+                "Azure Foundry Entra ID credential expansion is disabled in "
+                "Jarvis Phase 1 capability mode",
+                provider="azure-foundry",
+                code="phase1_capability_boundary",
+            )
         if explicit_api_key:
             # User passed --api-key on the CLI while config says entra_id —
             # honour the explicit string (escape hatch for one-off testing).
@@ -1780,6 +1822,8 @@ def resolve_runtime_provider(
     persisted default. Other callers can leave it None to preserve existing
     behavior (api_mode derived from config).
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
     requested_provider = resolve_requested_provider(requested)
 
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
@@ -1802,6 +1846,30 @@ def resolve_runtime_provider(
                 f"provider {requested_provider!r} is disabled in config "
                 f"(providers.{requested_provider}.enabled: false)"
             )
+
+    if phase1_capability_mode_enabled() and requested_provider in {
+        "vertex",
+        "google-vertex",
+        "vertex-ai",
+        "gcp-vertex",
+        "vertexai",
+        "bedrock",
+        "aws",
+        "aws-bedrock",
+        "amazon-bedrock",
+        "amazon",
+        "openai-codex",
+        "xai-oauth",
+        "qwen-oauth",
+        "minimax-oauth",
+        "copilot-acp",
+    }:
+        raise AuthError(
+            f"Provider '{requested_provider}' requires credential expansion "
+            "that is disabled in Jarvis Phase 1 capability mode",
+            provider=requested_provider,
+            code="phase1_capability_boundary",
+        )
 
     if requested_provider == "moa":
         return {
@@ -1986,10 +2054,13 @@ def resolve_runtime_provider(
             and not has_runtime_override
         )
 
-    try:
-        pool = load_pool(provider) if should_use_pool else None
-    except Exception:
+    if phase1_capability_mode_enabled():
         pool = None
+    else:
+        try:
+            pool = load_pool(provider) if should_use_pool else None
+        except Exception:
+            pool = None
     if pool and pool.has_credentials():
         entry = pool.select()
         pool_api_key = ""
@@ -2199,7 +2270,7 @@ def resolve_runtime_provider(
                         break
             # Next: an inline api_key on the model config (useful in multi-profile
             # setups that want to avoid env-var juggling).
-            if not token:
+            if not token and not phase1_capability_mode_enabled():
                 token = str(model_cfg.get("api_key") or "").strip()
             # Finally fall back to the historical fixed names.
             if not token:
@@ -2214,13 +2285,29 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
-            if not token:
-                raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
+            if phase1_capability_mode_enabled():
+                token = (
+                    _getenv("ANTHROPIC_TOKEN", "").strip()
+                    or _getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+                    or _getenv("ANTHROPIC_API_KEY", "").strip()
                 )
+                if not token:
+                    raise AuthError(
+                        "No inherited Anthropic credential is available in "
+                        "Jarvis Phase 1 capability mode",
+                        provider="anthropic",
+                        code="missing_api_key",
+                    )
+            else:
+                from agent.anthropic_adapter import resolve_anthropic_token
+
+                token = resolve_anthropic_token()
+                if not token:
+                    raise AuthError(
+                        "No Anthropic credentials found. Set ANTHROPIC_TOKEN or "
+                        "ANTHROPIC_API_KEY, run 'claude setup-token', or "
+                        "authenticate with 'claude /login'."
+                    )
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",

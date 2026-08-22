@@ -449,6 +449,11 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     preserve / claimed / override guards and is disabled with
     ``secrets.profile_alias: false``.
     """
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("external secret sources")
     import os as _os
 
     env = environ if environ is not None else _os.environ

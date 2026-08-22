@@ -688,6 +688,17 @@ def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        from agent.secret_scope import get_secret
+
+        for env_var in pconfig.api_key_env_vars:
+            val = (get_secret(env_var) or "").strip()
+            if has_usable_secret(val):
+                return val, env_var
+        return "", ""
+
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
@@ -1288,6 +1299,11 @@ def _auth_store_lock(
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("auth store")
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return {"version": AUTH_STORE_VERSION, "providers": {}}
@@ -2215,6 +2231,23 @@ def resolve_provider(
         _scoped_key_env("OPENROUTER_API_KEY")
     ):
         return "openrouter"
+
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        for pid, pconfig in PROVIDER_REGISTRY.items():
+            if pconfig.auth_type != "api_key" or pid in {"copilot", "lmstudio"}:
+                continue
+            if any(
+                has_usable_secret(_scoped_key_env(env_var))
+                for env_var in pconfig.api_key_env_vars
+            ):
+                return pid
+        raise AuthError(
+            "No inherited inference credential is available in Jarvis Phase 1 "
+            "capability mode",
+            code="phase1_capability_boundary",
+        )
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
     # (manual pool entry, no env var). Without this, a key that only lives in

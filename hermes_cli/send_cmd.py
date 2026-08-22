@@ -248,11 +248,15 @@ def _load_hermes_env() -> None:
     intentionally reimplement the minimum needed here so ``hermes send``
     doesn't pull in the full gateway module just to resolve a home channel.
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
     # Step 1: dotenv
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        load_dotenv = None  # type: ignore[assignment]
+    load_dotenv = None
+    if not phase1_capability_mode_enabled():
+        try:
+            from dotenv import load_dotenv
+        except Exception:
+            load_dotenv = None  # type: ignore[assignment]
 
     try:
         from hermes_cli.config import get_hermes_home

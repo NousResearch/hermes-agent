@@ -1129,6 +1129,11 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("Claude Code credentials")
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
 
@@ -1701,6 +1706,11 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("Anthropic OAuth credentials")
     oauth_file = _get_hermes_oauth_file()
     if oauth_file.exists():
         try:

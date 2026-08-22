@@ -3130,6 +3130,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 
 def load_pool(provider: str) -> CredentialPool:
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("credential pool")
     provider = (provider or "").strip().lower()
     raw_entries = read_credential_pool(provider)
     disk_ids = {

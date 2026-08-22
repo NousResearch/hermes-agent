@@ -44,6 +44,10 @@ def has_xai_credentials() -> bool:
     else:
         if (get_secret("XAI_API_KEY", "") or "").strip():
             return True
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return False
     try:
         from hermes_constants import get_hermes_home
 

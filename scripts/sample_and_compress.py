@@ -22,8 +22,11 @@ from typing import List, Dict, Any, Tuple
 import fire
 
 # Load environment variables
+from hermes_cli.phase1_capability import phase1_capability_mode_enabled
 from dotenv import load_dotenv
-load_dotenv()
+
+if not phase1_capability_mode_enabled():
+    load_dotenv()
 
 
 # Default datasets to sample from

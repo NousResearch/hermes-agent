@@ -9,6 +9,10 @@ import sys
 import threading
 from pathlib import Path
 
+from hermes_cli.phase1_capability import (
+    phase1_capability_mode_enabled,
+    require_persistent_credential_expansion_allowed,
+)
 from dotenv import load_dotenv
 from utils import atomic_replace, fast_safe_load
 
@@ -181,12 +185,15 @@ def hydrate_profile_secret_sources(
     values actually contributed by external sources, never the profile's
     plaintext ``.env`` entries.
     """
+    if phase1_capability_mode_enabled():
+        return {}
     with _SECRET_SOURCE_CACHE_LOCK:
         return _hydrate_profile_secret_sources(Path(hermes_home))
 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    require_persistent_credential_expansion_allowed("profile secret sources")
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
@@ -484,6 +491,9 @@ def load_hermes_dotenv(
       ``load_external_secrets=False`` to avoid loading optional secret-manager
       dependencies into the process that replaces that same environment.
     """
+    if phase1_capability_mode_enabled():
+        return []
+
     loaded: list[Path] = []
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
@@ -599,6 +609,7 @@ def _apply_managed_env() -> None:
     Fail-open: a missing managed dir or .env is the common case and a no-op; any
     error here is swallowed so managed scope can never block startup.
     """
+    require_persistent_credential_expansion_allowed("managed-scope environment")
     try:
         from hermes_cli import managed_scope
 
@@ -637,6 +648,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     ``reset_secret_source_cache()`` if you need to force a re-pull
     (tests, long-running processes after a config change).
     """
+    require_persistent_credential_expansion_allowed("external secret sources")
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
         return

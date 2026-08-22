@@ -2473,6 +2473,11 @@ def _read_nous_auth() -> Optional[dict]:
     Returns the provider state dict if Nous is active with tokens,
     otherwise None.
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return None
+
     pool_present, entry = _select_pool_entry("nous")
     if pool_present:
         if entry is None:

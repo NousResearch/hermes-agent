@@ -3997,6 +3997,11 @@ def load_env() -> Dict[str, str]:
     menu paint on top of the OAuth-refresh slowness. The mtime check
     invalidates the cache when the user edits .env mid-process.
     """
+    from hermes_cli.phase1_capability import (
+        require_persistent_credential_expansion_allowed,
+    )
+
+    require_persistent_credential_expansion_allowed("user dotenv")
     global _env_cache
     env_path = get_env_path()
 
@@ -4433,6 +4438,10 @@ def reload_env() -> int:
     the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
     _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return 0
     env_vars = load_env()
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
     count = 0
@@ -4480,6 +4489,11 @@ def get_env_value(key: str) -> Optional[str]:
     if val is not None:
         return val
 
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        return None
+
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
@@ -4499,6 +4513,16 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     is scope-checked rather than leaking another profile's raw ``os.environ``
     value — matching the credential-pool seeding path's behaviour.
     """
+    from hermes_cli.phase1_capability import phase1_capability_mode_enabled
+
+    if phase1_capability_mode_enabled():
+        try:
+            from agent.secret_scope import get_secret as _get_secret
+
+            return _get_secret(key)
+        except Exception:
+            return os.environ.get(key)
+
     env_vars = load_env()
     val = env_vars.get(key)
     if val:

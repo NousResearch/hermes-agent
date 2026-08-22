@@ -8104,6 +8104,7 @@ def run_conversation(
 
                 try:
                     from agent.verification_stop import (
+                        build_grounding_nudge,
                         build_verify_on_stop_nudge,
                         verify_on_stop_enabled,
                     )
@@ -8114,6 +8115,15 @@ def run_conversation(
                             changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
                             attempts=getattr(agent, "_verification_stop_nudges", 0),
                         )
+                        if _verify_nudge is None:
+                            # Prose grounding gate: catch analytical deliverables
+                            # (analysis/report/summary) written with no grounding
+                            # reads — the fabrication case the code gate skips.
+                            _verify_nudge = build_grounding_nudge(
+                                changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+                                session_messages=messages,
+                                attempts=getattr(agent, "_verification_stop_nudges", 0),
+                            )
                     else:
                         _verify_nudge = None
                 except Exception:

@@ -148,6 +148,74 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     assert "codex_ttfb_kill" not in closes
 
 
+@pytest.mark.parametrize(
+    ("estimated_tokens", "env", "expected_enabled", "expected_timeout"),
+    [
+        (1_000, {}, True, 120.0),
+        (100_001, {}, True, 180.0),
+        (100_001, {"HERMES_CODEX_TTFB_MAX_SECONDS": "120"}, True, 120.0),
+        (100_001, {"HERMES_CODEX_TTFB_STRICT": "1"}, True, 120.0),
+        (100_001, {"HERMES_CODEX_TTFB_TIMEOUT_SECONDS": "0"}, False, 0.0),
+    ],
+)
+def test_ttfb_timeout_policy(
+    tmp_path,
+    monkeypatch,
+    estimated_tokens,
+    env,
+    expected_enabled,
+    expected_timeout,
+):
+    """Default scaling survives unless an operator explicitly overrides it."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    for name in (
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+        "HERMES_CODEX_TTFB_STRICT",
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    monkeypatch.setattr(
+        h, "estimate_request_context_tokens", lambda _kwargs: estimated_tokens
+    )
+    response = SimpleNamespace(ok=True)
+    monkeypatch.setattr(agent, "_run_codex_stream", lambda *_args, **_kwargs: response)
+    observed: dict[str, object] = {}
+
+    class HeartbeatThread:
+        def __init__(self, *, target, daemon):
+            self._polls = 0
+            self._target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            self._polls += 1
+            if self._polls == 101:
+                self._target()
+                return False
+            return True
+
+    def capture_policy(**kwargs):
+        observed.update(kwargs)
+        return ""
+
+    monkeypatch.setattr(h.threading, "Thread", HeartbeatThread)
+    monkeypatch.setattr(h, "_codex_wait_notice_recovery", capture_policy)
+
+    assert h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"}) is response
+    assert observed["ttfb_enabled"] is expected_enabled
+    assert observed["ttfb_timeout"] == expected_timeout
+
+
 
 
 

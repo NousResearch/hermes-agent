@@ -210,6 +210,11 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
+Explicit local `observationMode` or `observation` values are authoritative and
+are pushed to Honcho when a session initializes. To manage observation from the
+Honcho UI instead, remove those local keys; with no explicit local policy,
+Hermes preserves the server-managed values.
+
 ### Write Behavior
 
 | Key | Type | Default | Description |

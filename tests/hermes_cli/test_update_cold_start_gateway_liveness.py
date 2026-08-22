@@ -6,6 +6,11 @@ straight off a successful ``Popen`` return, which only proves the process was
 created, not that it survived. This asserts the observable output: the
 success line is gated on the process actually being found alive afterwards,
 same as every other ``_spawn_detached`` caller.
+
+The cold-start path now prefers ``_spawn_via_scheduled_task`` (ssue #84185
+job-object escape via schtasks /Run) and only falls back to the direct
+``_spawn_detached`` when no Scheduled Task is registered. Both paths are
+mocked here so the test exercises the fallback + survival-check reporting.
 """
 
 from __future__ import annotations
@@ -26,8 +31,10 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
         "find_gateway_pids",
         lambda all_profiles=False: [] if all_profiles else surviving_pids,
     )
+    # No Scheduled Task registered -> forces the fallback to _spawn_detached.
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
-    # Avoid the real 6s/0.4s poll loop in _report_gateway_start.
+    # Avoid the real 6s/0.4s poll loop.
     monkeypatch.setattr(
         gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: surviving_pids
     )
@@ -41,10 +48,10 @@ def test_cold_start_reports_failure_when_process_does_not_survive(monkeypatch, c
     out = _run_cold_start(monkeypatch, capsys, surviving_pids=[])
 
     assert "✓ Starting Windows gateway after update" not in out
-    assert "no process detected" in out
+    assert "did not survive" in out
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):
     out = _run_cold_start(monkeypatch, capsys, surviving_pids=[4242])
 
-    assert "✓ Gateway started via cold-start after update" in out
+    assert "✓ Starting Windows gateway after update" in out

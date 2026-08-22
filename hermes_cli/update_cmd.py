@@ -4824,14 +4824,37 @@ def _cold_start_windows_gateway_after_update() -> None:
         return
 
     try:
+        # The Task Scheduler runs the gateway outside any job object holding
+        # this updater (issue #84185). subprocess.Popen + CREATE_BREAKAWAY_FROM_JOB
+        # is accepted silently by CreateProcess even when the parent job denies
+        # breakaway, so the child lands inside the job and is hard-killed when
+        # the updater exits — the ✓ printed below would be a lie. Prefer the
+        # task path whenever the Scheduled Task actually exists; fall back to
+        # the direct spawn only when there's no task to trigger.
+        if gateway_windows._spawn_via_scheduled_task():
+            print()
+            print("  ✓ Starting Windows gateway after update (via Scheduled Task)")
+            return
         pid = gateway_windows._spawn_detached()
     except Exception as exc:
         logger.debug("Could not cold-start Windows gateway after update: %s", exc)
         return
 
     if pid:
-        print()
-        gateway_windows._report_gateway_start(f"cold-start after update (PID {pid})")
+        # The direct spawn is NOT guaranteed to survive the updater's exit.
+        # Verify a gateway actually comes up before printing the success line;
+        # a dead-on-arrival spawn must surface as a failure, not a ✓.
+        survived = gateway_windows._wait_for_gateway_ready()
+        if survived:
+            print()
+            print(f"  ✓ Starting Windows gateway after update (PID {pid})")
+        else:
+            print()
+            print(
+                f"  ✗ Gateway spawned after update (PID {pid}) did not survive —\n"
+                f"    it was likely killed when the updater exited. Start it manually:\n"
+                f"      hermes gateway start"
+            )
 
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,

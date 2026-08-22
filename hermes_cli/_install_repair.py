@@ -527,14 +527,15 @@ def _quarantine_running_hermes_exe(
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
-    """Put quarantined shims back when the installer did not replace them."""
-    for original, quarantined in moved:
-        if original.exists():
-            continue  # installer wrote a fresh shim — the .old one is garbage
-        try:
-            os.rename(quarantined, original)
-        except OSError:
-            pass
+    """Put quarantined shims back when the installer did not replace them.
+
+    Delegates to the shared helper in the stdlib-only ``_early_recovery``
+    module: one retry ladder and one recovery message for every restore site,
+    instead of the near-identical copies that had already drifted (#75584).
+    Warnings land on stderr — this module runs in the early-recovery path and
+    ``hermes acp`` speaks JSON-RPC on stdout.
+    """
+    _er.restore_quarantined_shims(moved)
 
 
 def _run_install_cmd(cmd: list[str], *, env: dict | None, root: Path) -> None:

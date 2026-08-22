@@ -144,6 +144,7 @@ from gateway.browser_control_broker import (
     filter_browser_control_capabilities,
     get_browser_control_broker,
 )
+from gateway.browser_pairing import BrowserPairingStore, PAIRING_TTL_SECONDS
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -1590,6 +1591,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
+        # Loopback browser-extension pairing: one-click scoped bearer
+        # tokens (see gateway/browser_pairing.py). Persisted under
+        # HERMES_HOME/state/browser_pairing.json so pairings and minted
+        # tokens survive gateway restarts.
+        self._browser_pairing = BrowserPairingStore()
+
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
 
@@ -1938,6 +1945,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # matches web_server.py's dashboard-token check.
             if hmac.compare_digest(token.encode(), expected_key.encode()):
                 return None  # Auth OK
+            # Scoped browser pairing token (loopback-minted, default profile).
+            # Accepted only for the default profile so a named profile can
+            # never be reached with a token minted against the listener key.
+            if not is_named_profile and self._browser_pairing.is_valid_token(token):
+                return None  # Auth OK (scoped pairing token)
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -2200,6 +2212,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # key) plus per-principal rate limits.
             ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
             ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
+            ("POST", "/api/browser-extension/pair/start", self._handle_browser_pair_start),
+            ("GET", "/api/browser-extension/pair/approve/{pairing_id}", self._handle_browser_pair_approve),
+            ("POST", "/api/browser-extension/pair/grant/{pairing_id}", self._handle_browser_pair_grant),
+            ("POST", "/api/browser-extension/pair/deny/{pairing_id}", self._handle_browser_pair_deny),
+            ("GET", "/api/browser-extension/pair/status/{pairing_id}", self._handle_browser_pair_status),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -3357,6 +3374,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         "cloud": "authenticated-gateway-rpc",
                     },
                 },
+                # Loopback browser pairing lets the Hermes Browser extension
+                # obtain a scoped token with one local approval click.
+                "browserPairing": True,
             },
             "endpoints": {
                 "health": {"method": "GET", "path": "/health"},
@@ -3390,6 +3410,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "method": "GET",
                     "path": "/v1/artifacts/download/{artifact_id}",
                 },
+                "browser_pair_start": {"method": "POST", "path": "/api/browser-extension/pair/start"},
+                "browser_pairing": {"method": "POST", "path": "/api/browser-extension/pair/start"},
+                "browser_pair_approve": {"method": "GET", "path": "/api/browser-extension/pair/approve/{pairing_id}"},
+                "browser_pair_grant": {"method": "POST", "path": "/api/browser-extension/pair/grant/{pairing_id}"},
+                "browser_pair_deny": {"method": "POST", "path": "/api/browser-extension/pair/deny/{pairing_id}"},
+                "browser_pair_status": {"method": "GET", "path": "/api/browser-extension/pair/status/{pairing_id}"},
             },
         })
 
@@ -4021,6 +4047,325 @@ class APIServerAdapter(BasePlatformAdapter):
                 "Content-Disposition": f'attachment; filename="{receipt.filename}"',
             },
         )
+
+
+    def _request_is_loopback(self, request: "web.Request") -> bool:
+        """True when the request arrived over the loopback interface."""
+        host = None
+        try:
+            transport = request.transport
+            if transport is not None:
+                peer = transport.get_extra_info("peername")
+                if isinstance(peer, tuple) and peer:
+                    host = peer[0]
+                elif isinstance(peer, str):
+                    host = peer
+        except Exception:
+            host = None
+        return host in ("127.0.0.1", "::1", "localhost") or (host or "").startswith("127.")
+
+
+    def _browser_pairing_asset(self, name: str) -> str:
+        """Return a data: URI for a pairing-page asset, or '' if unavailable.
+
+        Assets live in ``gateway/assets/browser_pairing/`` and ship in the
+        wheel via the ``gateway = ["assets/**/*"]`` package-data entry. A
+        missing asset degrades the page gracefully (fallback fonts, no
+        decorative images) instead of breaking pairing.
+        """
+        import base64
+
+        path = Path(__file__).resolve().parent.parent / "assets" / "browser_pairing" / name
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return ""
+        mime = {
+            ".woff2": "font/woff2",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(path.suffix.lower(), "application/octet-stream")
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+    def _pairing_page(self, title: str, message: str, body_extra: str = "", rail_rows=None) -> str:
+        """Nous Portal-branded pairing page (approve + status pages).
+
+        Split layout in the portal's design language: cobalt rail with a white
+        dithered Hermes bust and session metadata, off-white pane with the
+        dithered Hermes as a full-bleed background, the small animated cobalt
+        globe over the Hermes Browser wordmark, Didone display headline, and
+        portal-style approve/deny buttons. Content is vertically centered.
+        """
+        import html
+
+        safe_title = html.escape(title)
+        safe_message = html.escape(message)
+        asset = self._browser_pairing_asset
+        sigurd = asset("sigurd.woff2")
+        jbm = asset("jbm.woff2")
+        jbmb = asset("jbmb.woff2")
+        statue = asset("statue.png")
+        railstatue = asset("railstatue.png")
+        badge = asset("badge.png")
+        globe = asset("globe.webp")
+        hbelogo = asset("hbe-logo.svg")
+
+        font_faces = ""
+        if sigurd:
+            font_faces += "@font-face{font-family:'Sigurd';src:url('" + sigurd + "') format('woff2')}"
+        if jbm:
+            font_faces += "@font-face{font-family:'JBM';src:url('" + jbm + "') format('woff2')}"
+        if jbmb:
+            font_faces += "@font-face{font-family:'JBM';font-weight:700;src:url('" + jbmb + "') format('woff2')}"
+
+        rail_statue_html = f'<img class="rail-statue" src="{railstatue}" alt="" aria-hidden="true">' if railstatue else ""
+        brand_chip_html = f'<span class="brand-chip"><img src="{badge}" alt=""></span>' if badge else ""
+        globe_html = f'<img class="rail-globe" src="{globe}" alt="" aria-hidden="true">' if globe else ""
+        logo_html = f'<img class="rail-logo" src="{hbelogo}" alt="Hermes Browser">' if hbelogo else ""
+        pane_statue_html = f'<img class="pane-statue" src="{statue}" alt="" aria-hidden="true">' if statue else ""
+
+        rail_html = ""
+        for label, value in rail_rows or []:
+            if label == "STATUS":
+                value = f'<span class="dot"></span>{value}'
+            rail_html += f'<p class="rail-label">{label}</p><p class="rail-value">{value}</p>'
+        return (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>Hermes Browser · {safe_title}</title>"
+            "<style>"
+            + font_faces
+            + ":root{color-scheme:light}"
+            "*{box-sizing:border-box}"
+            "html,body{height:100%}"
+            "body{margin:0;background:#0505e8;-webkit-font-smoothing:antialiased;"
+            "font-family:'JBM',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+            ".frame{display:grid;grid-template-columns:320px 1fr;min-height:100vh}"
+            ".rail{position:relative;background:#0505e8;color:#fff;overflow:hidden}"
+            ".rail-statue{position:absolute;right:-70px;bottom:-14%;height:118%;opacity:.38;pointer-events:none}"
+            ".rail-inner{position:relative;z-index:1;display:flex;flex-direction:column;"
+            "justify-content:space-between;min-height:100vh;padding:30px 28px}"
+            ".brand{display:flex;gap:14px;align-items:center}"
+            ".brand-chip{flex:0 0 auto;width:54px;height:66px;border-radius:8px;overflow:hidden}"
+            ".brand-chip img{width:100%;height:100%;object-fit:cover;display:block}"
+            ".brand-text{font-family:'Sigurd',Didot,'Bodoni MT',serif;font-size:27px;line-height:1.04}"
+            ".rail-sub{font-size:10px;letter-spacing:.34em;margin:14px 0 0;opacity:.85}"
+            ".rail-mid{margin:34px 0}"
+            ".rail-label{font-size:9px;letter-spacing:.3em;opacity:.6;margin:0 0 5px}"
+            ".rail-value{font-size:12px;letter-spacing:.06em;margin:0 0 16px;word-break:break-all;line-height:1.5}"
+            ".dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7cffb0;"
+            "margin-right:9px;vertical-align:1px;animation:pulse 1.6s ease-in-out infinite}"
+            ".rail-foot{font-size:9px;letter-spacing:.26em;opacity:.6;margin:0}"
+            ".pane{position:relative;background:#f6f7fb;overflow:hidden;display:flex;align-items:center}"
+            ".pane-statue{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;"
+            "object-position:right center;opacity:.8;pointer-events:none}"
+            ".pane-inner{position:relative;z-index:1;padding:56px 72px;max-width:780px;width:100%}"
+            ".rail-globe{width:64px;height:auto;display:block;margin:0 0 12px;background:#f6f7fb;border-radius:50%;padding:7px}"
+            ".rail-logo{width:170px;max-width:100%;height:auto;display:block;margin:0 0 18px}"
+            ".display{font-family:'Sigurd',Didot,'Bodoni MT',serif;text-transform:uppercase;color:#0505e8;"
+            "font-weight:500;font-size:clamp(34px,4.6vw,58px);line-height:1.05;letter-spacing:.005em;margin:0 0 18px}"
+            ".lede{font-family:-apple-system,'Segoe UI',system-ui,sans-serif;color:#3c4254;"
+            "font-size:14px;line-height:1.7;max-width:54ch;margin:0 0 26px}"
+            ".prompt{font-family:-apple-system,'Segoe UI',system-ui,sans-serif;color:#3c4254;"
+            "font-size:14px;line-height:1.7;max-width:54ch;margin:0 0 14px}"
+            ".prompt strong{color:#111}"
+            ".code{display:block;padding:10px 13px;border:1px solid rgba(5,5,232,.25);background:#edeff8;"
+            "color:#333;font-size:11px;letter-spacing:.05em;word-break:break-all;margin:0 0 26px}"
+            ".actions{display:flex;gap:16px;flex-wrap:wrap}"
+            "button{font-family:'JBM',ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:12px;"
+            "letter-spacing:.22em;text-transform:uppercase;padding:14px 30px;cursor:pointer;"
+            "border-radius:0;border:2px solid #0505e8}"
+            ".approve{background:#0505e8;color:#fff;box-shadow:4px 4px 0 #b3b5f7}"
+            ".deny{background:#fff;color:#0505e8;box-shadow:4px 4px 0 #c9cbf9}"
+            "button:hover{filter:brightness(1.08)}"
+            "button:active{transform:translate(2px,2px);box-shadow:1px 1px 0 #b3b5f7}"
+            ".pane-foot{position:absolute;left:72px;bottom:26px;font-size:9px;letter-spacing:.26em;"
+            "text-transform:uppercase;color:#666;margin:0}"
+            "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}"
+            "@media(max-width:860px){.frame{grid-template-columns:1fr}.rail{display:none}"
+            ".pane-inner{padding:40px 28px}.pane-foot{left:28px}}"
+            "</style></head>"
+            "<body><div class=\"frame\">"
+            "<aside class=\"rail\">"
+            + rail_statue_html
+            + "<div class=\"rail-inner\">"
+            "<div class=\"rail-top\">"
+            "<div class=\"brand\">"
+            + brand_chip_html
+            + "<span class=\"brand-text\">NOUS<br>PORTAL</span>"
+            "</div>"
+            "<p class=\"rail-sub\">HERMES AGENT</p>"
+            "</div>"
+            + f"<div class=\"rail-mid\">{rail_html}</div>"
+            + "<div class=\"rail-bottom\">"
+            + globe_html
+            + logo_html
+            + "<p class=\"rail-foot\">LOCAL GATEWAY · 127.0.0.1</p>"
+            "</div>"
+            "</div>"
+            "</aside>"
+            "<main class=\"pane\">"
+            + pane_statue_html
+            + "<div class=\"pane-inner\">"
+            + f"<h1 class=\"display\">{safe_title}</h1>"
+            + (f"<p class=\"lede\">{safe_message}</p>" if safe_message else "")
+            + f"{body_extra}"
+            "</div>"
+            "<p class=\"pane-foot\">Return to Hermes Browser</p>"
+            "</main>"
+            "</div></body></html>"
+        )
+
+    def _pairing_page_response(self, page: str, status: int = 200) -> "web.Response":
+        """HTML response for pairing pages with a page-safe CSP.
+
+        The global API-server CSP (default-src 'none') would otherwise block
+        the inline <style> and data: logo, leaving the approval page unstyled.
+        This override still blocks scripts, frames, and all external fetches —
+        it only permits inline styles and data: images for this surface.
+        """
+        return web.Response(
+            text=page,
+            content_type="text/html",
+            status=status,
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; font-src data:; "
+                    "img-src data:; media-src data:; frame-ancestors 'none'"
+                )
+            },
+        )
+
+    async def _handle_browser_pair_start(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/start — mint a short-lived pairing."""
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        name = str(payload.get("name") or "Hermes Browser Extension")[:80]
+        extension_id = str(payload.get("extensionId") or payload.get("extension_id") or "")[:200]
+        record = self._browser_pairing.create_pairing(name=name, extension_id=extension_id)
+        approval_url = (
+            f"http://{request.host}/api/browser-extension/pair/approve/"
+            f"{record['pairing_id']}"
+        )
+        return web.json_response(
+            {
+                "pairing_id": record["pairing_id"],
+                "approval_url": approval_url,
+                "ttl_seconds": PAIRING_TTL_SECONDS,
+            }
+        )
+
+    async def _handle_browser_pair_approve(self, request: "web.Request") -> "web.Response":
+        """GET /api/browser-extension/pair/approve/{id} — local approval page."""
+        import html
+
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        record = self._browser_pairing.get_pairing(pairing_id)
+        if not record:
+            return web.Response(
+                status=404,
+                text="Pairing request not found or expired. Close this tab and click Connect again.",
+            )
+        if record["status"] == "approved":
+            return self._pairing_page_response(
+                self._pairing_page(
+                    "Already approved",
+                    "This browser is already paired. Close this tab and return to Hermes Browser.",
+                    rail_rows=[("STATUS", "APPROVED")],
+                )
+            )
+        if record["status"] != "pending":
+            return self._pairing_page_response(
+                self._pairing_page(
+                    "Pairing closed",
+                    "This pairing request is no longer active. Close this tab and click Connect again.",
+                    rail_rows=[("STATUS", "CLOSED")],
+                )
+            )
+        name = html.escape(record["name"])
+        ext = html.escape(record["extension_id"] or "Hermes Browser Extension")
+        page = self._pairing_page(
+            "Approve connection",
+            "",
+            rail_rows=[("SESSION", name), ("EXTENSION", ext), ("STATUS", "PENDING APPROVAL")],
+            body_extra=(
+                f"<p class=\"prompt\">Allow <strong>{name}</strong> to connect to your local Hermes gateway?</p>"
+                f"<code class=\"code\">{ext}</code>"
+                "<div class=\"actions\">"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/grant/{pairing_id}\">"
+                "<button id=\"approveButton\" class=\"approve\" type=\"submit\">Approve</button></form>"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/deny/{pairing_id}\">"
+                "<button id=\"denyButton\" class=\"deny\" type=\"submit\">Deny</button></form>"
+                "</div>"
+            ),
+        )
+        return self._pairing_page_response(page)
+
+    async def _handle_browser_pair_grant(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/grant/{id} — approve and mint token."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        granted = self._browser_pairing.grant_pairing(pairing_id)
+        if not granted:
+            return web.Response(
+                status=410,
+                text="Pairing request not found or expired. Close this tab and click Connect again.",
+            )
+        return self._pairing_page_response(
+            self._pairing_page(
+                "Approved",
+                "Hermes Browser is connected. You can close this tab.",
+                rail_rows=[("STATUS", "APPROVED")],
+            )
+        )
+
+    async def _handle_browser_pair_deny(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/deny/{id} — reject the pairing."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        denied = self._browser_pairing.deny_pairing(pairing_id)
+        if not denied:
+            return web.Response(status=410, text="Pairing request not found.")
+        return self._pairing_page_response(
+            self._pairing_page(
+                "Denied",
+                "You denied this pairing. You can close this tab.",
+                rail_rows=[("STATUS", "DENIED")],
+            )
+        )
+
+    async def _handle_browser_pair_status(self, request: "web.Request") -> "web.Response":
+        """GET /api/browser-extension/pair/status/{id} — poll for the scoped token."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.json_response(
+                {"error": {"message": "Browser pairing is available only on the local machine.", "code": "pairing_loopback_only"}},
+                status=403,
+            )
+        record = self._browser_pairing.get_pairing(pairing_id)
+        if not record:
+            return web.json_response(
+                {"error": {"message": "Pairing request was not found.", "code": "pairing_not_found"}},
+                status=404,
+            )
+        pairing_status = record["status"]
+        if pairing_status == "approved":
+            return web.json_response({"status": "approved", "token": record.get("token")})
+        if pairing_status == "denied":
+            return web.json_response(
+                {"error": {"message": "Pairing request was denied.", "code": "pairing_denied"}},
+                status=410,
+            )
+        return web.json_response({"status": pairing_status})
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

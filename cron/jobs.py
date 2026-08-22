@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
+import subprocess
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 
@@ -1606,6 +1607,56 @@ def save_jobs(
         _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 
+def _is_canonical_git_checkout(path: Path) -> bool:
+    """Return True when *path* is a canonical (primary) git working tree.
+
+    A cron job workdir may point at a git **linked worktree** (the ``.git``
+    entry is a file whose value names a separate common git dir) or at a plain
+    non-repo directory, but never at a canonical checkout — the repo's real
+    working tree (``.git`` is a directory, and ``--git-dir`` equals
+    ``--git-common-dir``). Running agent terminal/file/code-exec inside a
+    canonical checkout risks parallel-agent collision on a dirty shared tree
+    and re-opens the project-context (AGENTS.md) injection surface.
+
+    Mirrors the atlas-side ``hermes-workdir-check.py`` classification: a
+    linked worktree is told apart from a canonical checkout by ``--git-dir``
+    differing from ``--git-common-dir``, NOT by whether ``.git`` is a file (an
+    initialised submodule also has a ``.git`` file yet is a committable
+    primary tree). Ambiguous cases (git refuses to answer) are treated as
+    False — fail-open so an unknown directory is not spuriously rejected.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    if out.returncode != 0 or out.stdout.strip() != "true":
+        return False
+    try:
+        gitdir = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-dir"],
+            capture_output=True, text=True, timeout=10,
+        )
+        common = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    if gitdir.returncode != 0 or common.returncode != 0:
+        return False
+    gitdir_path = gitdir.stdout.strip() or ""
+    common_path = common.stdout.strip() or ""
+    if not gitdir_path or not common_path:
+        return False
+    try:
+        return os.path.realpath(gitdir_path) == os.path.realpath(common_path)
+    except OSError:
+        return False
+
+
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
@@ -1616,6 +1667,8 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
       - The path must exist and be a directory at create/update time.  We do
         NOT re-check at run time (a user might briefly unmount the dir; the
         scheduler will just fall back to old behaviour with a logged warning).
+      - A canonical (primary) git checkout is rejected — agent runs must use a
+        linked worktree or a plain non-repo directory.
 
     Returns the absolute path string, or None when disabled.
     Raises ValueError on invalid input.
@@ -1636,6 +1689,14 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
         raise ValueError(f"Cron workdir does not exist: {resolved}")
     if not resolved.is_dir():
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
+    if _is_canonical_git_checkout(resolved):
+        raise ValueError(
+            f"Cron workdir must not be a canonical git checkout: {resolved}. "
+            f"Agent runs must use their own linked worktree (e.g. a git worktree "
+            f"or a plain non-repo directory) so parallel agents never collide on "
+            f"a dirty shared tree. Use `git worktree add` for a repo-driven job, "
+            f"or point workdir at a plain directory."
+        )
     return str(resolved)
 
 

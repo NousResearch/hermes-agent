@@ -194,6 +194,26 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
     ),
+    # ── Anthropic Claude Opus 5 ──────────────────────────────────────────
+    # Launched 2026-07-24. Same $5/$25 base pricing as the Opus 4.5-4.8
+    # line; the generation bump did not move the tier.
+    # NOTE: cache_write here is the 5m-TTL rate ($6.25). The 1h-TTL rate is
+    # $10.00/MTok, which this schema cannot express (single cache-write
+    # field). Estimates undercount cache writes by 60% if prompt_caching
+    # .cache_ttl is set to "1h".
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-08",
+    ),
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).
@@ -1053,10 +1073,70 @@ def _usage_count(value: Any) -> int:
 
 
 
+def _anthropic_is_subscription(api_key: Optional[str] = None) -> bool:
+    """Return True when Anthropic access is an OAuth subscription seat.
+
+    Claude Max / Claude Code / Pro seats authenticate with an OAuth token
+    (``sk-ant-oat…``, a JWT, or a ``cc-`` Claude Code token) and carry NO
+    per-token invoice: usage is included in the subscription and metered
+    against rolling quota windows instead. A Console API key
+    (``sk-ant-api…``) is the opposite: every token is billed.
+
+    Pricing them identically is wrong in both directions, so decide from
+    the credential actually in use, mirroring the ``openai-codex`` route
+    which is already ``subscription_included``.
+
+    Detection is POSITIVE-ONLY and fails closed: we return True solely when
+    an OAuth token is positively identified. An API key, an empty pool, or
+    any error keeps the metered path, because under-reporting real spend to
+    a metered user is far worse than the ``unknown``/estimated status this
+    replaces.
+    """
+    try:
+        from agent.anthropic_adapter import _is_oauth_token
+
+        if api_key:
+            # An explicit key wins: it is the credential the caller used.
+            return bool(_is_oauth_token(api_key))
+
+        # No key threaded through (the common case: the token lives in the
+        # credential pool, not the environment). Consult the pool, honouring
+        # priority order so the seat actually used decides.
+        from hermes_cli.auth import read_credential_pool
+
+        pool = read_credential_pool("anthropic")
+        entries = pool if isinstance(pool, list) else (pool or {}).get("anthropic")
+        if not isinstance(entries, list):
+            return False
+
+        def _priority(entry: Any) -> int:
+            value = _usage_get(entry, "priority", 0)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        for entry in sorted(entries, key=_priority):
+            token = (
+                _usage_get(entry, "access_token", "")
+                or _usage_get(entry, "api_key", "")
+                or ""
+            )
+            if not token:
+                continue
+            # First credential bearing a usable token decides the route.
+            return bool(_is_oauth_token(token))
+        return False
+    except Exception:  # pragma: no cover - defensive: never break pricing
+        logger.debug("anthropic subscription detection failed", exc_info=True)
+        return False
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> BillingRoute:
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
@@ -1074,6 +1154,10 @@ def resolve_billing_route(
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
     if provider_name == "anthropic":
+        # Claude Max / Claude Code OAuth seats bill nothing per token; only
+        # Console API keys are metered. Decide from the live credential.
+        if _anthropic_is_subscription(api_key):
+            return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="subscription_included")
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # "openai-api" is the picker/registry slug for direct api.openai.com; it
     # bills identically to bare "openai", so normalize it here — otherwise the
@@ -1244,7 +1328,7 @@ def get_pricing_entry(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return PricingEntry(
             input_cost_per_million=_ZERO,
@@ -1431,7 +1515,7 @@ def estimate_usage_cost(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> CostResult:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return CostResult(
             amount_usd=_ZERO,
@@ -1515,7 +1599,7 @@ def has_known_pricing(
     Uses direct lookup instead of routing through the full estimation
     pipeline — avoids creating dummy usage objects just to check status.
     """
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return True
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)

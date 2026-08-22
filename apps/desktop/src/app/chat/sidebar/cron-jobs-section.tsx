@@ -40,7 +40,7 @@ const PEEK_BACKSTOP_INTERVAL_MS = 60_000
 
 // Keep the section compact: show a few jobs up front, reveal more in larger
 // steps on demand (mirrors the messaging sections in the sidebar).
-const INITIAL_VISIBLE_JOBS = 3
+const INITIAL_VISIBLE_JOBS = 6
 const LOAD_MORE_STEP = 10
 
 function nextRunMs(job: CronJob): null | number {
@@ -90,6 +90,7 @@ export function SidebarCronJobsSection({
   onToggle,
   open
 }: SidebarCronJobsSectionProps) {
+  const { t } = useI18n()
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
@@ -184,7 +185,18 @@ export function SidebarCronJobsSection({
           onClick={onToggle}
           type="button"
         >
-          <SidebarPanelLabel>{label}</SidebarPanelLabel>
+          <SidebarPanelLabel>
+            {label}
+            {hiddenCount > 0 && (
+              <span className="font-normal normal-case tracking-normal text-(--ui-text-tertiary)">
+                {' · '}
+                {/* The denominator is capped by the same `max` that limits the
+                    rows load-more can actually reveal, so the badge and the
+                    button always agree on how many jobs remain hidden. */}
+                {t.cron.shownOf(shown.length, Math.min(sorted.length, max))}
+              </span>
+            )}
+          </SidebarPanelLabel>
           <DisclosureCaret
             className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
             open={open}
@@ -210,6 +222,7 @@ export function SidebarCronJobsSection({
             <SidebarLoadMoreRow
               onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
               step={Math.min(LOAD_MORE_STEP, hiddenCount)}
+              variant="row"
             />
           )}
         </SidebarGroupContent>

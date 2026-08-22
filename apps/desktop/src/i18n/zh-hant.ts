@@ -1538,6 +1538,7 @@ export const zhHant = defineLocale({
   },
 
   cron: {
+    shownOf: (shown, total) => `${shown} / ${total}`,
     close: '關閉排程',
     title: '排程工作',
     count: count => `${count} 個工作`,

@@ -1596,6 +1596,7 @@ export const ja = defineLocale({
   },
 
   cron: {
+    shownOf: (shown, total) => `${shown} / ${total}`,
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,

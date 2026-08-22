@@ -1455,6 +1455,7 @@ export const ar = defineLocale({
     failedRename: 'فشل إعادة التسمية'
   },
   cron: {
+    shownOf: (shown, total) => `${shown} من ${total}`,
     close: 'إغلاق',
     modelImpact: {
       title: 'تحتاج المهام المجدولة إلى المراجعة',

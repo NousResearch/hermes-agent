@@ -774,7 +774,12 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        status_cleared_ids: Optional[List[str]] = None,
+    ) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
@@ -782,6 +787,7 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                status_cleared_ids=status_cleared_ids,
             )
 
     def _is_terminal_auth_failure(
@@ -2329,11 +2335,43 @@ class CredentialPool:
         return refreshed
 
     def reset_statuses(self) -> int:
+        """Clear exhaustion state on every entry. Returns how many were cleared.
+
+        Two details are load-bearing, and both were missing:
+
+        ``failure_reason`` is cleared alongside the status fields. It lives in
+        ``extra`` rather than as a dataclass field, so ``replace()`` cannot reach
+        it and it survived every reset — leaving an entry with no status but
+        still classified ``billing``, a contradiction ``hermes auth list``
+        renders as if it were a finding.
+
+        The persist declares the clear as DELIBERATE. ``write_credential_pool``
+        merges on-disk status over the caller's snapshot whenever the disk copy
+        is more recent and still binding, so a process cannot resurrect a key
+        another one has just rate-limited. Clearing sets ``last_status_at`` to
+        None, which compares as epoch 0 — older than any real timestamp — so
+        that merge read an operator reset as exactly the stale snapshot it
+        exists to reject and copied the cooldown straight back. The command
+        reported success and changed nothing, and only while the cooldown was
+        still binding: once expired the merge bails out early and the reset
+        appeared to work. Broken precisely when it is needed.
+        """
         with self._lock:
             count = 0
+            cleared_ids: List[str] = []
             new_entries = []
             for entry in self._entries:
-                if entry.last_status or entry.last_status_at or entry.last_error_code:
+                if (
+                    entry.last_status
+                    or entry.last_status_at
+                    or entry.last_error_code
+                    or getattr(entry, "failure_reason", None)
+                ):
+                    extra = {
+                        key: value
+                        for key, value in (entry.extra or {}).items()
+                        if key != "failure_reason"
+                    }
                     new_entries.append(
                         replace(
                             entry,
@@ -2343,14 +2381,16 @@ class CredentialPool:
                             last_error_reason=None,
                             last_error_message=None,
                             last_error_reset_at=None,
+                            extra=extra,
                         )
                     )
+                    cleared_ids.append(entry.id)
                     count += 1
                 else:
                     new_entries.append(entry)
             if count:
                 self._entries = new_entries
-                self._persist()
+                self._persist(status_cleared_ids=cleared_ids)
             return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:

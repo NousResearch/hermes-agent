@@ -412,6 +412,61 @@ describe('renderMediaTags', () => {
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
   })
+
+  it('keeps the full path when a standalone MEDIA line contains spaces', () => {
+    // Regression: the old `\S+` matcher cut the path at the first space, so a
+    // macOS iCloud path ("Mobile Documents", "6 开发项目") produced a truncated
+    // "File: Mobile" link plus the rest of the path as plain text.
+    const input = 'MEDIA:/Users/me/Library/Mobile Documents/6 开发项目/a.png'
+    expect(renderMediaTags(input)).toBe(
+      '[Image: a.png](#media:%2FUsers%2Fme%2FLibrary%2FMobile%20Documents%2F6%20%E5%BC%80%E5%8F%91%E9%A1%B9%E7%9B%AE%2Fa.png)'
+    )
+  })
+
+  it('keeps the full path when a MEDIA tag sits inside a markdown link destination', () => {
+    // `[label](MEDIA:…)` must resolve to a single media link; the path must not
+    // be truncated at the first space nor swallow the closing paren. The
+    // markdown label is preserved as the link label (accessibility).
+    expect(renderMediaTags('[截图](MEDIA:/tmp/path with space/shot.png)')).toBe(
+      '[Image: 截图](#media:%2Ftmp%2Fpath%20with%20space%2Fshot.png)'
+    )
+  })
+
+  it('replaces markdown image syntax wrapping MEDIA with a single media link', () => {
+    // `![alt](MEDIA:…)` must not nest a link inside an image destination —
+    // remark cannot parse that and renders the whole thing as plain text.
+    // The alt text is preserved as the link label (accessibility).
+    expect(renderMediaTags('![回测进度板块](MEDIA:/tmp/path with space/shot.png)')).toBe(
+      '[Image: 回测进度板块](#media:%2Ftmp%2Fpath%20with%20space%2Fshot.png)'
+    )
+    // No spaces: still must not swallow the closing paren; label kept.
+    expect(renderMediaTags('![clip](MEDIA:/tmp/clip.mp4)')).toBe(
+      '[Video: clip](#media:%2Ftmp%2Fclip.mp4)'
+    )
+  })
+
+  it('does not swallow trailing prose on a bare MEDIA line', () => {
+    // Regression (AI review #85790): `MEDIA:/tmp/a.png is attached` must keep
+    // only the path — the old whole-line bare match treated " is attached" as
+    // part of the path.
+    expect(renderMediaTags('MEDIA:/tmp/foo.png is attached')).toBe(
+      '[Image: foo.png](#media:%2Ftmp%2Ffoo.png) is attached'
+    )
+  })
+
+  it('keeps spaced bare paths that look path-like', () => {
+    // A spaced path that ends path-like (extension) stays whole — the bounded
+    // match must not truncate legitimate macOS iCloud-style paths.
+    expect(renderMediaTags('MEDIA:/Users/me/Mobile Documents/6 开发项目/a.png')).toBe(
+      '[Image: a.png](#media:%2FUsers%2Fme%2FMobile%20Documents%2F6%20%E5%BC%80%E5%8F%91%E9%A1%B9%E7%9B%AE%2Fa.png)'
+    )
+  })
+
+  it('supports quoted MEDIA paths containing spaces and parens', () => {
+    expect(renderMediaTags('MEDIA:"/tmp/report (final).pdf"')).toBe(
+      '[File: report (final).pdf](#media:%2Ftmp%2Freport%20(final).pdf)'
+    )
+  })
 })
 
 describe('interleaved reasoning/text boundaries', () => {

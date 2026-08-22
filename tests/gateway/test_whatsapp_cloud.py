@@ -1400,3 +1400,134 @@ class TestReplyContextResolution:
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
 
+
+# ---------------------------------------------------------------------------
+# edit_message — Cloud API edit text endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestEditMessage:
+    """Outbound edit-message path via Graph API /messages with text.message_id."""
+
+    @pytest.mark.asyncio
+    async def test_edit_includes_body_and_message_id(self):
+        """The edit POST carries the new content and original message_id."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.abc123"}]}
+            )
+        )
+
+        result = await adapter.edit_message(
+            "15551234567", "wamid.abc123", "edited content"
+        )
+
+        assert result.success is True
+        assert result.message_id == "wamid.abc123"
+
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["messaging_product"] == "whatsapp"
+        assert payload["recipient_type"] == "individual"
+        assert payload["to"] == "15551234567"
+        assert payload["type"] == "text"
+        assert payload["text"]["body"] == "edited content"
+        assert payload["text"]["preview_url"] is True
+        assert payload["text"]["message_id"] == "wamid.abc123"
+
+    @pytest.mark.asyncio
+    async def test_edit_requires_connected_client(self):
+        """edit_message returns failure when http_client is None."""
+        adapter = _make_adapter()
+        adapter._http_client = None
+
+        result = await adapter.edit_message(
+            "15551234567", "wamid.abc123", "hi"
+        )
+
+        assert result.success is False
+        assert result.error == "Not connected"
+
+    @pytest.mark.asyncio
+    async def test_edit_rejects_empty_content(self):
+        """edit_message returns failure on empty/whitespace-only content."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+
+        result = await adapter.edit_message(
+            "15551234567", "wamid.abc123", "   "
+        )
+
+        assert result.success is False
+        assert result.error == "Empty content"
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_failure_status(self):
+        """Non-200 status returns failure with formatted error."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                400, {"error": {"code": 131009, "message": "Parameter value is not valid"}}
+            )
+        )
+
+        result = await adapter.edit_message(
+            "15551234567", "wamid.invalid", "edited"
+        )
+
+        assert result.success is False
+        assert "131009" in result.error
+
+    @pytest.mark.asyncio
+    async def test_edit_network_error(self):
+        """A network-level exception is caught and reported."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=ConnectionError("Connection reset"))
+
+        result = await adapter.edit_message(
+            "15551234567", "wamid.abc123", "edited"
+        )
+
+        assert result.success is False
+        assert "Connection reset" in result.error
+
+    @pytest.mark.asyncio
+    async def test_edit_includes_bearer_auth(self):
+        """The edit POST uses the adapter's access token for auth."""
+        adapter = _make_adapter(access_token="my-secret-token")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.abc123"}]}
+            )
+        )
+
+        await adapter.edit_message("15551234567", "wamid.abc123", "edited")
+
+        headers = adapter._http_client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer my-secret-token"
+        assert headers["Content-Type"] == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_edit_targets_graph_messages(self):
+        """edit_message POSTs to the Graph /messages endpoint."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.abc123"}]}
+            )
+        )
+
+        await adapter.edit_message("15551234567", "wamid.abc123", "edited")
+
+        args, _ = adapter._http_client.post.call_args
+        url = args[0] if args else adapter._http_client.post.call_args.kwargs.get("url")
+        # URL includes the phone-number-ID bucket: .../<phone_id>/messages
+        assert url.endswith("/messages")
+        assert adapter._phone_number_id in url
+

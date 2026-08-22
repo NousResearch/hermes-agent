@@ -98,12 +98,31 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_env_var_db_override_wins_for_unnamed_board(self, fresh_home, tmp_path, monkeypatch):
+        """``HERMES_KANBAN_DB`` pins the file when no board is named.
+
+        This is the dispatcher→worker handoff: a pinned worker that does not
+        name a board stays contained to the board that dispatched it.
+        """
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+
+    def test_env_var_db_override_conflicts_with_explicit_board(self, fresh_home, tmp_path, monkeypatch):
+        """An EXPLICIT board that contradicts the pin raises, never lies.
+
+        Previously the pin silently won (``board=`` was ignored), and the
+        CLI's ``--board`` resolves the DB through this function before
+        scoping — so a pinned process running ``--board other`` read and
+        wrote the pinned board while printing the requested board's name.
+        A dispatched worker filed cards onto its own board all night while
+        truthfully reporting it had filed them elsewhere. See
+        test_kanban_board_pin.py for the full contract.
+        """
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        with pytest.raises(kb.BoardPinConflict):
+            kb.kanban_db_path(board="ignored")
 
 
 # ---------------------------------------------------------------------------

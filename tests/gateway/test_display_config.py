@@ -155,10 +155,12 @@ class TestPlatformDefaults:
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "telegram", "busy_ack_enabled") is True
         # Discord keeps all of these on (desktop-first, more vertical space).
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+        assert resolve_display_setting({}, "discord", "busy_ack_enabled") is True
 
     def test_slack_workspace_chatter_defaults(self):
         """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
@@ -167,6 +169,27 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "tool_progress") == "off"
         assert resolve_display_setting({}, "slack", "long_running_notifications") is False
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
+
+    def test_platform_chatter_overrides(self):
+        """Boolean-like per-platform values override chatter defaults."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "interim_assistant_messages": False,
+                        "long_running_notifications": False,
+                        "busy_ack_enabled": "off",
+                        "busy_ack_detail": "on",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
+        assert resolve_display_setting(config, "telegram", "busy_ack_enabled") is False
+        assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
 
 # ---------------------------------------------------------------------------
@@ -300,5 +323,4 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
 

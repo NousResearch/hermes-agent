@@ -419,6 +419,18 @@ The first time you message a busy agent on any platform, Hermes appends a one-li
 
 If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
 
+To silence busy acknowledgments on only one messaging platform, use the same
+setting under that platform's display overrides:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      busy_ack_enabled: false
+```
+
+Other platforms continue to use the global setting or the default (`true`).
+
 ## Clarify Questions (Multi-Select)
 
 When the agent uses the `clarify` tool to ask you a question, the gateway renders the choices as a numbered prompt (or native buttons on platforms that support them). Clarify supports **multi-select** questions too — the agent can let you pick several options at once:

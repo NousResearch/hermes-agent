@@ -170,6 +170,110 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Codex-backend transient errors — detection, ceiling, adaptive long backoff
+# ---------------------------------------------------------------------------
+
+_CODEX_BASE = "https://chatgpt.com/backend-api/codex"
+
+
+def _codex_error(message, status_code=None):
+    return SimpleNamespace(status_code=status_code, message=message)
+
+
+class TestCodexBackendTransient:
+    def test_detects_overload_message(self):
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error("Our servers are currently overloaded. Please try again later.")
+        assert is_codex_backend_transient_error(base_url=_CODEX_BASE, error=err)
+
+    def test_detects_generic_request_id_error(self):
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error(
+            "An error occurred while processing your request. You can retry "
+            "your request, or contact us through our help center at "
+            "help.openai.com if the error persists. Please include the "
+            "request ID d418eb1e-b6b1-4e70-8f50-4a01d752e4f7 in your message."
+        )
+        assert is_codex_backend_transient_error(base_url=_CODEX_BASE, error=err)
+
+    def test_detects_5xx_status_regardless_of_text(self):
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error("upstream hiccup", status_code=503)
+        assert is_codex_backend_transient_error(base_url=_CODEX_BASE, error=err)
+
+    def test_rejects_other_base_url(self):
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error("Our servers are currently overloaded.")
+        assert not is_codex_backend_transient_error(
+            base_url="https://api.openai.com/v1", error=err
+        )
+
+    def test_rejects_4xx_status_even_with_matching_text(self):
+        """A 4xx on the Codex backend is auth/quota/validation territory —
+        it must keep its fast-fail path even if the body text looks
+        transient."""
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error("Our servers are currently overloaded.", status_code=429)
+        assert not is_codex_backend_transient_error(base_url=_CODEX_BASE, error=err)
+
+    def test_rejects_unrelated_statusless_error(self):
+        from agent.retry_utils import is_codex_backend_transient_error
+        err = _codex_error("Invalid prompt: your input violates our usage policy.")
+        assert not is_codex_backend_transient_error(base_url=_CODEX_BASE, error=err)
+
+    def test_ceiling_exceeds_short_attempts(self):
+        """Same invariant as the Z.AI ceiling: give-up check runs before the
+        attempt's backoff, so the ceiling must leave headroom for every
+        long-backoff entry to execute."""
+        from agent.retry_utils import (
+            codex_backend_transient_retry_ceiling,
+            _CODEX_BACKEND_TRANSIENT_LONG_BACKOFF,
+        )
+        short_attempts = 3
+        ceiling = codex_backend_transient_retry_ceiling(short_attempts)
+        assert ceiling > short_attempts
+        assert (ceiling - 1) - short_attempts >= len(_CODEX_BACKEND_TRANSIENT_LONG_BACKOFF)
+
+    def test_ceiling_makes_long_tier_reachable(self, monkeypatch):
+        """With the extended ceiling, the retry loop's attempt range walks the
+        entire long-backoff schedule."""
+        monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+        from agent.retry_utils import codex_backend_transient_retry_ceiling
+
+        err = _codex_error("Our servers are currently overloaded.")
+        ceiling = codex_backend_transient_retry_ceiling()
+
+        short_waits, long_waits = [], []
+        for attempt in range(1, ceiling):
+            _wait, policy = adaptive_rate_limit_backoff(
+                attempt,
+                base_url=_CODEX_BASE,
+                model="gpt-5.6-sol",
+                error=err,
+                default_wait=1.0,
+            )
+            if policy == "codex_backend_transient_long":
+                long_waits.append(_wait)
+            elif policy == "codex_backend_transient_short":
+                short_waits.append(_wait)
+
+        assert len(short_waits) == 3
+        assert long_waits == [15.0, 30.0, 60.0, 90.0]
+
+    def test_adaptive_backoff_untouched_for_other_providers(self):
+        err = _codex_error("Our servers are currently overloaded.")
+        wait, policy = adaptive_rate_limit_backoff(
+            5,
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.6-sol",
+            error=err,
+            default_wait=7.5,
+        )
+        assert wait == 7.5
+        assert policy is None
+
+
+# ---------------------------------------------------------------------------
 # parse_retry_after_seconds — shared Retry-After parser
 # ---------------------------------------------------------------------------
 

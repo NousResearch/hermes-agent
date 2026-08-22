@@ -34,6 +34,19 @@ _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 # the two from silently desyncing if the short-retry count is ever tuned.
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
+# OpenAI's Codex subscription backend (chatgpt.com/backend-api/codex) fails
+# transiently under load with HTTP-status-less APIErrors — "Our servers are
+# currently overloaded. Please try again later." or a generic "An error
+# occurred while processing your request ... request ID ...". These clear on
+# their own within minutes, but the default 3 short retries (~2/4/8s) give up
+# long before that window closes, and the fallback chain usually points at the
+# same Codex backend (so it is skipped) — the turn then dies with a
+# user-visible provider failure. Mirror the Z.AI overload handling: keep the
+# short retries, then progressively widen the wait. Cap total added wait
+# around ~3 minutes so interactive sessions still fail visibly rather than
+# sitting silent.
+_CODEX_BACKEND_TRANSIENT_LONG_BACKOFF = (15.0, 30.0, 60.0, 90.0)
+
 
 def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     """Parse a ``Retry-After`` value into non-negative seconds.
@@ -159,6 +172,29 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     )
 
 
+def is_codex_backend_transient_error(*, base_url: str | None, error: Any) -> bool:
+    """Return True for transient OpenAI Codex-backend failures worth extended retries.
+
+    The Codex subscription backend reports transient trouble either as an
+    explicit overload message or as a generic "An error occurred while
+    processing your request" with a request ID — both typically without a
+    usable HTTP status on the wrapped APIError. Genuine 5xx statuses on the
+    same backend qualify too. Auth, quota and other 4xx shapes keep their
+    normal fast-fail paths.
+    """
+    base = (base_url or "").lower()
+    if "chatgpt.com/backend-api" not in base:
+        return False
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return status >= 500
+    text = _error_text(error)
+    return (
+        "currently overloaded" in text
+        or "an error occurred while processing your request" in text
+    )
+
+
 def adaptive_rate_limit_backoff(
     attempt: int,
     *,
@@ -171,24 +207,31 @@ def adaptive_rate_limit_backoff(
     """Provider-aware rate-limit backoff.
 
     For most providers this returns ``default_wait`` unchanged. For Z.AI
-    Coding Plan GLM-5.2 overloads, keep the first ``short_attempts`` retries on
-    the normal short exponential schedule, then switch to progressively longer
-    waits (30s → 60s → 90s → 120s, capped) plus light jitter.
+    Coding Plan GLM-5.2 overloads and transient OpenAI Codex-backend failures,
+    keep the first ``short_attempts`` retries on the normal short exponential
+    schedule, then switch to progressively longer waits (per-provider long
+    table, capped) plus light jitter.
 
     ``attempt`` is 1-based, matching the retry loop's logged attempt number.
     Returns ``(wait_seconds, reason_label)`` where ``reason_label`` is suitable
     for status/log decoration when a provider-specific policy fired.
     """
-    if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+    if is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
+        long_table = _ZAI_CODING_OVERLOAD_LONG_BACKOFF
+        label = "zai_coding_overload"
+    elif is_codex_backend_transient_error(base_url=base_url, error=error):
+        long_table = _CODEX_BACKEND_TRANSIENT_LONG_BACKOFF
+        label = "codex_backend_transient"
+    else:
         return default_wait, None
     if attempt <= short_attempts:
-        return default_wait, "zai_coding_overload_short"
+        return default_wait, f"{label}_short"
 
-    idx = min(attempt - short_attempts - 1, len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) - 1)
-    base_delay = _ZAI_CODING_OVERLOAD_LONG_BACKOFF[idx]
+    idx = min(attempt - short_attempts - 1, len(long_table) - 1)
+    base_delay = long_table[idx]
     # A smaller jitter ratio keeps long waits readable while still avoiding
     # synchronized retry storms across concurrent Hermes sessions.
-    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+    return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), f"{label}_long"
 
 
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
@@ -206,3 +249,14 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
     """
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+def codex_backend_transient_retry_ceiling(
+    short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS,
+) -> int:
+    """Retry-loop ceiling for the full Codex-backend transient backoff schedule.
+
+    Same shape as ``zai_coding_overload_retry_ceiling`` — see that docstring
+    for why the ceiling must sit one past the final long-backoff entry.
+    """
+    return short_attempts + len(_CODEX_BACKEND_TRANSIENT_LONG_BACKOFF) + 1

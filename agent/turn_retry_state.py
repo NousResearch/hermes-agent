@@ -67,6 +67,13 @@ class TurnRetryState:
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # One-shot forced local compression after exhausting retries on a
+    # transient Codex-backend error (overload / 5xx-shaped APIError). The
+    # fallback chain usually points at the same backend and is skipped, so a
+    # materially smaller request retried with a fresh backoff budget is the
+    # recovery rail of last resort (local compressor stays active alongside
+    # native server-side compaction).
+    transient_recovery_compact_attempted: bool = False
 
     # ── Auth-failure provider failover ───────────────────────────────────
     # Set once we've escalated a persistent 401/403 (after the per-provider

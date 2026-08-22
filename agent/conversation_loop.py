@@ -83,6 +83,8 @@ from agent.prompt_caching import (
 )
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
+    codex_backend_transient_retry_ceiling,
+    is_codex_backend_transient_error,
     is_zai_coding_overload_error,
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
@@ -5341,6 +5343,21 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                # OpenAI Codex-backend transient failures ("servers currently
+                # overloaded" / generic request-ID error / genuine 5xx) get the
+                # same adaptive treatment as the Z.AI overload above. The
+                # fallback chain usually points at the same Codex backend (and
+                # is skipped), so riding out the transient window on the
+                # long-backoff tier is the recovery that actually works. See
+                # codex_backend_transient_retry_ceiling() for the ceiling
+                # rationale.
+                _is_codex_backend_transient = is_codex_backend_transient_error(
+                    base_url=str(_base), error=api_error
+                )
+                if _is_codex_backend_transient:
+                    max_retries = max(
+                        max_retries, codex_backend_transient_retry_ceiling()
+                    )
                 _should_fallback = (
                     (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
@@ -6246,6 +6263,50 @@ def run_conversation(
                         agent._fallback_index = 0
                         agent._fallback_activated = False
                         continue
+
+                    # ── Transient-error recovery compact ──────────────────
+                    # The local compressor stays the recovery rail even with
+                    # native (server-side) compaction active. After exhausting
+                    # retries on a transient Codex backend error, force one
+                    # local compression pass and restart the attempt cycle
+                    # with a smaller request before trying fallback/terminal:
+                    # a materially smaller request retries later with a fresh
+                    # backoff budget and is likelier to dodge the overloaded
+                    # path. One-shot per API call block. A no-op compact (aux
+                    # LLM unreachable — often the same backend — or
+                    # compression disabled or breaker-blocked) falls through
+                    # to the existing fallback/terminal handling unchanged.
+                    if (
+                        _is_codex_backend_transient
+                        and not _retry.transient_recovery_compact_attempted
+                        and getattr(agent, "compression_enabled", True)
+                    ):
+                        _retry.transient_recovery_compact_attempted = True
+                        agent._buffer_status(
+                            "🗜️ Provider keeps failing — compacting context "
+                            "locally and retrying with a smaller request..."
+                        )
+                        _pre_recovery_len = len(messages)
+                        _pre_recovery_tokens = estimate_messages_tokens_rough(messages)
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                            task_id=effective_task_id,
+                        )
+                        conversation_history = conversation_history_after_compression(
+                            agent, messages, conversation_history
+                        )
+                        _post_recovery_tokens = estimate_messages_tokens_rough(messages)
+                        if len(messages) < _pre_recovery_len or (
+                            _post_recovery_tokens > 0
+                            and _post_recovery_tokens < _pre_recovery_tokens * 0.95
+                        ):
+                            time.sleep(2)
+                            _retry.restart_with_compressed_messages = True
+                            break
+                        # Compact didn't shrink the request — fall through to
+                        # fallback/terminal handling below.
+
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
@@ -6472,7 +6533,7 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
+                if (is_rate_limited or _is_zai_coding_overload or _is_codex_backend_transient) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                         retry_count,
                         base_url=str(_base),
@@ -6480,18 +6541,27 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
-                if is_rate_limited or _is_zai_coding_overload:
+                if is_rate_limited or _is_zai_coding_overload or _is_codex_backend_transient:
                     _policy_note = ""
                     if _backoff_policy == "zai_coding_overload_long":
                         _policy_note = " (Z.AI Coding overload adaptive long backoff)"
                     elif _backoff_policy == "zai_coding_overload_short":
                         _policy_note = " (Z.AI Coding overload short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
+                    elif _backoff_policy == "codex_backend_transient_long":
+                        _policy_note = " (Codex backend transient adaptive long backoff)"
+                    elif _backoff_policy == "codex_backend_transient_short":
+                        _policy_note = " (Codex backend transient short retry)"
+                    _wait_reason = (
+                        "Provider overloaded"
+                        if (_is_zai_coding_overload or _is_codex_backend_transient)
+                        and not is_rate_limited
+                        else "Rate limited"
+                    )
                     _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
                     # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
+                    # adaptive waits are different: they can last minutes, so surface
                     # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
+                    if _backoff_policy in ("zai_coding_overload_long", "codex_backend_transient_long"):
                         agent._emit_status(_rate_limit_status)
                     else:
                         agent._buffer_status(_rate_limit_status)

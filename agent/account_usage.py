@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -748,8 +749,40 @@ def redeem_codex_reset_credit(
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+def _anthropic_official_usage_route(base_url: Optional[str]) -> bool:
+    """Return whether live credentials may be used on Anthropic's usage API."""
+    if not base_url:
+        return True
+    try:
+        parsed = urlparse(str(base_url).strip())
+        return (
+            parsed.scheme.lower() == "https"
+            and (parsed.hostname or "").lower() == "api.anthropic.com"
+            and parsed.port in {None, 443}
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _fetch_anthropic_account_usage(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    has_live_context = base_url is not None or api_key is not None
+    if has_live_context and not _anthropic_official_usage_route(base_url):
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason=(
+                "Anthropic account limits require the official Anthropic endpoint; "
+                "custom and proxy routes are not queried."
+            ),
+        )
+    token = str(api_key or "").strip()
+    if not token:
+        token = (resolve_anthropic_token() or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -881,6 +914,80 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_supermemory_account_usage() -> AccountUsageSnapshot:
+    """Fetch billing usage from one atomically resolved Supermemory connection."""
+    from plugins.memory.supermemory import resolve_supermemory_connection_settings
+
+    connection = resolve_supermemory_connection_settings()
+    resolved_key = str(connection.get("api_key") or "").strip()
+    resolved_base = str(connection.get("base_url") or "").strip().rstrip("/")
+    timeout = connection.get("api_timeout", 10.0)
+    if not resolved_key:
+        return AccountUsageSnapshot(
+            provider="supermemory",
+            source="billing_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="SUPERMEMORY_API_KEY not set",
+        )
+
+    endpoint = f"{resolved_base}/v3/auth/billing/usage"
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(
+            endpoint,
+            headers={"Authorization": f"Bearer {resolved_key}", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    features = payload.get("features") if isinstance(payload, dict) else None
+    credits = features.get("usd_credits") if isinstance(features, dict) else None
+    if not isinstance(credits, dict):
+        credits = {}
+
+    used = credits.get("usage")
+    included = credits.get("included_usage")
+    balance = credits.get("balance")
+    reset = credits.get("next_reset_at")
+
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    if _is_finite_num(used) and _is_finite_num(included) and float(included) > 0:
+        used_value = float(used)
+        included_value = float(included)
+        remaining = (
+            max(0.0, float(balance))
+            if _is_finite_num(balance)
+            else max(0.0, included_value - used_value)
+        )
+        reset_at = (
+            _parse_dt(float(reset) / 1000)
+            if _is_finite_num(reset)
+            else _parse_dt(reset)
+        )
+        windows.append(
+            AccountUsageWindow(
+                label="Supermemory credits",
+                used_percent=(used_value / included_value) * 100,
+                reset_at=reset_at,
+                detail=f"${remaining:.2f} of ${included_value:.2f} remaining",
+            )
+        )
+        details.append(
+            f"Supermemory credits used: ${used_value:.2f} of ${included_value:.2f}"
+        )
+    elif _is_finite_num(balance):
+        details.append(f"Supermemory credits balance: ${max(0.0, float(balance)):.2f}")
+
+    return AccountUsageSnapshot(
+        provider="supermemory",
+        source="billing_usage_api",
+        fetched_at=_utc_now(),
+        title="Supermemory limits",
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -894,9 +1001,13 @@ def fetch_account_usage(
         if normalized == "openai-codex":
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
+            return _fetch_anthropic_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "supermemory":
+            # Supermemory's key/base/timeout form one authority unit. Never
+            # combine generic model-provider overrides with that connection.
+            return _fetch_supermemory_account_usage()
     except Exception:
         return None
     return None

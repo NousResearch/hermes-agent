@@ -1229,7 +1229,7 @@ display:
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
   runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "context_pct", "quota", "cwd"]
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
   language: en            # 静态消息的 UI 语言（审批提示、部分 gateway 回复）。en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
@@ -1273,13 +1273,15 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
+当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。页脚可显示模型、上下文窗口百分比、可用的模型/Supermemory 配额窗口和当前工作目录。默认关闭；配额查询为尽力而为且受超时限制，页脚关闭或省略 `quota` 字段时不会查询。
+
+Supermemory 账单查询会复用 memory provider 已配置的 API 密钥和 base URL，包括自托管安装，不会将自托管密钥改发到云端 API。
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
+    fields: ["model", "context_pct", "quota", "cwd"]   # 支持字段：model、context_pct、quota、cwd
 ```
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。
@@ -1287,7 +1289,10 @@ display:
 附加到 Telegram/Discord/Slack 回复的示例页脚：
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+claude-opus-4.7 · 5% · ~/project
+Quota Used:
+Session - 25%
+Supermemory credits - 80% - $10.00 of $50.00 remaining
 ```
 
 只有轮次的**最终**消息获得页脚；中间更新保持干净。

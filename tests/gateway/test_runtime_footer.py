@@ -4,9 +4,11 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
@@ -79,6 +81,17 @@ def test_format_footer_skips_missing_context_length():
 # ---------------------------------------------------------------------------
 
 
+def test_resolve_defaults_include_quota_field():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    default_fields = DEFAULT_CONFIG["display"]["runtime_footer"]["fields"]
+    assert "quota" in default_fields
+    assert resolve_footer_config({}, "telegram") == {
+        "enabled": False,
+        "fields": default_fields,
+    }
+
+
 def test_resolve_platform_override_wins():
     user = {
         "display": {
@@ -105,7 +118,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["model", "context_pct", "quota", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -131,6 +144,56 @@ def test_build_footer_per_platform_off_suppresses():
         cwd="/tmp",
     )
     assert out == ""
+
+
+def test_format_footer_quota_uses_provider_window_labels():
+    snapshot = AccountUsageSnapshot(
+        provider="combined",
+        source="test",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=25),
+            AccountUsageWindow(
+                label="Supermemory credits",
+                used_percent=80,
+                detail="$10.00 of $50.00 remaining",
+            ),
+        ),
+    )
+
+    out = format_runtime_footer(
+        model=None,
+        context_tokens=0,
+        context_length=None,
+        quota_snapshot=snapshot,
+        cwd="",
+        fields=("quota",),
+    )
+
+    assert out == (
+        "Quota Used:\n"
+        "Session - 25%\n"
+        "Supermemory credits - 80% - $10.00 of $50.00 remaining"
+    )
+
+
+def test_format_footer_keeps_inline_fields_above_multiline_quota():
+    snapshot = AccountUsageSnapshot(
+        provider="combined",
+        source="test",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(AccountUsageWindow(label="Session", used_percent=25),),
+    )
+
+    out = format_runtime_footer(
+        model="openai/gpt-5.6",
+        context_tokens=50,
+        context_length=100,
+        quota_snapshot=snapshot,
+        cwd="/tmp/project",
+    )
+
+    assert out == "gpt-5.6 · 50% · /tmp/project\nQuota Used:\nSession - 25%"
 
 
 
@@ -247,29 +310,29 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Byte-stability: `latency` is opt-in, so the DEFAULT footer is unchanged.
+# Byte-stability: `latency` is opt-in; unavailable quota adds no output bytes.
 #
 # Upstream doctrine: a system prompt / rendered surface must be byte-stable for
 # the life of a conversation.  Adding a field to _DEFAULT_FIELDS would silently
-# change the footer text of every user who already enabled it.  These tests pin
-# the default set and the exact default-config output strings.
+# change the footer text of every user who already enabled it. These tests pin
+# latency exclusion and exact output when quota data is unavailable.
 # ---------------------------------------------------------------------------
 
-_LEGACY_DEFAULT_FIELDS = ["model", "context_pct", "cwd"]
+_DEFAULT_FIELDS_WITH_QUOTA = ["model", "context_pct", "quota", "cwd"]
 
 
 def test_latency_not_in_default_fields():
     from gateway.runtime_footer import _DEFAULT_FIELDS
 
     assert "latency" not in _DEFAULT_FIELDS
-    assert list(_DEFAULT_FIELDS) == _LEGACY_DEFAULT_FIELDS
+    assert list(_DEFAULT_FIELDS) == _DEFAULT_FIELDS_WITH_QUOTA
 
 
 def test_resolve_footer_config_default_fields_exclude_latency():
-    assert resolve_footer_config({}, "telegram")["fields"] == _LEGACY_DEFAULT_FIELDS
+    assert resolve_footer_config({}, "telegram")["fields"] == _DEFAULT_FIELDS_WITH_QUOTA
     assert resolve_footer_config(
         {"display": {"runtime_footer": {"enabled": True}}}, "discord"
-    )["fields"] == _LEGACY_DEFAULT_FIELDS
+    )["fields"] == _DEFAULT_FIELDS_WITH_QUOTA
 
 
 @pytest.mark.parametrize(

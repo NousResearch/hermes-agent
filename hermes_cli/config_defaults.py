@@ -1493,7 +1493,7 @@ DEFAULT_CONFIG = {
         # display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+            "fields": ["model", "context_pct", "quota", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
         # Petdex animated mascot (https://github.com/crafter-station/petdex).

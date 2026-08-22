@@ -3422,7 +3422,7 @@ class CLICommandsMixin:
         cfg = load_config() or {}
         footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
         current = bool(footer_cfg.get("enabled", False))
-        fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
+        fields = footer_cfg.get("fields") or ["model", "context_pct", "quota", "cwd"]
 
         if arg in {"status", "?"}:
             state = "ON" if current else "OFF"

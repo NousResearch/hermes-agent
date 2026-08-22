@@ -5,6 +5,8 @@ import threading
 
 import pytest
 
+import plugins.memory.supermemory as supermemory_module
+
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
@@ -80,6 +82,24 @@ def test_load_and_save_config_round_trip(tmp_path):
     assert cfg["container_tag"] == "demo-tag"
     assert cfg["auto_capture"] is False
     assert cfg["auto_recall"] is True
+
+
+def test_resolve_connection_settings_reuses_configured_self_hosted_base(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "self-hosted-key")
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "https://env.example.invalid")
+    _save_supermemory_config(
+        {"base_url": "https://memory.internal.example/root", "api_timeout": 2.5},
+        str(tmp_path),
+    )
+
+    assert hasattr(supermemory_module, "resolve_supermemory_connection_settings")
+    settings = supermemory_module.resolve_supermemory_connection_settings(str(tmp_path))
+
+    assert settings == {
+        "api_key": "self-hosted-key",
+        "base_url": "https://memory.internal.example/root",
+        "api_timeout": 2.5,
+    }
 
 
 def test_clean_text_for_capture_strips_injected_context():

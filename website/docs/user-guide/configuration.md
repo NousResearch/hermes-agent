@@ -1827,7 +1827,7 @@ display:
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "context_pct", "quota", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
@@ -1930,13 +1930,13 @@ Focus view is **display-only**. It never edits conversation history, the system 
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer can show the model, context-window percentage, available model/Supermemory quota windows, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance. Quota fetching is best-effort, timeout-bounded, and skipped when the footer is disabled or the `quota` field is omitted.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
+    fields: ["model", "context_pct", "quota", "cwd"]   # order shown; drop any to hide
 ```
 
 Supported fields:
@@ -1945,17 +1945,21 @@ Supported fields:
 | --- | --- | --- |
 | `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
+| `quota` | Available provider and Supermemory usage windows | `Session - 25%` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
 | `cwd` | Home-relative working directory | `~` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set is `["model", "context_pct", "quota", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot. Supermemory billing uses the same configured base URL and API key as the memory provider, including self-hosted installations.
 
 The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+claude-opus-4.7 · 5% · ~/project
+Quota Used:
+Session - 25%
+Supermemory credits - 80% - $10.00 of $50.00 remaining
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

@@ -2173,7 +2173,7 @@ def _current_max_iterations() -> int:
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
-from contextlib import contextmanager as _contextmanager
+from contextlib import contextmanager as _contextmanager, nullcontext as _nullcontext
 
 
 # Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
@@ -2249,6 +2249,75 @@ def _profile_runtime_scope(profile_home: "Path"):
     finally:
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+
+
+def _runtime_footer_context_from_agent(agent: Any) -> Dict[str, Any]:
+    """Capture the actual runtime used by one agent turn for footer billing.
+
+    The API key lives only in the internal ``agent_result`` long enough for the
+    outer gateway path to consume it.  ``_build_runtime_footer_for_result``
+    removes the context before hooks or platform sends run.
+    """
+    if agent is None:
+        return {}
+    return {
+        "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+    }
+
+
+async def _build_runtime_footer_for_result(
+    runner: Any,
+    *,
+    source: Any,
+    session_key: str | None,
+    agent_result: Dict[str, Any],
+    turn_seconds: float | None,
+) -> str:
+    """Build the footer under the same profile/secret scope as the agent turn."""
+    runtime_context = agent_result.pop("_runtime_footer_context", None)
+    if not isinstance(runtime_context, dict):
+        runtime_context = {}
+
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False):
+        profile_home = runner._resolve_profile_home_for_source(source)
+        scope = _profile_runtime_scope(profile_home)
+    else:
+        scope = _nullcontext()
+
+    with scope:
+        user_config = _load_gateway_config()
+        if not runtime_context.get("provider"):
+            try:
+                _model, resolved_runtime = runner._resolve_session_agent_runtime(
+                    source=source,
+                    session_key=session_key,
+                    user_config=user_config,
+                )
+                runtime_context = {
+                    "provider": resolved_runtime.get("provider"),
+                    "base_url": resolved_runtime.get("base_url"),
+                    "api_key": resolved_runtime.get("api_key"),
+                }
+            except Exception:
+                logger.debug("runtime footer provider resolution failed", exc_info=True)
+
+        from gateway.runtime_footer import build_footer_line_async
+
+        return await build_footer_line_async(
+            user_config=user_config,
+            platform_key=_platform_config_key(source.platform),
+            provider=runtime_context.get("provider"),
+            base_url=runtime_context.get("base_url"),
+            api_key=runtime_context.get("api_key"),
+            model=agent_result.get("model"),
+            context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+            context_length=agent_result.get("context_length") or None,
+            cwd=os.environ.get("TERMINAL_CWD", ""),
+            turn_seconds=turn_seconds,
+        )
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
@@ -6486,6 +6555,7 @@ class TurnRunner:
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
         _resolved_model = getattr(_agent, "model", None) if _agent else None
+        _runtime_footer_context = _runtime_footer_context_from_agent(_agent)
 
         # Sync session_id immediately after run_conversation(). Compression
         # can rotate before a follow-up model call fails; the failure return
@@ -6621,6 +6691,8 @@ class TurnRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": _runtime_footer_context.get("provider"),
+                "_runtime_footer_context": _runtime_footer_context,
                 "context_length": _context_length,
             }
 
@@ -6702,6 +6774,8 @@ class TurnRunner:
             "input_tokens": _input_toks,
             "output_tokens": _output_toks,
             "model": _resolved_model,
+            "provider": _runtime_footer_context.get("provider"),
+            "_runtime_footer_context": _runtime_footer_context,
             "context_length": _context_length,
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
@@ -20382,14 +20456,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
-                _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
-                    context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
-                    context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                _footer_line = await _build_runtime_footer_for_result(
+                    self,
+                    source=source,
+                    session_key=session_key,
+                    agent_result=agent_result,
                     turn_seconds=_turn_seconds,
                 )
             except Exception as _footer_err:

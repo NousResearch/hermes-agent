@@ -75,7 +75,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/statusbar`（别名：`/sb`） | 切换上下文/模型状态栏的显示与隐藏 |
 | `/voice [on\|off\|tts\|status]` | 切换 CLI 语音模式和语音播放。录音使用 `voice.record_key`（默认：`Ctrl+B`）。 |
 | `/yolo` | 切换 YOLO 模式——跳过所有危险命令审批提示。 |
-| `/footer [on\|off\|status]` | 切换最终回复中的 gateway 运行时元数据页脚（显示模型、工具调用次数、耗时）。 |
+| `/footer [on\|off\|status]` | 切换最终回复中的 gateway 运行时元数据页脚（显示模型、上下文百分比、可用配额和当前工作目录）。 |
 | `/busy [queue\|steer\|interrupt\|status]` | 仅限 CLI：控制 Hermes 工作时按下 Enter 的行为——将新消息加入队列、中途引导，或立即中断。 |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | 仅限 CLI：选择 TUI 忙碌指示器样式。 |
 
@@ -224,7 +224,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/queue <prompt>`（别名：`/q`） | 将 prompt 加入队列等待下一轮处理，不中断当前轮次。 |
 | `/steer <prompt>` | 在下一次工具调用后注入一条消息，不中断——模型在下一次迭代时获取，而非作为新轮次。 |
 | `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。裁判模型在每轮后检查；若未完成，Hermes 自动继续，直到完成、你暂停/清除，或达到轮次预算（默认 20）。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`。agent 运行中可安全执行 status/pause/clear；设置新目标需先执行 `/stop`。见 [持续目标](/user-guide/features/goals)。 |
-| `/footer [on\|off\|status]` | 切换最终回复中的运行时元数据页脚（显示模型、工具调用次数、耗时）。 |
+| `/footer [on\|off\|status]` | 切换最终回复中的运行时元数据页脚（显示模型、上下文百分比、可用配额和当前工作目录）。 |
 | `/curator [status\|run\|pin\|archive]` | 后台 skill 维护控制。 |
 | `/suggestions [accept\|dismiss N\|catalog\|clear]` | 直接在聊天中审核建议的自动化。`/suggestions` 列出待处理建议，`catalog` 添加精选起步自动化，`clear` 清理已解决的建议记录。被接受的建议会保留当前聊天/线程作为任务投递来源。 |
 | `/blueprint [name] [slot=value ...]` | 浏览 cron blueprint、启动引导式填槽对话，或直接创建 blueprint 任务。直接创建的任务会回投到当前聊天/线程。 |

@@ -157,6 +157,24 @@ def _load_supermemory_config(hermes_home: str) -> dict:
     return config
 
 
+def resolve_supermemory_connection_settings(
+    hermes_home: str | None = None,
+    *,
+    config: dict | None = None,
+) -> dict[str, Any]:
+    """Resolve the authoritative Supermemory key, base URL, and timeout."""
+    if hermes_home is None:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = str(get_hermes_home())
+    resolved_config = config if config is not None else _load_supermemory_config(hermes_home)
+    return {
+        "api_key": get_secret("SUPERMEMORY_API_KEY", "") or "",
+        "base_url": _resolve_base_url(resolved_config.get("base_url", "")),
+        "api_timeout": resolved_config.get("api_timeout", _DEFAULT_API_TIMEOUT),
+    }
+
+
 def _save_supermemory_config(values: dict, hermes_home: str) -> None:
     config_path = Path(hermes_home) / "supermemory.json"
     existing = {}
@@ -656,7 +674,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
-        self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
+        connection = resolve_supermemory_connection_settings(
+            self._hermes_home,
+            config=self._config,
+        )
+        self._api_key = connection["api_key"]
 
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.
@@ -672,10 +694,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._capture_mode = self._config["capture_mode"]
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
-        self._api_timeout = self._config["api_timeout"]
+        self._api_timeout = connection["api_timeout"]
         # Base URL: config > SUPERMEMORY_BASE_URL env var > api.supermemory.ai.
         # Supports self-hosted Supermemory servers.
-        self._base_url = _resolve_base_url(self._config["base_url"])
+        self._base_url = connection["base_url"]
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]

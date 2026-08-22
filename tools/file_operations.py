@@ -418,7 +418,7 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
 # diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
 # match because the path token forbids whitespace and a leading tool prefix
 # like "rg" is followed by ": " (space) which the negated class rejects.
-_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|(?:[^\s:]*/|\.*/)[^\n]*$')
 
 
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:

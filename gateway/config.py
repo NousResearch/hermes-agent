@@ -1987,45 +1987,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     whatsapp_cloud_phone_id = getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
     whatsapp_cloud_token = getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
-        if Platform.WHATSAPP_CLOUD not in config.platforms:
-            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
-        config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
+        wa_cloud_config = _enable_from_env(Platform.WHATSAPP_CLOUD)
+        wa_cloud_config.extra.update({
             "phone_number_id": whatsapp_cloud_phone_id,
             "access_token": whatsapp_cloud_token,
         })
         # Optional: app_id / app_secret (signature verification)
         wa_cloud_app_id = getenv("WHATSAPP_CLOUD_APP_ID")
         if wa_cloud_app_id:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
+            wa_cloud_config.extra["app_id"] = wa_cloud_app_id
         wa_cloud_app_secret = getenv("WHATSAPP_CLOUD_APP_SECRET")
         if wa_cloud_app_secret:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
+            wa_cloud_config.extra["app_secret"] = wa_cloud_app_secret
         # Optional: WABA id (analytics, future use)
         wa_cloud_waba_id = getenv("WHATSAPP_CLOUD_WABA_ID")
         if wa_cloud_waba_id:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
+            wa_cloud_config.extra["waba_id"] = wa_cloud_waba_id
         # Webhook verify token — Meta hub.verify_token shared secret
         wa_cloud_verify_token = getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
         if wa_cloud_verify_token:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
+            wa_cloud_config.extra["verify_token"] = wa_cloud_verify_token
         # Webhook server bind config (defaults baked into the adapter)
         wa_cloud_host = getenv("WHATSAPP_CLOUD_WEBHOOK_HOST")
         if wa_cloud_host:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_host"] = wa_cloud_host
+            wa_cloud_config.extra["webhook_host"] = wa_cloud_host
         wa_cloud_port = getenv("WHATSAPP_CLOUD_WEBHOOK_PORT")
         if wa_cloud_port:
             try:
-                config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
+                wa_cloud_config.extra["webhook_port"] = int(wa_cloud_port)
             except ValueError:
                 pass
         wa_cloud_path = getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
         if wa_cloud_path:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
+            wa_cloud_config.extra["webhook_path"] = wa_cloud_path
         # Graph API version override (rarely needed)
         wa_cloud_api_version = getenv("WHATSAPP_CLOUD_API_VERSION")
         if wa_cloud_api_version:
-            config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
+            wa_cloud_config.extra["api_version"] = wa_cloud_api_version
     whatsapp_cloud_home = getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
     if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
         config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(
@@ -2166,10 +2164,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
-        if Platform.EMAIL not in config.platforms:
-            config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
-        config.platforms[Platform.EMAIL].extra.update({
+        email_config = _enable_from_env(Platform.EMAIL)
+        email_config.extra.update({
             "address": email_addr,
             "imap_host": email_imap,
             "smtp_host": email_smtp,

@@ -1391,3 +1391,152 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestEmailEnvOverridesRespectExplicitDisable:
+    def test_email_env_vars_respect_explicit_disable(self):
+        """An explicit ``platforms.email.enabled: false`` must survive
+        _apply_env_overrides() even when the EMAIL_* env vars are set.
+
+        Regression: the hardcoded email env-arming block set
+        ``enabled = True`` directly instead of going through
+        ``_enable_from_env()`` (the helper that carries the
+        ``_enabled_explicit`` guard added in #41112), so email was the only
+        platform that ignored ``enabled: false`` — the gateway started and
+        connected IMAP/SMTP as if the config said nothing.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        email_env = {
+            "EMAIL_ADDRESS": "a@e.com",
+            "EMAIL_PASSWORD": "x",
+            "EMAIL_IMAP_HOST": "imap.example.com",
+            "EMAIL_SMTP_HOST": "smtp.example.com",
+        }
+        with patch.dict(os.environ, email_env, clear=True):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.EMAIL].enabled is False
+        # The credentials are still wired through for when it is enabled.
+        extra = config.platforms[Platform.EMAIL].extra
+        assert extra.get("address") == "a@e.com"
+        assert extra.get("imap_host") == "imap.example.com"
+        assert extra.get("smtp_host") == "smtp.example.com"
+
+    def test_email_env_vars_still_enable_without_explicit_setting(self):
+        """Env-arming must keep working when the operator never pinned
+        ``enabled`` — presence of all EMAIL_* vars enables the platform."""
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(enabled=False, extra={}),
+            },
+        )
+
+        email_env = {
+            "EMAIL_ADDRESS": "a@e.com",
+            "EMAIL_PASSWORD": "x",
+            "EMAIL_IMAP_HOST": "imap.example.com",
+            "EMAIL_SMTP_HOST": "smtp.example.com",
+        }
+        with patch.dict(os.environ, email_env, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.EMAIL].enabled is True
+
+    def test_email_env_vars_keep_defaults_when_not_all_set(self):
+        """Partial EMAIL_* env (missing password) must not flip email on."""
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(enabled=False, extra={}),
+            },
+        )
+
+        partial_env = {
+            "EMAIL_ADDRESS": "a@e.com",
+            "EMAIL_IMAP_HOST": "imap.example.com",
+            "EMAIL_SMTP_HOST": "smtp.example.com",
+        }
+        with patch.dict(os.environ, partial_env, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.EMAIL].enabled is False
+
+
+class TestWhatsAppCloudEnvOverridesRespectExplicitDisable:
+    def test_whatsapp_cloud_env_vars_respect_explicit_disable(self):
+        """An explicit ``platforms.whatsapp_cloud.enabled: false`` must survive
+        _apply_env_overrides() even when the WHATSAPP_CLOUD_* env vars are set.
+
+        Regression: the hardcoded WhatsApp Cloud env-arming block set
+        ``enabled = True`` directly instead of going through
+        ``_enable_from_env()`` (the helper that carries the
+        ``_enabled_explicit`` guard added in #41112), so WhatsApp Cloud
+        ignored ``enabled: false`` — the gateway started and connected
+        as if the config said nothing.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP_CLOUD: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        wa_cloud_env = {
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "12345",
+            "WHATSAPP_CLOUD_ACCESS_TOKEN": "token",
+        }
+        with patch.dict(os.environ, wa_cloud_env, clear=True):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.WHATSAPP_CLOUD].enabled is False
+        # The credentials are still wired through for when it is enabled.
+        extra = config.platforms[Platform.WHATSAPP_CLOUD].extra
+        assert extra.get("phone_number_id") == "12345"
+        assert extra.get("access_token") == "token"
+
+    def test_whatsapp_cloud_env_vars_still_enable_without_explicit_setting(self):
+        """Env-arming must keep working when the operator never pinned
+        ``enabled`` — presence of the WHATSAPP_CLOUD_* vars enables the
+        platform."""
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP_CLOUD: PlatformConfig(enabled=False, extra={}),
+            },
+        )
+
+        wa_cloud_env = {
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "12345",
+            "WHATSAPP_CLOUD_ACCESS_TOKEN": "token",
+        }
+        with patch.dict(os.environ, wa_cloud_env, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.WHATSAPP_CLOUD].enabled is True
+
+    def test_whatsapp_cloud_env_vars_keep_defaults_when_not_all_set(self):
+        """Partial WHATSAPP_CLOUD_* env (missing access token) must not flip
+        WhatsApp Cloud on."""
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP_CLOUD: PlatformConfig(enabled=False, extra={}),
+            },
+        )
+
+        partial_env = {
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "12345",
+        }
+        with patch.dict(os.environ, partial_env, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.WHATSAPP_CLOUD].enabled is False

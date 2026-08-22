@@ -8353,6 +8353,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 now,
             ),
         )
+        # Per-API-call detail: one row per call with the exact timestamp, so
+        # analytics can bucket usage by hour/day without the last_seen drift of
+        # the aggregate row.  Same transaction, best-effort (never abort the
+        # aggregate accounting if this write fails).
+        try:
+            conn.execute(
+                """INSERT INTO api_call_usage (
+                       session_id, ts, model, billing_provider, billing_base_url,
+                       billing_mode, task, api_call_count, input_tokens, output_tokens,
+                       cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                       estimated_cost_usd, actual_cost_usd
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    now,
+                    eff_model,
+                    eff_provider,
+                    eff_base_url,
+                    eff_billing_mode,
+                    task or "",
+                    api_call_count or 1,
+                    input_tokens or 0,
+                    output_tokens or 0,
+                    cache_read_tokens or 0,
+                    cache_write_tokens or 0,
+                    reasoning_tokens or 0,
+                    float(estimated_cost_usd or 0.0),
+                    float(actual_cost_usd or 0.0),
+                ),
+            )
+        except Exception:
+            pass  # best-effort — never let the detail write fail accounting
 
     def ensure_session(
         self,

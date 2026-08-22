@@ -451,6 +451,35 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- Per-API-call usage detail: one row per LLM call, carrying the precise
+-- timestamp so analytics can bucket by hour/day accurately.  The aggregate
+-- session_model_usage table only keeps per-(session,model,route,task)
+-- cumulative totals plus last_seen (the time of the MOST RECENT call in that
+-- bucket); a long-lived session spanning many hours would otherwise have its
+-- entire volume attributed to the final hour.  Written from the same
+-- chokepoint (_record_model_usage) in the same transaction as the aggregate.
+CREATE TABLE IF NOT EXISTS api_call_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    ts REAL NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
+    api_call_count INTEGER NOT NULL DEFAULT 1,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_ts ON api_call_usage(ts);
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_model ON api_call_usage(model, ts);
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_session ON api_call_usage(session_id, ts);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT

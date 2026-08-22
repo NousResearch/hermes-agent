@@ -589,6 +589,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    codex_app_server_strict_config: bool | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -1773,6 +1774,16 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    if codex_app_server_strict_config is None:
+        agent.codex_app_server_strict_config = (
+            cfg_get(
+                _agent_cfg, "codex_app_server", "strict_config", default=False
+            )
+            is True
+        )
+    else:
+        agent.codex_app_server_strict_config = codex_app_server_strict_config is True
 
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as

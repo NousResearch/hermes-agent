@@ -367,6 +367,7 @@ def _run_agent(
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
+    from hermes_constants import resolve_reasoning_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
@@ -432,6 +433,8 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
+    reasoning_config = resolve_reasoning_config(cfg, effective_model)
+
     runtime = resolve_runtime_provider(
         requested=effective_provider,
         target_model=effective_model or None,
@@ -480,6 +483,7 @@ def _run_agent(
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             model=effective_model,
+            reasoning_config=reasoning_config,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",

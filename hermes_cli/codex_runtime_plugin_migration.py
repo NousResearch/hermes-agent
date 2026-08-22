@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_constants import resolve_reasoning_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -450,6 +452,10 @@ def _strip_existing_managed_block(toml_text: str) -> str:
 def _query_codex_plugins(
     codex_home: Optional[Path] = None,
     timeout: float = 8.0,
+    *,
+    strict_config: bool = False,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> tuple[list[dict], Optional[str]]:
     """Query codex's `plugin/list` for installed curated plugins.
 
@@ -469,7 +475,10 @@ def _query_codex_plugins(
 
     try:
         with CodexAppServerClient(
-            codex_home=str(codex_home) if codex_home else None
+            codex_home=str(codex_home) if codex_home else None,
+            strict_config=strict_config,
+            model=model,
+            reasoning_effort=reasoning_effort,
         ) as client:
             client.initialize(client_name="hermes-migration")
             resp = client.request("plugin/list", {}, timeout=timeout)
@@ -671,7 +680,28 @@ def migrate(
     plugins: list[dict] = []
     plugin_query_succeeded = False
     if discover_plugins and not dry_run:
-        plugins, plugin_err = _query_codex_plugins(codex_home=codex_home)
+        codex_app_server = (hermes_config or {}).get("codex_app_server") or {}
+        strict_config = (
+            isinstance(codex_app_server, dict)
+            and codex_app_server.get("strict_config") is True
+        )
+        model = None
+        reasoning_effort = None
+        if strict_config:
+            model_config = (hermes_config or {}).get("model") or {}
+            if isinstance(model_config, str):
+                model = model_config.strip()
+            elif isinstance(model_config, dict):
+                model = model_config.get("default")
+            reasoning_config = resolve_reasoning_config(hermes_config, model)
+            if isinstance(reasoning_config, dict):
+                reasoning_effort = reasoning_config.get("effort")
+        plugins, plugin_err = _query_codex_plugins(
+            codex_home=codex_home,
+            strict_config=strict_config,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
         if plugin_err:
             report.plugin_query_error = plugin_err
         else:

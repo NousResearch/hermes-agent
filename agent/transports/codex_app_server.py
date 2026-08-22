@@ -74,7 +74,25 @@ class CodexAppServerClient:
         codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        strict_config: bool = False,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> None:
+        if strict_config is True:
+            if not isinstance(model, str):
+                raise ValueError("codex_app_server.strict_config requires a string model")
+            if not isinstance(reasoning_effort, str):
+                raise ValueError(
+                    "codex_app_server.strict_config requires a string reasoning effort"
+                )
+            model = model.strip()
+            effort = reasoning_effort.strip().lower()
+            if not model:
+                raise ValueError("codex_app_server.strict_config requires a model")
+            if effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+                raise ValueError(
+                    "codex_app_server.strict_config requires a supported reasoning effort"
+                )
         self._codex_bin = codex_bin
         # codex app-server is a model-driving CLI executor: it runs a
         # model-chosen agentic loop that executes shell commands, so it
@@ -123,7 +141,18 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        if strict_config is True:
+            cmd = [
+                codex_bin,
+                "--strict-config",
+                "--model",
+                model,
+                "-c",
+                f'model_reasoning_effort="{effort}"',
+                "app-server",
+            ] + app_server_args
+        else:
+            cmd = [codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 

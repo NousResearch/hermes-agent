@@ -110,6 +110,125 @@ class TestCodexAppServerModule:
         assert "boom" in str(err)
         assert "-32600" in str(err)
 
+    @staticmethod
+    def _capture_cmd(monkeypatch, **kwargs):
+        import subprocess
+        from agent.transports import codex_app_server as cas
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **popen_kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+            def poll(self): return None
+            def terminate(self): pass
+            def wait(self, timeout=None): return 0
+            def kill(self): pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        client = cas.CodexAppServerClient(codex_bin="codex", **kwargs)
+        client._closed = True
+        return captured["cmd"]
+
+    def test_strict_config_pins_model_and_effort_before_app_server(self, monkeypatch):
+        assert self._capture_cmd(
+            monkeypatch,
+            strict_config=True,
+            model="gpt-5.6-terra",
+            reasoning_effort="medium",
+            extra_args=["-c", 'sandbox_mode="workspace-write"'],
+        ) == [
+            "codex", "--strict-config", "--model", "gpt-5.6-terra", "-c",
+            'model_reasoning_effort="medium"', "app-server",
+            "-c", 'sandbox_mode="workspace-write"',
+        ]
+
+    def test_session_factory_receives_strict_config_model_and_effort(self):
+        from agent.transports.codex_app_server_session import CodexAppServerSession
+
+        captured = {}
+
+        class FakeClient:
+            def initialize(self, **kwargs):
+                pass
+
+            def request(self, method, params, timeout=None):
+                assert method == "thread/start"
+                return {"thread": {"id": "thread-1"}}
+
+        def capture_factory(**kwargs):
+            captured.update(kwargs)
+            return FakeClient()
+
+        session = CodexAppServerSession(
+            strict_config=True,
+            model="gpt-5.6-terra",
+            reasoning_effort="medium",
+            client_factory=capture_factory,
+        )
+
+        assert session.ensure_started() == "thread-1"
+        assert captured == {
+            "codex_bin": "codex",
+            "codex_home": None,
+            "strict_config": True,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+        }
+
+    def test_legacy_argv_is_unchanged_when_strict_config_is_false(self, monkeypatch):
+        assert self._capture_cmd(monkeypatch) == ["codex", "app-server"]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"strict_config": True},
+            {"strict_config": True, "model": "m"},
+            {"strict_config": True, "model": "m", "reasoning_effort": "bogus"},
+        ],
+    )
+    def test_strict_config_rejects_missing_or_invalid_pins_before_spawn(self, monkeypatch, kwargs):
+        import subprocess
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawned"))
+        with pytest.raises(ValueError):
+            from agent.transports.codex_app_server import CodexAppServerClient
+            CodexAppServerClient(codex_bin="codex", **kwargs)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"strict_config": "true", "model": "gpt-5.6", "reasoning_effort": "medium"},
+            {"strict_config": True, "model": 123, "reasoning_effort": "medium"},
+            {"strict_config": True, "model": ["gpt-5.6"], "reasoning_effort": "medium"},
+            {"strict_config": True, "model": "gpt-5.6", "reasoning_effort": 1},
+            {"strict_config": True, "model": "gpt-5.6", "reasoning_effort": {"value": "medium"}},
+        ],
+    )
+    def test_strict_pin_type_boundary_rejects_nonstrings_before_spawn(
+        self, monkeypatch, kwargs
+    ):
+        import subprocess
+
+        spawned = False
+
+        class FakePopen:
+            def __init__(self, *args, **kwargs):
+                nonlocal spawned
+                spawned = True
+                self.stdin = self.stdout = self.stderr = None
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        from agent.transports.codex_app_server import CodexAppServerClient
+
+        if kwargs["strict_config"] is True:
+            with pytest.raises(ValueError):
+                CodexAppServerClient(codex_bin="codex", **kwargs)
+        else:
+            CodexAppServerClient(codex_bin="codex", **kwargs)
+        assert spawned is (kwargs["strict_config"] is not True)
+
 
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
@@ -339,4 +458,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

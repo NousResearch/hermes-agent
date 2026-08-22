@@ -73,6 +73,184 @@ class TestApiModeAccepted:
 
 
 class TestRunConversationCodexPath:
+    def test_explicit_strict_false_is_authoritative_after_construction(
+        self, tmp_path, monkeypatch
+    ):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-explicit-false-1"
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", projected_messages=[], thread_id=self._thread_id
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "codex_app_server:\n  strict_config: true\n", encoding="utf-8"
+        )
+
+        agent = _make_codex_agent(codex_app_server_strict_config=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: (_ for _ in ()).throw(AssertionError("late config read")),
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert captured["strict_config"] is False
+
+    def test_profile_strict_pins_reach_session(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-config-1"
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession, "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", projected_messages=[], thread_id="thread-config-1"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "codex_app_server:\n  strict_config: true\n", encoding="utf-8"
+        )
+        agent = _make_codex_agent(model="gpt-5.6-terra", reasoning_config={"effort": "medium"})
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert captured["strict_config"] is True
+        assert captured["model"] == "gpt-5.6-terra"
+        assert captured["reasoning_effort"] == "medium"
+
+    def test_profile_strict_config_is_snapshotted_at_construction(
+        self, tmp_path, monkeypatch
+    ):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-profile-snapshot-1"
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", projected_messages=[], thread_id=self._thread_id
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "codex_app_server:\n  strict_config: true\n", encoding="utf-8"
+        )
+        agent = _make_codex_agent()
+        config_path.write_text(
+            "codex_app_server:\n  strict_config: false\n", encoding="utf-8"
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert captured["strict_config"] is True
+
+    @pytest.mark.parametrize(
+        ("configured_value", "explicit_value", "expected"),
+        [
+            (None, None, False),
+            (False, None, False),
+            ("true", None, False),
+            (1, None, False),
+            (True, None, True),
+            (False, False, False),
+            (False, True, True),
+            (True, "true", False),
+        ],
+    )
+    def test_strict_config_normalizes_to_exact_boolean_true(
+        self, tmp_path, monkeypatch, configured_value, explicit_value, expected
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        if configured_value is None:
+            config_text = "{}\n"
+        else:
+            config_text = f"codex_app_server:\n  strict_config: {configured_value!r}\n"
+        (tmp_path / "config.yaml").write_text(config_text, encoding="utf-8")
+
+        kwargs = {}
+        if explicit_value is not None:
+            kwargs["codex_app_server_strict_config"] = explicit_value
+        agent = _make_codex_agent(**kwargs)
+
+        assert agent.codex_app_server_strict_config is expected
+
+    def test_missing_strict_config_preserves_default_session_pins(
+        self, tmp_path, monkeypatch
+    ):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-default-1"
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession, "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", projected_messages=[], thread_id="thread-default-1"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        agent = _make_codex_agent(
+            model="gpt-5.6-terra", reasoning_config={"effort": "medium"}
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert captured["strict_config"] is False
+        assert captured["model"] == "gpt-5.6-terra"
+        assert captured["reasoning_effort"] == "medium"
+
+    def test_config_loader_failure_at_construction_defaults_strict_false(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-config-failure-1"
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", projected_messages=[], thread_id=self._thread_id
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: (_ for _ in ()).throw(RuntimeError("config unavailable")),
+        )
+        agent = _make_codex_agent(
+            model="gpt-5.6-terra", reasoning_config={"effort": "medium"}
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert agent.codex_app_server_strict_config is False
+        assert captured["strict_config"] is False
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests

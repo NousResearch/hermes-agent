@@ -195,7 +195,19 @@ You can also set it manually in `~/.hermes/config.yaml`:
 ```yaml
 model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
+codex_app_server:
+  strict_config: true
 ```
+
+With `strict_config: true`, Hermes pins the native launch to the existing
+`model.default` and resolved `agent.reasoning_effort` settings. Both must be
+present and the effort must be one of the supported Codex values; otherwise
+Hermes fails before starting Codex. The launch has this shape:
+`codex --strict-config --model <model> -c model_reasoning_effort="<effort>" app-server`.
+Existing App Server and Kanban overrides follow `app-server`. The default is
+`false`, which preserves the legacy `codex app-server` launch and its existing
+argument behavior. Model and effort are not duplicated under this block.
+Migration plugin discovery obeys these same strict launch pins.
 
 ## Self-improvement loop (memory + skill nudges)
 

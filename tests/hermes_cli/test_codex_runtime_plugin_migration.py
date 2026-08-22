@@ -11,6 +11,7 @@ from hermes_cli.codex_runtime_plugin_migration import (
     _build_hermes_tools_mcp_entry,
     _format_toml_value,
     _looks_like_test_tempdir,
+    _query_codex_plugins,
     _strip_existing_managed_block,
     _strip_unmanaged_plugin_tables,
     _translate_one_server,
@@ -162,6 +163,217 @@ class TestStripExistingManagedBlock:
 
 class TestMigrate:
 
+    def test_invalid_strict_model_keeps_migration_best_effort(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            lambda *args, **kwargs: pytest.fail("invalid strict pin spawned"),
+        )
+        report = migrate(
+            {
+                "mcp_servers": {"filesystem": {"command": "npx"}},
+                "model": {"default": 123},
+                "agent": {"reasoning_effort": "medium"},
+                "codex_app_server": {"strict_config": True},
+            },
+            codex_home=tmp_path,
+            expose_hermes_tools=False,
+        )
+
+        assert report.plugin_query_error
+        assert report.migrated == ["filesystem"]
+        assert report.migrated_plugins == []
+        assert report.written is True
+        assert (tmp_path / "config.toml").exists()
+
+    def test_plugin_query_constructs_strict_client_with_typed_pins(
+        self, tmp_path, monkeypatch
+    ):
+        """Strict plugin discovery reaches the App Server client with pins."""
+        from agent.transports import codex_app_server
+
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def initialize(self, **kwargs):
+                return None
+
+            def request(self, *args, **kwargs):
+                return {"marketplaces": []}
+
+        monkeypatch.setattr(codex_app_server, "CodexAppServerClient", FakeClient)
+
+        plugins, error = _query_codex_plugins(
+            codex_home=tmp_path,
+            strict_config=True,
+            model="gpt-5.6-terra",
+            reasoning_effort="medium",
+        )
+
+        assert (plugins, error) == ([], None)
+        assert captured == {
+            "codex_home": str(tmp_path),
+            "strict_config": True,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+        }
+
+    def test_plugin_query_constructs_legacy_unpinned_client(self, tmp_path, monkeypatch):
+        """The false default preserves the client's legacy app-server launch."""
+        from agent.transports import codex_app_server
+
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def initialize(self, **kwargs):
+                return None
+
+            def request(self, *args, **kwargs):
+                return {"marketplaces": []}
+
+        monkeypatch.setattr(codex_app_server, "CodexAppServerClient", FakeClient)
+
+        plugins, error = _query_codex_plugins(codex_home=tmp_path)
+
+        assert (plugins, error) == ([], None)
+        assert captured == {
+            "codex_home": str(tmp_path),
+            "strict_config": False,
+            "model": None,
+            "reasoning_effort": None,
+        }
+
+    def test_plugin_discovery_receives_strict_resolved_pins(self, tmp_path, monkeypatch):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(**kwargs):
+            captured.update(kwargs)
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        migrate(
+            {
+                "model": {"default": "gpt-5.6-terra"},
+                "agent": {"reasoning_effort": "medium"},
+                "codex_app_server": {"strict_config": True},
+            },
+            codex_home=tmp_path,
+            expose_hermes_tools=False,
+        )
+
+        assert captured == {
+            "codex_home": tmp_path,
+            "strict_config": True,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+        }
+
+    def test_plugin_discovery_supports_legacy_string_model_config(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(**kwargs):
+            captured.update(kwargs)
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        migrate(
+            {
+                "model": " gpt-5.6-terra ",
+                "agent": {"reasoning_effort": "medium"},
+                "codex_app_server": {"strict_config": True},
+            },
+            codex_home=tmp_path,
+            expose_hermes_tools=False,
+        )
+
+        assert captured == {
+            "codex_home": tmp_path,
+            "strict_config": True,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "medium",
+        }
+
+    def test_plugin_discovery_uses_per_model_reasoning_override(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(**kwargs):
+            captured.update(kwargs)
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        migrate(
+            {
+                "model": {"default": "gpt-5.6-terra"},
+                "agent": {
+                    "reasoning_effort": "low",
+                    "reasoning_overrides": {"gpt-5.6-terra": "medium"},
+                },
+                "codex_app_server": {"strict_config": True},
+            },
+            codex_home=tmp_path,
+            expose_hermes_tools=False,
+        )
+
+        assert captured["reasoning_effort"] == "medium"
+
+    def test_plugin_discovery_requires_literal_true_for_strict_mode(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(**kwargs):
+            captured.update(kwargs)
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        migrate(
+            {
+                "model": {"default": "gpt-5.6-terra"},
+                "agent": {"reasoning_effort": "medium"},
+                "codex_app_server": {"strict_config": "true"},
+            },
+            codex_home=tmp_path,
+            expose_hermes_tools=False,
+        )
+
+        assert captured["strict_config"] is False
+        assert captured["model"] is None
+        assert captured["reasoning_effort"] is None
+
 
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
@@ -169,7 +381,7 @@ class TestMigrate:
         blocks. This is what OpenClaw calls 'migrate native codex plugins.'"""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, **kwargs):
             return [
                 {"name": "google-calendar", "marketplace": "openai-curated",
                  "enabled": True},
@@ -192,7 +404,7 @@ class TestMigrate:
         completes. The error surfaces in the report but doesn't abort."""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query_fails(codex_home=None, timeout=8.0):
+        def fake_query_fails(codex_home=None, timeout=8.0, **kwargs):
             return [], "codex CLI not available"
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query_fails)
 
@@ -355,7 +567,7 @@ class TestStripUnmanagedPluginTables:
         )
 
         # Simulate codex's plugin/list reporting the same plugin tasks@openai-curated.
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, **kwargs):
             return (
                 [{"name": "tasks", "marketplace": "openai-curated", "enabled": True}],
                 None,

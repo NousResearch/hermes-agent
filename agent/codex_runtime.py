@@ -702,6 +702,10 @@ def run_codex_app_server_turn(
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
+        strict_config = getattr(agent, "codex_app_server_strict_config", False) is True
+        model = str(getattr(agent, "model", "") or "").strip()
+        reasoning = getattr(agent, "reasoning_config", None)
+        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -747,6 +751,9 @@ def run_codex_app_server_turn(
                 auto_approve_apply_patch=auto_approve_requests,
             ),
             on_event=make_codex_app_server_event_bridge(agent),
+            strict_config=strict_config,
+            model=model,
+            reasoning_effort=effort,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

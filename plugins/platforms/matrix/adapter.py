@@ -1839,6 +1839,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 await api.session.close()
                 return False
         elif self._password and self._user_id:
+            # Password login without a pinned device ID mints a fresh device
+            # on every restart (the homeserver auto-generates one when
+            # device_id is None), which accumulates toward the hard device
+            # limit. Resolve a stable device ID — user-configured wins;
+            # otherwise generate + persist one so restarts reuse it.
+            if not self._device_id:
+                self._device_id = _resolve_stable_device_id()
             try:
                 resp = await client.login(
                     identifier=self._user_id,
@@ -1848,6 +1855,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 if resp and hasattr(resp, "device_id"):
                     client.device_id = resp.device_id
+                    if self._device_id and resp.device_id and resp.device_id != self._device_id:
+                        logger.warning(
+                            "Matrix: homeserver assigned device %s instead of "
+                            "the requested %s — the persisted MATRIX_DEVICE_ID "
+                            "now diverges from the live device.",
+                            resp.device_id,
+                            self._device_id,
+                        )
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -5267,6 +5282,52 @@ async def _standalone_send(
         return {"error": f"Matrix send failed: {e}"}
 
 
+def _generate_stable_device_id() -> str:
+    """Generate a stable, unique Matrix device ID for E2EE persistence.
+
+    A 10-char random value from ``[A-Za-z0-9]`` (the shape homeservers like
+    Synapse assign to real clients), unique per install. Persisted to
+    ``.env`` so password logins on later restarts reuse the same device
+    instead of minting a fresh one each time (which accumulates toward the
+    homeserver's hard device limit).
+    """
+    import secrets
+    import string
+
+    alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+def _resolve_stable_device_id() -> str:
+    """Return the stable device ID to use for password login, generating one if unset.
+
+    Reads ``MATRIX_DEVICE_ID`` and returns it when present (a user-supplied
+    value always wins). Otherwise generates a fresh stable ID and persists
+    it via ``save_env_value`` so subsequent restarts reuse the same device.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+
+    existing = get_env_value("MATRIX_DEVICE_ID")
+    if existing:
+        return existing
+    device_id = _generate_stable_device_id()
+    try:
+        save_env_value("MATRIX_DEVICE_ID", device_id)
+    except Exception as exc:
+        # An unwritable .env (read-only HOME, container, managed scope that
+        # rejects the write) must not prevent login. Fall back to a
+        # generated-but-unpersisted ID: the session still works, and a later
+        # restart just regenerates (equivalent to the pre-fix auto-mint),
+        # rather than failing connect entirely.
+        logger.warning(
+            "Matrix: could not persist MATRIX_DEVICE_ID (%s); using a "
+            "generated ID for this session only. Restarts may mint a fresh "
+            "device until the profile .env is writable.",
+            exc,
+        )
+    return device_id
+
+
 def interactive_setup() -> None:
     """Configure Matrix credentials. Replaces hermes_cli/setup.py::_setup_matrix
     and the static _PLATFORMS["matrix"] dict. CLI helpers are lazy-imported."""
@@ -5311,6 +5372,15 @@ def interactive_setup() -> None:
         password = prompt("Password", password=True)
         if password:
             save_env_value("MATRIX_PASSWORD", password)
+            # Password login without a pinned device ID makes the homeserver
+            # mint a fresh device on every restart, accumulating toward its
+            # hard device limit. Generate + persist a stable ID at setup so
+            # new installs are pinned from the start; a user-configured
+            # MATRIX_DEVICE_ID always wins over the generated one.
+            if not get_env_value("MATRIX_DEVICE_ID"):
+                device_id = _generate_stable_device_id()
+                save_env_value("MATRIX_DEVICE_ID", device_id)
+                print_success(f"Generated a stable device ID ({device_id})")
             print_success("Matrix credentials saved")
 
     if token or get_env_value("MATRIX_PASSWORD"):

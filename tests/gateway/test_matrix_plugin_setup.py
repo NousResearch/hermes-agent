@@ -81,3 +81,58 @@ class TestMatrixHomeChannelClear:
         assert "MATRIX_HOME_ROOM" not in saved
 
 
+# Password-login prompts: homeserver, blank token (→ password branch),
+# user_id, password. The E2EE/allowed_users/home_room block is skipped here
+# because the patched get_env_value only reads `existing`, so the saved
+# MATRIX_PASSWORD is not visible to the `if token or ...` guard.
+_PROMPTS_PASSWORD = [
+    "https://matrix.example.org",
+    "",                            # blank token → password login
+    "@bot:matrix.example.org",     # user_id
+    "hunter2",                     # password
+]
+
+
+class TestMatrixSetupGeneratesDeviceId:
+    """Password-login setup must persist a stable MATRIX_DEVICE_ID (#84229).
+
+    Without a pinned device ID the homeserver mints a fresh device on every
+    restart, accumulating toward the hard device limit. The wizard generates
+    + persists a stable ID at setup so new password-login installs are pinned
+    from the start.
+    """
+
+    def test_password_setup_persists_generated_device_id(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            _PROMPTS_PASSWORD,
+            _YES_NO,
+            saved,
+            removed,
+            existing={},
+        )
+        interactive_setup()
+        # A 10-char [A-Za-z0-9] device ID was generated and persisted.
+        device_id = saved.get("MATRIX_DEVICE_ID", "")
+        assert len(device_id) == 10
+        assert device_id.isalnum()
+        assert "MATRIX_PASSWORD" in saved
+
+    def test_password_setup_respects_configured_device_id(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            _PROMPTS_PASSWORD,
+            _YES_NO,
+            saved,
+            removed,
+            existing={"MATRIX_DEVICE_ID": "MY_PINNED_DEVICE"},
+        )
+        interactive_setup()
+        # A user-configured MATRIX_DEVICE_ID wins; nothing new is generated.
+        assert "MATRIX_DEVICE_ID" not in saved
+
+

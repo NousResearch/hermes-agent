@@ -120,11 +120,25 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def _marker_owner_is_live(marker: Path) -> bool:
-    """True when a legacy update marker names a process still running."""
+    """True when a legacy update marker names a process still running.
+
+    Accepts either the historical ``pid=<n>`` line body or a JSON object with
+    a ``pid`` field (self-lock enriched markers).
+    """
     try:
         body = marker.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
+    stripped = body.strip()
+    if stripped.startswith("{"):
+        try:
+            import json as _json
+
+            payload = _json.loads(stripped)
+            if isinstance(payload, dict) and "pid" in payload:
+                return _pid_is_running(int(payload["pid"]))
+        except (ValueError, TypeError, AttributeError):
+            return False
     for line in body.splitlines():
         key, separator, value = line.partition("=")
         if separator and key.strip() == "pid":
@@ -499,6 +513,86 @@ def _release_recovery_lock(root: Path) -> None:
         pass
 
 
+def _print_self_lock_manual_escape(root: Path, *, branch: str | None = None) -> None:
+    """Print manual git reset + update commands for stuck self-lock users."""
+    # hermes_constants is first-party + stdlib-only — safe here (no 3rd-party).
+    from hermes_constants import venv_python_path
+
+    branch_name = (branch or "main").strip() or "main"
+    venv_win = venv_python_path(root / "venv", windows=True)
+    venv_posix = venv_python_path(root / "venv", windows=False)
+    if venv_win.is_file():
+        python_exe = str(venv_win)
+    elif venv_posix.is_file():
+        python_exe = str(venv_posix)
+    else:
+        python_exe = sys.executable
+    print("  Manual escape if retries stay stuck:", file=sys.stderr)
+    print(f'    git -C "{root}" fetch origin', file=sys.stderr)
+    print(
+        f'    git -C "{root}" reset --hard origin/{branch_name}',
+        file=sys.stderr,
+    )
+    print(
+        f'    "{python_exe}" -m hermes_cli.main update --yes',
+        file=sys.stderr,
+    )
+
+
+def _marker_requests_pipeline_resume(payload: dict) -> bool:
+    """True when an enriched incomplete marker still has post-deps work."""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("reason") == "self_lock":
+        return True
+    pending = payload.get("pending")
+    if not isinstance(pending, list):
+        return False
+    return any(stage in pending for stage in ("node_web", "desktop", "skills"))
+
+
+def _write_pipeline_resume_from_incomplete_marker(
+    root: Path, core_marker: Path
+) -> None:
+    """Leave ``.update-pipeline-resume`` after core deps finish for self-lock.
+
+    Early recovery only installs Python core deps. Desktop rebuild / skills
+    sync still need a later process (``hermes update`` up-to-date path or a
+    plain launch). Never raises.
+    """
+    try:
+        raw = core_marker.read_text(encoding="utf-8", errors="replace").strip()
+        if not raw:
+            return
+        import json as _json
+
+        try:
+            payload = _json.loads(raw)
+        except ValueError:
+            return
+        if not _marker_requests_pipeline_resume(payload):
+            return
+        pending = payload.get("pending")
+        if not isinstance(pending, list):
+            pending = ["core_deps", "node_web", "desktop", "skills"]
+        remaining = [stage for stage in pending if stage != "core_deps"]
+        if not remaining:
+            remaining = ["node_web", "desktop", "skills"]
+        resume = {
+            "reason": payload.get("reason") or "self_lock",
+            "phase": "post_deps",
+            "pending": remaining,
+            "had_desktop_app": bool(payload.get("had_desktop_app")),
+            "branch": payload.get("branch"),
+            "head": payload.get("head"),
+        }
+        (root / ".update-pipeline-resume").write_text(
+            _json.dumps(resume), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
 def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     """Run the pending core install BEFORE main.py can import native modules.
 
@@ -515,6 +609,9 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     attempts ceiling caps automatic retries so a persistent installer
     failure does not block every launch (``hermes acp`` included).
 
+    For self-lock markers, success also writes ``.update-pipeline-resume`` so
+    a later process can finish node/web/desktop/skills after core deps.
+
     Never raises: any failure leaves the marker for the post-import path and
     returns ``False``.  Returns ``True`` only after the install succeeds.
     """
@@ -525,14 +622,18 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
         # persistently-failing install stops hammering early.  After the
         # increment the counter reflects THIS attempt.
         attempts = 0
+        marker_branch = None
         try:
             raw = core_marker.read_text(encoding="utf-8", errors="replace").strip()
             if raw:
                 import json as _json
 
                 try:
-                    attempts = int(_json.loads(raw).get("attempts", 0))
-                except (ValueError, AttributeError):
+                    parsed = _json.loads(raw)
+                    if isinstance(parsed, dict):
+                        attempts = int(parsed.get("attempts", 0) or 0)
+                        marker_branch = parsed.get("branch")
+                except (ValueError, AttributeError, TypeError):
                     attempts = 0
         except OSError:
             attempts = 0
@@ -544,6 +645,7 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
                 "post-import recovery path.",
                 file=sys.stderr,
             )
+            _print_self_lock_manual_escape(root, branch=marker_branch)
             return False
 
         if not _claim_recovery_lock(root):
@@ -569,9 +671,13 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
                 "the current venv in the meantime.",
                 file=sys.stderr,
             )
+            if new_attempts >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS:
+                _print_self_lock_manual_escape(root, branch=marker_branch)
             return False
         finally:
             _release_recovery_lock(root)
+
+        _write_pipeline_resume_from_incomplete_marker(root, core_marker)
 
         try:
             core_marker.unlink()

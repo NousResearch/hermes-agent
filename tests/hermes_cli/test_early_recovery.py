@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -158,6 +159,21 @@ def test_marker_owner_liveness_uses_recorded_pid(tmp_path, monkeypatch):
 
     assert er._marker_owner_is_live(marker) is True
     assert seen == [4321]
+
+
+def test_marker_owner_liveness_reads_json_pid(tmp_path, monkeypatch):
+    marker = tmp_path / ".update-incomplete"
+    marker.write_text(
+        json.dumps({"reason": "self_lock", "pid": 9876, "attempts": 0}),
+        encoding="utf-8",
+    )
+    seen = []
+    monkeypatch.setattr(
+        er, "_pid_is_running", lambda pid: seen.append(pid) or True
+    )
+
+    assert er._marker_owner_is_live(marker) is True
+    assert seen == [9876]
 
 
 def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
@@ -537,6 +553,104 @@ def test_bump_marker_attempts_handles_missing_and_corrupt_bodies(tmp_path):
     assert ir.bump_marker_attempts(m) == 3
 
 
+def test_bump_marker_attempts_preserves_self_lock_fields(tmp_path):
+    from hermes_cli import _install_repair as ir
+
+    m = tmp_path / ".update-incomplete"
+    m.write_text(
+        json.dumps(
+            {
+                "reason": "self_lock",
+                "pending": ["core_deps", "desktop", "skills"],
+                "attempts": 1,
+                "pid": 42,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert ir.bump_marker_attempts(m) == 2
+    body = json.loads(m.read_text(encoding="utf-8"))
+    assert body["reason"] == "self_lock"
+    assert body["pending"] == ["core_deps", "desktop", "skills"]
+    assert body["pid"] == 42
+    assert body["attempts"] == 2
+
+
+def test_successful_self_lock_core_install_writes_pipeline_resume(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text(
+        json.dumps(
+            {
+                "reason": "self_lock",
+                "phase": "post_code_swap",
+                "attempts": 0,
+                "pid": 1,
+                "had_desktop_app": True,
+                "branch": "main",
+                "head": "abc123",
+                "pending": ["core_deps", "node_web", "desktop", "skills"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from hermes_cli import _install_repair as ir
+
+    monkeypatch.setattr(ir, "run_core_install", lambda _r: None)
+    monkeypatch.setattr(er, "_marker_owner_is_live", lambda _marker: False, raising=False)
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    assert not core_marker.exists()
+    resume = root / ".update-pipeline-resume"
+    assert resume.exists()
+    body = json.loads(resume.read_text(encoding="utf-8"))
+    assert body["reason"] == "self_lock"
+    assert body["had_desktop_app"] is True
+    assert body["branch"] == "main"
+    assert body["head"] == "abc123"
+    assert "core_deps" not in body["pending"]
+    assert "desktop" in body["pending"]
+    assert "skills" in body["pending"]
+
+
+def test_core_marker_retry_ceiling_prints_manual_escape(
+    tmp_path, monkeypatch, capsys
+):
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text(
+        json.dumps(
+            {
+                "reason": "self_lock",
+                "attempts": er._EARLY_CORE_INSTALL_MAX_ATTEMPTS,
+                "branch": "fix/demo",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from hermes_cli import _install_repair as ir
+
+    monkeypatch.setattr(
+        ir,
+        "run_core_install",
+        lambda _r: (_ for _ in ()).throw(
+            AssertionError("install must NOT run past the attempts ceiling")
+        ),
+    )
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    err = capsys.readouterr().err
+    assert "git -C" in err
+    assert "origin/fix/demo" in err
+    assert "update --yes" in err
 
 
 

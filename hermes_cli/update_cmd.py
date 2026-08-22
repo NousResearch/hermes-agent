@@ -4135,10 +4135,284 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
         print(f"    {name}")
     print()
     print("  On Windows a mapped extension cannot be replaced by the process")
-    print("  holding it. The code update has been applied; only the dependency")
-    print("  sync has been deferred: the next `hermes` launch will complete it")
-    print("  in a fresh process before anything imports these modules.")
-    _m()._write_update_incomplete_marker()
+    print("  holding it. The code update has been applied; only the remaining")
+    print("  install stages have been deferred.")
+    print()
+    print("  The next fresh `hermes` / Desktop Update retry will finish Python")
+    print("  dependencies AND the remaining post-deps stages (Node/web build,")
+    print("  Desktop rebuild when present, skills sync) before importing the")
+    print("  locked modules.")
+    print()
+    _m()._write_self_lock_incomplete_marker()
+    _m()._print_self_lock_manual_escape_commands()
+
+
+def _update_pipeline_resume_path() -> Path:
+    """Sidecar for post-core stages left after self-lock deferral recovery."""
+    return _m().PROJECT_ROOT / ".update-pipeline-resume"
+
+
+def _best_effort_update_git_identity() -> tuple[str | None, str | None]:
+    """Return ``(head_sha, branch)`` best-effort; never raises."""
+    root = _m().PROJECT_ROOT
+    head = None
+    branch = None
+    try:
+        head_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if head_proc.returncode == 0:
+            head = (head_proc.stdout or "").strip() or None
+    except OSError:
+        head = None
+    try:
+        branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if branch_proc.returncode == 0:
+            branch = (branch_proc.stdout or "").strip() or None
+            if branch == "HEAD":
+                branch = None
+    except OSError:
+        branch = None
+    return head, branch
+
+
+def _preferred_update_python_executable() -> str:
+    """Prefer the project venv interpreter for manual escape commands."""
+    root = _m().PROJECT_ROOT
+    candidate = venv_python_path(root / "venv", windows=_m()._is_windows())
+    if candidate.is_file():
+        return str(candidate)
+    # Fall back to the other platform's layout when detection mismatches.
+    for alt in (
+        venv_python_path(root / "venv", windows=True),
+        venv_python_path(root / "venv", windows=False),
+    ):
+        if alt.is_file():
+            return str(alt)
+    return sys.executable
+
+
+def _print_self_lock_manual_escape_commands(*, branch: str | None = None) -> None:
+    """Tell stuck pre-fix users how to force a clean checkout + update."""
+    root = _m().PROJECT_ROOT
+    if branch is None:
+        _, branch = _best_effort_update_git_identity()
+    branch_name = (branch or "main").strip() or "main"
+    python_exe = _preferred_update_python_executable()
+    print("  If automatic retries stay stuck in a catch-22, run:")
+    print(f'    git -C "{root}" fetch origin')
+    print(f'    git -C "{root}" reset --hard origin/{branch_name}')
+    print(f'    "{python_exe}" -m hermes_cli.main update --yes')
+
+
+def _write_self_lock_incomplete_marker(
+    *,
+    had_desktop_app: bool | None = None,
+    branch: str | None = None,
+    head: str | None = None,
+) -> None:
+    """Write enriched ``.update-incomplete`` for self-lock post-code-swap deferral.
+
+    Keeps a JSON body with ``pid`` so early recovery's live-owner check and
+    attempts counter still work. Never raises.
+    """
+    marker = _m()._update_marker_path()
+    if _m()._pytest_owns_live_checkout(marker.parent):
+        logger.debug("Skipping self-lock incomplete marker under pytest (live checkout)")
+        return
+    if had_desktop_app is None:
+        try:
+            had_desktop_app = _desktop_app_present(
+                _m().PROJECT_ROOT / "apps" / "desktop"
+            )
+        except Exception:
+            had_desktop_app = False
+    if head is None and branch is None:
+        head, branch = _best_effort_update_git_identity()
+    payload = {
+        "reason": "self_lock",
+        "phase": "post_code_swap",
+        "started": _time.time(),
+        "pid": os.getpid(),
+        "attempts": 0,
+        "head": head,
+        "branch": branch,
+        "had_desktop_app": bool(had_desktop_app),
+        "pending": ["core_deps", "node_web", "desktop", "skills"],
+    }
+    try:
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write self-lock incomplete marker: %s", exc)
+        # Fall back to the legacy breadcrumb so #86979 Desktop retry still sees
+        # a marker even when the enriched JSON write fails.
+        try:
+            _write_update_incomplete_marker()
+        except Exception:
+            pass
+
+
+def _read_pipeline_resume() -> dict | None:
+    """Load ``.update-pipeline-resume`` if present; None on missing/corrupt."""
+    path = _update_pipeline_resume_path()
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _clear_pipeline_resume() -> None:
+    """Remove the post-deps resume sidecar. Never raises."""
+    try:
+        _update_pipeline_resume_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not clear update-pipeline-resume: %s", exc)
+
+
+def _write_pipeline_resume(payload: dict) -> None:
+    """Persist the post-deps resume sidecar. Never raises."""
+    path = _update_pipeline_resume_path()
+    if _m()._pytest_owns_live_checkout(path.parent):
+        return
+    try:
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write update-pipeline-resume: %s", exc)
+
+
+def _sync_skills_after_update() -> None:
+    """Run the same skills (+ profile seed) block used by the full update path."""
+    try:
+        from tools.skills_sync import sync_skills
+
+        print()
+        print("→ Syncing bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(
+                f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
+            )
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+            print(
+                "    → see them: hermes skills list-modified  "
+                "(diff/reset to resume updates)"
+            )
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if result.get("relocated"):
+            print(
+                f"  → {len(result['relocated'])} moved to new upstream paths: "
+                f"{', '.join(result['relocated'])}"
+            )
+        if not result["copied"] and not result.get("updated"):
+            print("  ✓ Skills are up to date")
+    except Exception as e:
+        logger.debug("Skills sync during deferred update resume failed: %s", e)
+
+    try:
+        from hermes_cli.profiles import (
+            list_profiles,
+            seed_profile_skills,
+        )
+
+        all_profiles = list_profiles()
+        if all_profiles:
+            print()
+            print("→ Syncing bundled skills to all profiles...")
+            for p in all_profiles:
+                try:
+                    r = seed_profile_skills(p.path, quiet=True)
+                    if r and r.get("skipped_opt_out"):
+                        status = "opted out (--no-skills)"
+                    elif r:
+                        copied = len(r.get("copied", []))
+                        updated = len(r.get("updated", []))
+                        modified = len(r.get("user_modified", []))
+                        parts = []
+                        if copied:
+                            parts.append(f"+{copied} new")
+                        if updated:
+                            parts.append(f"↑{updated} updated")
+                        if modified:
+                            parts.append(f"~{modified} user-modified")
+                        status = ", ".join(parts) if parts else "up to date"
+                    else:
+                        status = "sync failed"
+                    print(f"  {p.name}: {status}")
+                except Exception as pe:
+                    print(f"  {p.name}: error ({pe})")
+    except Exception:
+        pass
+
+
+def _run_deferred_post_dependency_stages(*, had_desktop_app: bool) -> None:
+    """Finish node/web + desktop + skills left after self-lock core recovery."""
+    print("→ Finishing deferred post-dependency update stages...")
+    node_failures = _update_node_dependencies()
+    if node_failures:
+        print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
+        print("    Fix npm and re-run `hermes update`.")
+    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    _rebuild_desktop_after_update(
+        _m().PROJECT_ROOT / "apps" / "desktop",
+        had_desktop_app_before_update=bool(had_desktop_app),
+    )
+    _sync_skills_after_update()
+
+
+def _resume_deferred_update_pipeline_if_needed() -> bool:
+    """Run ``.update-pipeline-resume`` stages when present. Never raises.
+
+    Returns True when a sidecar was found and the resume attempt ran (even if
+    individual stages logged non-fatal failures).
+    """
+    try:
+        if _m()._pytest_owns_live_checkout(_m().PROJECT_ROOT):
+            return False
+        payload = _read_pipeline_resume()
+        if not payload:
+            return False
+        pending = payload.get("pending")
+        if not isinstance(pending, list):
+            pending = ["node_web", "desktop", "skills"]
+        # core_deps is owned by early/late marker recovery; ignore if leftover.
+        remaining = [stage for stage in pending if stage != "core_deps"]
+        if not remaining:
+            _clear_pipeline_resume()
+            return False
+        had_desktop_app = bool(payload.get("had_desktop_app"))
+        _run_deferred_post_dependency_stages(had_desktop_app=had_desktop_app)
+        _clear_pipeline_resume()
+        return True
+    except Exception as exc:
+        logger.debug("Deferred update pipeline resume failed: %s", exc)
+        return False
 
 
 _HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
@@ -6173,7 +6447,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _repair_node_deps_on_current_checkout(_print_update_completion)
+                deferred_resume = _resume_deferred_update_pipeline_if_needed()
+                if deferred_resume:
+                    _print_update_completion(
+                        "✓ Already up to date - finished deferred post-update stages."
+                    )
+                else:
+                    _repair_node_deps_on_current_checkout(_print_update_completion)
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(

@@ -4942,8 +4942,17 @@ _LAZY_COMMAND_EXPORTS = {
         "_web_toolchain_roots",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
+        "_write_pipeline_resume",
+        "_write_self_lock_incomplete_marker",
         "_write_update_incomplete_marker",
         "_write_update_planned_stop_marker",
+        "_print_self_lock_manual_escape_commands",
+        "_read_pipeline_resume",
+        "_clear_pipeline_resume",
+        "_resume_deferred_update_pipeline_if_needed",
+        "_run_deferred_post_dependency_stages",
+        "_sync_skills_after_update",
+        "_update_pipeline_resume_path",
         "_UPDATE_RUNTIME_RELOAD_MODULES",
         "_UPDATE_CRITICAL_FILES",
         "_UPDATE_CRITICAL_MODULES",
@@ -8501,6 +8510,10 @@ def _update_marker_path() -> Path:
     return PROJECT_ROOT / ".update-incomplete"
 
 
+def _update_pipeline_resume_path() -> Path:
+    return PROJECT_ROOT / ".update-pipeline-resume"
+
+
 def _lazy_refresh_marker_path() -> Path:
     return PROJECT_ROOT / ".lazy-refresh-incomplete"
 
@@ -8541,6 +8554,49 @@ def _clear_lazy_refresh_incomplete_marker() -> None:
     _clear_marker_file(_lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
 
 
+def _resume_deferred_update_pipeline_from_launch() -> None:
+    """Finish self-lock post-deps stages left in ``.update-pipeline-resume``.
+
+    Invoked on ordinary launches (not ``hermes update``) so Desktop/skills
+    still complete when early recovery already cleared ``.update-incomplete``.
+    Routes prints to stderr like other recovery noise. Never raises.
+    """
+    if _pytest_owns_live_checkout(PROJECT_ROOT):
+        return
+    resume_path = _update_pipeline_resume_path()
+    if not resume_path.exists():
+        return
+    if not (PROJECT_ROOT / "pyproject.toml").is_file():
+        try:
+            resume_path.unlink()
+        except OSError:
+            pass
+        return
+
+    saved_stdout_fd = None
+    saved_sys_stdout = sys.stdout
+    try:
+        try:
+            saved_stdout_fd = os.dup(1)
+            os.dup2(2, 1)
+        except OSError:
+            saved_stdout_fd = None
+        sys.stdout = sys.stderr
+        from hermes_cli import update_cmd as _update_cmd
+
+        _update_cmd._resume_deferred_update_pipeline_if_needed()
+    except Exception as exc:
+        logger.debug("Deferred update pipeline resume from launch failed: %s", exc)
+    finally:
+        sys.stdout = saved_sys_stdout
+        if saved_stdout_fd is not None:
+            try:
+                os.dup2(saved_stdout_fd, 1)
+                os.close(saved_stdout_fd)
+            except OSError:
+                pass
+
+
 def _recover_from_interrupted_install() -> None:
     """Finish update work left half-done by a prior ``hermes update``.
 
@@ -8571,7 +8627,10 @@ def _recover_from_interrupted_install() -> None:
         return
     core_marker = _update_marker_path().exists()
     lazy_marker = _lazy_refresh_marker_path().exists()
+    pipeline_resume = _update_pipeline_resume_path().exists()
     if not core_marker and not lazy_marker:
+        if pipeline_resume:
+            _resume_deferred_update_pipeline_from_launch()
         return
 
     # Skip in managed/Docker installs and on PyPI installs with no git checkout:
@@ -8580,6 +8639,10 @@ def _recover_from_interrupted_install() -> None:
     if not (PROJECT_ROOT / "pyproject.toml").is_file():
         _clear_update_incomplete_marker()
         _clear_lazy_refresh_incomplete_marker()
+        try:
+            _update_pipeline_resume_path().unlink()
+        except OSError:
+            pass
         return
 
     # Single-flight guard: atomically claim the recovery lock. If another
@@ -8621,6 +8684,14 @@ def _recover_from_interrupted_install() -> None:
 
         if _update_marker_path().exists():
             _recover_core_update_marker_locked()
+
+        # Self-lock early recovery may have already cleared .update-incomplete
+        # and left .update-pipeline-resume; finish those stages here too when
+        # this late path just completed core deps.
+        if _update_pipeline_resume_path().exists():
+            from hermes_cli import update_cmd as _update_cmd
+
+            _update_cmd._resume_deferred_update_pipeline_if_needed()
     finally:
         sys.stdout = saved_sys_stdout
         if saved_stdout_fd is not None:
@@ -8709,6 +8780,18 @@ def _recover_core_update_marker_locked() -> None:
         # established by _recover_from_interrupted_install, so
         # run_core_install's own redirect nests harmlessly.
         _ir.run_core_install(PROJECT_ROOT)
+
+        # Self-lock markers still need node/web/desktop/skills after core deps.
+        try:
+            from hermes_cli._early_recovery import (
+                _write_pipeline_resume_from_incomplete_marker,
+            )
+
+            _write_pipeline_resume_from_incomplete_marker(
+                PROJECT_ROOT, _update_marker_path()
+            )
+        except Exception:
+            pass
 
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")

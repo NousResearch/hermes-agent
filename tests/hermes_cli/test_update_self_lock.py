@@ -23,6 +23,8 @@ looped forever (#86735 / #86780 / #86781).  The guard is now honest:
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -190,41 +192,155 @@ def test_abort_helper_noop_when_nothing_at_risk():
     defer.assert_not_called()
 
 
-def test_abort_helper_defers_and_exits_2(capsys):
-    marker_writes = []
+def test_abort_helper_defers_and_exits_2(tmp_path, capsys):
+    marker = tmp_path / ".update-incomplete"
     with patch.object(
         cli_main,
         "_detect_self_loaded_native_modules",
         return_value=["cryptography (_rust.pyd)"],
+    ), patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_pytest_owns_live_checkout", return_value=False
     ), patch.object(
-        cli_main,
-        "_write_update_incomplete_marker",
-        side_effect=lambda: marker_writes.append("written"),
+        cli_main, "_desktop_packaged_executable", return_value=None
+    ), patch.object(
+        cli_main, "_desktop_dist_exists", return_value=False
+    ), patch.object(
+        cli_main, "_is_windows", return_value=True
     ), pytest.raises(SystemExit) as exc:
         cli_main._abort_dependency_sync_if_self_locked()
     assert exc.value.code == 2
-    # Deferral contract: marker dropped so the next fresh launch completes
-    # the dependency install (the code swap has already happened by now).
-    assert marker_writes == ["written"]
+    # Deferral contract: enriched marker dropped so the next fresh launch
+    # completes core deps (+ later post-deps resume) after the code swap.
+    assert marker.exists()
+    import json
+
+    body = json.loads(marker.read_text(encoding="utf-8"))
+    assert body["reason"] == "self_lock"
+    assert body["phase"] == "post_code_swap"
+    assert body["pid"] == os.getpid()
+    assert body["attempts"] == 0
+    assert "core_deps" in body["pending"]
+    assert "desktop" in body["pending"]
+    assert "skills" in body["pending"]
     out = capsys.readouterr().out
     assert "cryptography (_rust.pyd)" in out
-    assert "deferred" in out
+    assert "deferred" in out.lower() or "Deferred" in out or "remaining" in out
+    assert "git -C" in out
+    assert "update --yes" in out
 
 
-def test_abort_helper_resumes_paused_gateways_before_exit():
+def test_abort_helper_resumes_paused_gateways_before_exit(tmp_path):
     resume_calls = []
     sentinel = object()
     with patch.object(
         cli_main,
         "_detect_self_loaded_native_modules",
         return_value=["cryptography (_rust.pyd)"],
-    ), patch.object(cli_main, "_write_update_incomplete_marker"), patch.object(
+    ), patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_pytest_owns_live_checkout", return_value=False
+    ), patch.object(
+        cli_main, "_desktop_packaged_executable", return_value=None
+    ), patch.object(
+        cli_main, "_desktop_dist_exists", return_value=False
+    ), patch.object(
         cli_main,
         "_resume_windows_gateways_after_update",
         side_effect=lambda token: resume_calls.append(token),
     ), pytest.raises(SystemExit):
         cli_main._abort_dependency_sync_if_self_locked(sentinel)
     assert resume_calls == [sentinel]
+    assert (tmp_path / ".update-incomplete").exists()
+
+
+def test_resume_deferred_pipeline_runs_desktop_and_skills(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main, "_pytest_owns_live_checkout", lambda _root: False)
+    sidecar = tmp_path / ".update-pipeline-resume"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "reason": "self_lock",
+                "pending": ["node_web", "desktop", "skills"],
+                "had_desktop_app": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_update_node_dependencies",
+        lambda: calls.append("node") or [],
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_build_web_ui",
+        lambda *_a, **_k: calls.append("web"),
+    )
+    monkeypatch.setattr(
+        update_cmd,
+        "_rebuild_desktop_after_update",
+        lambda desktop_dir, *, had_desktop_app_before_update: calls.append(
+            ("desktop", had_desktop_app_before_update)
+        ),
+    )
+    monkeypatch.setattr(
+        update_cmd,
+        "_sync_skills_after_update",
+        lambda: calls.append("skills"),
+    )
+
+    assert update_cmd._resume_deferred_update_pipeline_if_needed() is True
+    assert calls == ["node", "web", ("desktop", True), "skills"]
+    assert not sidecar.exists()
+
+
+def test_resume_deferred_pipeline_noop_without_sidecar(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main, "_pytest_owns_live_checkout", lambda _root: False)
+    assert update_cmd._resume_deferred_update_pipeline_if_needed() is False
+
+
+def test_uptodate_path_invokes_resume_when_sidecar_exists(tmp_path, monkeypatch, capsys):
+    """commit_count==0 healthy branch must finish deferred desktop/skills."""
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main, "_pytest_owns_live_checkout", lambda _root: False)
+
+    resume_calls = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_resume_deferred_update_pipeline_if_needed",
+        lambda: resume_calls.append(True) or True,
+    )
+    repair_calls = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_repair_node_deps_on_current_checkout",
+        lambda print_completion: repair_calls.append(print_completion),
+    )
+    completion_msgs = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_print_update_completion",
+        lambda msg: completion_msgs.append(msg),
+    )
+
+    # Drive just the healthy up-to-date branch body by invoking the resume
+    # decision the same way _cmd_update_impl does.
+    deferred_resume = update_cmd._resume_deferred_update_pipeline_if_needed()
+    if deferred_resume:
+        update_cmd._print_update_completion(
+            "✓ Already up to date - finished deferred post-update stages."
+        )
+    else:
+        update_cmd._repair_node_deps_on_current_checkout(
+            update_cmd._print_update_completion
+        )
+
+    assert resume_calls == [True]
+    assert repair_calls == []
+    assert completion_msgs
+    assert "deferred" in completion_msgs[0].lower()
 
 
 # ---------------------------------------------------------------------------

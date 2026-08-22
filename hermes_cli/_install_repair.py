@@ -347,21 +347,32 @@ def bump_marker_attempts(marker_path: Path) -> int:
     The marker's existence is the signal; opportunistic JSON body carries the
     retry count so a persistently failing install can back off instead of
     reinstall-hammering every launch. Corrupt/missing bodies restart at 1.
+
+    When the marker already holds a JSON object (e.g. self-lock deferral
+    metadata with ``reason`` / ``pending``), merge the bumped counter into
+    that payload instead of wiping sibling fields.
     Returns the new attempt count. Never raises.
     """
     attempts = 0
+    payload: dict = {}
     try:
         raw = marker_path.read_text(encoding="utf-8", errors="replace").strip()
         if raw:
             try:
-                attempts = int(json.loads(raw).get("attempts", 0))
-            except (ValueError, AttributeError):
+                loaded = json.loads(raw)
+                if isinstance(loaded, dict):
+                    payload = dict(loaded)
+                    attempts = int(payload.get("attempts", 0) or 0)
+            except (ValueError, TypeError, AttributeError):
                 attempts = 0
+                payload = {}
     except OSError:
         attempts = 0
+        payload = {}
     attempts += 1
+    payload["attempts"] = attempts
     try:
-        marker_path.write_text(json.dumps({"attempts": attempts}), encoding="utf-8")
+        marker_path.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
     return attempts

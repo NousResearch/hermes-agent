@@ -13429,20 +13429,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         active. Safe to call at startup before the gateway/CLI starts
         serving traffic.
 
-        FTS5 segments are merged first via :meth:`optimize_fts` so the
-        subsequent VACUUM reclaims the pages freed by the merge. This is a
-        layout-only optimization — search results are unchanged.
+        FTS5 indexes are rebuilt first via :meth:`rebuild_fts` so the
+        subsequent VACUUM reclaims tombstone pages left by bulk deletes.
+        ``optimize_fts`` (segment merge) is not enough after a large prune:
+        deleted FTS rows stay in ``*_data`` shadow tables until the index is
+        discarded and recreated. Measured on a 1.7 GB gateway ``state.db``
+        after pruning 4,715 sessions: VACUUM alone left 1.0 GB (656 MB of
+        it ``messages_fts_trigram_data``); rebuild then VACUUM dropped the
+        file to 86 MB. Search results are unchanged.
 
-        Returns the number of FTS indexes that were optimized (0 if the
-        merge step failed or no FTS tables exist).
+        This is not the live write-path FTS rebuild (``_try_runtime_fts_rebuild``),
+        which must not run while another process holds WAL sidecars. It
+        shares VACUUM's exclusive-lock window and is the same class of
+        operator/startup maintenance VACUUM already is.
+
+        Returns the number of FTS indexes that were rebuilt (0 if the
+        rebuild step failed or no FTS tables exist).
         """
-        # Merge FTS5 segments before VACUUM so the freed pages are returned
-        # to the OS in the same pass. optimize_fts() manages its own lock.
-        optimized = 0
+        # Rebuild FTS5 indexes before VACUUM so tombstone pages from bulk
+        # deletes are actually returned to the OS. rebuild_fts() manages
+        # its own lock.
+        rebuilt = 0
         try:
-            optimized = self.optimize_fts()
+            rebuilt = self.rebuild_fts()
         except Exception as exc:
-            logger.warning("FTS optimize before VACUUM failed: %s", exc)
+            logger.warning("FTS rebuild before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
             # Best-effort WAL checkpoint first, then VACUUM. PASSIVE, not
@@ -13466,7 +13477,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception as exc:
                 logger.debug("WAL checkpoint (TRUNCATE) after VACUUM failed: %s", exc)
-        return optimized
+        return rebuilt
 
     def maybe_auto_prune_and_vacuum(
         self,

@@ -1241,10 +1241,10 @@ def cmd_sessions(args, sessions_parser=None):
             if db_path.exists()
             else 0.0
         )
-        print("Optimizing session store (FTS merge + VACUUM)…")
+        print("Optimizing session store (FTS rebuild + VACUUM)…")
         try:
-            # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs,
-            # and returns the number of indexes it merged.
+            # vacuum() rebuilds FTS5 indexes then VACUUMs, and returns
+            # the number of indexes it rebuilt.
             n = db.vacuum()
         except Exception as e:
             print(f"Error: optimization failed: {e}")

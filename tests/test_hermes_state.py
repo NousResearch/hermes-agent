@@ -2600,6 +2600,60 @@ class TestVacuum:
         # Should not raise, even though there's nothing significant to reclaim.
         db.vacuum()
 
+    def test_vacuum_rebuilds_fts_before_sqlite_vacuum(self, db):
+        """Bulk deletes leave FTS tombstones; vacuum() must rebuild, not only merge.
+
+        ``optimize_fts`` (INSERT 'optimize') merges segments but does not
+        drop deleted FTS rows from ``*_data`` shadow tables. After a large
+        prune that is the bulk of the file. rebuild_fts recreates the
+        index from canonical messages so the subsequent VACUUM actually
+        returns those pages to the OS.
+        """
+        db.create_session(session_id="keep", source="cli")
+        db.append_message(session_id="keep", role="user", content="keep-me")
+        db.create_session(session_id="drop", source="cli")
+        db.append_message(
+            session_id="drop",
+            role="user",
+            content=("tombstone-payload " * 200),
+        )
+        db.end_session("drop", end_reason="done")
+        past = time.time() - 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (past, past, "drop"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (past, "drop"),
+        )
+        db.prune_sessions(older_than_days=1)
+
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        rebuild_calls = []
+        real_rebuild = db.rebuild_fts
+
+        def _spy_rebuild():
+            rebuild_calls.append(True)
+            return real_rebuild()
+
+        db.rebuild_fts = _spy_rebuild
+        try:
+            n = db.vacuum()
+        finally:
+            db.rebuild_fts = real_rebuild
+            db._conn.set_trace_callback(None)
+
+        assert rebuild_calls == [True]
+        assert n >= 1
+        rebuild_sql = [sql for sql in statements if "'rebuild'" in sql]
+        optimize_sql = [sql for sql in statements if "'optimize'" in sql]
+        assert rebuild_sql, "vacuum() must issue FTS5 rebuild before VACUUM"
+        assert not optimize_sql
+        assert db.search_messages("keep-me")
+        assert not db.search_messages("tombstone-payload")
+
     def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
         vacuum_calls = []

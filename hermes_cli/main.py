@@ -13540,7 +13540,7 @@ def main():
 
     sessions_subparsers.add_parser(
         "optimize",
-        help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+        help="Reclaim disk space: rebuild FTS5 indexes + VACUUM (no data change)",
     )
 
     sessions_clean_markers = sessions_subparsers.add_parser(

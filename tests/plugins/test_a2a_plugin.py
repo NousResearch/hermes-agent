@@ -431,6 +431,67 @@ class TestPersistence:
         protocol.persist_message("ctx-2", "user", "b", "t")
         assert set(protocol.list_conversations()) == {"ctx-1", "ctx-2"}
 
+    def test_distinct_context_ids_keep_separate_histories(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        protocol.persist_message("tenant/a", "user", "left-only", "task-left")
+        protocol.persist_message("tenanta", "user", "right-only", "task-right")
+
+        assert [m["text"] for m in protocol.load_conversation("tenant/a")] == ["left-only"]
+        assert [m["text"] for m in protocol.load_conversation("tenanta")] == ["right-only"]
+        assert set(protocol.list_conversations()) == {"tenant/a", "tenanta"}
+
+    def test_legacy_history_is_not_automatically_loaded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        conversation_dir = tmp_path / "a2a_conversations"
+        conversation_dir.mkdir()
+        (conversation_dir / "ctx-legacy.jsonl").write_text(
+            '{"ts": 1, "role": "user", "text": "before-upgrade", "task_id": "old"}\n',
+            encoding="utf-8",
+        )
+
+        protocol.persist_message("ctx-legacy", "agent", "after-upgrade", "new")
+
+        assert [m["text"] for m in protocol.load_conversation("ctx-legacy")] == [
+            "after-upgrade"
+        ]
+        assert protocol.list_conversations() == ["ctx-legacy"]
+
+    def test_ambiguous_legacy_history_is_not_loaded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        conversation_dir = tmp_path / "a2a_conversations"
+        conversation_dir.mkdir()
+        (conversation_dir / "tenanta.jsonl").write_text(
+            '{"ts": 1, "role": "user", "text": "other-context", "task_id": "old"}\n',
+            encoding="utf-8",
+        )
+
+        assert protocol.load_conversation("tenant/a") == []
+        assert protocol.load_conversation("tenanta") == []
+        assert protocol.list_conversations() == []
+
+    def test_new_storage_does_not_collide_with_legacy_digest_name(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        conversation_dir = tmp_path / "a2a_conversations"
+        conversation_dir.mkdir()
+        legacy_context_id = (
+            "584a11c77f870c594a006addb001b6af"
+            "9cfb03baca2d4081942d67565a14a245"
+        )
+        (conversation_dir / f"{legacy_context_id}.jsonl").write_text(
+            '{"ts": 1, "role": "user", "text": "legacy-only", "task_id": "old"}\n',
+            encoding="utf-8",
+        )
+
+        protocol.persist_message("tenant/a", "agent", "new-only", "new")
+
+        assert [m["text"] for m in protocol.load_conversation("tenant/a")] == [
+            "new-only"
+        ]
+        assert protocol.load_conversation(legacy_context_id) == []
+        assert protocol.list_conversations() == ["tenant/a"]
+
     def test_load_missing_is_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert protocol.load_conversation("nope") == []

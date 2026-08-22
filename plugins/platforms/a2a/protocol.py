@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import os
 import threading
 import time
@@ -798,15 +799,26 @@ def _conv_dir() -> Path:
 
 
 def _safe_name(context_id: str) -> str:
-    return "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
+    return hashlib.sha256(context_id.encode("utf-8")).hexdigest()
+
+
+def _current_conv_dir() -> Path:
+    """Separate collision-resistant logs from ambiguous legacy filenames."""
+    return _conv_dir() / "v2"
 
 
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log."""
     try:
-        d = _conv_dir()
+        d = _current_conv_dir()
         d.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": time.time(), "role": role, "text": text, "task_id": task_id}
+        rec = {
+            "ts": time.time(),
+            "context_id": context_id,
+            "role": role,
+            "text": text,
+            "task_id": task_id,
+        }
         with (d / f"{_safe_name(context_id)}.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
@@ -815,7 +827,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
 
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Load the last *limit* messages for a context (empty list if none)."""
-    path = _conv_dir() / f"{_safe_name(context_id)}.jsonl"
+    path = _current_conv_dir() / f"{_safe_name(context_id)}.jsonl"
     if not path.exists():
         return []
     out: list[dict] = []
@@ -836,7 +848,21 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 
 def list_conversations() -> list[str]:
     """Return known context-ids that have persisted conversations."""
-    d = _conv_dir()
+    d = _current_conv_dir()
     if not d.exists():
         return []
-    return sorted(p.stem for p in d.glob("*.jsonl"))
+    context_ids: set[str] = set()
+    for path in d.glob("*.jsonl"):
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    context_id = rec.get("context_id")
+                    context_ids.add(context_id if isinstance(context_id, str) else path.stem)
+                    break
+        except Exception:
+            continue
+    return sorted(context_ids)

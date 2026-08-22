@@ -4906,8 +4906,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
     try:
         if normalized == "copilot":
             from hermes_cli.copilot_auth import (
-                _jwt_cache,
-                _token_fingerprint,
+                evict_cached_exchanged_token,
                 exchange_copilot_token,
                 resolve_copilot_token,
             )
@@ -4915,7 +4914,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             raw_token, _source = resolve_copilot_token()
             if not str(raw_token or "").strip():
                 return False
-            _jwt_cache.pop(_token_fingerprint(raw_token), None)
+            evict_cached_exchanged_token(raw_token)
             exchange_copilot_token(raw_token)
             _evict_cached_clients(normalized)
             return True
@@ -5005,7 +5004,7 @@ def _auth_refresh_provider_for_route(
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
-    if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
+    if base_url_host_matches(client_base_url, "githubcopilot.com"):
         return "copilot"
     if base_url_host_matches(client_base_url, "chatgpt.com"):
         return "openai-codex"

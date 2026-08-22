@@ -4,6 +4,7 @@ from agent.usage_pricing import (
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
+    format_token_count_compact,
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
@@ -766,3 +767,21 @@ def test_normalize_usage_nested_details_win_over_qwen_flat_top_level():
 
     assert normalized.cache_read_tokens == 900
     assert normalized.input_tokens == 1100
+
+
+# ---------------------------------------------------------------------------
+# Compact token-count formatting
+# ---------------------------------------------------------------------------
+
+
+def test_format_token_count_compact_promotes_unit_on_rounding_overflow():
+    # Rounding the mantissa to display precision must not emit a value >= the
+    # next unit: 999_999 rounds to 1000K, which should promote to 1M (and the
+    # M->B boundary likewise). Regression for the [1, 1000) mantissa contract.
+    assert format_token_count_compact(999_999) == "1M"
+    assert format_token_count_compact(999_999_999) == "1B"
+    # Just below the rollover threshold stays in the smaller unit.
+    assert format_token_count_compact(999_499) == "999K"
+    # Normal (non-rollover) values are unchanged.
+    assert format_token_count_compact(260_000) == "260K"
+    assert format_token_count_compact(1_500_000) == "1.5M"

@@ -500,6 +500,12 @@ class HonchoClientConfig:
             return self.config_path
         return resolve_config_path()
 
+    # Session pruning — automatic cleanup of stale Honcho sessions.
+    # When prune_enabled is True, the gateway calls prune on gateway start
+    # and every 24h, deleting sessions older than prune_max_age_days.
+    prune_enabled: bool = False
+    prune_max_age_days: int = 90
+
     @classmethod
     def from_env(
         cls,

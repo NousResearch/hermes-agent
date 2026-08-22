@@ -64,6 +64,22 @@ _JSON_TO_PY = {
 }
 
 
+def _resolve_json_type(pspec: dict) -> type:
+    """Resolve a JSON Schema type spec to a Python type.
+
+    Handles nested arrays recursively so that
+    {"type": "array", "items": {"type": "string"}} becomes
+    list[str] instead of bare list.
+    """
+    pspec = pspec or {}
+    ptype = pspec.get("type")
+    if ptype == "array" and pspec.get("items"):
+        return list[_resolve_json_type(pspec["items"])]
+    if ptype == "object":
+        return dict
+    return _JSON_TO_PY.get(ptype, Any)
+
+
 def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict[str, type]]:
     """Build a Python function signature and annotations from a JSON schema.
 
@@ -81,7 +97,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
     for pname, pspec in props.items():
         if pname.startswith("_"):
             continue
-        py = _JSON_TO_PY.get((pspec or {}).get("type"), Any)
+        py = _resolve_json_type(pspec)
         ann, default = (
             (py, inspect.Parameter.empty)
             if pname in required

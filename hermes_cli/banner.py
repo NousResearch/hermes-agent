@@ -503,8 +503,18 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
     _deferred_update_notice_started = True
 
     def _wait_and_print() -> None:
-        if _update_check_done.wait(timeout=max_wait) and _update_result:
-            console.print(_format_update_notice(_update_result))
+        if not _update_check_done.wait(timeout=max_wait):
+            return
+        behind = _update_result
+        if behind is None or behind == 0:
+            return
+        # Once patch_stdout() is active, a Rich Console can leak/sanitize ANSI
+        # through prompt_toolkit's StdoutProxy. Deferred notices stay plain;
+        # the synchronous banner path remains colorized.
+        from rich.text import Text
+
+        print(Text.from_markup(_format_update_notice(behind)).plain)
+
     _daemon("update-notice", _wait_and_print)  # never break the session over an update notice
 
 

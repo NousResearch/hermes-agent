@@ -502,6 +502,43 @@ class TestHubLockFile:
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
 
+    def test_failed_save_preserves_existing_lock_and_cleans_temp_file(
+        self, tmp_path, monkeypatch
+    ):
+        lock_file = tmp_path / "lock.json"
+        original = '{"version": 1, "installed": {"keep": {}}}\n'
+        lock_file.write_text(original, encoding="utf-8")
+
+        def fail_replace(_tmp_path, _target):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr("utils.atomic_replace", fail_replace)
+
+        with pytest.raises(OSError, match="simulated replace failure"):
+            HubLockFile(path=lock_file).save(
+                {"version": 1, "installed": {"replacement": {}}}
+            )
+
+        assert lock_file.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob(".lock_*.tmp")) == []
+
+    @pytest.mark.linux_only
+    def test_save_preserves_existing_lock_permissions(self, tmp_path):
+        import os
+        import stat
+
+        lock_file = tmp_path / "lock.json"
+        lock_file.write_text(
+            '{"version": 1, "installed": {}}\n', encoding="utf-8"
+        )
+        os.chmod(lock_file, 0o640)
+
+        HubLockFile(path=lock_file).save(
+            {"version": 1, "installed": {"replacement": {}}}
+        )
+
+        assert stat.S_IMODE(lock_file.stat().st_mode) == 0o640
+
 
 # ---------------------------------------------------------------------------
 # TapsManager
@@ -1199,6 +1236,75 @@ class TestInstallPathSafety:
                     install_path=bad_install_path,
                     files=["SKILL.md"],
                 )
+
+    def test_record_install_rejects_deep_non_official_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+
+        with pytest.raises(ValueError, match="non-official"):
+            lock.record_install(
+                name="deep-skill",
+                source="github",
+                identifier="owner/repo/deep-skill",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="h1",
+                install_path="a/b/deep-skill",
+                files=["SKILL.md"],
+            )
+
+        assert not lock.path.exists()
+
+    def test_record_install_allows_deep_official_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+
+        lock.record_install(
+            name="deep-skill",
+            source="official",
+            identifier="official/a/b/deep-skill",
+            trust_level="builtin",
+            scan_verdict="pass",
+            skill_hash="h1",
+            install_path="a/b/deep-skill",
+            files=["SKILL.md"],
+        )
+
+        assert lock.get_installed("deep-skill")["install_path"] == "a/b/deep-skill"
+
+    def test_uninstall_allows_legacy_deep_non_official_path(
+        self, tmp_path, isolated_skills_dir, patch_lock_file
+    ):
+        from tools.skills_hub import uninstall_skill
+
+        installed = isolated_skills_dir / "a" / "b" / "legacy-skill"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("legacy", encoding="utf-8")
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(
+            json.dumps({
+                "version": 1,
+                "installed": {
+                    "legacy-skill": {
+                        "source": "github",
+                        "identifier": "owner/repo/legacy-skill",
+                        "trust_level": "trusted",
+                        "scan_verdict": "pass",
+                        "content_hash": "h",
+                        "install_path": "a/b/legacy-skill",
+                        "files": ["SKILL.md"],
+                        "metadata": {},
+                        "installed_at": "now",
+                        "updated_at": "now",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        patch_lock_file(lock_path)
+
+        ok, _message = uninstall_skill("legacy-skill")
+
+        assert ok is True
+        assert not installed.exists()
 
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):

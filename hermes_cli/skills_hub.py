@@ -1477,7 +1477,11 @@ def do_repair_official(name: str, restore: bool = False,
     c = console or _console
     if restore and not skip_confirm:
         c.print(f"\n[bold]Restore official optional skill '{name}' from repo source?[/]")
-        c.print("[dim]Existing matching active copies will be moved to a restore backup before copying the official source.[/]")
+        c.print(
+            "[dim]Any existing copies at the canonical path or elsewhere that "
+            "do not match the official source will be moved to a backup under "
+            f"{display_hermes_home()}/skills/.restore-backups/.[/]"
+        )
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -1505,8 +1509,10 @@ def do_repair_official(name: str, restore: bool = False,
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Skills prompt cache clear failed: %s", exc
+            )
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:

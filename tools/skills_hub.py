@@ -39,6 +39,7 @@ from tools.skills_guard import (
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,12 @@ def _validate_install_parent_path(category: str) -> str:
     return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
 
 
-def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
+def _normalize_lock_install_path(
+    install_path: str,
+    skill_name: str,
+    *,
+    source: Optional[str] = None,
+) -> str:
     """Validate a skill install path before it touches the lock file or disk.
 
     Lock-file ``install_path`` entries are the source-of-truth for where
@@ -244,7 +250,10 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
     Enforce that ``install_path`` ends with ``<skill_name>``. Nested
     official optional skills may legitimately install below paths such as
     ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
-    and mismatched final components are still rejected.
+    and mismatched final components are still rejected. When ``source`` is
+    supplied for a new write, non-official installs are limited to one
+    optional category plus the skill name. Omitting ``source`` preserves
+    read/uninstall compatibility with older, already-recorded lock entries.
     """
     safe_skill_name = _validate_skill_name(skill_name)
     normalized = _normalize_bundle_path(
@@ -255,6 +264,11 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
     parts = normalized.split("/")
     if not parts or parts[-1] != safe_skill_name:
         raise ValueError(f"Unsafe install path: {install_path}")
+    if source is not None and source != "official" and len(parts) > 2:
+        raise ValueError(
+            f"Unsafe non-official install path: {install_path} "
+            "(at most category/skill is allowed)"
+        )
     return normalized
 
 
@@ -268,7 +282,12 @@ def _is_path_redirect(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
-def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
+def _resolve_lock_install_path(
+    install_path: str,
+    skill_name: str,
+    *,
+    source: Optional[str] = None,
+) -> Path:
     """Resolve a lock-file install path without allowing escapes from ``SKILLS_DIR``.
 
     Two layers of defence on top of the existing ``is_relative_to`` check
@@ -281,7 +300,11 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
        — an empty/``"."``/``""`` install_path resolves to the skills root itself,
        and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
     """
-    normalized = _normalize_lock_install_path(install_path, skill_name)
+    normalized = _normalize_lock_install_path(
+        install_path,
+        skill_name,
+        source=source,
+    )
     skills_dir = _skills_dir()
     skills_root = skills_dir.resolve()
 
@@ -3744,8 +3767,12 @@ class HubLockFile:
             return {"version": 1, "installed": {}}
 
     def save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        atomic_write_text(
+            self.path,
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            tmp_prefix=".lock_",
+            preserve_mode=True,
+        )
 
     def record_install(
         self,
@@ -3765,7 +3792,11 @@ class HubLockFile:
         # for the uninstall_skill rmtree-escape; reject malformed input at
         # write time so the file never carries the bad state.
         safe_name = _validate_skill_name(name)
-        safe_install_path = _normalize_lock_install_path(install_path, safe_name)
+        safe_install_path = _normalize_lock_install_path(
+            install_path,
+            safe_name,
+            source=source,
+        )
         data = self.load()
         data["installed"][safe_name] = {
             "source": source,
@@ -3961,7 +3992,11 @@ def install_from_quarantine(
     # Resolve via the same lock-path validator the uninstaller uses. Catches
     # symlink-in-skills-tree redirects at install time so the lock entry's
     # path can never refer to a redirected target.
-    install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
+    install_dir = _resolve_lock_install_path(
+        install_rel_path,
+        safe_skill_name,
+        source=bundle.source,
+    )
 
     # Refuse to nest a skill inside an existing skill directory. Installing
     # with ``--category <name-of-an-existing-skill>`` would create a hybrid

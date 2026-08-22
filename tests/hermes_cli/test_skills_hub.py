@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_repair_official,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -489,3 +496,54 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+def test_repair_official_confirmation_describes_every_backup_location(monkeypatch):
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    do_repair_official("demo", restore=True, console=console)
+
+    output = sink.getvalue().lower()
+    assert "canonical path or elsewhere" in output
+    assert ".restore-backups" in output
+
+
+def test_repair_official_logs_prompt_cache_clear_failure(monkeypatch, caplog):
+    import agent.prompt_builder as prompt_builder
+    import tools.skills_sync as skills_sync
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr(
+        skills_sync,
+        "restore_official_optional_skill",
+        lambda _name, restore=False: {
+            "ok": True,
+            "changed": True,
+            "message": "Official optional skill repair complete.",
+            "restored": ["demo"],
+            "backfilled": [],
+            "backed_up": [],
+        },
+    )
+
+    def fail_cache_clear(*, clear_snapshot):
+        raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(
+        prompt_builder,
+        "clear_skills_system_prompt_cache",
+        fail_cache_clear,
+    )
+    caplog.set_level("DEBUG", logger="hermes_cli.skills_hub")
+
+    do_repair_official(
+        "demo",
+        restore=True,
+        console=console,
+        skip_confirm=True,
+    )
+
+    assert "Skills prompt cache clear failed: cache unavailable" in caplog.text

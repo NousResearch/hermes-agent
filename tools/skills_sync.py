@@ -48,7 +48,7 @@ for _stream in (sys.stdout, sys.stderr):
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
-from utils import atomic_replace, atomic_write_text
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -325,16 +325,18 @@ def _content_hash(directory: Path) -> str:
 
 
 def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
-    """Return official optional skills keyed by folder name and frontmatter name.
+    """Return official optional skills keyed by exact path and unambiguous aliases.
 
     Values are ``(folder_name, install_path, source_dir)``. Multiple keys may
-    point to the same skill so callers can accept either the folder slug used
-    by the hub lock or the user-facing frontmatter name.
+    point to the same skill so callers can accept the exact install path, the
+    folder slug used by the hub lock, or the user-facing frontmatter name.
+    Ambiguous aliases are omitted rather than silently selecting one skill.
     """
     optional_dir = _get_optional_dir()
-    index: Dict[str, Tuple[str, str, Path]] = {}
     if not optional_dir.exists():
-        return index
+        return {}
+
+    entries: List[Tuple[Tuple[str, str, Path], str]] = []
     for skill_md in sorted(optional_dir.rglob("SKILL.md")):
         if is_excluded_skill_path(
             skill_md.relative_to(optional_dir), root=optional_dir
@@ -348,8 +350,29 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
         folder_name = src.name
         frontmatter_name = _read_skill_name(skill_md, folder_name)
         value = (folder_name, install_path, src)
-        index[folder_name] = value
-        index[frontmatter_name] = value
+        entries.append((value, frontmatter_name))
+
+    index: Dict[str, Tuple[str, str, Path]] = {
+        value[1]: value for value, _frontmatter_name in entries
+    }
+    exact_paths = set(index)
+    aliases: Dict[str, Dict[str, Tuple[str, str, Path]]] = {}
+    for value, frontmatter_name in entries:
+        for alias in {value[0], frontmatter_name}:
+            aliases.setdefault(alias, {})[value[1]] = value
+
+    for alias, targets_by_path in aliases.items():
+        if len(targets_by_path) > 1:
+            logger.warning(
+                "Ambiguous official optional skill alias %r matches install paths: %s; "
+                "use the full install path",
+                alias,
+                ", ".join(sorted(targets_by_path)),
+            )
+            if alias not in exact_paths:
+                index.pop(alias, None)
+            continue
+        index.setdefault(alias, next(iter(targets_by_path.values())))
     return index
 
 
@@ -376,18 +399,36 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     """
     index = _optional_skill_index()
     if not index:
-        return {"ok": False, "message": "No official optional skills directory found.", "restored": [], "backfilled": [], "backed_up": []}
+        return {
+            "ok": False,
+            "changed": False,
+            "message": "No official optional skills directory found.",
+            "restored": [],
+            "backfilled": [],
+            "backed_up": [],
+        }
 
-    targets = sorted(set(index.values()), key=lambda item: item[1]) if name in {"all", "*"} else []
+    targets = (
+        sorted(set(index.values()), key=lambda item: item[1])
+        if name == "all"
+        else []
+    )
     if not targets:
         target = index.get(name)
         if target is None:
-            return {"ok": False, "message": f"Official optional skill not found: {name}", "restored": [], "backfilled": [], "backed_up": []}
+            return {
+                "ok": False,
+                "changed": False,
+                "message": f"Official optional skill not found: {name}",
+                "restored": [],
+                "backfilled": [],
+                "backed_up": [],
+            }
         targets = [target]
 
     restored: List[str] = []
     backed_up: List[str] = []
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     backup_root = _skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
 
     for folder_name, install_path, src in targets:
@@ -428,9 +469,18 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             continue
 
     backfilled = _backfill_optional_provenance(quiet=True)
+    changed = bool(restored or backfilled or backed_up)
     return {
         "ok": True,
-        "message": "Official optional skill repair complete.",
+        "changed": changed,
+        "message": (
+            "Official optional skill repair complete."
+            if changed
+            else (
+                "No repair needed; official optional skill is already canonical "
+                "and provenance is current."
+            )
+        ),
         "restored": restored,
         "backfilled": backfilled,
         "backed_up": backed_up,
@@ -492,21 +542,8 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     if not optional_dir.exists():
         return []
 
-    lock_path = _skills_dir() / ".hub" / "lock.json"
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {"version": 1, "installed": {}}
-    except (json.JSONDecodeError, OSError):
-        data = {"version": 1, "installed": {}}
-    installed = data.setdefault("installed", {})
-    existing_paths = {
-        entry.get("install_path")
-        for entry in installed.values()
-        if isinstance(entry, dict)
-    }
-
-    backfilled: List[str] = []
-    changed = False
-    installed_dir_index: Optional[Dict[str, List[Path]]] = None
+    candidates: List[Tuple[Path, str, str]] = []
+    folder_paths: Dict[str, List[str]] = {}
     for skill_md in sorted(optional_dir.rglob("SKILL.md")):
         if is_excluded_skill_path(skill_md):
             continue
@@ -517,6 +554,37 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             logger.debug("Skipping optional skill with unsafe path %s: %s", src, e)
             continue
         lock_name = src.name
+        candidates.append((src, install_path, lock_name))
+        folder_paths.setdefault(lock_name, []).append(install_path)
+
+    colliding_names = {
+        name for name, paths in folder_paths.items() if len(set(paths)) > 1
+    }
+    for name in sorted(colliding_names):
+        logger.warning(
+            "Skipping ambiguous official optional skill folder %r during provenance "
+            "backfill; install paths: %s",
+            name,
+            ", ".join(sorted(set(folder_paths[name]))),
+        )
+
+    from tools.skills_hub import HubLockFile
+
+    lock_path = _skills_dir() / ".hub" / "lock.json"
+    lock = HubLockFile(path=lock_path)
+    data = lock.load()
+    installed = data.setdefault("installed", {})
+    existing_paths = {
+        entry.get("install_path")
+        for entry in installed.values()
+        if isinstance(entry, dict)
+    }
+
+    backfilled: List[str] = []
+    installed_dir_index: Optional[Dict[str, List[Path]]] = None
+    for src, install_path, lock_name in candidates:
+        if lock_name in colliding_names:
+            continue
         if lock_name in installed or install_path in existing_paths:
             continue
         dest = _skills_dir() / Path(*install_path.split("/"))
@@ -544,50 +612,22 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         if _dir_hash(dest) != _dir_hash(src):
             continue
 
-        timestamp = datetime.now(timezone.utc).isoformat()
-        installed[lock_name] = {
-            "source": "official",
-            "identifier": f"official/{install_path}",
-            "trust_level": "builtin",
-            "scan_verdict": "backfilled",
-            "content_hash": _content_hash(dest),
-            "install_path": install_path,
-            "files": _skill_file_list(dest),
-            "metadata": {"backfilled_from": "optional-skills"},
-            "installed_at": timestamp,
-            "updated_at": timestamp,
-        }
+        lock.record_install(
+            name=lock_name,
+            source="official",
+            identifier=f"official/{install_path}",
+            trust_level="builtin",
+            scan_verdict="backfilled",
+            skill_hash=_content_hash(dest),
+            install_path=install_path,
+            files=_skill_file_list(dest),
+            metadata={"backfilled_from": "optional-skills"},
+        )
+        installed[lock_name] = {"install_path": install_path}
         existing_paths.add(install_path)
         backfilled.append(lock_name)
-        changed = True
         if not quiet:
             print(f"  = {lock_name} (official optional provenance backfilled)")
-
-    if changed:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write so a crash mid-write can't silently wipe all provenance
-        # via the JSONDecodeError fallback above (which resets `installed` to
-        # an empty dict).
-        import tempfile
-
-        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(lock_path.parent),
-            prefix=".lock_",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, lock_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
     return backfilled
 
 

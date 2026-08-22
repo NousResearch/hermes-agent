@@ -367,6 +367,50 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(fireEvent.keyDown(window, { key: 'ArrowDown' })).toBe(true)
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('confirms a clicked choice with Enter while the choice button keeps focus', async () => {
+    const request = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    // Click selects the choice; in a real browser the option button keeps
+    // focus afterwards. jsdom's fireEvent.click does not move focus, so
+    // focus it explicitly to reproduce the reported bug.
+    fireEvent.click(production)
+    production.focus()
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(production)
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'production',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('confirms a Tab-focused (not clicked) choice with Enter', async () => {
+    const request = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    // A pure-keyboard user tabs onto the choice without clicking it. The
+    // choice is still the answer itself, so Enter must confirm the currently
+    // highlighted one (staging is active by default) — not fall through as a
+    // hands-off keypress (the pre-fix bug path).
+    production.focus()
+    expect(production.getAttribute('aria-pressed')).toBe('false')
+    expect(document.activeElement).toBe(production)
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'staging',
+        request_id: 'request-1'
+      })
+    })
+  })
 })
 
 describe('ClarifyTool recommended option', () => {

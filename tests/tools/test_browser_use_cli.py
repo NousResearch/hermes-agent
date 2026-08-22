@@ -123,6 +123,65 @@ class TestSubprocessEnvironment:
         assert "PYTHONHOME" not in env
         assert env["KEEP_ME"] == "yes"
 
+    def test_windows_subprocess_routes_chrome_urls_to_detected_browser(
+        self, monkeypatch
+    ):
+        """browser-harness opens chrome://inspect via stdlib webbrowser.
+
+        Windows' default webbrowser backend dispatches custom schemes through
+        the URL protocol registry, where chrome: is normally unregistered. A
+        direct BROWSER executable keeps that URI inside Chromium instead of
+        raising the native "Get an app to open this 'chrome' link" chooser.
+        """
+        import sys
+        from types import ModuleType
+
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: [chrome] if system == "Windows" else [],
+        )
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["BROWSER"] == chrome
+
+    def test_windows_subprocess_preserves_explicit_browser_override(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {"BROWSER": "custom-browser %s"}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda _system: (_ for _ in ()).throw(
+                AssertionError("explicit BROWSER must skip candidate discovery")
+            ),
+        )
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["BROWSER"] == "custom-browser %s"
+
+    def test_non_windows_subprocess_does_not_force_browser(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Linux")
+
+        env = bu_cli._base_subprocess_env()
+
+        assert "BROWSER" not in env
+
 
 class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):

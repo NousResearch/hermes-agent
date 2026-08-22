@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from utils import atomic_json_write
 
@@ -940,3 +940,100 @@ def _chunk_newline_preferred(text, limit, len_fn):
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+# ── HTML parse-mode detection + HTML-aware chunking (TKT-0040) ──────────────
+# Unifies the two Telegram send paths that drifted apart (in-gateway adapter
+# vs standalone send tool): both must detect HTML identically and both must
+# split long HTML without leaving a tag unbalanced across a chunk boundary.
+# King advisory (TKT-0041): the fix is a SHARED utility, not a per-callsite
+# wrapper. Mirrors the balance_fences_across_chunks pattern (close-on-head,
+# reopen-on-tail) but for HTML tag spans instead of code fences.
+
+# Matches an opening OR closing HTML tag. The optional leading `/` (captured
+# implicitly) is what makes closers like </b> match — without it the closer is
+# invisible and the open-tag stack never pops.
+_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^<>]*)?)\s*(/?)>")
+
+# Void elements never need a closing tag; treating them as paired would
+# corrupt the open-tag stack.
+_HTML_VOID = frozenset({"br", "hr", "img", "wbr", "input", "meta", "link"})
+
+
+def detect_parse_mode(content: str) -> str:
+    """Return ``"HTML"`` if *content* carries HTML markup, else ``"MarkdownV2"``.
+
+    Single source of truth for "is this message HTML?" so every Telegram send
+    path (gateway adapter, standalone tool, cron delivery) agrees. Mirrors the
+    heuristic the standalone path used (``<[a-zA-Z/][^>]*>``): any tag-like
+    token selects HTML. Plain comparison text like ``a < b`` is NOT matched
+    (the ``<`` must be followed by a letter or ``/``).
+    """
+    if not content:
+        return "MarkdownV2"
+    return "HTML" if re.search(r"<[a-zA-Z/][^>]*>", content) else "MarkdownV2"
+
+
+def _html_open_tags(prefix: str) -> "List[tuple[str, str]]":
+    """Return the LIFO stack of currently-open ``(tag_name, full_match)`` in
+    *prefix*. Void and self-closing tags are never pushed. A closing tag pops
+    the most recent matching open tag (Telegram flattens mis-nested HTML, so a
+    simple LIFO is the correct conservative model)."""
+    stack: "List[tuple[str, str]]" = []
+    for m in _HTML_TAG_RE.finditer(prefix):
+        is_closer = m.group(1) == "/"
+        name = m.group(2).lower()
+        text = m.group(0)
+        if is_closer:
+            # A closer cancels only its own matching opener. Tags opened BEFORE
+            # it (stack[0..i)) stay open — e.g. </i> inside <b><i>..</i>..</b>
+            # must leave <b> open. Telegram flattens mis-nesting, so we just
+            # remove the single matched opener rather than the whole tail.
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i][0] == name:
+                    del stack[i]
+                    break
+        elif not (text.rstrip().endswith("/>") or name in _HTML_VOID):
+            stack.append((name, text))
+    return stack
+
+
+def balance_html_across_chunks(chunks: "List[str]") -> "List[str]":
+    """Close tags left open at the end of each chunk and re-open them at the
+    start of the next, so every chunk parses standalone. The HTML analogue of
+    :func:`balance_fences_across_chunks`.
+
+    The reopen-set carried into the next chunk is the open stack of the *raw*
+    piece (before this chunk's synthetic closers were appended) — otherwise a
+    tag that closes naturally in a later chunk would be closed twice.
+    """
+    out: "List[str]" = []
+    open_stack: "List[tuple[str, str]]" = []
+    for piece in chunks:
+        reopen = "".join(tag for _, tag in open_stack)
+        piece = reopen + piece
+        # Stack from the reopened + raw content, BEFORE appending synthetic
+        # closers — this is what the next chunk must re-open.
+        open_stack = _html_open_tags(piece)
+        closers = "".join(f"</{name}>" for name, _ in reversed(open_stack))
+        out.append(piece + closers)
+    return out
+
+
+def chunk_html(content: str, max_length: int = 4096, len_fn=None) -> "List[str]":
+    """Split long HTML into chunks that each stay under *max_length* AND keep
+    every tag balanced within a chunk.
+
+    Uses :func:`split_text_fence_aware` for the UTF-16-aware split-point logic,
+    then rebalances tag spans so no tag is split across a boundary. This is the
+    defect the King's chunking test (TKT-0040) exposed: a single giant
+    ``<b>…</b>`` span split mid-way yields two chunks each with an unbalanced
+    tag, which Telegram rejects with "can't parse entities" — the caller then
+    falls back and the original HTML-leak bug returns.
+    """
+    _len = len_fn or len
+    if _len(content) <= max_length:
+        return [content]
+    raw = split_text_fence_aware(content, max_length, len_fn=len_fn,
+                                 prefer_paragraphs=False)
+    return balance_html_across_chunks(raw)

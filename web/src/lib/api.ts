@@ -2068,7 +2068,8 @@ export interface ManagedFileEntry {
   path: string;
   is_directory: boolean;
   size: number | null;
-  mtime: number;
+  /** Null for ghost rows: entries that vanished or dangling symlinks that fail stat(). */
+  mtime: number | null;
   mime_type: string | null;
 }
 

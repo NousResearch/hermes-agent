@@ -375,3 +375,85 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+# ---------------------------------------------------------------------------
+# Ghost rows: entries that vanish mid-scan or dangle must not 500 the listing
+# ---------------------------------------------------------------------------
+
+
+def test_listing_survives_entry_vanishing_mid_scan(forced_files_client, monkeypatch):
+    """Regression: a directory entry that disappears between scandir() and its
+    stat() used to fail the whole listing with HTTP 500 ("Could not stat path").
+    Steam's bootstrapper recreates entries under ~/.steam on every launch, which
+    made the dashboard Files page intermittently unusable. The listing must
+    survive and report the vanished entry as a ghost row instead."""
+    import os
+
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "real.txt").write_text("hello")
+
+    real_scandir = os.scandir
+
+    def _vanishing_scandir(path):
+        it = real_scandir(path)
+        try:
+            entries = list(it)
+        finally:
+            it.close()
+        ghost = SimpleNamespace(path=str(root / "vanished.tmp"), name="vanished.tmp")
+
+        class _FakeScan:
+            """os.scandir() stand-in: iterable *and* a context manager."""
+
+            def __init__(self, items):
+                self._it = iter(items)
+
+            def __iter__(self):
+                return self._it
+
+            def __enter__(self):
+                return self._it
+
+            def __exit__(self, *_exc):
+                return False
+
+        return _FakeScan([*entries, ghost])
+
+    monkeypatch.setattr(web_server.os, "scandir", _vanishing_scandir)
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    by_name = {e["name"]: e for e in listing.json()["entries"]}
+    assert by_name["real.txt"]["size"] == 5
+    assert by_name["real.txt"]["mtime"] is not None
+
+    ghost = by_name["vanished.tmp"]
+    assert ghost["is_directory"] is False
+    assert ghost["size"] is None
+    assert ghost["mtime"] is None
+    assert ghost["mime_type"] is None
+
+
+def test_listing_includes_dangling_symlink_as_ghost_row(forced_files_client):
+    """Dangling symlinks fail stat() permanently; they must appear as ghost rows
+    rather than turning the directory listing into an HTTP 500."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "keep.txt").write_text("ok")
+    (root / "dangling").symlink_to(root / "never-existed")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    by_name = {e["name"]: e for e in listing.json()["entries"]}
+    assert by_name["keep.txt"]["mtime"] is not None
+
+    ghost = by_name["dangling"]
+    assert ghost["is_directory"] is False
+    assert ghost["mtime"] is None
+
+    # Direct reads of the dangling link keep their proper 4xx semantics.
+    assert client.get(
+        "/api/files/read", params={"path": str(root / "dangling")}
+    ).status_code == 404
+
+

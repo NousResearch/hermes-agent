@@ -2426,10 +2426,24 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
+    # stat() follows symlinks, so two benign situations land here: a directory
+    # entry that vanished between scandir() and this stat (Steam's bootstrapper
+    # recreates such entries under ~/.steam on every launch), and dangling
+    # symlinks, which fail stat() forever. Both used to turn a routine listing
+    # into an HTTP 500 for the whole page. Report them as ghost rows instead;
+    # direct reads/downloads still return their proper 4xx because they check
+    # existence themselves before reaching this helper.
     try:
         st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    except OSError:
+        return {
+            "name": target.name or resolved.name or str(resolved),
+            "path": str(resolved),
+            "is_directory": False,
+            "size": None,
+            "mtime": None,
+            "mime_type": None,
+        }
 
     is_dir = resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
@@ -2561,11 +2575,19 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 
     try:
         with os.scandir(target) as scan:
-            entries = [
-                _managed_file_entry(policy, Path(entry.path))
-                for entry in scan
-                if not _is_sensitive_path(Path(entry.path))
-            ]
+            raw_entries = list(scan)
+        entries = []
+        for entry in raw_entries:
+            entry_path = Path(entry.path)
+            if _is_sensitive_path(entry_path):
+                continue
+            try:
+                entries.append(_managed_file_entry(policy, entry_path))
+            except HTTPException as exc:
+                # A single unreadable entry must not fail the whole listing.
+                if exc.status_code == 403:
+                    raise
+                continue
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:

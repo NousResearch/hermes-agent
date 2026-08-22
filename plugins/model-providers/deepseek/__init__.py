@@ -100,6 +100,7 @@ deepseek = DeepSeekProfile(
     display_name="DeepSeek",
     description="DeepSeek — native DeepSeek API",
     signup_url="https://platform.deepseek.com/",
+    default_headers={"User-Agent": "curl/8.7.1"},
     fallback_models=(
         "deepseek-v4-pro",
         "deepseek-v4-flash",

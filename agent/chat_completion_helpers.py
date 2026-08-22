@@ -1822,6 +1822,216 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+
+def _prepare_deepseek_v4_synthetic_tool_history(api_messages: list) -> list:
+    """Rewrite Hermes-synthetic DeepSeek V4 tool history to native DSML replay.
+
+    DeepSeek V4 models may emit DSML tool intent as textual assistant content.
+    Hermes converts that intent to native tool_calls internally so its normal
+    tool executor, UI, persistence, and audit paths continue to work.
+
+    Some OpenAI-compatible DeepSeek V4 endpoints reject replay of those
+    synthetic calls as assistant.tool_calls + role=tool.  At the provider
+    boundary only, convert Hermes-synthetic dsml_* / deepseek_xml_* calls back
+    to DeepSeek V4's native textual protocol:
+
+        assistant: <｜DSML｜tool_calls>...</｜DSML｜tool_calls>
+        user:      <tool_result>...</tool_result>
+
+    Canonical internal Hermes history is not modified.
+    """
+
+    def _arguments_to_dsml(arguments_text):
+        try:
+            arguments = json.loads(arguments_text or "{}")
+        except Exception:
+            arguments = {"arguments": arguments_text or ""}
+
+        if not isinstance(arguments, dict):
+            arguments = {"arguments": arguments}
+
+        params = []
+
+        for key, value in arguments.items():
+            if isinstance(value, str):
+                is_string = "true"
+                rendered = value
+            else:
+                is_string = "false"
+                rendered = json.dumps(value, ensure_ascii=False)
+
+            params.append(
+                f'<｜DSML｜parameter name="{key}" string="{is_string}">'
+                f'{rendered}'
+                f'</｜DSML｜parameter>'
+            )
+
+        return "\n".join(params)
+
+    def _tool_calls_to_dsml(tool_calls):
+        invokes = []
+
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                return None
+
+            fn = tc.get("function")
+            if not isinstance(fn, dict):
+                return None
+
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                return None
+
+            params = _arguments_to_dsml(fn.get("arguments"))
+
+            if params:
+                invoke = (
+                    f'<｜DSML｜invoke name="{name}">\n'
+                    f'{params}\n'
+                    f'</｜DSML｜invoke>'
+                )
+            else:
+                invoke = (
+                    f'<｜DSML｜invoke name="{name}">\n'
+                    f'</｜DSML｜invoke>'
+                )
+
+            invokes.append(invoke)
+
+        if not invokes:
+            return None
+
+        return (
+            "<｜DSML｜tool_calls>\n"
+            + "\n".join(invokes)
+            + "\n</｜DSML｜tool_calls>"
+        )
+
+    rewritten = []
+    i = 0
+
+    while i < len(api_messages):
+        msg = api_messages[i]
+
+        if not isinstance(msg, dict):
+            rewritten.append(msg)
+            i += 1
+            continue
+
+        tool_calls = msg.get("tool_calls")
+
+        if (
+            msg.get("role") == "assistant"
+            and isinstance(tool_calls, list)
+            and tool_calls
+        ):
+            synthetic_ids = []
+            all_synthetic = True
+
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    all_synthetic = False
+                    break
+
+                tc_id = tc.get("id") or ""
+
+                if not (
+                    isinstance(tc_id, str)
+                    and tc_id.startswith(("dsml_", "deepseek_xml_"))
+                ):
+                    all_synthetic = False
+                    break
+
+                synthetic_ids.append(tc_id)
+
+            if all_synthetic:
+                dsml_content = _tool_calls_to_dsml(tool_calls)
+
+                # Collect the immediately following Hermes tool results.
+                j = i + 1
+                tool_results = {}
+
+                while j < len(api_messages):
+                    candidate = api_messages[j]
+
+                    if not (
+                        isinstance(candidate, dict)
+                        and candidate.get("role") == "tool"
+                    ):
+                        break
+
+                    result_id = candidate.get("tool_call_id")
+
+                    if result_id in synthetic_ids:
+                        tool_results[result_id] = candidate
+
+                    j += 1
+
+                # Rewrite only a complete call/result batch.  Partial batches
+                # remain untouched so generic Hermes recovery can handle them.
+                if (
+                    dsml_content is not None
+                    and len(tool_results) == len(synthetic_ids)
+                    and all(tc_id in tool_results for tc_id in synthetic_ids)
+                ):
+                    assistant_replay = {
+                        k: v
+                        for k, v in msg.items()
+                        if k != "tool_calls"
+                    }
+
+                    existing_content = assistant_replay.get("content")
+                    if isinstance(existing_content, str) and existing_content.strip():
+                        assistant_replay["content"] = (
+                            existing_content.rstrip()
+                            + "\n\n"
+                            + dsml_content
+                        )
+                    else:
+                        assistant_replay["content"] = dsml_content
+
+                    rewritten.append(assistant_replay)
+
+                    result_blocks = []
+
+                    # DeepSeek V4 requires results in preceding tool-call order.
+                    for tc_id in synthetic_ids:
+                        tool_msg = tool_results[tc_id]
+                        content = tool_msg.get("content")
+
+                        if content is None:
+                            content = ""
+                        elif not isinstance(content, str):
+                            content = json.dumps(
+                                content,
+                                ensure_ascii=False,
+                            )
+
+                        result_blocks.append(
+                            f"<tool_result>{content}</tool_result>"
+                        )
+
+                    rewritten.append({
+                        "role": "user",
+                        "content": "\n".join(result_blocks),
+                    })
+
+                    logger.info(
+                        "Rewrote DeepSeek V4 synthetic tool history "
+                        "to native DSML/tool_result replay (%d call(s)).",
+                        len(synthetic_ids),
+                    )
+
+                    i = j
+                    continue
+
+        rewritten.append(msg)
+        i += 1
+
+    return rewritten
+
+
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     if tools_for_api is None:
@@ -2038,6 +2248,19 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
+
+        # DeepSeek V4 compatibility: textual DSML/XML tool intent is converted
+        # to native Hermes tool calls for local execution, but compatible V4
+        # endpoints may reject replayed assistant.tool_calls / role=tool history.
+        # Rewrite only Hermes-synthetic deepseek_xml_*/dsml_* call/result batches
+        # at the provider boundary; canonical internal history remains untouched.
+        if (
+            (agent.provider or "").strip().lower() == "deepseek"
+            and (agent.model or "").strip().lower().startswith("deepseek-v4-")
+        ):
+            api_messages = _prepare_deepseek_v4_synthetic_tool_history(
+                api_messages
+            )
 
         return _ct.build_kwargs(
             model=agent.model,
@@ -4310,6 +4533,160 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         # Build mock response matching non-streaming shape
         full_content = "".join(content_parts) or None
+
+        # DeepSeek V4 DSML tool-call compatibility fallback.
+        # Strictly scoped to native DeepSeek V4 models and used only
+        # when no OpenAI-native tool_calls were received.
+        _provider_name = str(getattr(agent, "provider", "") or "").lower()
+        _model_name_lower = str(getattr(agent, "model", "") or "").lower()
+
+        if (
+            not tool_calls_acc
+            and _provider_name == "deepseek"
+            and _model_name_lower.startswith("deepseek-v4-")
+            and isinstance(full_content, str)
+            and "DSML" in full_content
+        ):
+            _dsml = re.sub(r"｜+DSML｜+", "DSML", full_content)
+
+            _tool_block_match = re.search(
+                r"<DSMLtool_calls>(.*?)</DSMLtool_calls>",
+                _dsml,
+                flags=re.DOTALL,
+            )
+
+            if _tool_block_match:
+                _tool_block = _tool_block_match.group(1)
+                _invoke_matches = list(re.finditer(
+                    r'<DSMLinvoke\s+name="([^"]+)">(.*?)</DSMLinvoke>',
+                    _tool_block,
+                    flags=re.DOTALL,
+                ))
+
+                _parsed_calls = {}
+
+                for _idx, _invoke_match in enumerate(_invoke_matches):
+                    _tool_name = _invoke_match.group(1).strip()
+                    _invoke_body = _invoke_match.group(2)
+
+                    _arguments = {}
+                    for _param_match in re.finditer(
+                        r'<DSMLparameter\s+name="([^"]+)"(?:\s+string="([^"]+)")?'
+                        r'>(.*?)</DSMLparameter>',
+                        _invoke_body,
+                        flags=re.DOTALL,
+                    ):
+                        _param_name = _param_match.group(1).strip()
+                        _is_string = (
+                            (_param_match.group(2) or "").strip().lower()
+                            == "true"
+                        )
+                        _raw_value = _param_match.group(3).strip()
+
+                        if _is_string:
+                            _value = _raw_value
+                        else:
+                            try:
+                                _value = json.loads(_raw_value)
+                            except (json.JSONDecodeError, TypeError):
+                                _value = _raw_value
+
+                        _arguments[_param_name] = _value
+
+                    # DeepSeek V4 DSML may emit read_file's path argument as
+                    # "file", while Hermes' canonical read_file schema expects
+                    # "path". Normalize only this known compatibility case.
+                    if (
+                        _tool_name == "read_file"
+                        and "path" not in _arguments
+                        and "file" in _arguments
+                    ):
+                        _arguments["path"] = _arguments.pop("file")
+
+                    if _tool_name:
+                        _parsed_calls[_idx] = {
+                            "id": f"dsml_{uuid.uuid4().hex}",
+                            "type": "function",
+                            "function": {
+                                "name": _tool_name,
+                                "arguments": json.dumps(
+                                    _arguments,
+                                    ensure_ascii=False,
+                                ),
+                            },
+                            "extra_content": None,
+                        }
+
+                if _parsed_calls:
+                    tool_calls_acc.update(_parsed_calls)
+
+                    _before = _dsml[:_tool_block_match.start()].strip()
+                    _after = _dsml[_tool_block_match.end():].strip()
+                    _remaining = "\n".join(
+                        part for part in (_before, _after) if part
+                    )
+                    full_content = _remaining or None
+
+                    logger.info(
+                        "Converted DeepSeek V4 DSML content to %d native "
+                        "Hermes tool call(s).",
+                        len(_parsed_calls),
+                    )
+
+        # DeepSeek V4 simple XML read_file compatibility fallback.
+        # Some compatible endpoints emit a textual read_file block instead
+        # of OpenAI-native structured tool_calls.
+        if (
+            not tool_calls_acc
+            and _provider_name == "deepseek"
+            and _model_name_lower.startswith("deepseek-v4-")
+            and isinstance(full_content, str)
+        ):
+            _xml_read_pattern = (
+                re.escape("<read_file>")
+                + r"\s*"
+                + re.escape("<path>")
+                + r"(.*?)"
+                + re.escape("</path>")
+                + r"\s*"
+                + re.escape("</read_file>")
+            )
+
+            _xml_read_match = re.search(
+                _xml_read_pattern,
+                full_content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+
+            if _xml_read_match:
+                _path = _xml_read_match.group(1).strip()
+
+                if _path:
+                    tool_calls_acc[0] = {
+                        "id": f"deepseek_xml_{uuid.uuid4().hex}",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps(
+                                {"path": _path},
+                                ensure_ascii=False,
+                            ),
+                        },
+                        "extra_content": None,
+                    }
+
+                    _before = full_content[:_xml_read_match.start()].strip()
+                    _after = full_content[_xml_read_match.end():].strip()
+                    _remaining = "\n".join(
+                        part for part in (_before, _after) if part
+                    )
+                    full_content = _remaining or None
+
+                    logger.info(
+                        "Converted DeepSeek V4 simple XML read_file content "
+                        "to native Hermes tool call."
+                    )
+
         mock_tool_calls = None
         has_truncated_tool_args = False
         if tool_calls_acc:

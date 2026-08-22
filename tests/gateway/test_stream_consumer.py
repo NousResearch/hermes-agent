@@ -6,7 +6,40 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+
+class _StaleAdapter(BasePlatformAdapter):
+    """Adapter loaded before per-chat capability methods were added."""
+
+    def __getattribute__(self, name):
+        if name == "message_len_fn_for_chat":
+            raise AttributeError(name)
+        return super().__getattribute__(name)
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def get_chat_info(self, chat_id: str):
+        return None
+
+    async def send(self, chat_id: str, content: str, **kwargs) -> SendResult:
+        return SendResult(success=True, message_id="message-1")
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_falls_back_for_stale_adapter_without_per_chat_len():
+    """An in-place update must not crash streams created with an old adapter class."""
+    adapter = _StaleAdapter(PlatformConfig(enabled=True), Platform.DISCORD)
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer.finish()
+
+    await consumer.run()
 
 
 def test_stream_send_metadata_carries_original_reply_anchor():

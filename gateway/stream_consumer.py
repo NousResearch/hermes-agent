@@ -849,11 +849,15 @@ class GatewayStreamConsumer:
         # Telegram 4096); native adapters return their scalar unchanged.
         # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
         # auto-attributes return mock objects, not callables) fall back to len.
-        _len_fn: "Callable[[str], int]" = (
-            self.adapter.message_len_fn_for_chat(self.chat_id)
-            if isinstance(self.adapter, _BasePlatformAdapter)
-            else len
-        )
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            _per_chat_len_fn = getattr(self.adapter, "message_len_fn_for_chat", None)
+            _len_fn = (
+                _per_chat_len_fn(self.chat_id)
+                if callable(_per_chat_len_fn)
+                else self.adapter.message_len_fn
+            )
+        else:
+            _len_fn = len
         # Rich-capable adapters (Telegram rich messages) raise this above the
         # legacy per-message limit so a reply that fits one rich send/draft
         # isn't fragmented at 4096 while streaming.  See _raw_message_limit.

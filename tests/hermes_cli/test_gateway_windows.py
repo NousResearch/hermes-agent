@@ -340,16 +340,26 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_deep_probe_warns_when_lock_ownership_is_unverifiable(
+    tmp_path, monkeypatch, capsys
+):
+    """Fail-closed lock uncertainty must not be labeled a live owner."""
+    import gateway.status as gateway_status
+    import hermes_cli.config as config
 
+    (tmp_path / "gateway.lock").touch()
+    monkeypatch.setattr(config, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        gateway_status,
+        "_probe_gateway_runtime_lock",
+        lambda path=None: "unverifiable",
+    )
 
+    gateway_windows._print_deep_probes()
+    output = capsys.readouterr().out
 
-
-
-
-
-
-
-
+    assert "WARN  Unable to verify lock ownership" in output
+    assert "PASS  Lock file held by a live process" not in output
 
 
 # ---------------------------------------------------------------------------

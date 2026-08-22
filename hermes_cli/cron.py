@@ -63,6 +63,13 @@ def _active_cron_provider_name() -> str:
         return "builtin"
 
 
+def _gateway_owner_status() -> dict:
+    """Return the shared-runtime owner state used by cron diagnostics."""
+    from importlib import import_module
+
+    return import_module("gateway.status").get_gateway_owner_status()
+
+
 def _warn_if_gateway_not_running() -> None:
     """Warn that scheduled jobs won't fire unless the gateway is running.
 
@@ -82,9 +89,7 @@ def _warn_if_gateway_not_running() -> None:
         if _active_cron_provider_name() != "builtin":
             return
 
-        from hermes_cli.gateway import find_gateway_pids
-
-        if find_gateway_pids():
+        if _gateway_owner_status().get("state") != "not_running":
             return
     except Exception:
         # If we can't determine gateway state, stay quiet rather than nag.
@@ -247,7 +252,6 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
 
     print()
 
@@ -275,8 +279,16 @@ def cron_status():
         print()
         return
 
-    pids = find_gateway_pids()
-    if pids:
+    try:
+        owner_status = _gateway_owner_status()
+    except Exception:
+        owner_status = {
+            "state": "unverifiable",
+            "pid": None,
+            "message": "Unable to determine gateway ownership from the runtime lock",
+        }
+    owner_state = owner_status.get("state")
+    if owner_state in {"local_pid_running", "shared_lock_active"}:
         # The gateway PROCESS is alive — but the cron ticker THREAD inside it
         # can die silently, or stay alive while every tick fails. Check both
         # the liveness heartbeat and the last-successful-tick marker so we
@@ -296,25 +308,45 @@ def cron_status():
         STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
         hb_age = get_ticker_heartbeat_age()
         ok_age = get_ticker_success_age()
+        shared_owner = owner_state == "shared_lock_active"
+        owner_pid = owner_status.get("pid")
+
+        def _print_owner_details() -> None:
+            if shared_owner:
+                print(f"  {owner_status.get('message') or 'Gateway owner may be in another namespace/container'}")
+                if owner_pid is not None:
+                    print(f"  Owner PID from shared metadata: {owner_pid}")
+            elif owner_pid is not None:
+                print(f"  PID: {owner_pid}")
 
         if hb_age is not None and hb_age > STALE_AFTER:
             # No heartbeat at all → the ticker thread is gone.
+            owner_label = (
+                "Gateway runtime lock is active but"
+                if shared_owner
+                else "Gateway is running but"
+            )
             print(color(
-                "⚠ Gateway is running but the cron ticker looks STALLED — "
+                f"⚠ {owner_label} the cron ticker looks STALLED — "
                 f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
                 Colors.YELLOW,
             ))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            _print_owner_details()
             print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
         elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
             # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
             # long time → ticks are failing every iteration.
+            owner_label = (
+                "Gateway runtime lock and cron ticker are active"
+                if shared_owner
+                else "Gateway and cron ticker are running"
+            )
             print(color(
-                "⚠ Gateway and cron ticker are running, but no tick has "
+                f"⚠ {owner_label}, but no tick has "
                 f"succeeded in {int(ok_age)}s — ticks may be failing.",
                 Colors.YELLOW,
             ))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            _print_owner_details()
             last_error = get_ticker_last_error()
             if last_error:
                 # Show WHY ticks fail — e.g. a root-rewritten jobs.json
@@ -341,10 +373,25 @@ def cron_status():
                     ))
             print("  Check the gateway log for 'Cron tick error'.")
         else:
-            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            if shared_owner:
+                print(color(
+                    "✓ Gateway runtime lock is active — cron jobs will fire automatically",
+                    Colors.GREEN,
+                ))
+            else:
+                print(color(
+                    "✓ Gateway is running — cron jobs will fire automatically",
+                    Colors.GREEN,
+                ))
+            _print_owner_details()
             if hb_age is not None:
                 print(f"  Ticker heartbeat: {int(hb_age)}s ago")
+    elif owner_state == "unverifiable":
+        print(color(
+            "⚠ Unable to determine gateway ownership; cron jobs may NOT be firing",
+            Colors.YELLOW,
+        ))
+        print("  Runtime lock state could not be verified; no lock metadata was removed.")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

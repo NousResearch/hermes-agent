@@ -79,13 +79,13 @@ class TestGatewayPidState:
 
         _write_record(111, 123)
 
-        calls = {"lock_active": 0}
+        calls = {"lock_probe": 0}
 
-        def _lock_active(lock_path=None):
-            calls["lock_active"] += 1
-            return True
+        def _lock_probe(lock_path=None):
+            calls["lock_probe"] += 1
+            return "active", None
 
-        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
+        monkeypatch.setattr(status, "_probe_gateway_runtime_lock_retained", _lock_probe)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123 if pid == 111 else 456)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
@@ -95,7 +95,7 @@ class TestGatewayPidState:
         _write_record(2222, 456)
 
         assert status.get_running_pid_cached(ttl_seconds=60) == 2222
-        assert calls["lock_active"] == 2
+        assert calls["lock_probe"] == 2
 
 
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
@@ -1149,56 +1149,232 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>KeepAlive</key>" in plist
 
 
+class TestGatewayOwnerStatus:
+    def _active_lock(self, monkeypatch):
+        monkeypatch.setattr(
+            status, "_probe_gateway_runtime_lock", lambda path=None: "active"
+        )
+
+    def test_matching_local_pid_and_start_time(self, tmp_path, monkeypatch):
+        self._active_lock(monkeypatch)
+        record = {"pid": 123, "start_time": 456}
+        monkeypatch.setattr(status, "_read_pid_record", lambda path: record)
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda path: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 456)
+        monkeypatch.setattr(status, "_record_matches_live_gateway_pid", lambda r, p: True)
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "local_pid_running"
+        assert owner["pid"] == 123
+
+    def test_pid_reuse_mismatch_falls_back_to_shared_owner(self, tmp_path, monkeypatch):
+        self._active_lock(monkeypatch)
+        record = {"pid": 123, "start_time": 456}
+        monkeypatch.setattr(status, "_read_pid_record", lambda path: record)
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda path: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "shared_lock_active"
+        assert owner["pid"] == 123
+
+    def test_invisible_pid_uses_shared_owner(self, tmp_path, monkeypatch):
+        self._active_lock(monkeypatch)
+        record = {"pid": 123, "start_time": 456}
+        monkeypatch.setattr(status, "_read_pid_record", lambda path: record)
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda path: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "shared_lock_active"
+        assert owner["pid"] == 123
+
+    def test_malformed_metadata_still_reports_shared_owner(self, tmp_path, monkeypatch):
+        self._active_lock(monkeypatch)
+        monkeypatch.setattr(status, "_read_pid_record", lambda path: None)
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda path: None)
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "shared_lock_active"
+        assert owner["pid"] is None
+
+
+    def test_inactive_lock_reports_not_running(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            status, "_probe_gateway_runtime_lock", lambda path=None: "inactive"
+        )
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "not_running"
+
+    def test_unverifiable_lock_reports_unverifiable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            status, "_probe_gateway_runtime_lock", lambda path=None: "unverifiable"
+        )
+
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+
+        assert owner["state"] == "unverifiable"
+
+
+class TestRunningPidCleanup:
+    @pytest.mark.parametrize("lock_state", ["active", "unverifiable"])
+    def test_live_or_unknown_lock_preserves_metadata(
+        self, lock_state, tmp_path, monkeypatch
+    ):
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text("stale-pid", encoding="utf-8")
+        lock_path.write_text("stale-lock", encoding="utf-8")
+        monkeypatch.setattr(
+            status,
+            "_probe_gateway_runtime_lock_retained",
+            lambda path=None: (lock_state, None),
+        )
+
+        assert status.get_running_pid(pid_path) is None
+        assert pid_path.read_text(encoding="utf-8") == "stale-pid"
+        assert lock_path.read_text(encoding="utf-8") == "stale-lock"
+
+    @pytest.mark.parametrize("cleanup_stale", [True, False])
+    def test_only_proven_inactive_metadata_is_optionally_cleaned(
+        self, cleanup_stale, tmp_path
+    ):
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text("stale-pid", encoding="utf-8")
+        lock_path.write_text("stale-lock", encoding="utf-8")
+
+        assert status.get_running_pid(pid_path, cleanup_stale=cleanup_stale) is None
+        assert pid_path.exists() is not cleanup_stale
+        assert lock_path.exists(), "unlocked gateway.lock is reusable and must persist"
+
+    def test_cleanup_holds_lock_against_concurrent_startup(self, tmp_path, monkeypatch):
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text("stale-pid", encoding="utf-8")
+        lock_path.write_text("stale-lock", encoding="utf-8")
+        state = {"probe_locked": False, "cleanup_ran": False}
+        real_probe = status._probe_file_lock
+        real_release = status._release_file_lock
+        real_cleanup = status._cleanup_invalid_pid_path
+
+        def tracked_probe(handle):
+            result = real_probe(handle)
+            if result == "acquired":
+                state["probe_locked"] = True
+            return result
+
+        def tracked_release(handle):
+            real_release(handle)
+            state["probe_locked"] = False
+
+        def cleanup_while_locked(path, *, cleanup_stale):
+            assert state["probe_locked"], "probe lock released before stale cleanup"
+            with lock_path.open("a+", encoding="utf-8") as contender:
+                assert real_probe(contender) == "contended"
+            state["cleanup_ran"] = True
+            real_cleanup(path, cleanup_stale=cleanup_stale)
+
+        monkeypatch.setattr(status, "_probe_file_lock", tracked_probe)
+        monkeypatch.setattr(status, "_release_file_lock", tracked_release)
+        monkeypatch.setattr(status, "_cleanup_invalid_pid_path", cleanup_while_locked)
+
+        assert status.get_running_pid(pid_path) is None
+        assert state["cleanup_ran"] is True
+        assert not pid_path.exists()
+        assert lock_path.read_text(encoding="utf-8") == "stale-lock"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permits unlinking open lock files")
+    def test_cleanup_rejects_detached_inactive_probe(self, tmp_path, monkeypatch):
+        """A probe of a replaced inode must not delete the live owner's PID."""
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text("stale-pid", encoding="utf-8")
+        lock_path.write_text("stale-lock", encoding="utf-8")
+        real_open = open
+        real_probe = status._probe_file_lock
+        replacement = {"handle": None, "inode": None, "interleaved": False}
+
+        def interleave_replacement(handle):
+            if not replacement["interleaved"]:
+                replacement["interleaved"] = True
+                old_owner = real_open(lock_path, "a+", encoding="utf-8")
+                assert real_probe(old_owner) == "acquired"
+                lock_path.unlink()
+                new_owner = real_open(lock_path, "x+", encoding="utf-8")
+                assert real_probe(new_owner) == "acquired"
+                replacement["handle"] = new_owner
+                replacement["inode"] = os.fstat(new_owner.fileno()).st_ino
+                pid_path.write_text("live-owner", encoding="utf-8")
+                status._release_file_lock(old_owner)
+                old_owner.close()
+            return real_probe(handle)
+
+        monkeypatch.setattr(status, "_probe_file_lock", interleave_replacement)
+
+        try:
+            assert status.get_running_pid(pid_path, cleanup_stale=True) is None
+            assert pid_path.read_text(encoding="utf-8") == "live-owner"
+            assert lock_path.stat().st_ino == replacement["inode"]
+        finally:
+            replacement_handle = replacement["handle"]
+            if replacement_handle is not None:
+                status._release_file_lock(replacement_handle)
+                replacement_handle.close()
+
+
 class TestPermissionErrorOnLockFile:
     """Stale root-owned lock files from launchd Background sessions must not
     crash the gateway on restart (issue #42685)."""
 
-    def test_permission_error_on_lock_file_returns_false_and_removes(self, tmp_path, monkeypatch):
-        """When the lock file is not writable (root-owned), the function should
-        remove the stale file and report the lock as inactive."""
+    def test_permission_error_with_active_read_only_lock_is_preserved(
+        self, tmp_path, monkeypatch
+    ):
+        """A writable-open failure must not unlink a lock proven active."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
+        lock_path.write_text("active-owner", encoding="utf-8")
 
         real_open = open
 
-        def deny_write(path, *args, **kwargs):
+        def deny_write(path, mode="r", *args, **kwargs):
+            if str(path) == str(lock_path) and "+" in mode:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+        monkeypatch.setattr(status, "_probe_file_lock", lambda handle: "contended")
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+        assert lock_path.read_text(encoding="utf-8") == "active-owner"
+
+    def test_unreadable_lock_is_unverifiable_and_preserved(self, tmp_path, monkeypatch):
+        """No access means unknown ownership, never permission to unlink."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("unknown-owner", encoding="utf-8")
+
+        real_open = open
+
+        def deny_lock_open(path, *args, **kwargs):
             if str(path) == str(lock_path):
                 raise PermissionError(13, "Permission denied", str(path))
             return real_open(path, *args, **kwargs)
 
-        monkeypatch.setattr("builtins.open", deny_write)
+        monkeypatch.setattr("builtins.open", deny_lock_open)
 
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-        assert not lock_path.exists(), "stale root-owned lock file should be removed"
-
-    def test_permission_error_unlink_failure_still_returns_false(self, tmp_path, monkeypatch):
-        """Even if unlinking the stale lock file fails (e.g. directory not writable),
-        the function should still return False to allow startup."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            if str(path) == str(lock_path):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        real_unlink = Path.unlink
-
-        def deny_unlink(self, *args, **kwargs):
-            if str(self) == str(lock_path):
-                raise OSError(13, "Permission denied", str(self))
-            return real_unlink(self, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-        monkeypatch.setattr(Path, "unlink", deny_unlink)
-
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
+        owner = status.get_gateway_owner_status(tmp_path / "gateway.pid")
+        assert owner["state"] == "unverifiable"
+        assert lock_path.exists()
 
     def test_acquire_gateway_runtime_lock_recovers_from_permission_error(self, tmp_path, monkeypatch):
         """acquire_gateway_runtime_lock must survive a stale root-owned lock
@@ -1210,17 +1386,17 @@ class TestPermissionErrorOnLockFile:
 
         real_open = open
 
-        def deny_write(path, *args, **kwargs):
-            # Simulate a root-owned file: opening fails while the ORIGINAL
-            # stale file is still on disk; after unlink, the fresh file the
-            # retry creates opens fine.
+        def deny_write(path, mode="r", *args, **kwargs):
+            # Simulate a readable root-owned stale file: writable open fails,
+            # but a read-only flock probe can prove that no owner holds it.
             if (
                 str(path) == str(lock_path)
+                and "+" in mode
                 and lock_path.exists()
                 and lock_path.read_text(encoding="utf-8") == "stale"
             ):
                 raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
+            return real_open(path, mode, *args, **kwargs)
 
         monkeypatch.setattr("builtins.open", deny_write)
 
@@ -1228,6 +1404,287 @@ class TestPermissionErrorOnLockFile:
             assert status.acquire_gateway_runtime_lock() is True
         finally:
             status.release_gateway_runtime_lock()
+
+    @pytest.mark.parametrize("lock_result", ["contended", "error"])
+    def test_acquire_preserves_active_or_unverifiable_path(
+        self, lock_result, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("other-owner", encoding="utf-8")
+        old_inode = lock_path.stat().st_ino
+        real_open = open
+
+        def deny_write(path, mode="r", *args, **kwargs):
+            if str(path) == str(lock_path) and "+" in mode:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+        monkeypatch.setattr(status, "_probe_file_lock", lambda handle: lock_result)
+
+        assert status.acquire_gateway_runtime_lock() is False
+        assert lock_path.stat().st_ino == old_inode
+        assert lock_path.read_text(encoding="utf-8") == "other-owner"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permits unlinking open lock files")
+    def test_normal_acquire_rejects_inode_replaced_between_open_and_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """A normal opener must not own an inode detached before its flock."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+        real_open = open
+        real_probe = status._probe_file_lock
+        replacement = {"handle": None, "inode": None, "interleaved": False}
+
+        def interleave_replacement(handle):
+            if not replacement["interleaved"]:
+                replacement["interleaved"] = True
+                old_owner = real_open(lock_path, "a+", encoding="utf-8")
+                assert real_probe(old_owner) == "acquired"
+                lock_path.unlink()
+                new_owner = real_open(lock_path, "x+", encoding="utf-8")
+                assert real_probe(new_owner) == "acquired"
+                replacement["handle"] = new_owner
+                replacement["inode"] = os.fstat(new_owner.fileno()).st_ino
+                status._release_file_lock(old_owner)
+                old_owner.close()
+            return real_probe(handle)
+
+        monkeypatch.setattr(status, "_probe_file_lock", interleave_replacement)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock_path.stat().st_ino == replacement["inode"]
+            with real_open(lock_path, "a+", encoding="utf-8") as contender:
+                assert real_probe(contender) == "contended"
+        finally:
+            status.release_gateway_runtime_lock()
+            replacement_handle = replacement["handle"]
+            if replacement_handle is not None:
+                status._release_file_lock(replacement_handle)
+                replacement_handle.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permits unlinking open lock files")
+    def test_recovery_rejects_replacement_inode_detached_before_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """A recoverer must validate the new pathname after locking it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+        original_inode = lock_path.stat().st_ino
+        real_open = open
+        real_probe = status._probe_file_lock
+        replacement = {"handle": None, "inode": None, "probe_count": 0}
+
+        def deny_initial_write(path, mode="r", *args, **kwargs):
+            if (
+                str(path) == str(lock_path)
+                and mode == "a+"
+                and lock_path.exists()
+                and lock_path.stat().st_ino == original_inode
+            ):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, mode, *args, **kwargs)
+
+        def detach_new_inode_before_its_lock(handle):
+            replacement["probe_count"] += 1
+            if replacement["probe_count"] == 2:
+                transient_owner = real_open(lock_path, "a+", encoding="utf-8")
+                assert real_probe(transient_owner) == "acquired"
+                lock_path.unlink()
+                new_owner = real_open(lock_path, "x+", encoding="utf-8")
+                assert real_probe(new_owner) == "acquired"
+                replacement["handle"] = new_owner
+                replacement["inode"] = os.fstat(new_owner.fileno()).st_ino
+                status._release_file_lock(transient_owner)
+                transient_owner.close()
+            return real_probe(handle)
+
+        monkeypatch.setattr("builtins.open", deny_initial_write)
+        monkeypatch.setattr(status, "_probe_file_lock", detach_new_inode_before_its_lock)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock_path.stat().st_ino == replacement["inode"]
+            with real_open(lock_path, "a+", encoding="utf-8") as contender:
+                assert real_probe(contender) == "contended"
+        finally:
+            status.release_gateway_runtime_lock()
+            replacement_handle = replacement["handle"]
+            if replacement_handle is not None:
+                status._release_file_lock(replacement_handle)
+                replacement_handle.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permits unlinking open lock files")
+    def test_stale_recovery_rejects_replaced_path_after_open(
+        self, tmp_path, monkeypatch
+    ):
+        """A detached stale descriptor must never unlink a replacement owner."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+        original_inode = lock_path.stat().st_ino
+        real_open = open
+        real_probe = status._probe_file_lock
+        real_unlink = Path.unlink
+        replacement = {"handle": None, "inode": None, "interleaved": False}
+
+        def deny_initial_write(path, mode="r", *args, **kwargs):
+            if (
+                str(path) == str(lock_path)
+                and mode == "a+"
+                and lock_path.exists()
+                and lock_path.stat().st_ino == original_inode
+            ):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, mode, *args, **kwargs)
+
+        def interleave_replacement(handle):
+            if not replacement["interleaved"]:
+                replacement["interleaved"] = True
+                old_owner = real_open(lock_path, "a+", encoding="utf-8")
+                assert real_probe(old_owner) == "acquired"
+                real_unlink(lock_path)
+                new_owner = real_open(lock_path, "x+", encoding="utf-8")
+                assert real_probe(new_owner) == "acquired"
+                replacement["handle"] = new_owner
+                replacement["inode"] = os.fstat(new_owner.fileno()).st_ino
+                status._release_file_lock(old_owner)
+                old_owner.close()
+            return real_probe(handle)
+
+        monkeypatch.setattr("builtins.open", deny_initial_write)
+        monkeypatch.setattr(status, "_probe_file_lock", interleave_replacement)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock_path.stat().st_ino == replacement["inode"]
+            with real_open(lock_path, "a+", encoding="utf-8") as contender:
+                assert real_probe(contender) == "contended"
+        finally:
+            status.release_gateway_runtime_lock()
+            replacement_handle = replacement["handle"]
+            if replacement_handle is not None:
+                status._release_file_lock(replacement_handle)
+                replacement_handle.close()
+
+    def test_stale_recovery_holds_old_lock_until_replacement_is_locked(
+        self, tmp_path, monkeypatch
+    ):
+        """No competitor can acquire the old inode during lock replacement."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = status._get_gateway_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+        old_inode = lock_path.stat().st_ino
+        state = {"old_locked": False, "recovery_unlinked": False}
+        real_open = open
+        real_probe = status._probe_file_lock
+        real_release = status._release_file_lock
+        real_unlink = Path.unlink
+
+        def deny_initial_write(path, mode="r", *args, **kwargs):
+            if (
+                str(path) == str(lock_path)
+                and mode == "a+"
+                and lock_path.exists()
+                and lock_path.stat().st_ino == old_inode
+            ):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, mode, *args, **kwargs)
+
+        def note_acquired(handle, result):
+            if result and os.fstat(handle.fileno()).st_ino == old_inode:
+                state["old_locked"] = True
+            elif result:
+                assert state["old_locked"], "replacement locked after old lock released"
+
+        def tracked_try(handle):
+            result = real_probe(handle) == "acquired"
+            note_acquired(handle, result)
+            return result
+
+        def tracked_probe(handle):
+            result = real_probe(handle)
+            note_acquired(handle, result == "acquired")
+            return result
+
+        def tracked_release(handle):
+            inode = os.fstat(handle.fileno()).st_ino
+            real_release(handle)
+            if inode == old_inode:
+                state["old_locked"] = False
+
+        def require_old_lock_during_recovery(self, *args, **kwargs):
+            if str(self) == str(lock_path) and not state["recovery_unlinked"]:
+                assert state["old_locked"], "old inode was unlocked before unlink"
+                state["recovery_unlinked"] = True
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_initial_write)
+        monkeypatch.setattr(status, "_try_acquire_file_lock", tracked_try)
+        monkeypatch.setattr(status, "_probe_file_lock", tracked_probe, raising=False)
+        monkeypatch.setattr(status, "_release_file_lock", tracked_release)
+        monkeypatch.setattr(Path, "unlink", require_old_lock_during_recovery)
+
+        try:
+            assert status.acquire_gateway_runtime_lock() is True
+            assert state["recovery_unlinked"] is True
+            assert lock_path.stat().st_ino != old_inode
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_lock_operation_error_is_unverifiable(self, tmp_path, monkeypatch):
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("metadata", encoding="utf-8")
+        monkeypatch.setattr(
+            status, "_probe_file_lock", lambda handle: "error", raising=False
+        )
+
+        assert status._probe_gateway_runtime_lock(lock_path) == "unverifiable"
+        assert lock_path.exists()
+
+    def test_windows_read_only_write_failure_is_lock_error(self, tmp_path, monkeypatch):
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.touch()
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        with lock_path.open("r", encoding="utf-8") as handle:
+            assert status._probe_file_lock(handle) == "error"
+
+    def test_unrecognized_lock_oserror_is_not_contention(self, tmp_path, monkeypatch):
+        import errno
+
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.touch()
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def unsupported(*args, **kwargs):
+            raise OSError(errno.ENOTSUP, "locking unsupported")
+
+        monkeypatch.setattr(status.fcntl, "flock", unsupported)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            assert status._probe_file_lock(handle) == "error"
+
+    def test_blocking_lock_error_is_contention(self, tmp_path, monkeypatch):
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.touch()
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def blocked(*args, **kwargs):
+            raise BlockingIOError()
+
+        monkeypatch.setattr(status.fcntl, "flock", blocked)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            assert status._probe_file_lock(handle) == "contended"
 
 
 class TestNormalizeUpdatedAt:

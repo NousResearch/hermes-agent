@@ -12,6 +12,7 @@ concurrently under distinct configurations).
 """
 
 import copy
+import errno
 import hashlib
 import json
 import logging
@@ -768,24 +769,18 @@ def _running_pid_cache_signature(
 
 
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Delete a stale gateway PID file (and its sibling lock metadata).
+    """Delete stale gateway PID metadata while the runtime lock is retained.
 
-    Called from ``get_running_pid()`` after the runtime lock has already been
-    confirmed inactive, so the on-disk metadata is known to belong to a dead
-    process.  Unlike ``remove_pid_file()`` (which defensively refuses to delete
-    a PID file whose ``pid`` field differs from ``os.getpid()`` to protect
-    ``--replace`` handoffs), this path force-unlinks both files so the next
-    startup sees a clean slate.
+    The caller must hold the sibling runtime lock continuously from inactivity
+    classification through this cleanup. The lock pathname itself is reusable
+    and must never be unlinked here: doing so would allow a concurrent startup
+    to keep the old inode locked while another process creates a new one.
     """
     if not cleanup_stale:
         return
     _clear_running_pid_cache()
     try:
         pid_path.unlink(missing_ok=True)
-    except Exception:
-        pass
-    try:
-        _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -801,7 +796,8 @@ def _write_gateway_lock_record(handle) -> None:
         pass
 
 
-def _try_acquire_file_lock(handle) -> bool:
+def _probe_file_lock(handle) -> str:
+    """Return ``acquired``, ``contended``, or ``error`` for one lock attempt."""
     try:
         if _IS_WINDOWS:
             handle.seek(0, os.SEEK_END)
@@ -812,9 +808,20 @@ def _try_acquire_file_lock(handle) -> bool:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except (BlockingIOError, OSError):
-        return False
+        return "acquired"
+    except BlockingIOError:
+        return "contended"
+    except OSError as exc:
+        contention_errnos = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+        contention_winerrors = {33, 36}  # lock violation / sharing buffer exceeded
+        if exc.errno in contention_errnos or getattr(exc, "winerror", None) in contention_winerrors:
+            return "contended"
+        return "error"
+
+
+def _try_acquire_file_lock(handle) -> bool:
+    """Compatibility wrapper for callers that only need acquired/not acquired."""
+    return _probe_file_lock(handle) == "acquired"
 
 
 def _pid_exists(pid: int) -> bool:
@@ -947,6 +954,16 @@ def _release_file_lock(handle) -> None:
         pass
 
 
+def _locked_handle_matches_path(handle, path: Path) -> bool:
+    """Return whether a locked descriptor still owns the pathname's inode."""
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        handle_stat = os.fstat(handle.fileno())
+    except OSError:
+        return False
+    return os.path.samestat(path_stat, handle_stat)
+
+
 def acquire_gateway_runtime_lock() -> bool:
     """Claim the cross-process runtime lock for the gateway.
 
@@ -962,23 +979,59 @@ def acquire_gateway_runtime_lock() -> bool:
     try:
         handle = open(path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root (same failure mode handled in
-        # is_gateway_runtime_lock_active).  The parent directory owner can
-        # unlink files even when they don't own them, so remove the stale
-        # lock and retry once with a fresh file.
+        # Recover a readable stale file without a probe/unlink race. Keep the
+        # old inode locked until a replacement inode has been exclusively
+        # created and locked; any contender must therefore lose on one inode
+        # or the other rather than becoming a second owner.
         try:
-            path.unlink()
+            old_handle = open(path, "r", encoding="utf-8")
         except OSError:
             return False
         try:
-            handle = open(path, "a+", encoding="utf-8")
-        except OSError:
+            if _probe_file_lock(old_handle) != "acquired":
+                return False
+            if not _locked_handle_matches_path(old_handle, path):
+                return False
+            try:
+                path.unlink()
+                handle = open(path, "x+", encoding="utf-8")
+            except OSError:
+                return False
+            lock_result = _probe_file_lock(handle)
+            if lock_result != "acquired" or not _locked_handle_matches_path(handle, path):
+                if lock_result == "acquired":
+                    _release_file_lock(handle)
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+                return False
+        finally:
+            _release_file_lock(old_handle)
+            try:
+                old_handle.close()
+            except OSError:
+                pass
+    else:
+        lock_result = _probe_file_lock(handle)
+        if lock_result != "acquired" or not _locked_handle_matches_path(handle, path):
+            if lock_result == "acquired":
+                _release_file_lock(handle)
+            try:
+                handle.close()
+            except OSError:
+                pass
             return False
-    if not _try_acquire_file_lock(handle):
-        handle.close()
-        return False
-    _write_gateway_lock_record(handle)
+
+    try:
+        _write_gateway_lock_record(handle)
+    except Exception:
+        _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
+        raise
     _gateway_lock_handle = handle
     _clear_running_pid_cache()
     return True
@@ -999,38 +1052,80 @@ def release_gateway_runtime_lock() -> None:
     _clear_running_pid_cache()
 
 
-def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
-    """Return True when some process currently owns the gateway runtime lock."""
+def _probe_gateway_runtime_lock_retained(
+    lock_path: Optional[Path] = None,
+) -> tuple[str, Optional[Any]]:
+    """Probe ownership, retaining the descriptor when inactivity is proven.
+
+    Callers receiving an ``inactive`` state and a handle must release and close
+    it. Keeping that handle locked lets stale PID cleanup run atomically with
+    respect to gateway startup.
+    """
     global _gateway_lock_handle
     resolved_lock_path = lock_path or _get_gateway_lock_path()
     if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
-        return True
-
-    if not resolved_lock_path.exists():
-        return False
+        return "active", None
 
     try:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root.  The parent directory owner can unlink
-        # files even when they don't own them, so remove the stale lock
-        # and report inactive — the new process will create a fresh one.
         try:
-            resolved_lock_path.unlink()
+            handle = open(resolved_lock_path, "r", encoding="utf-8")
         except OSError:
-            pass
-        return False
-    try:
-        if _try_acquire_file_lock(handle):
-            _release_file_lock(handle)
-            return False
-        return True
-    finally:
+            return "unverifiable", None
+    except OSError:
+        return "unverifiable", None
+
+    lock_result = _probe_file_lock(handle)
+    if lock_result == "acquired":
+        if _locked_handle_matches_path(handle, resolved_lock_path):
+            return "inactive", handle
+        _release_file_lock(handle)
         try:
             handle.close()
         except OSError:
             pass
+        return "unverifiable", None
+    try:
+        handle.close()
+    except OSError:
+        pass
+    if lock_result == "contended":
+        return "active", None
+    return "unverifiable", None
+
+
+def _probe_gateway_runtime_lock(lock_path: Optional[Path] = None) -> str:
+    """Return ``active``, ``inactive``, or ``unverifiable`` for the lock.
+
+    This read-only status wrapper releases an inactivity probe immediately.
+    Cleanup paths that need an atomic decision use the retained variant.
+    """
+    resolved_lock_path = lock_path or _get_gateway_lock_path()
+    try:
+        if not resolved_lock_path.exists():
+            return "inactive"
+    except OSError:
+        return "unverifiable"
+
+    lock_state, handle = _probe_gateway_runtime_lock_retained(resolved_lock_path)
+    if handle is not None:
+        _release_file_lock(handle)
+        try:
+            handle.close()
+        except OSError:
+            pass
+    return lock_state
+
+
+def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
+    """Return True unless the gateway runtime lock is proven inactive.
+
+    Treat an unprobeable lock as active for this legacy boolean interface. This
+    prevents cleanup and split-brain startup when shared storage permissions do
+    not allow the caller to verify the owner's lock directly.
+    """
+    return _probe_gateway_runtime_lock(lock_path) != "inactive"
 
 
 def write_pid_file() -> None:
@@ -2299,26 +2394,98 @@ def clear_planned_stop_marker() -> None:
         pass
 
 
+def get_gateway_owner_status(pid_path: Optional[Path] = None) -> dict[str, Any]:
+    """Return scheduler-owner status without requiring local PID visibility.
+
+    A gateway in another container or process namespace can hold the runtime
+    lock for a shared ``HERMES_HOME`` even though its PID cannot be inspected
+    locally.  Cron diagnostics must treat that lock as an active owner instead
+    of reporting that scheduled jobs will not fire.
+    """
+    resolved_pid_path = pid_path or _get_pid_path()
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    lock_state = _probe_gateway_runtime_lock(resolved_lock_path)
+    if lock_state == "inactive":
+        return {
+            "state": "not_running",
+            "pid": None,
+            "message": "No active gateway runtime lock found",
+        }
+    if lock_state == "unverifiable":
+        return {
+            "state": "unverifiable",
+            "pid": None,
+            "message": "Unable to determine gateway ownership from the runtime lock",
+        }
+
+    best_pid: Optional[int] = None
+    records = (
+        _read_pid_record(resolved_pid_path),
+        _read_gateway_lock_record(resolved_lock_path),
+    )
+    for record in records:
+        if not record:
+            continue
+        pid = _pid_from_record(record)
+        if pid is None:
+            continue
+        if best_pid is None:
+            best_pid = pid
+        if not _pid_exists(pid):
+            continue
+
+        recorded_start = record.get("start_time")
+        current_start = _get_process_start_time(pid)
+        if (
+            recorded_start is not None
+            and current_start is not None
+            and current_start != recorded_start
+        ):
+            continue
+
+        if _record_matches_live_gateway_pid(record, pid):
+            return {
+                "state": "local_pid_running",
+                "pid": pid,
+                "message": "Gateway PID is running in this namespace",
+            }
+
+    return {
+        "state": "shared_lock_active",
+        "pid": best_pid,
+        "message": "Gateway owner may be in another namespace/container",
+    }
+
+
 def get_running_pid(
     pid_path: Optional[Path] = None,
     *,
     cleanup_stale: bool = True,
 ) -> Optional[int]:
-    """Return the PID of a running gateway instance, or ``None``.
+    """Return the PID of a locally visible gateway instance, or ``None``.
 
-    Checks the PID file and verifies the process is actually alive.
-    Cleans up stale PID files automatically.
+    Stale metadata is cleaned only when the runtime lock is not held. An active
+    lock may belong to a gateway in another process namespace/container, where
+    its PID cannot be verified by this process.
     """
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
-    lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
-    if not lock_active:
-        if pid_path is None:
-            runtime_pid = get_runtime_status_running_pid()
-            if runtime_pid is not None:
-                return runtime_pid
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return None
+    lock_state, probe_handle = _probe_gateway_runtime_lock_retained(resolved_lock_path)
+    if lock_state == "inactive":
+        try:
+            if pid_path is None:
+                runtime_pid = get_runtime_status_running_pid()
+                if runtime_pid is not None:
+                    return runtime_pid
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+            return None
+        finally:
+            if probe_handle is not None:
+                _release_file_lock(probe_handle)
+                try:
+                    probe_handle.close()
+                except OSError:
+                    pass
 
     primary_record = _read_pid_record(resolved_pid_path)
     fallback_record = _read_gateway_lock_record(resolved_lock_path)
@@ -2339,7 +2506,6 @@ def get_running_pid(
         if _record_matches_live_gateway_pid(record, pid):
             return pid
 
-    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     if pid_path is None:
         runtime_pid = get_runtime_status_running_pid()
         if runtime_pid is not None:

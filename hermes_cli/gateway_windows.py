@@ -1356,14 +1356,18 @@ def _print_deep_probes() -> None:
         print(f"  [1] {_mark(False):4s}  PID file missing: {pid_path}")
 
     # [2] Lock file present + held
-    lock_held = False
     lock_present = lock_path.exists()
     if lock_present:
         try:
-            from gateway.status import is_gateway_runtime_lock_active
+            from gateway.status import _probe_gateway_runtime_lock
 
-            lock_held = is_gateway_runtime_lock_active(lock_path)
-            print(f"  [2] {_mark(lock_held):4s}  Lock file held by a live process: {lock_path}")
+            lock_state = _probe_gateway_runtime_lock(lock_path)
+            if lock_state == "active":
+                print(f"  [2] PASS  Lock file held by a live process: {lock_path}")
+            elif lock_state == "inactive":
+                print(f"  [2] FAIL  Lock file is not held: {lock_path}")
+            else:
+                print(f"  [2] WARN  Unable to verify lock ownership: {lock_path}")
         except Exception as exc:
             print(f"  [2] {_mark(False):4s}  Could not probe lock: {exc}")
     else:

@@ -140,10 +140,68 @@ class TestGatewayNotRunningWarning:
 
     def test_list_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
         create_job(prompt="Daily report", schedule="0 11 * * *")
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            cron_cli,
+            "_gateway_owner_status",
+            lambda: {"state": "not_running", "pid": None},
+        )
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
         assert "Gateway is not running" in out
+
+
+class TestSharedGatewayOwnerStatus:
+    def _shared_owner(self, monkeypatch):
+        monkeypatch.setattr(
+            cron_cli,
+            "_gateway_owner_status",
+            lambda: {
+                "state": "shared_lock_active",
+                "pid": 987654321,
+                "message": "Gateway owner may be in another namespace/container",
+            },
+        )
+
+    def test_list_suppresses_absent_warning(self, tmp_cron_dir, capsys, monkeypatch):
+        create_job(prompt="Daily report", schedule="0 11 * * *")
+        self._shared_owner(monkeypatch)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Gateway is not running" not in out
+
+    def test_status_retains_stalled_ticker_warning(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        create_job(prompt="Daily report", schedule="0 11 * * *")
+        self._shared_owner(monkeypatch)
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 999.0)
+        monkeypatch.setattr("cron.jobs.get_ticker_success_age", lambda: 5.0)
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "STALLED" in out
+        assert "another namespace/container" in out
+        assert "will fire automatically" not in out
+
+    def test_status_retains_failing_ticker_warning(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        create_job(prompt="Daily report", schedule="0 11 * * *")
+        self._shared_owner(monkeypatch)
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 5.0)
+        monkeypatch.setattr("cron.jobs.get_ticker_success_age", lambda: 999.0)
+        monkeypatch.setattr("cron.jobs.get_ticker_last_error", lambda: "synthetic failure")
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "ticks may be failing" in out
+        assert "synthetic failure" in out
+        assert "another namespace/container" in out
+        assert "will fire automatically" not in out
 
 
 class TestExternalCronProviderStatus:
@@ -164,7 +222,11 @@ class TestExternalCronProviderStatus:
         )
         # Even with NO gateway process and NO ticker heartbeat, Chronos status
         # must NOT report a stall / "not firing".
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            cron_cli,
+            "_gateway_owner_status",
+            lambda: {"state": "not_running", "pid": None},
+        )
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
         assert "chronos" in out
@@ -184,7 +246,11 @@ class TestExternalCronProviderStatus:
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
         )
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            cron_cli,
+            "_gateway_owner_status",
+            lambda: {"state": "not_running", "pid": None},
+        )
         cron_command(
             Namespace(
                 cron_command="create",
@@ -220,7 +286,11 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
             }
         ],
     )
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr(
+        cron_cli,
+        "_gateway_owner_status",
+        lambda: {"state": "not_running", "pid": None},
+    )
     monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
 
     cron_cli.cron_list()

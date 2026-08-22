@@ -1029,6 +1029,44 @@ class TestEdgeCases:
         assert cloned_config["model"] == "cloned"
         assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
 
+    def test_clone_skips_root_owned_recovery_paths(self, profile_env):
+        """#91850: root-owned paths in the source home must not abort the clone.
+
+        `lost+found` (filesystem-created, root:root 0700 on ext*) and
+        `portal-recovery` (root-owned recovery snapshots) previously hit
+        PermissionError inside copytree and killed the whole profile
+        creation, leaving a partial directory behind. Both are excluded by
+        name: neither is ever useful in a cloned profile. The dirs are
+        created 0700 without chown to simulate the unreadable shape.
+        """
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        # Simulate root-only shapes: contents written first, then the parent
+        # dir goes 0o000 so copytree could never read inside (#91850).
+        lost = default_home / "lost+found"
+        lost.mkdir()
+        (lost / "inside").write_text("unreachable")
+        recovery = default_home / "portal-recovery" / "snapshots" / "last-ready"
+        recovery.mkdir(parents=True)
+        (recovery / "config.yaml").write_text("root:root 0640 in reality")
+        lost.chmod(0o000)
+        (default_home / "portal-recovery" / "snapshots").chmod(0o000)
+
+        try:
+            profile_dir = create_profile("luna", clone_config=True, no_alias=True)
+        finally:
+            # Restore modes so tmp_path cleanup can delete the tree.
+            lost.chmod(0o700)
+            (default_home / "portal-recovery" / "snapshots").chmod(0o700)
+
+        # The clone succeeded and carried the readable config…
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cloned_config["model"] == "test"
+        # …and neither root-owned path was copied.
+        assert not (profile_dir / "lost+found").exists()
+        assert not (profile_dir / "portal-recovery").exists()
+
 
 
 class TestProfilesToServe:

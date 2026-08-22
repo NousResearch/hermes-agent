@@ -1885,7 +1885,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 
     Checks:
       1. active_provider in auth.json matches
-      2. model.provider in config.yaml matches
+      2. model.provider or a provider-specific section in config.yaml matches
       3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
     This is used to gate auto-discovery of external credentials (e.g.
@@ -1912,6 +1912,26 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         if isinstance(model_cfg, dict):
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
+                return True
+
+        # Vertex has no static API key or credential-pool entry. Its setup flow
+        # instead writes a dedicated ``vertex:`` section, which is still an
+        # explicit provider choice even after the user switches their primary
+        # model elsewhere. Read the raw config so DEFAULT_CONFIG cannot make
+        # Vertex appear explicitly configured for every installation.
+        if normalized == "vertex":
+            from hermes_cli.config import get_env_value, read_raw_config
+
+            vertex_cfg = read_raw_config().get("vertex")
+            if isinstance(vertex_cfg, dict) and any(
+                str(value).strip()
+                for value in vertex_cfg.values()
+                if value is not None
+            ):
+                return True
+            # This variable is specific to Hermes' documented Vertex setup,
+            # unlike ambient GOOGLE_APPLICATION_CREDENTIALS or ADC state.
+            if str(get_env_value("VERTEX_CREDENTIALS_PATH") or "").strip():
                 return True
 
         # MoA presets are explicit model selections too.  A user who configured

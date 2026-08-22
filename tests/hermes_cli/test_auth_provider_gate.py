@@ -75,6 +75,62 @@ def test_returns_true_when_moa_reference_slot_uses_provider(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("anthropic") is True
 
 
+def test_vertex_section_counts_as_explicit_configuration(tmp_path, monkeypatch):
+    """The Vertex setup flow persists its explicit choice under ``vertex:``."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("VERTEX_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    _write_config(tmp_path, {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "vertex": {
+            "project_id": "example-project",
+            "region": "global",
+        },
+    })
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("vertex") is True
+
+
+def test_vertex_credentials_path_counts_as_explicit_configuration(tmp_path, monkeypatch):
+    """Hermes' Vertex-specific credential path is an explicit opt-in."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", "/tmp/example-service-account.json")
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    _write_config(tmp_path, {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+    })
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("vertex") is True
+
+
+def test_default_vertex_config_does_not_count_as_explicit(tmp_path, monkeypatch):
+    """Merged defaults alone must not make Vertex visible in every picker."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+    })
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("vertex") is False
+
+
 def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatch):
     """An env-seeded pool entry left in auth.json after the env var was removed
     must not mark the provider configured (#55790): the picker showed removed

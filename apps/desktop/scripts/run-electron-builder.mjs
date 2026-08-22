@@ -8,6 +8,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
+import {
+  classifyMachOArchitectures,
+  electronBuilderArchFlag,
+  hasExplicitArchFlag,
+} from "./native-binary-arch.mjs"
 
 const require = createRequire(import.meta.url)
 
@@ -40,6 +45,20 @@ const dist = electronDistDir()
 const args = []
 if (dist && fs.existsSync(distBinary(dist))) {
   args.push(`-c.electronDist=${dist}`)
+  const requestedArgs = process.argv.slice(2)
+  if (process.platform === "darwin" && !hasExplicitArchFlag(requestedArgs)) {
+    const architectures = classifyMachOArchitectures(distBinary(dist))
+    const archFlag = electronBuilderArchFlag(architectures)
+    if (!archFlag) {
+      console.error("[run-electron-builder] cannot determine the local Electron architecture")
+      process.exit(1)
+    }
+    args.push(archFlag)
+    console.log(
+      `[run-electron-builder] pinning target architecture to ${archFlag.slice(2)} ` +
+        `(local Electron; process.arch=${process.arch})`
+    )
+  }
 } else {
   console.warn(
     "[run-electron-builder] no local electron dist; electron-builder will fetch " +

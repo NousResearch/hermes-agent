@@ -22,8 +22,20 @@
 import path from 'node:path'
 
 import { stampExeIdentity } from './set-exe-identity.mjs'
+import { archNameFromBuilderValue, assertMachOArchitecture } from './native-binary-arch.mjs'
 
 export default async function afterPack(context) {
+  if (context.electronPlatformName === 'darwin') {
+    const productName = context.packager?.appInfo?.productFilename || 'Hermes'
+    const executable = path.join(context.appOutDir, `${productName}.app`, 'Contents', 'MacOS', productName)
+    const expectedArch = archNameFromBuilderValue(context.arch)
+    if (!expectedArch) {
+      throw new Error(`[after-pack] unknown electron-builder architecture value: ${context.arch}`)
+    }
+    assertMachOArchitecture(executable, expectedArch)
+    return
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }

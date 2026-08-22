@@ -104,6 +104,8 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     hyphen_access_secret = "HYPHEN_ACCESS_SECRET"
     hyphen_api_secret = "HYPHEN_API_SECRET"
     encoded_hyphen_secret = "ENCODED_HYPHEN_SECRET"
+    array_query_secret = "ARRAY_QUERY_SECRET"
+    encoded_array_query_secret = "ENCODED_ARRAY_QUERY_SECRET"
     prompts = []
 
     def mock_call_llm(**kwargs):
@@ -121,7 +123,9 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
                 f"hyphen-client: /resume?client-secret={hyphen_client_secret}\n"
                 f"hyphen-access: /resume?Access-Token={hyphen_access_secret}\n"
                 f"hyphen-api: /resume?api-key={hyphen_api_secret}\n"
-                f"encoded-hyphen: /resume?client%2Dsecret={encoded_hyphen_secret}"
+                f"encoded-hyphen: /resume?client%2Dsecret={encoded_hyphen_secret}\n"
+                f"array: /resume?access_token[]={array_query_secret}\n"
+                f"encoded-array: /resume?access_token%5B%5D={encoded_array_query_secret}"
             ),
         )
 
@@ -134,12 +138,16 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     assert hyphen_access_secret not in prompt
     assert hyphen_api_secret not in prompt
     assert encoded_hyphen_secret not in prompt
+    assert array_query_secret not in prompt
+    assert encoded_array_query_secret not in prompt
     assert "token=***" in prompt
     assert "https://user:***@example.test/private" in prompt
     assert "client-secret=***" in prompt
     assert "Access-Token=***" in prompt
     assert "api-key=***" in prompt
     assert "client%2Dsecret=***" in prompt
+    assert "access_token[]=***" in prompt
+    assert "access_token%5B%5D=***" in prompt
 
 
 

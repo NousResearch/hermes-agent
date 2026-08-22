@@ -724,6 +724,23 @@ class TestPromptBuilderConstants:
         # Fallback guidance: plain file path in the response text.
         assert "plain" in hint.lower()
 
+    def test_openwebui_hint_does_not_inherit_api_server_non_image_caveat(self):
+        """The openwebui platform hint must NOT carry the api_server hint's
+        "non-image files aren't intercepted, state a plain path" caveat --
+        that's accurate for a generic /v1/runs API caller (Hermes's own
+        server-side _resolve_media_to_data_urls never runs for /v1/runs at
+        all, see test_api_server_hint_scopes_media_tag_guidance), but wrong
+        for the Open WebUI Function: it fully imports MEDIA: tags for any
+        file type client-side, from the raw SSE stream, independent of
+        Hermes's own resolver. Found live 2026-08-18: a Kim-generated PPTX
+        leaked as a raw host path in chat because the model, correctly
+        following the api_server hint it was actually given (there was no
+        openwebui-specific one), stated a plain path instead of a MEDIA: tag."""
+        hint = PLATFORM_HINTS["openwebui"]
+        assert "include MEDIA:" in hint
+        assert "non-image" not in hint.lower()
+        assert "state the plain file path" not in hint.lower()
+
     def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
         """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
         markdown to native formatting (gateway/platforms/whatsapp_common.py

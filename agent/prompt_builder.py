@@ -1138,6 +1138,19 @@ PLATFORM_HINTS = {
         "![alt](/path) for local files; local paths are not served that way. "
         "Use MEDIA:/absolute/path instead."
     ),
+    "openwebui": (
+        "You are in an Open WebUI-based chat interface, reached through a "
+        "custom Function that talks to Hermes via /v1/runs (not "
+        "/v1/chat/completions). Full Markdown rendering is supported — "
+        "headings, bold, italic, code blocks, tables, and math all render "
+        "natively. "
+        "To deliver a file to the user, include MEDIA:/absolute/path/to/file "
+        "in your response. Unlike the generic api_server platform, this "
+        "integration DOES intercept and import MEDIA: tags for any file type "
+        "(not just images) via /v1/runs — the Function turns them into a "
+        "real downloadable or inline attachment in the chat, scoped to this "
+        "profile's configured media roots. Local file paths must be absolute."
+    ),
 }
 
 # Telegram rich-messages extension — only injected when the user has opted in

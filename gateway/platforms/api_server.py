@@ -2790,6 +2790,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        client_platform: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2823,6 +2824,14 @@ class APIServerAdapter(BasePlatformAdapter):
         session ``/model`` override, disables the global fallback model
         chain, and fails closed if the locked provider's credentials cannot
         be resolved.
+
+        ``client_platform`` lets a known, trusted /v1/runs caller identify
+        itself so PLATFORM_HINTS reflects what it actually supports, instead
+        of the generic "api_server" hint's file-delivery caveats (which are
+        wrong for e.g. the Open WebUI Function -- it does intercept MEDIA:
+        tags for any file type). Deliberately allowlisted rather than passed
+        through verbatim: an unrecognized value falls back to "api_server"
+        unchanged, so this can never widen what a caller can claim.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -3091,7 +3100,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
             "session_id": session_id,
-            "platform": "api_server",
+            "platform": "openwebui" if client_platform == "openwebui" else "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
@@ -7518,6 +7527,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        # Optional: a known /v1/runs caller identifying itself so the system
+        # prompt's platform hint reflects what it actually supports (see
+        # _create_agent's client_platform docstring). Allowlisted there, not
+        # here -- an unrecognized value is inert, never an error.
+        client_platform = body.get("client_platform")
+        if client_platform is not None and not isinstance(client_platform, str):
+            return web.json_response(_openai_error("'client_platform' must be a string"), status=400)
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -7661,6 +7678,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
                         route=route,
+                        client_platform=client_platform,
                     )
                 self._active_run_agents[run_id] = agent
 

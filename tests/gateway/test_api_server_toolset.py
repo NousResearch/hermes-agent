@@ -80,3 +80,58 @@ class TestApiServerAdapterToolset:
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
 
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_client_platform_openwebui_sets_platform_hint(self):
+        """A /v1/runs caller identifying itself as client_platform='openwebui'
+        gets the accurate openwebui PLATFORM_HINTS entry instead of the
+        generic api_server one (whose file-delivery caveats are wrong for
+        this integration -- it does intercept MEDIA: tags for any file
+        type). Found live 2026-08-18 diagnosing a generated file that leaked
+        as a raw host path instead of a chat attachment."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+
+            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            mock_config.return_value = {}
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(client_platform="openwebui")
+
+            assert mock_agent_cls.call_args.kwargs.get("platform") == "openwebui"
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_unrecognized_client_platform_falls_back_to_api_server(self):
+        """An unrecognized client_platform value is inert, never an error and
+        never a way to claim an arbitrary platform hint -- it must fall back
+        to the same 'api_server' behavior as not sending the field at all."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+
+            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            mock_config.return_value = {}
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(client_platform="totally-made-up-platform")
+
+            assert mock_agent_cls.call_args.kwargs.get("platform") == "api_server"
+

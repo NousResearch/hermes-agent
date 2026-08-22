@@ -260,6 +260,64 @@ class TestStartRun:
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
 
+    @pytest.mark.asyncio
+    async def test_start_passes_client_platform_to_create_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "client_platform": "openwebui"},
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert mock_create.call_args.kwargs["client_platform"] == "openwebui"
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_string_client_platform(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "client_platform": 123},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_start_without_client_platform_passes_none(self, adapter):
+        """Existing callers that never send client_platform must be
+        unaffected -- _create_agent receives None, same as before this field
+        existed, and internally falls back to the 'api_server' platform."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert mock_create.call_args.kwargs["client_platform"] is None
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

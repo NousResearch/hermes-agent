@@ -33,8 +33,64 @@ def _read_config(home: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# _read_chain / _write_chain
+# _parse_spec
 # ---------------------------------------------------------------------------
+
+class TestParseSpec:
+    """Tests for _parse_spec — non-interactive fallback spec parsing."""
+
+    def test_returns_none_for_empty(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        assert _parse_spec("") is None
+        assert _parse_spec(None) is None
+        assert _parse_spec("  ") is None
+
+    def test_parses_provider_and_model(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        result = _parse_spec("openrouter/anthropic/claude-sonnet-4.6")
+        assert result == {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}
+
+    def test_parses_with_base_url(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        result = _parse_spec("nous/Hermes-4@https://api.nousresearch.com/v1")
+        assert result == {
+            "provider": "nous",
+            "model": "Hermes-4",
+            "base_url": "https://api.nousresearch.com/v1",
+        }
+
+    def test_parses_simple_provider_model(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        result = _parse_spec("openai/gpt-5.4")
+        assert result == {"provider": "openai", "model": "gpt-5.4"}
+
+    def test_raises_on_missing_separator(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        with pytest.raises(ValueError, match="Invalid fallback spec"):
+            _parse_spec("noslash")
+
+    def test_raises_on_empty_provider(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        with pytest.raises(ValueError, match="Invalid fallback spec"):
+            _parse_spec("/model-only")
+
+    def test_raises_on_empty_model(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        with pytest.raises(ValueError, match="Invalid fallback spec"):
+            _parse_spec("provider/")
+
+    def test_strips_whitespace(self):
+        from hermes_cli.fallback_cmd import _parse_spec
+        result = _parse_spec("  openai / gpt-5.4  @  https://api.openai.com/v1  ")
+        assert result == {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "base_url": "https://api.openai.com/v1",
+        }
+
+
+# ---------------------------------------------------------------------------
+# _read_chain / _write_chain
 
 class TestReadChain:
     def test_returns_empty_list_when_unset(self):
@@ -215,6 +271,81 @@ class TestAddCommand:
         # Fallback added
         assert len(cfg["fallback_providers"]) == 1
         assert cfg["fallback_providers"][0]["provider"] == "openrouter"
+    def test_add_via_spec(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        cmd_fallback_add(types.SimpleNamespace(spec="openrouter/anthropic/claude-sonnet-4.6"))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        ]
+        out = capsys.readouterr().out
+        assert "Added fallback" in out
+
+    def test_add_via_spec_with_base_url(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        cmd_fallback_add(types.SimpleNamespace(
+            spec="nous/Hermes-4@https://api.nousresearch.com/v1"
+        ))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {
+                "provider": "nous",
+                "model": "Hermes-4",
+                "base_url": "https://api.nousresearch.com/v1",
+            },
+        ]
+        out = capsys.readouterr().out
+        assert "Added fallback" in out
+
+    def test_add_via_spec_duplicate_skipped(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        cmd_fallback_add(types.SimpleNamespace(spec="openrouter/anthropic/claude-sonnet-4.6"))
+
+        cfg = _read_config(isolated_home)
+        assert len(cfg["fallback_providers"]) == 1
+        out = capsys.readouterr().out
+        assert "already in the fallback chain" in out
+
+    def test_add_via_spec_malformed_exits(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        with pytest.raises(SystemExit):
+            cmd_fallback_add(types.SimpleNamespace(spec="badspec"))
+
+        out = capsys.readouterr().out
+        assert "Invalid fallback spec" in out
+
+    def test_add_via_spec_skips_tty(self, isolated_home, capsys):
+        """When spec is given, _require_tty must NOT be called."""
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+        # The spec path never imports _require_tty, so we verify by ensuring
+        # the command succeeds without a TTY (which would fail in picker path).
+        from hermes_cli.fallback_cmd import cmd_fallback_add
+        cmd_fallback_add(types.SimpleNamespace(spec="openai/gpt-5.4"))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {"provider": "openai", "model": "gpt-5.4"},
+        ]
+
 
 
 # ---------------------------------------------------------------------------

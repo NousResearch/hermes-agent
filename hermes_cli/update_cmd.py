@@ -1158,6 +1158,166 @@ def _print_update_completion(message: str) -> None:
         print(f"=== hermes-update completed {action_id} ===")
 
 
+def _called_process_error_cmd_parts(exc: subprocess.CalledProcessError) -> list[str]:
+    """Normalize ``CalledProcessError.cmd`` into argv-style tokens."""
+    cmd = exc.cmd
+    if cmd is None:
+        return []
+    if isinstance(cmd, (str, bytes)):
+        text = cmd.decode("utf-8", "replace") if isinstance(cmd, bytes) else cmd
+        try:
+            return shlex.split(text, posix=os.name != "nt")
+        except ValueError:
+            return text.split()
+    return [str(part) for part in cmd]
+
+
+def _called_process_error_is_git(exc: subprocess.CalledProcessError) -> bool:
+    """True when the failed subprocess was git itself."""
+    parts = _called_process_error_cmd_parts(exc)
+    if not parts:
+        return False
+    # Windows argv may use backslashes; basename() on POSIX would otherwise
+    # keep the whole path. Normalize separators before taking the name.
+    name = os.path.basename(parts[0].replace("\\", "/")).lower()
+    return name in {"git", "git.exe"}
+
+
+def _called_process_error_is_python_dep_install(
+    exc: subprocess.CalledProcessError,
+) -> bool:
+    """True when the failed subprocess was a uv/pip (or ensurepip) install."""
+    parts = [part.lower() for part in _called_process_error_cmd_parts(exc)]
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0].replace("\\", "/"))
+    if "ensurepip" in parts:
+        return True
+    if "install" in parts and (
+        "pip" in parts or exe in {"pip", "pip.exe", "pip3", "pip3.exe", "uv", "uv.exe"}
+    ):
+        return True
+    return False
+
+
+def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
+    """Name the update stage that actually failed.
+
+    The git pull and the Python-dependency install share one ``try`` in
+    ``_cmd_update_impl``. Calling every ``CalledProcessError`` a git failure
+    (the historical Windows message) sent users hunting in the wrong place
+    and, worse, keyed the ZIP overlay on exception *type* rather than on git
+    actually having failed (#87304, #85840).
+    """
+    if _called_process_error_is_python_dep_install(exc):
+        return "Python dependency install failed"
+    if _called_process_error_is_git(exc):
+        return "Git update failed"
+    return "Update step failed"
+
+
+def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
+    """ZIP fallback is for Windows git file-I/O breakage, not later stages.
+
+    A dependency-install failure (locked ``hermes.exe`` / ``uv pip install``
+    exit 2) is not a git failure. The pull has already succeeded by then, so
+    re-downloading the source ZIP cannot fix the install and would replace
+    every top-level entry except ``venv`` / ``node_modules`` / ``.git`` /
+    ``.env`` — permanently deleting uncommitted edits and untracked files.
+    """
+    return (
+        isinstance(exc, subprocess.CalledProcessError)
+        and _m()._is_windows()
+        and _called_process_error_is_git(exc)
+    )
+
+
+def _print_called_process_error_tail(
+    exc: subprocess.CalledProcessError, *, limit: int = 12
+) -> None:
+    """Print a captured stderr/stdout tail when the failing call recorded one."""
+    blob = exc.stderr or exc.stdout or ""
+    if isinstance(blob, bytes):
+        blob = blob.decode("utf-8", "replace")
+    lines = [line for line in str(blob).splitlines() if line.strip()]
+    if not lines:
+        return
+    print("  Last output:")
+    for line in lines[-limit:]:
+        print(f"    {line}")
+
+
+def _zip_overlay_block_reason(
+    root: Path, *, ignore_staging_artifacts: bool = False
+) -> Optional[str]:
+    """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
+
+    The ZIP path swaps every top-level entry (except a tiny preserve set) and
+    then deletes the backups, so uncommitted edits and untracked files under
+    a replaced directory are gone. Fail closed when git status cannot run:
+    unknown dirtiness is not a license to clobber the tree (#87304).
+
+    ``ignore_staging_artifacts`` is for the pre-swap re-check: phase 1 of the
+    two-phase replace creates ``*.hermes-update-staging`` siblings inside the
+    checkout, which git reports as untracked. Those are our own artifacts,
+    not user work — without the filter the re-check would always refuse.
+    """
+    if not (root / ".git").exists():
+        return None
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    result = subprocess.run(
+        # -uall: a user-level ``status.showUntrackedFiles = no`` git config
+        # would otherwise hide untracked files and silently blind this guard.
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        suffix = f" ({detail[0]})" if detail else ""
+        return f"could not check the working tree{suffix}"
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    if ignore_staging_artifacts:
+        lines = [
+            line for line in lines if not _is_zip_staging_artifact_status_line(line)
+        ]
+    if lines:
+        return "the working tree has uncommitted changes or untracked files"
+    return None
+
+
+_ZIP_STAGING_ARTIFACT_SUFFIXES = (".hermes-update-staging", ".hermes-update-old")
+
+
+def _is_zip_staging_artifact_status_line(line: str) -> bool:
+    """True when a porcelain status line is our own two-phase-swap artifact."""
+    payload = line[3:] if len(line) >= 3 else line
+    top_level = (
+        payload.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
+    )
+    return top_level.endswith(_ZIP_STAGING_ARTIFACT_SUFFIXES)
+
+
+def _abort_zip_update_if_dirty_tree() -> None:
+    """Refuse to overlay a ZIP onto a dirty git checkout (#87304)."""
+    reason = _zip_overlay_block_reason(_m().PROJECT_ROOT)
+    if reason is None:
+        return
+    print(f"✗ ZIP fallback refused: {reason}.")
+    print(
+        "  Overlaying the ZIP would overwrite uncommitted edits and permanently "
+        "delete untracked files."
+    )
+    print("  Stash or commit your changes, then rerun `hermes update`.")
+    print("  To inspect: git status --porcelain")
+    _m().sys.exit(1)
+
+
 def _read_project_version() -> str | None:
     """Read the ``version`` field from the checkout's pyproject.toml.
 
@@ -1268,6 +1428,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    _abort_zip_update_if_dirty_tree()
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -1361,6 +1522,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                 src = os.path.join(extracted, item)
                 dst = os.path.join(str(_m().PROJECT_ROOT), item)
                 staged.append((_stage_replacement(src, dst), dst))
+                # #70337/#87331: the GitHub source ZIP contains only source —
+                # apps/desktop/release/ (the BUILT desktop app, win-unpacked/
+                # Hermes.exe) exists only in the LIVE tree. Swapping `apps`
+                # without it deletes the desktop build and breaks the
+                # shortcut. Graft the live release dir into the staged copy
+                # BEFORE the swap so the commit preserves it atomically.
+                if item == "apps":
+                    live_release = os.path.join(dst, "desktop", "release")
+                    staged_release = os.path.join(
+                        staged[-1][0], "desktop", "release"
+                    )
+                    if os.path.isdir(live_release) and not os.path.exists(
+                        staged_release
+                    ):
+                        os.makedirs(os.path.dirname(staged_release), exist_ok=True)
+                        shutil.copytree(live_release, staged_release)
         except Exception:
             # Nothing is live yet; drop the partial staging copies so a retry
             # starts from the same free space this attempt did.
@@ -1368,6 +1545,23 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             raise
 
         try:
+            # Re-check the tree right before the swap (#87304 TOCTOU): the
+            # download + extract + staging window above can take minutes, and
+            # work created in it would be destroyed by the commit below. Our
+            # own phase-1 staging siblings are filtered out — they are the
+            # expected artifacts of getting here, not user work.
+            recheck_reason = _zip_overlay_block_reason(
+                _m().PROJECT_ROOT, ignore_staging_artifacts=True
+            )
+            if recheck_reason is not None:
+                _discard_staged(staged)
+                print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
+                print(
+                    "  Files appeared in the checkout while the update was "
+                    "downloading; committing the swap would delete them."
+                )
+                print("  Stash or commit your changes, then rerun `hermes update`.")
+                _m().sys.exit(1)
             _commit_staged_replacements(staged)
         except Exception:
             # The rollback already restored every swapped entry, but staging
@@ -3684,7 +3878,27 @@ def _detect_venv_python_processes(
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
     try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
+    try:
         for anc in psutil.Process().parents():
+            # #87594: do NOT blanket-exclude ancestors. When `/update` runs
+            # from a messaging platform the updater is a CHILD of the gateway
+            # — excluding all ancestors hides the gateway from the scan, so
+            # the pause machinery downstream never sees the one process it
+            # exists to stop, and the update dead-ends on `venv-blocked`.
+            # A GATEWAY ancestor stays visible (the pause path stops it
+            # gracefully; a detached child updater survives its parent's
+            # stop on Windows). Every other ancestor (shells, terminals,
+            # this CLI's own venv python chain) stays excluded — an updater
+            # must never nominate its own interactive ancestry as blockers.
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -3915,18 +4129,115 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     _m()._write_update_incomplete_marker()
 
 
+_HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
+    {
+        "--profile", "-p", "--config",
+        "--model", "-m", "--provider", "--reasoning",
+        "--toolsets", "-t", "--skills", "-s",
+        "--continue", "-c", "--resume", "-r",
+        "--oneshot", "-z", "--in", "--usage-file",
+    }
+)
+_holder_value_flags_cache: frozenset | None = None
+
+
+def _holder_value_flags() -> frozenset:
+    """Top-level CLI flags that consume a value — derived from the REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the holder classifier can never drift from the argparse surface
+    (#91869 review: a handwritten subset misparsed ``--reasoning high
+    serve`` as subcommand ``high`` and ``-m dashboard serve`` as
+    ``dashboard`` — recreating the wrong-hint class). The pre-argparse
+    profile selectors (``--profile``/``-p``, ``--config``) are added
+    explicitly since they are stripped before argparse sees argv. Falls
+    back to a static snapshot when the parser cannot be imported (the
+    updater must classify holders even mid-upgrade on a broken tree).
+    Cached per process.
+    """
+    global _holder_value_flags_cache
+    if _holder_value_flags_cache is not None:
+        return _holder_value_flags_cache
+    flags: set[str] = {"--profile", "-p", "--config"}
+    try:
+        from hermes_cli._parser import build_top_level_parser
+
+        parser = build_top_level_parser()[0]
+        for action in parser._actions:
+            if action.option_strings and action.nargs != 0:
+                flags.update(action.option_strings)
+        _holder_value_flags_cache = frozenset(flags)
+    except Exception:
+        _holder_value_flags_cache = _HOLDER_VALUE_FLAGS_FALLBACK
+    return _holder_value_flags_cache
+
+
+def _hermes_holder_subcommand(cmdline: str) -> str | None:
+    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
+
+    Token-based, never substring (#90778: ``kanban --preserve-cache``
+    contained \"serve\" and got labeled as the Desktop backend). Finds the
+    ``hermes_cli.main`` / ``hermes(.exe)`` entry token, then returns the
+    first following token that is not a flag or a flag's value. Profile
+    selectors (``--profile X``, ``-p X``) are skipped like the canonical
+    gateway matcher does. Returns None when no subcommand can be
+    determined — callers must NOT guess a label in that case.
+    """
+    try:
+        import shlex
+
+        tokens = shlex.split(cmdline, posix=False)
+    except Exception:
+        tokens = cmdline.split()
+
+    entry_idx: int | None = None
+    for i, token in enumerate(tokens):
+        low = token.lower().strip('"')
+        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        if base in ("hermes", "hermes.exe"):
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return None
+
+    value_flags = _holder_value_flags()
+    i = entry_idx + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_flags or token.split("=", 1)[0] in value_flags:
+            # --flag value consumes two tokens; --flag=value consumes one.
+            i += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token.lower()
+    return None
+
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them."""
+    """Explain which venv processes block the update and how to clear them.
+
+    Holder labels come from the parsed SUBCOMMAND, never substring matching
+    (#90778): a standalone ``hermes dashboard`` must not be labeled as the
+    Desktop backend (advice to close an app that isn't running), and flags
+    like ``--preserve-cache`` must not match \"serve\". Unknown argv gets no
+    hint rather than a wrong one.
+    """
     lines = [
         "✗ Other Hermes processes are running from this install's venv:",
     ]
+    hint_by_subcommand = {
+        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
+        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
+        "gateway": "  ← gateway",
+    }
     for pid, name, cmdline in matches[:6]:
-        hint = ""
-        low = cmdline.lower()
-        if "serve" in low or "dashboard" in low:
-            hint = "  ← Hermes Desktop backend (close the desktop app)"
-        elif "gateway" in low:
-            hint = "  ← gateway"
+        sub = _hermes_holder_subcommand(cmdline)
+        hint = hint_by_subcommand.get(sub or "", "")
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
@@ -3983,9 +4294,23 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 
     # Never return ourselves or our own ancestry: a CLI ``hermes update``
     # runs from the venv python and would otherwise nominate itself.
+    # Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
+    # ancestor is not "our own ancestry" in the interactive sense — it is
+    # the process the pause machinery must see (the /update-from-gateway
+    # topology makes the updater the gateway's child).
+    try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
     skip: set[int] = {os.getpid()}
     try:
         for anc in psutil.Process().parents():
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -7655,8 +7980,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
+        stage = _format_update_failure_stage(e)
+        if _should_zip_fallback_on_update_error(e):
+            print(f"⚠ {stage}: {e}")
             print("→ Falling back to ZIP download...")
             print()
             desktop_build_ok = _update_via_zip(
@@ -7666,7 +7992,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
-            print(f"✗ Update failed: {e}")
+            print(f"✗ {stage}: {e}")
+            _print_called_process_error_tail(e)
+            if _called_process_error_is_python_dep_install(e):
+                print(
+                    "  The git update already finished. Re-downloading the source "
+                    "ZIP cannot fix a dependency install error and would overwrite "
+                    "local files."
+                )
+                if _m()._is_windows():
+                    print("  Retry through the venv interpreter:")
+                    print(
+                        '    venv\\Scripts\\python.exe -c '
+                        '"from hermes_cli.main import main; main()" update --yes'
+                    )
             try:
                 from hermes_cli.update_receipt import finalize_update_receipt
 

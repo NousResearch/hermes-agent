@@ -35,7 +35,7 @@ import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } f
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
+import { isReauthRequiredError, makeNousCloudBackendDownError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import {
   canImportHermesCli,
@@ -1371,11 +1371,13 @@ let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
+  isCloudBackendDown: false,
   message: 'Waiting to start Hermes backend',
   phase: 'idle',
   progress: 0,
   retryable: false,
   running: false,
+  statusCode: null,
   timestamp: Date.now()
 }
 
@@ -8979,6 +8981,19 @@ async function buildRemoteConnection(
     try {
       ticket = await mintGatewayWsTicket(baseUrl, remoteHeaders)
     } catch (error) {
+      // For a Nous-managed Cloud agent, a 502/503/504 from the WS-ticket mint
+      // means the backend server itself is down — the actionable Cloud-down
+      // error. This boundary runs BEFORE the readiness loop, so without this
+      // the ticket wrapper below would swallow the server-fault classification
+      // and the renderer would never see isCloudBackendDown. Preserve the
+      // existing 401/403 reauth and generic transport behavior for everything
+      // else (#85335).
+      const cloudError = makeNousCloudBackendDownError(baseUrl, error)
+
+      if (cloudError !== null) {
+        throw cloudError
+      }
+
       throw gatewayTicketFailure(
         error,
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
@@ -10892,6 +10907,18 @@ async function startHermes() {
     const message = error instanceof Error ? error.message : String(error)
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
 
+    // Carry structured Cloud-down metadata through the boot-progress / IPC
+    // boundary when present, so the renderer overlay can key on it rather than
+    // re-classifying the message string. main owns classification; the renderer
+    // only consumes the structured result (#85335).
+    const isCloudBackendDown = Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
+
+    const statusCode = Number(
+      error && typeof error === 'object' && Number.isInteger((error as any).statusCode)
+        ? (error as any).statusCode
+        : NaN
+    )
+
     // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
     // timeout / host briefly unreachable across sleep) is transient and has no
     // child 'exit' handler to clear the cache — latching it would wedge the app
@@ -10920,6 +10947,7 @@ async function startHermes() {
     updateBootProgress(
       {
         error: message,
+        isCloudBackendDown: isCloudBackendDown || undefined,
         message: `Desktop boot failed: ${message}`,
         phase: 'backend.error',
         // Renderer contract for the self-heal loop (#82679): a transient
@@ -10933,7 +10961,8 @@ async function startHermes() {
           isReauth: isReauthRequiredError(error),
           isHostKeyChanged: hostKeyChanged
         }),
-        running: false
+        running: false,
+        statusCode: Number.isInteger(statusCode) ? statusCode : undefined
       },
       { allowDecrease: true }
     )

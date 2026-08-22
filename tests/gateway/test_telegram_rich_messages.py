@@ -678,6 +678,41 @@ async def test_finalize_edit_uses_rich_for_table_content():
 
 
 @pytest.mark.asyncio
+async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
+    """DM-topic metadata must not make a rich edit look like a new send.
+
+    Telegram identifies an edit by chat_id + message_id. Passing topic-routing
+    fields on editMessageText rejects the rich request, after which the legacy
+    formatter permanently rewrites the table into bullet groups.
+    """
+    adapter = _make_adapter()
+
+    async def _api(endpoint, api_kwargs=None, **kwargs):
+        assert endpoint == "editMessageText"
+        has_send_routing = (
+            "message_thread_id" in api_kwargs
+            or "direct_messages_topic_id" in api_kwargs
+        )
+        if has_send_routing:
+            raise BadRequest("unexpected topic routing on editMessageText")
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_api)
+
+    result = await adapter.edit_message(
+        "12345", "555", TOPIC_TABLE, finalize=True, metadata=TOPIC_METADATA,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_id"] == 555
+    assert "message_thread_id" not in api_kwargs
+    assert "direct_messages_topic_id" not in api_kwargs
+    assert "| F1 |" in api_kwargs["rich_message"]["markdown"]
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
     import agent.redact as redact
 

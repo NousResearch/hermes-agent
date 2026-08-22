@@ -2363,15 +2363,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "message_id": int(message_id),
             "rich_message": self._rich_message_payload(content),
         }
-        thread_id = self._metadata_thread_id(metadata)
-        thread_kwargs = self._thread_kwargs_for_send(
-            chat_id,
-            thread_id,
-            metadata,
-            reply_to_message_id=None,
-            reply_to_mode=self._reply_to_mode,
-        )
-        payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
+        # Edits target an existing message by chat_id + message_id. Topic
+        # routing belongs only on send endpoints; forwarding message_thread_id
+        # or direct_messages_topic_id makes Telegram reject this rich edit and
+        # sends the caller through the legacy table-to-bullets fallback.
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         try:

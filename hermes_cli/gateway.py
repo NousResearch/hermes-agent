@@ -4902,14 +4902,299 @@ def generate_launchd_plist() -> str:
 """
 
 
+# ── Operator customisation preservation ────────────────────────────────────
+# generate_launchd_plist() emits a fixed template. Anything else an operator
+# put in the installed plist by hand — a raised SoftResourceLimits/NumberOfFiles,
+# an extra EnvironmentVariables entry — is not reproduced by the template, so a
+# plain overwrite silently reverts it (#82046). Managed ownership is derived
+# from the *live* generated template (see `_managed_top_level_keys_from`), not
+# only this static fallback: if a sibling change (e.g. #80748) starts emitting
+# SoftResourceLimits/HardResourceLimits, those keys become managed the moment
+# the template owns them. A static-only allowlist would either (a) leave them
+# unmanaged and double-splice a second SoftResourceLimits block into the
+# regenerated plist, or (b) hard-code them as managed and wipe hand-raised
+# operator limits while the template still doesn't emit them. Deriving from
+# the generated body avoids both.
+_LAUNCHD_MANAGED_TOP_LEVEL_KEYS = frozenset(
+    {
+        "Label",
+        "ProgramArguments",
+        "WorkingDirectory",
+        "EnvironmentVariables",
+        "LimitLoadToSessionType",
+        "RunAtLoad",
+        "KeepAlive",
+        "ThrottleInterval",
+        "ExitTimeOut",
+        "StandardOutPath",
+        "StandardErrorPath",
+    }
+)
+_LAUNCHD_MANAGED_ENV_KEYS = frozenset({"PATH", "VIRTUAL_ENV", "HERMES_HOME"})
+
+# Keep a bounded window of pre-overwrite backups so an operator can diff/restore
+# without the LaunchAgents directory growing without limit.
+_SERVICE_BACKUP_RETENTION = 5
+
+
+def _parse_plist_text(text: str) -> dict | None:
+    """Parse plist XML into a dict, or None when it isn't a readable plist dict.
+
+    Hand-edited plists can be malformed, and tests stub the generator with
+    non-plist placeholders. Either way the caller must degrade to "no
+    customisations detected" rather than raise.
+    """
+    import plistlib
+
+    try:
+        parsed = plistlib.loads(text.encode("utf-8"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _managed_top_level_keys_from(generated: str | None = None) -> frozenset:
+    """Top-level keys the current template owns.
+
+    Prefer the keys actually present in ``generated`` (or a fresh
+    ``generate_launchd_plist()`` call) so new template keys become managed
+    without a second allowlist edit. Union with the static fallback so a
+    partial stub in tests still treats the classic managed keys as managed
+    even when the stub omits them.
+    """
+    text = generated
+    if text is None:
+        try:
+            text = generate_launchd_plist()
+        except Exception:
+            return _LAUNCHD_MANAGED_TOP_LEVEL_KEYS
+    parsed = _parse_plist_text(text)
+    if not parsed:
+        return _LAUNCHD_MANAGED_TOP_LEVEL_KEYS
+    return frozenset(parsed.keys()) | _LAUNCHD_MANAGED_TOP_LEVEL_KEYS
+
+
+def _managed_env_keys_from(generated: str | None = None) -> frozenset:
+    """``EnvironmentVariables`` keys the current template owns.
+
+    Same live-template derivation as :func:`_managed_top_level_keys_from`, so
+    a future template env addition is not preserved-as-customisation and then
+    double-spliced on merge.
+    """
+    text = generated
+    if text is None:
+        try:
+            text = generate_launchd_plist()
+        except Exception:
+            return _LAUNCHD_MANAGED_ENV_KEYS
+    parsed = _parse_plist_text(text)
+    if not parsed:
+        return _LAUNCHD_MANAGED_ENV_KEYS
+    env = parsed.get("EnvironmentVariables")
+    if not isinstance(env, dict):
+        return _LAUNCHD_MANAGED_ENV_KEYS
+    return frozenset(env.keys()) | _LAUNCHD_MANAGED_ENV_KEYS
+
+
+def launchd_plist_customisations(
+    text: str,
+    *,
+    generated: str | None = None,
+) -> tuple[dict, dict]:
+    """Return ``(extra_top_level, extra_env)`` operator additions in a plist.
+
+    ``extra_top_level`` holds keys the generated template does not emit (e.g.
+    hand-raised ``SoftResourceLimits`` while the template still omits them);
+    ``extra_env`` holds ``EnvironmentVariables`` entries beyond the ones the
+    template owns. Both are empty for a plist Hermes generated itself.
+
+    Pass ``generated`` when the caller already has the template body (the
+    merge path) so managed ownership matches that exact body rather than a
+    second ``generate_launchd_plist()`` call that could differ under a
+    monkeypatch or path change.
+    """
+    parsed = _parse_plist_text(text)
+    if not parsed:
+        return {}, {}
+
+    managed_top = _managed_top_level_keys_from(generated)
+    managed_env = _managed_env_keys_from(generated)
+
+    extra_top_level = {
+        key: value
+        for key, value in parsed.items()
+        if key not in managed_top
+    }
+    env = parsed.get("EnvironmentVariables")
+    extra_env = (
+        {
+            key: value
+            for key, value in env.items()
+            if key not in managed_env
+        }
+        if isinstance(env, dict)
+        else {}
+    )
+    return extra_top_level, extra_env
+
+
+def _plist_body_fragment(mapping: dict, indent: str) -> str:
+    """Serialize ``mapping`` to plist XML key/value lines at ``indent``.
+
+    Returns the inner body only — no ``<plist>``/``<dict>`` wrapper — so it can
+    be spliced into the generated template without reformatting the template
+    itself (which would churn the whole file and lose its comments).
+    """
+    import plistlib
+
+    if not mapping:
+        return ""
+    try:
+        dumped = plistlib.dumps(mapping, sort_keys=True).decode("utf-8")
+    except Exception:
+        return ""
+
+    lines = dumped.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == "<dict>")
+        end = len(lines) - 1 - next(
+            i for i, line in enumerate(reversed(lines)) if line.strip() == "</dict>"
+        )
+    except StopIteration:
+        return ""
+
+    body = lines[start + 1 : end]
+    if not body:
+        return ""
+    # plistlib indents the body one tab deep inside <dict>; re-base to 0 so
+    # `indent` alone controls where the fragment sits in the template.
+    base = min(len(line) - len(line.lstrip("\t")) for line in body)
+    rendered = []
+    for line in body:
+        stripped = line.lstrip("\t")
+        depth = len(line) - len(stripped) - base
+        rendered.append(f"{indent}{'    ' * depth}{stripped}")
+    return "\n".join(rendered)
+
+
+def _splice_before(text: str, close_idx: int, fragment: str) -> str:
+    """Insert ``fragment`` as whole lines immediately above the closing tag at
+    ``close_idx``, leaving that tag's own indentation intact."""
+    if close_idx == -1 or not fragment:
+        return text
+    line_start = text.rfind("\n", 0, close_idx) + 1
+    return f"{text[:line_start]}{fragment}\n{text[line_start:]}"
+
+
+def _merge_launchd_customisations(generated: str, installed: str) -> str:
+    """Splice operator customisations from ``installed`` into ``generated``.
+
+    Managed keys always win — the whole point of regeneration is to update
+    them. Only keys the template does not emit are carried across. Ownership
+    is derived from ``generated`` itself, so a template that already emits
+    SoftResourceLimits (e.g. after #80748) will not re-splice a second copy
+    from a stock installed plist. Returns ``generated`` unchanged when there
+    is nothing to preserve, so the common case stays byte-identical to the
+    template.
+    """
+    extra_top_level, extra_env = launchd_plist_customisations(
+        installed, generated=generated
+    )
+    if not extra_top_level and not extra_env:
+        return generated
+
+    merged = generated
+
+    if extra_env:
+        fragment = _plist_body_fragment(extra_env, indent=" " * 8)
+        # The EnvironmentVariables dict is the first <dict> after its <key>;
+        # its terminator is the first </dict> that follows.
+        env_key = merged.find("<key>EnvironmentVariables</key>")
+        if fragment and env_key != -1:
+            merged = _splice_before(merged, merged.find("</dict>", env_key), fragment)
+
+    if extra_top_level:
+        fragment = _plist_body_fragment(extra_top_level, indent=" " * 4)
+        # Top-level dict terminator: the last </dict> before </plist>.
+        plist_close = merged.rfind("</plist>")
+        root_close = merged.rfind("</dict>", 0, plist_close if plist_close != -1 else None)
+        if fragment:
+            merged = _splice_before(merged, root_close, f"\n{fragment}")
+
+    return merged
+
+
+def _generate_launchd_plist_preserving(installed: str | None) -> str:
+    """Generated plist with any operator customisations from ``installed`` kept."""
+    generated = generate_launchd_plist()
+    if not installed:
+        return generated
+    return _merge_launchd_customisations(generated, installed)
+
+
+def _read_installed_launchd_plist() -> str | None:
+    """Text of the installed plist, or None when absent/unreadable."""
+    plist_path = get_launchd_plist_path()
+    try:
+        return plist_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _backup_service_file(path: Path) -> Path | None:
+    """Copy ``path`` to a timestamped sibling before it is overwritten.
+
+    Named ``<name>.bak-<YYYYmmdd-HHMMSS>`` rather than ``*.plist`` so launchd
+    never treats a backup as a second service definition. Returns the backup
+    path, or None when no backup could be written (never fatal — a failed
+    backup must not block the refresh).
+    """
+    try:
+        if not path.exists():
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak-{stamp}")
+        counter = 1
+        while backup.exists():
+            backup = path.with_name(f"{path.name}.bak-{stamp}.{counter}")
+            counter += 1
+        shutil.copy2(path, backup)
+    except OSError as e:
+        logger.warning("Could not back up %s before overwriting: %s", path, e)
+        return None
+
+    try:
+        existing = sorted(
+            path.parent.glob(f"{path.name}.bak-*"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for stale in existing[:-_SERVICE_BACKUP_RETENTION]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass  # best-effort pruning; the backup itself already succeeded
+
+    return backup
+
+
+def _describe_launchd_customisations(extra_top_level: dict, extra_env: dict) -> str:
+    """Comma-separated key names for operator-facing preservation messages."""
+    names = sorted(extra_top_level) + [f"EnvironmentVariables/{k}" for k in sorted(extra_env)]
+    return ", ".join(names)
+
+
 def launchd_plist_is_current() -> bool:
-    """Check if the installed launchd plist matches the currently generated one."""
+    """Check if the installed launchd plist matches the currently generated one.
+
+    Compared against the *preserving* generation, so a plist carrying operator
+    customisations is not reported stale forever (which would make every
+    ``status`` nag and every ``start`` rewrite the file).
+    """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
 
     installed = plist_path.read_text(encoding="utf-8")
-    expected = generate_launchd_plist()
+    expected = _generate_launchd_plist_preserving(installed)
     return _normalize_launchd_plist_for_comparison(
         installed
     ) == _normalize_launchd_plist_for_comparison(expected)
@@ -4926,9 +5211,23 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    new_plist = generate_launchd_plist()
+    installed = _read_installed_launchd_plist()
+    new_plist = _generate_launchd_plist_preserving(installed)
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
+
+    # Regeneration replaces the file wholesale, so take a restorable copy first
+    # and say what is being carried across — the loss is otherwise invisible,
+    # since a regenerated plist is perfectly well-formed either way (#82046).
+    backup = _backup_service_file(plist_path)
+    extra_top_level, extra_env = launchd_plist_customisations(installed or "")
+    if extra_top_level or extra_env:
+        print(
+            "↻ Preserving operator customisations in the launchd plist: "
+            + _describe_launchd_customisations(extra_top_level, extra_env)
+        )
+    if backup is not None:
+        print(f"↻ Backed up existing launchd plist to: {backup}")
 
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
@@ -5140,10 +5439,23 @@ def launchd_install(force: bool = False):
         return
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    new_plist = generate_launchd_plist()
+    # `--force` reinstalls over an existing plist; preserve + back up the same
+    # way the refresh path does so a reinstall is not a silent config wipe.
+    installed = _read_installed_launchd_plist()
+    new_plist = _generate_launchd_plist_preserving(installed)
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
+    if plist_path.exists():
+        extra_top_level, extra_env = launchd_plist_customisations(installed or "")
+        if extra_top_level or extra_env:
+            print(
+                "  Preserving operator customisations: "
+                + _describe_launchd_customisations(extra_top_level, extra_env)
+            )
+        backup = _backup_service_file(plist_path)
+        if backup is not None:
+            print(f"  Previous plist backed up to: {backup}")
     plist_path.write_text(new_plist, encoding="utf-8")
 
     try:
@@ -5489,11 +5801,35 @@ def launchd_status(deep: bool = False):
 
     # ── Report ──
     print(f"Launchd plist: {plist_path}")
+    # Operator customisations are reported either way: on a current plist so the
+    # operator can see they survived the last regeneration, and on a stale one so
+    # the recommendation below is not a blind "this will rewrite your file".
+    try:
+        extra_top_level, extra_env = launchd_plist_customisations(
+            plist_path.read_text(encoding="utf-8")
+        )
+    except OSError:
+        extra_top_level, extra_env = {}, {}
+    customisations = _describe_launchd_customisations(extra_top_level, extra_env)
+
     if launchd_plist_is_current():
         print("✓ Service definition matches the current Hermes install")
+        if customisations:
+            print(f"  Operator customisations present: {customisations}")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
+        if customisations:
+            print(f"  Operator customisations present: {customisations}")
+            print("  These are carried across, and the current plist is backed up first.")
+        # `restart` deliberately does NOT refresh the definition, so it cannot
+        # clear this warning — recommending it here would just make the warning
+        # permanent. Say what each command does instead of implying a choice.
+        if launchd_pid is not None or fallback_pid is not None:
+            print(
+                "  (hermes gateway restart only recycles the running process — "
+                "it leaves the stale definition in place.)"
+            )
 
     if service_listed:
         if launchd_pid is not None:

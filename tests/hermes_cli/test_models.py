@@ -104,6 +104,54 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
+    def test_surfaces_all_live_free_models_with_tool_support(self, monkeypatch):
+        """Live free models with tool support should be included in the picker even if not in curated list (#89150)."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["temperature","tools"]},'
+                    b'{"id":"openai/gpt-oss-20b:free","pricing":{"prompt":"0","completion":"0"},'
+                    b'"supported_parameters":["temperature","tools"]},'
+                    b'{"id":"meta-llama/llama-free-no-tools:free","pricing":{"prompt":"0","completion":"0"},'
+                    b'"supported_parameters":["temperature"]},'
+                    b'{"id":"expensive/model-not-curated","pricing":{"prompt":"0.01","completion":"0.02"},'
+                    b'"supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [
+                ("anthropic/claude-opus-4.6", ""),
+            ],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        model_dict = dict(models)
+        # Curated paid model present
+        assert "anthropic/claude-opus-4.6" in model_dict
+        # Uncurated free model WITH tools present and marked 'free'
+        assert "openai/gpt-oss-20b:free" in model_dict
+        assert model_dict["openai/gpt-oss-20b:free"] == "free"
+        # Free model WITHOUT tools excluded
+        assert "meta-llama/llama-free-no-tools:free" not in model_dict
+        # Uncurated paid model excluded
+        assert "expensive/model-not-curated" not in model_dict
+
 
 
 class TestOpenRouterToolSupportHelper:

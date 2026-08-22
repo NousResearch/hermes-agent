@@ -28,6 +28,7 @@ from tools.skills_hub import (
     unified_search,
     append_audit_log,
     quarantine_bundle,
+    _referenced_support_paths,
 )
 
 
@@ -145,6 +146,19 @@ class TestTrustLevelFor:
                 "from GitHubSource.DEFAULT_TAPS — its skills will not be "
                 "browsable via `hermes skills browse`."
             )
+
+
+class TestGitHubSourceFileFetch:
+    def test_quotes_decoded_support_path_before_contents_api_fetch(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        src._github_get = MagicMock(return_value=None)
+
+        src._fetch_file_bytes("owner/repo", "skill/references/foo#bar.md")
+
+        assert src._github_get.call_args.args[0] == (
+            "https://api.github.com/repos/owner/repo/contents/"
+            "skill/references/foo%23bar.md"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +367,58 @@ class TestUrlSource:
 
     def _source(self):
         return UrlSource()
+
+    @pytest.mark.parametrize(
+        "glob_reference",
+        [
+            "references/*.md",
+            "references/file?",
+            "references/file?.md",
+            "references/agent.v?.md",
+            "references/data.file?.md",
+            "references/backup.2026?.md",
+            "references/file?x.md",
+            "references/agent.v?x.md",
+            "references/file?[ab].md",
+            "references/file??.md",
+            "references/[ab].md",
+            "references/%2A.md",
+            "references/file%3F.md",
+            "references/%5Bab%5D.md",
+        ],
+    )
+    def test_support_path_extraction_ignores_glob_shaped_prose(
+        self, glob_reference
+    ):
+        skill_md = f"""
+See [the web reference](references/web.md) for details.
+Complex cases are documented under `{glob_reference}`.
+"""
+
+        assert _referenced_support_paths(skill_md) == {"references/web.md"}
+
+    @pytest.mark.parametrize(
+        ("reference", "expected"),
+        [
+            ("templates/report.md?raw=1", "templates/report.md"),
+            ("references/LICENSE?download", "references/LICENSE"),
+            ("references/LICENSE?raw", "references/LICENSE"),
+            ("references/guide.md?view", "references/guide.md"),
+            ("references/guide.md?inline", "references/guide.md"),
+            ("references/guide.md?plain", "references/guide.md"),
+            ("references/guide.md?preview-mode", "references/guide.md"),
+            ("references/guide.md?view&inline&theme=dark", "references/guide.md"),
+            ("references/LICENSE?plain&download=1", "references/LICENSE"),
+            ("references/LICENSE?.well-known=1", "references/LICENSE"),
+            ("references/guide.md#usage", "references/guide.md"),
+            ("references/my%20guide.md", "references/my guide.md"),
+            ("references/foo%23bar.md", "references/foo#bar.md"),
+        ],
+    )
+    def test_support_path_extraction_preserves_concrete_url_suffixes(
+        self, reference, expected
+    ):
+        assert _referenced_support_paths(f"Use `{reference}`.") == {expected}
 
     # ── _matches ────────────────────────────────────────────────────────
     def test_matches_bare_md_url(self):

@@ -2,7 +2,7 @@
 
 The Buzz adapter connects Hermes to a [Buzz](https://github.com/block/buzz) community — Block's open-source human+agent collaboration platform built on the Nostr protocol — and relays messages between Buzz channels (or DMs) and the agent. Outbound traffic shells out to the `buzz` CLI binary ("JSON in, JSON out"); inbound uses a native Nostr WebSocket subscription (via the already-bundled `websockets` package) with CLI polling as fallback. **No extra Python packages are required** — just the `buzz` binary.
 
-Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id.
+Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id, and threads are session-scoped: every reply under one thread root shares a single Hermes conversation, while separate threads in the same channel get separate contexts. Top-level channel messages keep the usual per-channel (per-user) session; the thread's root message stays there too, but each reply quotes the message it actually replies to — for the first reply that is the root itself, so a thread conversation starts with the root's content in view, and later replies carry the specific message they answered.
 
 Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription by default (near-instant delivery), with automatic fallback to CLI polling when the WebSocket can't be established. Outbound messages always go through the `buzz` CLI. Control it with `transport` / `BUZZ_TRANSPORT`: `auto` (default), `websocket` (require WS, fail otherwise), or `poll`. If your relay membership uses NIP-OA owner attestation, set `BUZZ_AUTH_TAG` to the four-string auth tag JSON.
 
@@ -95,6 +95,34 @@ gateway:
 
 **Exception:** If you want users to see tool progress (e.g., for long-running operations), set `tool_progress: all` — but `interim_assistant_messages` should still be `false` to avoid spamming with every tool result.
 
+### Discord-like progress and streaming
+
+Buzz Desktop understands edit events, so Hermes can keep one assistant message
+updated while tokens arrive and can accumulate tool progress into an edited
+progress message instead of leaving a permanent post for every update. Enable
+the richer Discord-like mode explicitly:
+
+```yaml
+display:
+  platforms:
+    buzz:
+      interim_assistant_messages: true
+      tool_progress: all
+      tool_progress_grouping: accumulate
+      streaming: true
+```
+
+Editable streaming requires a `buzz` CLI build where
+`buzz messages edit --content -` reads the replacement body from stdin and
+edits preserve attachments by default. `buzz messages edit --help` should list
+both `--file` and `--no-media`; builds without those options predate this
+contract and may replace the message with a literal `-`. Leave
+`streaming: false` when using an older build.
+
+Buzz edits are append-only Nostr edit events. Buzz Desktop renders the newest
+edit in place. A client that does not apply Buzz edit events may display the
+underlying events separately even though Hermes targets one original message.
+
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
@@ -117,7 +145,7 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- **Inbound prefers WebSocket push.** The adapter uses a persistent, authenticated Nostr WebSocket subscription by default and falls back to `buzz messages get` polling when WebSocket setup fails. In forced `poll` mode, expect up to one `poll_interval` of inbound latency.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

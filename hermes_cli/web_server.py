@@ -18969,6 +18969,9 @@ def start_server(
         # The gate engages on every non-loopback bind. Require at least one
         # provider to be registered, else fail closed — there is no longer an
         # escape hatch that serves the dashboard without authentication.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined

@@ -160,14 +160,26 @@ def test_start_server_public_without_insecure_records_auth_required(monkeypatch)
     branch on it. (See task 3.5 tests below for the with-provider path.)
     """
     from hermes_cli.dashboard_auth import clear_providers
+
+    discovery_calls = []
+
+    def _discover_plugins():
+        discovery_calls.append(True)
+
     clear_providers()
+    monkeypatch.setattr(
+        "hermes_cli.plugins.discover_plugins",
+        _discover_plugins,
+    )
     _stub_uvicorn_run(monkeypatch)
     web_server.app.state.auth_required = None
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc_info:
         web_server.start_server(
             host="0.0.0.0", port=9119,
             open_browser=False, allow_public=False,
         )
+    assert discovery_calls == [True]
+    assert "no auth providers are registered" in str(exc_info.value)
     assert web_server.app.state.auth_required is True
 
 
@@ -203,3 +215,27 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         clear_providers()
 
 
+def test_start_server_discovers_auth_plugins_before_public_bind_gate(monkeypatch):
+    """A configured auth plugin can register before the public-bind check."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    captured = _stub_uvicorn_run(monkeypatch)
+
+    def _discover_plugins():
+        register_provider(StubAuthProvider())
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.discover_plugins",
+        _discover_plugins,
+    )
+    try:
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+        assert captured["kwargs"].get("host") == "0.0.0.0"
+        assert captured["kwargs"].get("proxy_headers") is True
+    finally:
+        clear_providers()

@@ -2863,6 +2863,54 @@ def resolve_qwen_runtime_credentials(
     }
 
 
+def get_qwen_auth_status_local() -> Dict[str, Any]:
+    """Return Qwen OAuth status without refreshing or writing credentials.
+
+    `hermes doctor` is a read-only diagnostic command, so it needs a structural
+    snapshot of the Qwen CLI token file rather than the runtime credential
+    resolver, which may refresh expired tokens via HTTP POST and rewrite the
+    token file.
+    """
+    auth_path = _qwen_cli_auth_path()
+    try:
+        tokens = _read_qwen_cli_tokens()
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        if not access_token:
+            raise AuthError(
+                "Qwen OAuth access token missing. Re-run 'qwen auth qwen-oauth'.",
+                provider="qwen-oauth",
+                code="qwen_access_token_missing",
+            )
+        expires_at_ms = tokens.get("expiry_date")
+        if _qwen_access_token_is_expiring(expires_at_ms, skew_seconds=0):
+            return {
+                "logged_in": False,
+                "auth_file": str(auth_path),
+                "source": "qwen-cli",
+                "expires_at_ms": expires_at_ms,
+                "error": "Qwen OAuth access token is expired. Run `hermes auth status qwen-oauth` or `qwen auth qwen-oauth` to refresh.",
+            }
+        return {
+            "logged_in": True,
+            "auth_file": str(auth_path),
+            "source": "qwen-cli",
+            "expires_at_ms": expires_at_ms,
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": str(exc),
+            "code": exc.code,
+        }
+    except Exception as exc:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": str(exc),
+        }
+
+
 def get_qwen_auth_status() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     try:

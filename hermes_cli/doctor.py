@@ -367,6 +367,44 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+def _safe_oauth_status_logged_in(status_fn) -> bool:
+    """Best-effort OAuth status check for read-only doctor probes."""
+    try:
+        return bool((status_fn() or {}).get("logged_in"))
+    except Exception:
+        return False
+
+
+def _oauth_auth_configured_for_doctor() -> bool:
+    """Return True when any supported OAuth provider has a local login.
+
+    This must stay side-effect-free: doctor is a read-only diagnostic command.
+    In particular, use the refresh-free Nous local snapshot and the refresh-free
+    Qwen local token-file snapshot instead of runtime credential resolvers.
+    """
+    try:
+        from hermes_cli.auth import (
+            get_codex_auth_status,
+            get_minimax_oauth_auth_status,
+            get_nous_auth_status_local,
+            get_qwen_auth_status_local,
+            get_xai_oauth_auth_status,
+        )
+    except Exception:
+        return False
+
+    return any(
+        _safe_oauth_status_logged_in(status)
+        for status in (
+            get_nous_auth_status_local,
+            get_codex_auth_status,
+            get_minimax_oauth_auth_status,
+            get_xai_oauth_auth_status,
+            get_qwen_auth_status_local,
+        )
+    )
+
+
 def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
     """Return True when a direct API-key probe failure is non-blocking.
 
@@ -379,13 +417,13 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     if normalized == "minimax":
         try:
             from hermes_cli.auth import get_minimax_oauth_auth_status
-            return bool((get_minimax_oauth_auth_status() or {}).get("logged_in"))
+            return _safe_oauth_status_logged_in(get_minimax_oauth_auth_status)
         except Exception:
             return False
     if normalized == "xai":
         try:
             from hermes_cli.auth import get_xai_oauth_auth_status
-            return bool((get_xai_oauth_auth_status() or {}).get("logged_in"))
+            return _safe_oauth_status_logged_in(get_xai_oauth_auth_status)
         except Exception:
             return False
     return False
@@ -1254,6 +1292,8 @@ def run_doctor(args):
             content = env_path.read_text(encoding="latin-1")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
+        elif _oauth_auth_configured_for_doctor():
+            check_ok("API key or OAuth auth configured")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")
@@ -1701,6 +1741,7 @@ def run_doctor(args):
         from hermes_cli.auth import (
             get_nous_auth_status_local,
             get_codex_auth_status,
+            get_qwen_auth_status_local,
             get_minimax_oauth_auth_status,
         )
 
@@ -1729,6 +1770,14 @@ def run_doctor(args):
                     "(optional — only required to import tokens "
                     "from an existing Codex CLI login)"
                 )
+
+        qwen_status = get_qwen_auth_status_local()
+        if qwen_status.get("logged_in"):
+            check_ok("Qwen OAuth", "(logged in)")
+        else:
+            check_warn("Qwen OAuth", "(not logged in)")
+            if qwen_status.get("error"):
+                check_info(qwen_status["error"])
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):

@@ -1,8 +1,8 @@
 """DuckDuckGo search plugin — bundled, auto-loaded.
 
-Backed by the community ``ddgs`` Python package which scrapes DDG's HTML
-results page. No API key required, but the package itself must be installed
-(it's an optional dep — gated via :meth:`is_available`).
+Backed by the community ``ddgs`` package on desktop platforms and a core-httpx
+HTML fallback on Termux, where ddgs's native transport cannot run. No API key
+is required.
 """
 
 from __future__ import annotations

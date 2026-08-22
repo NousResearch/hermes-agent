@@ -1,33 +1,36 @@
-"""DuckDuckGo search — plugin form (via the ``ddgs`` package).
+"""DuckDuckGo search provider with platform-specific transports.
 
 Subclasses the plugin-facing :class:`agent.web_search_provider.WebSearchProvider`.
 The legacy in-tree module ``tools.web_providers.ddgs`` was removed in the
 same commit that moved this code under ``plugins/``; this file is now the
 canonical implementation.
 
-The ``ddgs`` package is an optional dependency. ``is_available()`` reflects
-whether the package is importable; the plugin still registers either way so
-``hermes tools`` can prompt the user to install it.
+The ``ddgs`` package is optional on non-Termux platforms. Termux uses the
+core ``httpx`` dependency against DuckDuckGo's HTML endpoint because the
+``ddgs`` native transport aborts there; the plugin still registers either way
+so ``hermes tools`` can offer the platform-appropriate setup.
 
 Isolation note (#68096): ``ddgs``/``primp`` can block inside native code while
-holding the Python GIL. A ``ThreadPoolExecutor`` + ``future.result(timeout=…)``
-cap (see #52118) cannot fire in that state — the waiter never reacquires the
-GIL — so the whole Hermes process freezes through Ctrl+C/SIGTERM. Each search
-therefore runs in a disposable child process the parent can terminate/kill.
+holding the Python GIL. A thread timeout cannot fire in that state — the
+waiter never reacquires the GIL — so the whole Hermes process freezes through
+Ctrl+C/SIGTERM. Each search therefore runs in a disposable child process that
+the parent polls and can terminate/kill.
 """
 
 from __future__ import annotations
 
-import concurrent.futures as cf
 import json
 import logging
 import os
 import subprocess
 import sys
 import time
+from html.parser import HTMLParser
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from agent.web_search_provider import WebSearchProvider
+from hermes_constants import is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,94 @@ class _SearchInterrupted(Exception):
     """Raised when tools.interrupt.is_interrupted() trips during a search wait."""
 
 
+_DDG_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
+
+
+def _decode_ddg_url(href: str) -> str:
+    """Return the destination hidden inside a trusted DDG redirect wrapper."""
+    absolute = urljoin(_DDG_HTML_ENDPOINT, href)
+    parsed = urlparse(absolute)
+    hostname = parsed.hostname or ""
+    if hostname == "duckduckgo.com" or hostname.endswith(".duckduckgo.com"):
+        destination = parse_qs(parsed.query).get("uddg")
+        if destination:
+            return destination[0]
+    return absolute
+
+
+class _DDGHTMLParser(HTMLParser):
+    """Extract the result fields emitted by DuckDuckGo's HTML endpoint."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.limit = limit
+        self.results: list[dict[str, Any]] = []
+        self._field: Optional[str] = None
+        self._depth = 0
+        self._current: Optional[dict[str, Any]] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if tag == "a" and "result__a" in classes:
+            if len(self.results) >= self.limit:
+                # A skipped result must also sever the previous result's
+                # snippet target; otherwise its snippet is appended there.
+                self._current = None
+                self._field = None
+                self._depth = 0
+                return
+            href = attributes.get("href") or ""
+            self._current = {
+                "title": "",
+                "url": _decode_ddg_url(href),
+                "description": "",
+                "position": len(self.results) + 1,
+            }
+            self.results.append(self._current)
+            self._field = "title"
+            self._depth = 1
+        elif "result__snippet" in classes and self._current is not None:
+            self._field = "description"
+            self._depth = 1
+        elif self._field:
+            self._depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._field:
+            return
+        self._depth -= 1
+        if self._depth == 0:
+            self._field = None
+
+    def handle_data(self, data: str) -> None:
+        if self._field and self._current is not None:
+            current = str(self._current[self._field])
+            self._current[self._field] = " ".join(f"{current} {data}".split())
+
+
+def _run_ddg_html_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
+    """Search DDG without the Android-incompatible ``primp`` transport."""
+    import httpx
+
+    response = httpx.post(
+        _DDG_HTML_ENDPOINT,
+        data={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; Hermes-Agent/1.0)"},
+        follow_redirects=True,
+        timeout=10,
+    )
+    response.raise_for_status()
+    parser = _DDGHTMLParser(safe_limit)
+    parser.feed(response.text)
+    if not parser.results:
+        raise RuntimeError(
+            "DuckDuckGo HTML endpoint returned no parseable results "
+            "(possible bot challenge or markup change)"
+        )
+    return parser.results
+
+
 def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     """Run the blocking ddgs query and return normalized hits.
 
@@ -57,6 +148,9 @@ def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     each individual HTTP request; the overall wall-clock cap is enforced by
     the parent via process timeout (#68096).
     """
+    if is_termux():
+        return _run_ddg_html_search(query, safe_limit)
+
     from ddgs import DDGS  # type: ignore
 
     results: list[dict[str, Any]] = []
@@ -143,8 +237,8 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     """Run ``_run_ddgs_search`` in a disposable process with a hard deadline.
 
     The parent never joins the child while it may be inside native code holding
-    *its* GIL — it only polls a communicator thread and, on timeout/interrupt,
-    terminates the child OS process. Raises ``TimeoutError``,
+    *its* GIL — it polls ``communicate()`` with short timeouts and, on
+    timeout/interrupt, terminates the child OS process. Raises ``TimeoutError``,
     ``_SearchInterrupted``, or ``RuntimeError``.
     """
     # Imported lazily so plugin import stays light for ``hermes tools`` probes.
@@ -199,13 +293,10 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     )
     _last_worker_proc = proc
 
-    # ``communicate`` runs in a side thread so the parent can poll interrupt /
-    # deadline without blocking. Killing the child unblocks communicate.
-    pool = cf.ThreadPoolExecutor(max_workers=1)
-    fut = pool.submit(proc.communicate, json.dumps(request))
     timed_out = False
     interrupted = False
     raw = ""
+    input_payload: Optional[str] = json.dumps(request)
     try:
         deadline = time.monotonic() + _SEARCH_TIMEOUT_SECS
         while True:
@@ -217,22 +308,26 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
                 timed_out = True
                 break
             try:
-                out, _err = fut.result(timeout=min(_POLL_INTERVAL_SECS, remaining))
+                out, _err = proc.communicate(
+                    input_payload,
+                    timeout=min(_POLL_INTERVAL_SECS, remaining),
+                )
+                input_payload = None
                 raw = out or ""
                 break
-            except cf.TimeoutError:
+            except subprocess.TimeoutExpired:
+                # communicate() retains its input after a timeout; subsequent
+                # calls must pass None and continue draining the same pipes.
+                input_payload = None
                 continue
     finally:
         _terminate_and_reap(proc)
-        # After kill, communicate should return promptly; don't block forever.
-        if not fut.done():
+        if not raw:
             try:
-                out, _err = fut.result(timeout=_TERMINATE_GRACE_SECS)
-                if not raw:
-                    raw = out or ""
-            except Exception:  # noqa: BLE001
+                out, _err = proc.communicate(timeout=_TERMINATE_GRACE_SECS)
+                raw = out or ""
+            except (subprocess.TimeoutExpired, ValueError):
                 pass
-        pool.shutdown(wait=False, cancel_futures=True)
 
     if interrupted:
         raise _SearchInterrupted("DuckDuckGo search interrupted")
@@ -240,7 +335,6 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
         raise TimeoutError(
             f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT_SECS}s"
         )
-
     raw = raw.strip()
     if not raw:
         raise RuntimeError(
@@ -281,12 +375,14 @@ class DDGSWebSearchProvider(WebSearchProvider):
         return "DuckDuckGo (ddgs)"
 
     def is_available(self) -> bool:
-        """Return True when the ``ddgs`` package is importable.
+        """Return True when the active platform's transport is available.
 
-        Probes the import once; cheap because Python caches the import. Must
-        NOT perform network I/O — runs at tool-registration time and on every
-        ``hermes tools`` paint.
+        Termux uses core ``httpx``; other platforms probe ``ddgs`` once. Must
+        not perform network I/O because this runs during tool registration and
+        on every ``hermes tools`` paint.
         """
+        if is_termux():
+            return True
         try:
             import ddgs  # noqa: F401
 
@@ -303,17 +399,18 @@ class DDGSWebSearchProvider(WebSearchProvider):
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a DuckDuckGo search and return normalized results.
 
-        The synchronous ``ddgs`` call runs in a disposable child process with
-        a hard wall-clock timeout (``_SEARCH_TIMEOUT_SECS``) so a hung native
-        ``primp`` call cannot freeze the Hermes process (#36776, #68096).
+        The synchronous transport runs in a disposable child process with a
+        hard wall-clock timeout (``_SEARCH_TIMEOUT_SECS``) so a hung native
+        call cannot freeze the Hermes process (#36776, #68096).
         """
-        try:
-            import ddgs  # type: ignore  # noqa: F401 — availability probe
-        except ImportError:
-            return {
-                "success": False,
-                "error": "ddgs package is not installed — run `pip install ddgs`",
-            }
+        if not is_termux():
+            try:
+                import ddgs  # type: ignore  # noqa: F401 — availability probe
+            except ImportError:
+                return {
+                    "success": False,
+                    "error": "ddgs package is not installed — run `pip install ddgs`",
+                }
 
         # DDGS().text yields at most `max_results` items; we cap defensively
         # in case the package ignores the hint.
@@ -341,7 +438,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
                 "success": False,
                 "error": "DuckDuckGo search interrupted",
             }
-        except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
+        except Exception as exc:  # noqa: BLE001 — transports raise vendor exceptions
             logger.warning("DDGS search error: %s", exc)
             return {"success": False, "error": f"DuckDuckGo search failed: {exc}"}
 
@@ -351,12 +448,13 @@ class DDGSWebSearchProvider(WebSearchProvider):
         return {"success": True, "data": {"web": web_results}}
 
     def get_setup_schema(self) -> Dict[str, Any]:
-        return {
+        schema = {
             "name": "DuckDuckGo (ddgs)",
             "badge": "free · no key · search only",
-            "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
+            "tag": "Search DuckDuckGo without an API key (pair with any extract provider)",
             "env_vars": [],
-            # Trigger `_run_post_setup("ddgs")` after the user picks this row
-            # so the ddgs Python package gets pip-installed on first selection.
-            "post_setup": "ddgs",
         }
+        if not is_termux():
+            # The Android fallback uses core httpx; primp aborts under Termux.
+            schema["post_setup"] = "ddgs"
+        return schema

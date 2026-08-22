@@ -1,0 +1,112 @@
+name: Validate Flatpak Build
+
+# Reusable workflow called by CI when Flatpak-related files change or when
+# the frontend lane runs. Builds the Flatpak bundle in a clean environment
+# to ensure the manifest and staging scripts are correct.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version for Electron build
+        required: false
+        default: '26'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flatpak-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flatpak-build:
+    name: Flatpak Build Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # ── System deps for flatpak-builder ────────────────────────────────
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+
+      # Add the Flathub remote (required for base runtime / Electron BaseApp)
+      - name: Add Flathub remote
+        run: |
+          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      # Install the required runtimes / SDK extensions
+      - name: Install Freedesktop + Electron BaseApp + Node 22 extension
+        run: |
+          flatpak install --user --noninteractive \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.node22//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
+      # ── Node / npm for Electron build ──────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      # ── Build the Electron app (linux-unpacked) ────────────────────────
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      # ── Stage Flatpak payload (Electron app only) ──────────────────────
+      - name: Stage Flatpak payload
+        working-directory: apps/desktop
+        run: node scripts/stage-flatpak.mjs
+
+      # ── Build Flatpak bundle ───────────────────────────────────────────
+      - name: Build Flatpak bundle
+        working-directory: apps/desktop
+        run: |
+          flatpak-builder --force-clean \
+            --repo flatpak/repo \
+            flatpak/build-dir \
+            flatpak/com.nousresearch.Hermes.yml
+          flatpak build-bundle \
+            flatpak/repo \
+            release/com.nousresearch.Hermes.flatpak \
+            com.nousresearch.Hermes
+
+      # ── Verify the bundle ──────────────────────────────────────────────
+      - name: Verify Flatpak bundle
+        run: |
+          flatpak run --command=sh com.nousresearch.Hermes -c '
+            echo "=== Flatpak metadata ===";
+            flatpak info com.nousresearch.Hermes;
+            echo "=== Executable present ===";
+            test -x /app/bin/hermes-desktop && echo "OK: /app/bin/hermes-desktop exists" || exit 1;
+            echo "=== Wrapper present ===";
+            test -x /app/bin/zypak-wrapper.sh && echo "OK: zypak-wrapper.sh exists" || exit 1;
+            echo "=== Electron binary present ===";
+            test -x /app/share/hermes-desktop/Hermes && echo "OK: Hermes binary exists" || exit 1;
+          ' || exit 1
+
+      # Upload as artifact for inspection
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flatpak-build-${{ github.sha }}
+          path: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          retention-days: 7
+          overwrite: true

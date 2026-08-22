@@ -1,0 +1,88 @@
+name: Validate Snapcraft Build
+
+# Reusable workflow called by CI when snap-related files change or when
+# the frontend lane runs. Builds the Snap in a clean environment
+# to ensure the snapcraft.yaml and staging scripts are correct.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version for Electron build
+        required: false
+        default: '26'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snapcraft-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapcraft-build:
+    name: Snapcraft Build Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # ── System deps for snapcraft ──────────────────────────────────────
+      - name: Install Snapcraft
+        uses: snapcore/action-install@b2ff61d1c7f3a9a3a5e3f0e8d8b3e5c7d1f2e4b6 # v1
+        with:
+          channel: latest/stable
+
+      # ── Node / npm for Electron build ──────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      # ── Build the Electron app (linux-unpacked) ────────────────────────
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      # ── Stage Snapcraft payload ────────────────────────────────────────
+      - name: Stage Snapcraft payload
+        working-directory: apps/desktop
+        run: node scripts/stage-snap.mjs
+
+      # ── Build Snap ─────────────────────────────────────────────────────
+      - name: Build Snap
+        working-directory: apps/desktop
+        run: snapcraft --destructive-mode
+
+      # ── Verify the snap ────────────────────────────────────────────────
+      - name: Verify Snap
+        run: |
+          snap info hermes-desktop_*.snap || true
+          snap run --shell hermes-desktop_*.snap -c '
+            echo "=== Snap metadata ===";
+            echo "App binary:";
+            test -x /snap/hermes-desktop/current/bin/hermes-desktop && echo "OK: bin/hermes-desktop exists" || exit 1;
+            echo "Electron binary:";
+            test -x /snap/hermes-desktop/current/share/hermes-desktop/Hermes && echo "OK: Hermes binary exists" || exit 1;
+          ' || exit 1
+
+      # Upload as artifact for inspection
+      - name: Upload Snap artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: snapcraft-build-${{ github.sha }}
+          path: apps/desktop/hermes-desktop_*.snap
+          retention-days: 7
+          overwrite: true

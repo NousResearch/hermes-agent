@@ -206,6 +206,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { resolvePackageUpdate } from './package-update'
 import {
   createParentStartMarkerResolver,
   electronProcessStartMarker,
@@ -296,7 +297,17 @@ import {
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL, resolveUpdateRemote } from './update-remote'
+import { runRebuildWithRetry } from './update-rebuild'
+import {
+  buildRelaunchScript,
+  collectRelaunchArgs,
+  collectRelaunchEnv,
+  decideRelaunchOutcome,
+  resolveUnpackedRelease,
+  sandboxFallbackFromEnv,
+  sandboxPreflight
+} from './update-relaunch'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
@@ -2708,10 +2719,14 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+async function getRemoteUrl(updateRoot, remote = 'origin') {
+  const result = await runGit(['remote', 'get-url', remote], { cwd: updateRoot })
 
-  return origin.code === 0 ? origin.stdout.trim() : ''
+  return result.code === 0 ? result.stdout.trim() : ''
+}
+
+async function getOriginUrl(updateRoot) {
+  return getRemoteUrl(updateRoot)
 }
 
 function emitUpdateProgress(payload) {
@@ -2753,6 +2768,18 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  const packageUpdate = resolvePackageUpdate(process.env)
+
+  if (packageUpdate) {
+    return {
+      supported: false,
+      reason: `${packageUpdate.kind}-managed`,
+      message: packageUpdate.message,
+      command: packageUpdate.command,
+      fetchedAt: Date.now()
+    }
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -2769,8 +2796,10 @@ async function checkUpdates() {
 
   branch = await resolveHealedBranch(updateRoot, branch)
   const originUrl = await getOriginUrl(updateRoot)
+  const updateRemote = resolveUpdateRemote(originUrl, await getRemoteUrl(updateRoot, 'upstream'))
+  const updateRemoteUrl = updateRemote === 'origin' ? originUrl : await getRemoteUrl(updateRoot, updateRemote)
 
-  if (isOfficialSshRemote(originUrl)) {
+  if (isOfficialSshRemote(updateRemoteUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
@@ -2823,12 +2852,6 @@ async function checkUpdates() {
     }
   }
 
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
-
   const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
 
   if (fetched.code !== 0) {
@@ -2843,20 +2866,29 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+  const remoteBranch = `${updateRemote}/${branch}`
 
   const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
+    git(['rev-parse', remoteBranch]),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
+    git(['rev-parse', '--is-shallow-repository']),
   ])
 
   const isShallow = shallowStr === 'true'
+  // merge-base exits non-zero with empty stdout when HEAD shares no common
+  // ancestor with the freshly fetched tip — exactly the shallow-clone case.
+  const mergeBaseResult = await runGit(['merge-base', 'HEAD', remoteBranch], { cwd: updateRoot })
+  const hasMergeBase = mergeBaseResult.code === 0
 
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
+  // Only enumerate the commit count when it is meaningful. On a shallow checkout
+  // with no merge-base, `rev-list --count` walks the entire remote ancestry
+  // (thousands of commits, see #51922) and resolveBehindCount discards the
+  // result anyway in favour of a SHA compare — so skip the expensive query.
+  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
+    ? await git(['rev-list', `HEAD..${remoteBranch}`, '--count'])
+    : ''
 
   // A positive directional ancestry result remains trustworthy in a shallow
   // graph and prevents a local commit on top of origin from looking outdated.
@@ -2899,60 +2931,6 @@ async function checkUpdates() {
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
-  }
-}
-
-// Best-effort exact behind-count for graphs the local clone can't measure.
-// Delegates URL building + response parsing to update-count.ts (pure, unit
-// tested); this wrapper only does the bounded network call. Any failure —
-// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
-// the honest "update available, count unknown" state.
-async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
-  const url = compareApiUrl({ currentSha, originUrl, targetSha })
-
-  if (!url) {
-    return null
-  }
-
-  try {
-    const payload = await new Promise((resolve, reject) => {
-      const req = https.get(
-        url,
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            // GitHub requires a UA on api.github.com; requests without one 403.
-            'User-Agent': 'hermes-desktop-update-check'
-          },
-          timeout: 10_000
-        },
-        res => {
-          const chunks = []
-          res.on('error', reject)
-          res.on('data', chunk => chunks.push(chunk))
-          res.on('end', () => {
-            if ((res.statusCode || 500) >= 400) {
-              reject(new Error(`compare API ${res.statusCode}`))
-
-              return
-            }
-
-            try {
-              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-            } catch (error) {
-              reject(error)
-            }
-          })
-        }
-      )
-
-      req.on('timeout', () => req.destroy(new Error('compare API timeout')))
-      req.on('error', reject)
-    })
-
-    return parseCompareBehindCount(payload)
-  } catch {
-    return null
   }
 }
 
@@ -3478,6 +3456,13 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+  const packageUpdate = resolvePackageUpdate(process.env)
+
+  if (packageUpdate) {
+    return { ok: true, manual: true, command: packageUpdate.command, message: packageUpdate.message }
+  }
+
+
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }

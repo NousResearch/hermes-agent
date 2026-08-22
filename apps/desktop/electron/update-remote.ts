@@ -58,8 +58,27 @@ function isSshRemote(url) {
   return value.startsWith('git@') || value.startsWith('ssh://')
 }
 
-function isOfficialSshRemote(url) {
-  return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
+function isOfficialRemote(url) {
+  return canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
 }
 
-export { canonicalGitHubRemote, isOfficialSshRemote, isSshRemote, OFFICIAL_REPO_CANONICAL, OFFICIAL_REPO_HTTPS_URL }
+// Fork installs commonly retain the fork as origin and the canonical repository
+// as upstream. Self-update must discover Hermes releases from upstream rather
+// than treating a stale fork as authoritative.
+function resolveUpdateRemote(originUrl, upstreamUrl) {
+  return !isOfficialRemote(originUrl) && isOfficialRemote(upstreamUrl) ? 'upstream' : 'origin'
+}
+
+function isOfficialSshRemote(url) {
+  return isSshRemote(url) && isOfficialRemote(url)
+}
+
+export {
+  canonicalGitHubRemote,
+  isOfficialRemote,
+  isOfficialSshRemote,
+  isSshRemote,
+  OFFICIAL_REPO_CANONICAL,
+  OFFICIAL_REPO_HTTPS_URL,
+  resolveUpdateRemote
+}

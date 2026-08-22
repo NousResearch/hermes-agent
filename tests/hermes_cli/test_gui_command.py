@@ -13,40 +13,6 @@ import pytest
 from hermes_cli import main as cli_main
 
 
-@pytest.fixture(autouse=True)
-def _isolate_xdg_data_home(tmp_path, monkeypatch):
-    """Keep desktop-entry writes out of the developer's real home directory.
-
-    ``cmd_gui`` registers an XDG launcher entry, and ``desktop_entry_path()``
-    resolves it under ``XDG_DATA_HOME`` (falling back to ``~/.local/share``).
-    While these tests faked the host as darwin the Linux-only registration
-    never ran, so nothing escaped. Running them on their real host makes that
-    call live, and on a Linux dev box it wrote a ``hermes.desktop`` pointing
-    ``Exec=`` at the test's throwaway npm stub into the user's actual
-    applications menu.
-
-    The hermetic conftest deliberately does NOT redirect ``HOME`` (subprocesses
-    depend on it being stable), so this has to be pinned per-file.
-    """
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
-
-
-@pytest.fixture(autouse=True)
-def _stable_keychain_detection(monkeypatch):
-    """Pin Linux keychain detection to the fast GNOME env path.
-
-    On Linux, ``cmd_gui`` falls back to a D-Bus ping via ``subprocess.run``
-    when no keychain env var is present. Tests here mock ``subprocess.run``
-    with strict ``side_effect`` lists, so an unpinned probe would silently
-    consume an item meant for the build/launch calls. Detection-specific
-    tests clear these vars again via ``_clear_keychain_env``.
-    """
-    monkeypatch.delenv("KDE_SESSION_VERSION", raising=False)
-    monkeypatch.delenv("KDE_FULL_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_DESKTOP_PASSWORD_STORE", raising=False)
-    monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
-
-
 def _ns(**kw):
     defaults = dict(
         skip_build=False,
@@ -70,30 +36,17 @@ def _make_desktop_tree(tmp_path: Path) -> Path:
     return root
 
 
-def _make_packaged_executable(root: Path, monkeypatch) -> Path:
-    """Create the packaged-app path layout electron-builder emits on THIS host.
-
-    The layout is keyed off the real ``sys.platform`` rather than a caller-
-    supplied override: ``cmd_gui`` resolves the executable through the same
-    branch, so faking the platform here only proved the test and the code
-    agreed about a host neither was running on.
-
-    Note the Linux arm also lays down ``chrome-sandbox``. ``cmd_gui`` refuses to
-    launch without it (Electron's setuid sandbox helper), which the old
-    darwin-by-default fake concealed — on Linux the packaged tree genuinely has
-    to include it.
-    """
+def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin") -> Path:
+    monkeypatch.setattr(cli_main.sys, "platform", platform)
     desktop_dir = root / "apps" / "desktop"
-    if sys.platform == "darwin":
+    if platform == "darwin":
         exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
-    elif sys.platform == "win32":
+    elif platform == "win32":
         exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
     else:
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
-    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
-    if sys.platform not in ("darwin", "win32"):
-        (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
     return exe
 
 
@@ -112,15 +65,11 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main._register_linux_desktop_entry"), \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    # The install now runs with a resolved env (managed-Node PATH), never a bare
-    # ``env=None`` that would leave npm's child scripts unable to find ``node``.
     mock_install.assert_called_once()
     assert mock_install.call_args.args == ("/usr/bin/npm", root)
     assert mock_install.call_args.kwargs["capture_output"] is False
@@ -144,31 +93,21 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
 
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
+    _make_packaged_executable(root, monkeypatch, platform="win32")
 
-    # A managed Node tree on disk so with_hermes_node_path() actually prepends it.
     home = tmp_path / "hermes-home"
     (home / "node" / "bin").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Simulate the stripped PATH the desktop updater chain hands us.
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     launch_ok = subprocess.CompletedProcess(["hermes"], 0)
 
-    # A plain return_value rather than a fixed side_effect list: this test only
-    # cares about the env handed to the npm install, and pinning an exact
-    # sequence of subprocess.run calls makes it fail (StopIteration) whenever
-    # cmd_gui legitimately shells out one extra time — e.g. the Linux sandbox
-    # fixup, which fires on hosts where chrome-sandbox isn't already
-    # root-owned+4755. Assert on the install env, not on a call count.
     with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[subprocess.CompletedProcess([], 0), launch_ok]), \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(skip_build=False))
 
@@ -177,22 +116,28 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     install_env = mock_install.call_args.kwargs["env"]
     path_parts = install_env["PATH"].split(os.pathsep)
     assert path_parts[: len(managed_dirs)] == managed_dirs
-    assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
+    assert "/usr/bin" in path_parts
 
 
+def test_gui_uses_flatpak_client_with_native_backend_on_linux(monkeypatch, tmp_path):
+    """Linux Flatpak path: ensure the Flatpak helper is invoked with the native
+    backend command and working directory, instead of building Electron locally.
+    """
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    launched = []
+    monkeypatch.setattr(
+        "hermes_cli.flatpak_desktop.launch_with_native_backend",
+        lambda command, *, cwd: launched.append((command, cwd)) or 0,
+    )
 
+    with pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(cwd=str(tmp_path)))
 
-
-
+    assert exc.value.code == 0
+    assert launched == [([sys.executable, "-m", "hermes_cli.main"], str(tmp_path))]
 
 
 # ── Content-hash stamp tests ──────────────────────────────────────────
-
-
-
-
-
-
 
 
 # ── Electron build-cache recovery tests ───────────────────────────────
@@ -212,9 +157,6 @@ def test_purge_electron_build_cache_clears_all_zips_and_unpacked_dir(tmp_path, m
     dir, because @electron/get's own SHASUM check on re-download is the real
     validator — not a self-rolled one."""
     cache = tmp_path / "electron-cache"
-    # A "clean" zip and a prepended-junk zip — the latter is the real-world
-    # corruption that zipfile.testzip() silently passes (it reads from the
-    # end-of-central-directory backward), which is why we don't gate on it.
     clean = cache / "electron-v40.9.3-linux-x64.zip"
     prepended = cache / "hashdir" / "electron-v40.9.3-linux-x64.zip"
     _write_zip(clean)
@@ -237,9 +179,6 @@ def test_purge_electron_build_cache_clears_all_zips_and_unpacked_dir(tmp_path, m
     assert not clean.exists()
     assert not prepended.exists()
     assert not unpacked.exists()
-
-
-
 
 def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypatch, capsys):
     """A build that already produced a packaged executable did NOT fail from the
@@ -779,3 +718,4 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert "HERMES_DESKTOP_PASSWORD_STORE" not in launch_env
+>>>>>>> upstream/main

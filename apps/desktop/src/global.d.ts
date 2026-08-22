@@ -552,6 +552,8 @@ export interface DesktopUpdateStatus {
   currentBranch?: string
   reason?: string
   message?: string
+  /** Exact host package-manager command when a packaged client cannot self-update. */
+  command?: string
   error?: string
   /** Exact commits behind. null = update available, but the count is
    *  unknowable (shallow clone without a merge-base) — never render it as a

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hermes
+GenericName=AI Agent
+Comment=Hermes Agent Desktop App
+Exec=hermes-desktop
+Icon=com.nousresearch.Hermes
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=Hermes
+Keywords=AI;Agent;Chat;LLM;

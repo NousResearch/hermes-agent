@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes
+Comment=Native desktop shell for Hermes Agent
+Exec=hermes-desktop %U
+Icon=com.nousresearch.Hermes
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+MimeType=x-scheme-handler/hermes;

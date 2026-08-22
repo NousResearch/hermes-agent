@@ -80,6 +80,53 @@ def _close_submitted_coro(coro, _loop):
     return SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
 
 
+class _RunCoroFuture:
+    """A fake Future that runs the coroutine synchronously on creation.
+
+    Used where a test must verify that the coroutine passed to
+    ``_submit_on_loop`` actually drove a downstream call (e.g. that
+    ``tools.slash_confirm.resolve`` ran with the chosen value).
+    """
+
+    def __init__(self, coro, _loop):
+        self._coro = coro
+        self._done_callbacks = []
+
+    def add_done_callback(self, fn):
+        self._done_callbacks.append(fn)
+        return self
+
+    def done(self):
+        return True
+
+    def result(self, timeout=None):
+        return None
+
+
+def _run_submitted_coro(coro, _loop, **_kwargs):
+    """Schedule a coroutine synchronously (run it to completion inline).
+
+    Mirrors what ``_submit_on_loop`` does via
+    ``agent.async_utils.safe_schedule_threadsafe``, but executes the coroutine
+    immediately so downstream async calls (e.g. ``tools.slash_confirm.resolve``)
+    actually run and can be asserted.  ``safe_schedule_threadsafe`` also accepts
+    ``logger``/``log_message``/``log_level`` kwargs, which are ignored here.
+    """
+    try:
+        import asyncio
+
+        async def _runner():
+            await coro
+
+        try:
+            asyncio.get_running_loop().run_until_complete(_runner())
+        except RuntimeError:
+            asyncio.run(_runner())
+    except Exception:
+        pass
+    return _RunCoroFuture(coro, _loop)
+
+
 # ===========================================================================
 # send_exec_approval — interactive card with buttons
 # ===========================================================================
@@ -445,5 +492,356 @@ class TestResolveUpdatePrompt:
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
+
+
+# ===========================================================================
+# Clarify — send_clarify interactive card + multi_select text fallback
+# ===========================================================================
+
+class TestFeishuClarifyCard:
+    """Test send_clarify renders an interactive card with choice buttons."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_card_with_buttons(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_clar_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_clarify(
+                chat_id="oc_12345",
+                question="Which server to deploy?",
+                choices=["staging", "prod"],
+                clarify_id="clar_001",
+                session_key="agent:main:feishu:group:oc_12345",
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_clar_001"
+
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "blue"
+        assert "Which server to deploy?" in card["elements"][0]["content"]
+        # Buttons for each choice + "Other"
+        actions = card["elements"][-1]["actions"]
+        assert len(actions) == 3
+        action_values = [a["value"] for a in actions]
+        assert action_values[0] == {
+            "hermes_clarify_action": "choice",
+            "clarify_id": "clar_001",
+            "choice_idx": 0,
+        }
+        assert action_values[-1] == {
+            "hermes_clarify_action": "other",
+            "clarify_id": "clar_001",
+        }
+
+    @pytest.mark.asyncio
+    async def test_multi_select_falls_back_to_text_renderer(self):
+        """multi_select must NOT render scalar choice buttons (JSON-array
+        contract can't be expressed by a single button click). It renders a
+        text prompt instead, which the gateway text-intercept resolves."""
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_clar_ms_001"),
+        )
+        entries = {
+            "clar_ms_1": SimpleNamespace(multi_select=True),
+        }
+        with (
+            patch.object(
+                adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_send,
+            patch(
+                "plugins.platforms.feishu.adapter._clarify_entries", entries,
+            ) if False else patch("tools.clarify_gateway._entries", entries),
+        ):
+            result = await adapter.send_clarify(
+                chat_id="oc_12345",
+                question="Pick all environments",
+                choices=["staging", "prod", "dev"],
+                clarify_id="clar_ms_1",
+                session_key="sess-ms-1",
+            )
+
+        assert result.success is True
+        card = json.loads(mock_send.call_args[1]["payload"])
+        # No action buttons — only markdown elements (question, list, prompt)
+        assert not any(e.get("tag") == "action" for e in card["elements"])
+        # The multi-select hint is present
+        assert any("多选" in e.get("content", "") for e in card["elements"])
+
+    @pytest.mark.asyncio
+    async def test_stores_clarify_state(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_clar_002"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_clarify(
+                chat_id="oc_12345",
+                question="Confirm?",
+                choices=["yes", "no"],
+                clarify_id="clar_002",
+                session_key="sess-2",
+            )
+
+        state = adapter._clarify_state["clar_002"]
+        assert state["session_key"] == "sess-2"
+        assert state["message_id"] == "msg_clar_002"
+        assert state["chat_id"] == "oc_12345"
+
+
+class TestClarifyCardAction:
+    """Test _handle_clarify_card_action resolves a choice via gateway."""
+
+    def test_choice_button_resolves(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._clarify_state["clar_1"] = {
+            "session_key": "sess-1",
+            "message_id": "msg-1",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {
+                "hermes_clarify_action": "choice",
+                "clarify_id": "clar_1",
+                "choice_idx": 1,
+            },
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        entries = {
+            "clar_1": SimpleNamespace(choices=["staging", "prod"]),
+        }
+        with (
+            patch("tools.clarify_gateway._entries", entries),
+            patch(
+                "agent.async_utils.safe_schedule_threadsafe",
+                side_effect=_run_submitted_coro,
+            ),
+        ):
+            response = adapter._handle_clarify_card_action(
+                event=data.event, action_value=data.event.action.value, loop=MagicMock(),
+            )
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "prod" in card["elements"][0]["content"]
+        assert "clar_1" not in adapter._clarify_state
+
+
+# ===========================================================================
+# Slash-confirm — card + whitelist validation (fail closed)
+# ===========================================================================
+
+class TestFeishuSlashConfirmCard:
+    """Test send_slash_confirm renders a three-button confirmation card."""
+
+    @pytest.mark.asyncio
+    async def test_sends_three_button_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_sc_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Reload MCP?",
+                message="This invalidates the provider prompt cache.",
+                session_key="sess-sc-1",
+                confirm_id="sc_001",
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_sc_001"
+
+        kwargs = mock_send.call_args[1]
+        assert kwargs["msg_type"] == "interactive"
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "orange"
+        actions = card["elements"][-1]["actions"]
+        assert [a["value"]["hermes_slash_confirm_action"] for a in actions] == [
+            "once", "always", "cancel",
+        ]
+        assert all(a["value"]["confirm_id"] == "sc_001" for a in actions)
+
+    @pytest.mark.asyncio
+    async def test_stores_slash_confirm_state(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_sc_002"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Confirm?",
+                message="Do it?",
+                session_key="sess-sc-2",
+                confirm_id="sc_002",
+            )
+
+        state = adapter._slash_confirm_state["sc_002"]
+        assert state["session_key"] == "sess-sc-2"
+        assert state["chat_id"] == "oc_12345"
+
+
+class TestSlashConfirmCardAction:
+    """Test _handle_slash_confirm_card_action resolves valid choices and
+    fails closed on malformed callback data."""
+
+    def _make_ready_adapter(self, confirm_id="sc_1"):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._slash_confirm_state[confirm_id] = {
+            "session_key": "sess-sc-1",
+            "message_id": "msg-sc-1",
+            "chat_id": "oc_12345",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        return adapter
+
+    def test_valid_once_resolves(self, _patch_callback_card_types):
+        adapter = self._make_ready_adapter()
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "confirm_id": "sc_1"},
+            open_id="ou_bob",
+        )
+
+        with (
+            patch(
+                "tools.slash_confirm.resolve",
+                new_callable=AsyncMock, return_value="done",
+            ) as mock_resolve,
+            patch(
+                "agent.async_utils.safe_schedule_threadsafe",
+                side_effect=_run_submitted_coro,
+            ),
+        ):
+            response = adapter._handle_slash_confirm_card_action(
+                event=data.event, action_value=data.event.action.value, loop=MagicMock(),
+            )
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.data["header"]["title"]["content"] == "✅ 已批准（仅本次）"
+        assert "sc_1" not in adapter._slash_confirm_state
+        mock_resolve.assert_called_once_with("sess-sc-1", "sc_1", "once")
+
+    def test_malformed_choice_fails_closed(self, _patch_callback_card_types):
+        """A callback with an unexpected choice value must NEVER reach the
+        destructive handler. It is rejected, state is NOT popped, and no
+        resolve runs."""
+        adapter = self._make_ready_adapter()
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "rm_rf_everything", "confirm_id": "sc_1"},
+            open_id="ou_bob",
+        )
+
+        with (
+            patch(
+                "tools.slash_confirm.resolve",
+                new_callable=AsyncMock, return_value="done",
+            ) as mock_resolve,
+            patch("asyncio.run_coroutine_threadsafe") as mock_submit,
+        ):
+            response = adapter._handle_slash_confirm_card_action(
+                event=data.event, action_value=data.event.action.value, loop=MagicMock(),
+            )
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.data["header"]["title"]["content"] == "❌ 无效操作"
+        # State preserved so a legitimate retry isn't blocked, and the
+        # destructive handler was never invoked.
+        assert "sc_1" in adapter._slash_confirm_state
+        mock_resolve.assert_not_called()
+        mock_submit.assert_not_called()
+
+    def test_cancel_is_valid(self, _patch_callback_card_types):
+        adapter = self._make_ready_adapter()
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "cancel", "confirm_id": "sc_1"},
+            open_id="ou_bob",
+        )
+
+        with (
+            patch(
+                "tools.slash_confirm.resolve",
+                new_callable=AsyncMock, return_value="cancelled",
+            ) as mock_resolve,
+            patch(
+                "agent.async_utils.safe_schedule_threadsafe",
+                side_effect=_run_submitted_coro,
+            ),
+        ):
+            response = adapter._handle_slash_confirm_card_action(
+                event=data.event, action_value=data.event.action.value, loop=MagicMock(),
+            )
+
+        assert response is not None
+        assert response.card.data["header"]["title"]["content"] == "❌ 已取消"
+        assert response.card.data["header"]["template"] == "grey"
+        mock_resolve.assert_called_once_with("sess-sc-1", "sc_1", "cancel")
+
+    def test_unauthorized_click_does_not_resolve(self, _patch_callback_card_types):
+        adapter = self._make_ready_adapter()
+        adapter._allowed_group_users = {"ou_other"}
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "confirm_id": "sc_1"},
+            open_id="ou_intruder",
+        )
+
+        with (
+            patch(
+                "tools.slash_confirm.resolve",
+                new_callable=AsyncMock, return_value="done",
+            ) as mock_resolve,
+            patch("asyncio.run_coroutine_threadsafe") as mock_submit,
+        ):
+            response = adapter._handle_slash_confirm_card_action(
+                event=data.event, action_value=data.event.action.value, loop=MagicMock(),
+            )
+
+        assert response is not None
+        assert response.card is None
+        assert "sc_1" in adapter._slash_confirm_state
+        mock_resolve.assert_not_called()
+        mock_submit.assert_not_called()
 
 

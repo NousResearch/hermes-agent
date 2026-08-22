@@ -773,6 +773,24 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
+    def test_spawn_via_env_creates_a_dedicated_process_group(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4242\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, "python worker.py")
+
+        assert session.pid == 4242
+        assert "setsid bash -lc" in env.commands[0][0]
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False
@@ -1059,6 +1077,47 @@ class TestKillProcess:
         registry._finished[s.id] = s
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
+
+    def test_kill_non_local_process_targets_its_process_group(self, registry):
+        commands = []
+
+        class FakeEnv:
+            def execute(self, command, **kwargs):
+                commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        session = _make_session(sid="proc_remote")
+        session.pid = 4242
+        session.pid_scope = "sandbox"
+        session.env_ref = FakeEnv()
+        registry._running[session.id] = session
+
+        with patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(session.id)
+
+        assert result["status"] == "killed"
+        assert "kill -TERM -- -4242" in commands[0][0]
+        assert "kill -KILL -- -4242" in commands[0][0]
+        assert "then exit 1" in commands[0][0]
+        assert "|| true" not in commands[0][0]
+
+    def test_kill_non_local_process_keeps_session_when_termination_fails(self, registry):
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                return {"output": "permission denied", "returncode": 1}
+
+        session = _make_session(sid="proc_remote_failed")
+        session.pid = 4242
+        session.pid_scope = "sandbox"
+        session.env_ref = FakeEnv()
+        registry._running[session.id] = session
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "error"
+        assert "termination failed" in result["error"]
+        assert registry.get(session.id) is session
+        assert session.exited is False
 
 
     def test_kill_detached_session_uses_host_pid(self, registry):

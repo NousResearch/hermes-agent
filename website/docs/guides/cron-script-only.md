@@ -75,6 +75,7 @@ cronjob(
     action="create",
     schedule="every 5m",
     script="memory-watchdog.sh",
+    target="scheduler",
     no_agent=True,
     deliver="telegram",
     name="memory-watchdog",
@@ -126,6 +127,7 @@ chmod +x ~/.hermes/scripts/memory-watchdog.sh
 hermes cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
+  --target scheduler \
   --deliver telegram \
   --name "memory-watchdog"
 
@@ -151,16 +153,16 @@ The "silent when empty" behavior is the key to the classic watchdog pattern: the
 
 ## Script Rules
 
-Scripts must live in `~/.hermes/scripts/`. This is enforced at both job-creation time and run time — absolute paths, `~/` expansion, and path-traversal patterns (`../`) are rejected. The same directory is shared with the pre-check script gate used by LLM jobs.
+New script jobs created through `cronjob` or `hermes cron create` default to `target="backend"`. With a non-local terminal backend, script paths **must be absolute** and backend-visible, such as `/workspace/scripts/disk-alert.sh`; Hermes checks that it is a regular file in that backend before saving the job. With the effective `local` backend, backend-target jobs use the confined scheduler-script rules instead: a relative regular file under `~/.hermes/scripts/`, with absolute paths, `~/` expansion, and traversal patterns rejected at creation and execution. Use `target="scheduler"` explicitly for scheduler-host maintenance jobs; it always uses those confined rules. Existing jobs without a stored target retain scheduler-host execution.
 
-Interpreter choice is by file extension:
+Interpreter choice is target-aware because a non-local backend has its own filesystem and runtime:
 
-| Extension | Interpreter |
-|-----------|-------------|
-| `.sh`, `.bash` | `bash` from `PATH` (fallback `/bin/bash`) |
-| anything else | `sys.executable` (current Python) |
+| Execution target | `.sh`, `.bash` | Any other extension |
+|------------------|----------------|---------------------|
+| Scheduler target or effective `local` backend | `bash` from the host `PATH` (fallback `/bin/bash`) | Hermes' current Python interpreter (`sys.executable`) |
+| Non-local backend target | `bash` from the backend `PATH` | Backend `python3` from `PATH` |
 
-We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
+Hermes cannot safely pass its host `sys.executable` path into Docker, SSH, or another remote backend. We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
 
 ## Schedule Syntax
 
@@ -223,6 +225,7 @@ chmod +x ~/.hermes/scripts/disk-alert.sh
 hermes cron create "*/15 * * * *" \
   --no-agent \
   --script disk-alert.sh \
+  --target scheduler \
   --deliver telegram \
   --name "disk-alert"
 ```

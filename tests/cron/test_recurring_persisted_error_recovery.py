@@ -55,14 +55,14 @@ def cron_env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
     monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
 
+    script = hermes_home / "scripts" / "probe.py"
+    script.write_text("print('ok')\n")
     job = jobs_mod.create_job(
         prompt="probe",
         schedule="every 10m",
         no_agent=True,
         script="probe.py",
     )
-    script = hermes_home / "scripts" / "probe.py"
-    script.write_text("print('ok')\n")
     return {"home": hermes_home, "job_id": job["id"]}
 
 

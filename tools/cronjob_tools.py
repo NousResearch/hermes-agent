@@ -8,6 +8,7 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 import json
 import logging
 import re
+import shlex
 import sys
 import threading
 import time
@@ -622,32 +623,72 @@ def _validate_cron_base_url(
     )
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
+def _validate_backend_script(script: str, workdir: Optional[str] = None) -> Optional[str]:
+    """Require a regular script file in the active terminal backend."""
+    raw = script.strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        return f"Backend script path must be absolute: {raw!r}."
+
+    try:
+        from tools.terminal_tool import terminal_tool
+
+        response = terminal_tool(
+            # ``test`` is a POSIX shell builtin: unlike GNU utilities, it does
+            # not portably accept ``--``. Backend script paths are required to
+            # be absolute, so they cannot be parsed as an option.
+            command=f"test -f {shlex.quote(str(path))}",
+            timeout=30,
+            workdir=workdir or str(path.parent),
+        )
+        result = json.loads(response) if isinstance(response, str) else response
+    except Exception as exc:
+        return f"Could not validate script in terminal backend: {exc}"
+
+    if not isinstance(result, dict) or result.get("exit_code") != 0:
+        detail = str((result or {}).get("error") or "").strip()
+        suffix = f" ({detail})" if detail else ""
+        return f"Script not found in terminal backend: {path}{suffix}"
+    return None
+
+
+def _validate_cron_script_path(
+    script: Optional[str], target: str, workdir: Optional[str] = None,
+) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Scheduler scripts must be regular files under HERMES_HOME/scripts. Backend
+    scripts are validated by the active terminal backend, where their paths are
+    actually resolved.
 
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
-
     raw = script.strip()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
+    if target == "backend":
+        from tools.terminal_tool import get_effective_terminal_backend
+
+        if get_effective_terminal_backend() != "local":
+            return _validate_backend_script(raw, workdir=workdir)
+
+    # Scheduler scripts — including backend-targeted jobs on an effective local
+    # terminal — are confined to the profile scripts directory.
+    if raw.startswith("~"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
-            f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Scheduler script path must be relative to ~/.hermes/scripts/: {raw!r}."
+        )
+
+    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
+        return (
+            f"Scheduler script path must be relative to ~/.hermes/scripts/: {raw!r}. "
+            "Use target='backend' for a backend-visible absolute path."
         )
 
     # Validate containment after resolution
+    from hermes_constants import get_hermes_home
     from tools.path_security import validate_within_dir
 
     scripts_dir = get_hermes_home() / "scripts"
@@ -657,6 +698,10 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
+
+    resolved = scripts_dir / raw
+    if not resolved.is_file():
+        return f"Scheduler script is not a regular file: {resolved}"
 
     return None
 
@@ -701,6 +746,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["monitor_state"] = job["monitor_state"]
     if job.get("no_agent"):
         result["no_agent"] = True
+    if job.get("target"):
+        result["target"] = job["target"]
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -1244,6 +1291,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    target: Optional[str] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
@@ -1281,15 +1329,24 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
+            effective_target = str(target or ("backend" if script else "scheduler")).strip().lower()
+            if effective_target not in {"scheduler", "backend"}:
+                return tool_error("Cron target must be either 'scheduler' or 'backend'.", success=False)
+
             # Validate script path before storing
             if script:
-                script_error = _validate_cron_script_path(script)
+                script_error = _validate_cron_script_path(
+                    script, effective_target, workdir=workdir,
+                )
                 if script_error:
                     return tool_error(script_error, success=False)
 
             # Validate monitor source (same containment rules as script).
             if monitor_script:
-                monitor_error = _validate_cron_script_path(monitor_script)
+                # Monitor sources run through the scheduler-side monitor path,
+                # not the job's script target; keep their existing containment
+                # contract explicit after target-aware script validation landed.
+                monitor_error = _validate_cron_script_path(monitor_script, "scheduler")
                 if monitor_error:
                     return tool_error(monitor_error, success=False)
 
@@ -1351,6 +1408,7 @@ def cronjob(
                     enabled_toolsets=enabled_toolsets or None,
                     workdir=_normalize_optional_job_value(workdir),
                     no_agent=_no_agent,
+                    target=effective_target,
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
@@ -1569,16 +1627,12 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
             if script is not None:
-                # Pass empty string to clear an existing script
-                if script:
-                    script_error = _validate_cron_script_path(script)
-                    if script_error:
-                        return tool_error(script_error, success=False)
+                # Pass empty string to clear an existing script.
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if monitor_script is not None:
                 # Pass empty string to clear an existing monitor_script
                 if monitor_script:
-                    monitor_error = _validate_cron_script_path(monitor_script)
+                    monitor_error = _validate_cron_script_path(monitor_script, "scheduler")
                     if monitor_error:
                         return tool_error(monitor_error, success=False)
                 updates["monitor_script"] = (
@@ -1651,6 +1705,22 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if target is not None:
+                normalized_target = str(target).strip().lower()
+                if normalized_target not in {"scheduler", "backend"}:
+                    return tool_error("Cron target must be either 'scheduler' or 'backend'.", success=False)
+                updates["target"] = normalized_target
+            effective_script = updates.get("script") if "script" in updates else job.get("script")
+            if effective_script and (script is not None or target is not None or workdir is not None):
+                effective_target = str(
+                    updates.get("target", job.get("target", "scheduler"))
+                ).strip().lower()
+                effective_workdir = updates.get("workdir", job.get("workdir"))
+                script_error = _validate_cron_script_path(
+                    effective_script, effective_target, workdir=effective_workdir,
+                )
+                if script_error:
+                    return tool_error(script_error, success=False)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -1764,6 +1834,12 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "target": {
+                "type": "string",
+                "enum": ["scheduler", "backend"],
+                "default": "backend",
+                "description": "Script execution target. New script jobs default to backend so agent-authored automation runs through the profile terminal backend. Use scheduler explicitly for scheduler-host automation; legacy jobs without a stored target retain scheduler behavior.",
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1863,6 +1939,7 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        target=args.get("target"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

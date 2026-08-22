@@ -262,6 +262,7 @@ else:
 hermes cron create "every 30m" \
   "If the script reports OUTAGE DETECTED, summarize which services are down and suggest likely causes. If NO_ISSUES, respond with [SILENT]." \
   --script ~/.hermes/scripts/check-uptime.py \
+  --target scheduler \
   --name "Uptime monitor" \
   --deliver telegram
 ```

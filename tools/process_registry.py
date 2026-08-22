@@ -1250,10 +1250,16 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
+        # Run the command in its own session/process group. The recorded PID is
+        # the group leader, so a later non-local kill can terminate the command
+        # and its descendants rather than only an outer launch shell.
+        wrapped_command = (
+            f"nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path}"
+        )
         bg_command = (
             f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+            f"setsid bash -lc {shlex.quote(wrapped_command)} & "
             f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
 
@@ -2123,8 +2129,23 @@ class ProcessRegistry:
                 # shell wrapper and leaves Git Bash descendants behind.
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local sessions are spawned as a dedicated process group.
+                # Signal the group so wrapper shells cannot orphan the actual
+                # sandbox command; escalate only if the group remains alive.
+                pid = int(session.pid)
+                kill_result = session.env_ref.execute(
+                    (
+                        f"if ! (kill -TERM -- -{pid} 2>/dev/null || kill -TERM {pid} 2>/dev/null); then exit 1; fi; "
+                        f"sleep 2; "
+                        f"if kill -0 -- -{pid} 2>/dev/null; then kill -KILL -- -{pid} 2>/dev/null; fi"
+                    ),
+                    timeout=5,
+                )
+                if isinstance(kill_result, dict):
+                    return_code = kill_result.get("returncode", kill_result.get("exit_code", 0))
+                    if return_code not in (None, 0):
+                        details = str(kill_result.get("output") or kill_result.get("error") or "unknown error")
+                        raise RuntimeError(f"Sandbox process-group termination failed: {details}")
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as

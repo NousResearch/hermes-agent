@@ -48,16 +48,46 @@ class TestJobScriptField:
     def test_create_job_with_script(self, cron_env):
         from cron.jobs import create_job, get_job
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('ok')\n")
         job = create_job(
             prompt="Analyze the data",
             schedule="every 30m",
-            script="/path/to/monitor.py",
+            script="monitor.py",
+            target="scheduler",
         )
-        assert job["script"] == "/path/to/monitor.py"
+        assert job["script"] == "monitor.py"
 
         loaded = get_job(job["id"])
-        assert loaded["script"] == "/path/to/monitor.py"
+        assert loaded["script"] == "monitor.py"
 
+
+    def test_create_job_enforces_target_validation_for_direct_callers(self, cron_env, monkeypatch):
+        """Data-layer callers cannot persist an invalid backend script job."""
+        from cron.jobs import create_job
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_cron_script_path",
+            lambda script, target, workdir=None: "Script not found in terminal backend",
+        )
+        with pytest.raises(ValueError, match="Script not found in terminal backend"):
+            create_job(
+                prompt="Analyze the data",
+                schedule="every 30m",
+                script="/path/to/monitor.py",
+                target="backend",
+            )
+
+    def test_update_job_enforces_target_validation_for_direct_callers(self, cron_env, monkeypatch):
+        """Direct updates cannot add an invalid backend script."""
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_cron_script_path",
+            lambda script, target, workdir=None: "Script not found in terminal backend",
+        )
+        with pytest.raises(ValueError, match="Script not found in terminal backend"):
+            update_job(job["id"], {"script": "/new/script.py", "target": "backend"})
 
     def test_update_job_add_script(self, cron_env):
         from cron.jobs import create_job, update_job
@@ -65,8 +95,9 @@ class TestJobScriptField:
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
 
-        updated = update_job(job["id"], {"script": "/new/script.py"})
-        assert updated["script"] == "/new/script.py"
+        (cron_env / "scripts" / "new.py").write_text("print('ok')\n")
+        updated = update_job(job["id"], {"script": "new.py", "target": "scheduler"})
+        assert updated["script"] == "new.py"
 
 
 def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
@@ -448,11 +479,14 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('ok')\n")
+
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
             script="some_script.py",
+            target="scheduler",
         ))
         job_id = create_result["job_id"]
 
@@ -468,17 +502,60 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('ok')\n")
+
         cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
             script="data_collector.py",
+            target="scheduler",
         )
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
         assert list_result["jobs"][0]["script"] == "data_collector.py"
+
+
+class TestBackendScriptTarget:
+    def test_backend_target_uses_scheduler_runner_when_effective_backend_is_local(self, monkeypatch):
+        """Local backend jobs retain scheduler run-time containment checks."""
+        from cron import scheduler as sched
+
+        monkeypatch.setattr(
+            sched,
+            "get_effective_terminal_backend",
+            lambda: "local",
+            raising=False,
+        )
+        monkeypatch.setattr(sched, "_run_job_script", lambda path, workdir=None: (True, "scheduler"))
+        monkeypatch.setattr(
+            sched,
+            "_run_job_script_in_backend",
+            lambda path, workdir=None: (False, "backend"),
+        )
+
+        success, output = sched._run_job_script_for_target({"target": "backend"}, "safe.py")
+
+        assert success is True
+        assert output == "scheduler"
+
+    def test_local_backend_target_executes_confined_script(self, cron_env, monkeypatch):
+        """A valid local backend target runs through the real confined scheduler path."""
+        from cron import scheduler as sched
+
+        script = cron_env / "scripts" / "local_target.py"
+        script.write_text("print('local backend confined')\n")
+        monkeypatch.setattr(sched, "get_effective_terminal_backend", lambda: "local")
+
+        success, output = sched._run_job_script_for_target(
+            {"target": "backend"},
+            "local_target.py",
+        )
+
+        assert success is True
+        assert output == "local backend confined"
 
 
 class TestScriptPathContainment:
@@ -575,6 +652,27 @@ class TestScriptPathContainment:
 class TestCronjobToolScriptValidation:
     """Test API-boundary validation of cron script paths in cronjob_tools."""
 
+    def test_backend_target_uses_scheduler_validation_when_effective_backend_is_local(
+        self, cron_env, monkeypatch,
+    ):
+        """A backend target must not escape scripts/ when terminal execution is local."""
+        from tools.cronjob_tools import _validate_cron_script_path
+        import tools.terminal_tool
+
+        monkeypatch.setattr(
+            tools.terminal_tool,
+            "_get_env_config",
+            lambda: {"env_type": "local"},
+        )
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_backend_script",
+            lambda script, workdir=None: "backend validation used",
+        )
+
+        error = _validate_cron_script_path("/tmp/evil.py", "backend")
+
+        assert error is not None
+        assert "relative to" in error
 
     def test_create_with_traversal_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -587,7 +685,11 @@ class TestCronjobToolScriptValidation:
             script="../../etc/passwd",
         ))
         assert result["success"] is False
-        assert "escapes" in result["error"].lower() or "traversal" in result["error"].lower()
+        assert (
+            "escapes" in result["error"].lower()
+            or "traversal" in result["error"].lower()
+            or "absolute" in result["error"].lower()
+        )
 
 
 class TestRunJobEnvVarCleanup:

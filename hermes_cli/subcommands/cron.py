@@ -52,11 +52,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "--script",
         help=(
-            "Path to a script under ~/.hermes/scripts/. Default mode: "
-            "script stdout is injected into the agent's prompt each run. "
+            "Script path. Backend-targeted scripts require an absolute "
+            "backend-visible path; scheduler-targeted scripts are relative to "
+            "~/.hermes/scripts/. Default mode: script stdout is injected into "
+            "the agent's prompt each run. "
             "With --no-agent: the script IS the job and its stdout is "
             "delivered verbatim. .sh/.bash files run via bash, everything "
             "else via Python."
+        ),
+    )
+    cron_create.add_argument(
+        "--target",
+        choices=["scheduler", "backend"],
+        help=(
+            "Script execution target. New script jobs default to backend; use "
+            "scheduler explicitly for host scripts under ~/.hermes/scripts/."
         ),
     )
     cron_create.add_argument(
@@ -169,10 +179,17 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--script",
         help=(
-            "Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
+            "Script path. Backend-targeted scripts require an absolute "
+            "backend-visible path; scheduler-targeted scripts are relative to "
+            "~/.hermes/scripts/. Pass empty string to clear. "
             "With --no-agent the script IS the job; otherwise its stdout is "
             "injected into the agent's prompt each run."
         ),
+    )
+    cron_edit.add_argument(
+        "--target",
+        choices=["scheduler", "backend"],
+        help="Change the script execution target.",
     )
     cron_edit.add_argument(
         "--no-agent",

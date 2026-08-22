@@ -368,6 +368,135 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_new_script_job_defaults_to_backend(self, monkeypatch):
+        """Agent-created script jobs inherit the active terminal backend."""
+        monkeypatch.setattr(
+            "tools.terminal_tool.get_effective_terminal_backend", lambda: "docker",
+        )
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_backend_script", lambda script, workdir=None: None,
+        )
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="/workspace/check.py",
+                no_agent=True,
+            )
+        )
+
+        assert created["success"] is True
+        assert created["job"]["target"] == "backend"
+
+    def test_scheduler_target_rejects_absolute_script_path(self):
+        """Only backend jobs may reference arbitrary backend-visible paths."""
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="/etc/passwd",
+                target="scheduler",
+                no_agent=True,
+            )
+        )
+
+        assert created["success"] is False
+        assert "relative to" in created["error"]
+
+    def test_backend_target_rejects_missing_script_before_scheduling(self, monkeypatch):
+        """Backend jobs are rejected when their declared backend lacks the file."""
+        monkeypatch.setattr(
+            "tools.terminal_tool.get_effective_terminal_backend", lambda: "docker",
+        )
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_backend_script",
+            lambda script, workdir=None: "Script not found in terminal backend: /workspace/missing.py",
+            raising=False,
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="/workspace/missing.py",
+                target="backend",
+                no_agent=True,
+            )
+        )
+
+        assert created["success"] is False
+        assert "Script not found in terminal backend" in created["error"]
+
+    def test_backend_validation_checks_regular_file_in_backend(self, monkeypatch):
+        """The backend validation probe uses the backend, not host pathlib."""
+        from tools.cronjob_tools import _validate_backend_script
+        import tools.terminal_tool
+
+        calls = []
+
+        def fake_terminal_tool(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"exit_code": 0, "output": "", "error": None})
+
+        monkeypatch.setattr(tools.terminal_tool, "terminal_tool", fake_terminal_tool)
+
+        assert _validate_backend_script("/workspace/check.py") is None
+        assert calls == [{
+            "command": "test -f /workspace/check.py",
+            "timeout": 30,
+            "workdir": "/workspace",
+        }]
+
+    def test_backend_validation_rejects_relative_script_path(self, monkeypatch):
+        """Backend jobs require a deterministic backend-visible script path."""
+        from tools.cronjob_tools import _validate_backend_script
+        import tools.terminal_tool
+
+        monkeypatch.setattr(
+            tools.terminal_tool,
+            "terminal_tool",
+            lambda **kwargs: json.dumps({"exit_code": 0, "output": "", "error": None}),
+        )
+
+        error = _validate_backend_script("check.py")
+
+        assert error == "Backend script path must be absolute: 'check.py'."
+
+
+    def test_backend_script_revalidated_when_update_changes_workdir(self, monkeypatch):
+        """A changed backend cwd is checked before the job can become broken."""
+        monkeypatch.setattr(
+            "tools.terminal_tool.get_effective_terminal_backend", lambda: "docker",
+        )
+        calls = []
+
+        def validate(script, workdir=None):
+            calls.append((script, workdir))
+            if len(calls) <= 2:
+                return None
+            return "Script not found in terminal backend: /workspace/check.py"
+
+        monkeypatch.setattr("tools.cronjob_tools._validate_backend_script", validate)
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="/workspace/check.py",
+                target="backend",
+                no_agent=True,
+            )
+        )
+        assert created["success"] is True
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                workdir="/missing-backend-workdir",
+            )
+        )
+        assert updated["success"] is False
+        assert calls[-1] == ("/workspace/check.py", "/missing-backend-workdir")
 
     def test_update_normalizes_list_form_deliver(self):
         """update with deliver=['telegram'] stores the canonical string."""

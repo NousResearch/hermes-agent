@@ -590,6 +590,7 @@ For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/mem
 hermes cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
+  --target scheduler \
   --deliver telegram \
   --name "memory-watchdog"
 ```
@@ -602,7 +603,12 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+Interpreter selection is deliberately target-aware:
+
+- Scheduler-target scripts — including backend-target jobs whose effective backend is `local` — run on the Hermes host. `.sh` / `.bash` uses `bash` from `PATH` (or `/bin/bash` on Windows Git Bash); other files use Hermes' current Python interpreter (`sys.executable`).
+- Non-local backend-target scripts run inside the configured Docker/SSH/remote backend. `.sh` / `.bash` still uses `bash`, while other files use that backend's `python3` from `PATH`. Hermes cannot safely pass its host `sys.executable` path across this filesystem/runtime boundary.
+
+New script jobs created through `cronjob` or `hermes cron create` default to `target="backend"`. With a non-local terminal backend, script paths **must be absolute** and backend-visible, such as `/workspace/scripts/memory-watchdog.sh`; Hermes verifies the script is a regular file before saving and again when it runs. With the effective `local` backend, backend-target jobs instead use the same confined scheduler-script rules: a relative regular file under `$HERMES_HOME/scripts/`, checked again at execution time. Use `target="scheduler"` explicitly for scheduler-host maintenance; it always uses those confined rules. Persisted jobs from before targets existed retain scheduler-host behavior. Backend-run scripts receive the configured terminal environment; scheduler-run scripts use the sanitized host subprocess environment (`_sanitize_subprocess_env`) and do not inherit Hermes-managed provider credentials.
 
 ### The agent sets these up for you
 
@@ -616,7 +622,7 @@ Hermes will write the check script to `~/.hermes/scripts/` via `write_file`, the
 
 ```python
 cronjob(action="create", schedule="every 5m",
-        script="memory-watchdog.sh", no_agent=True,
+        script="memory-watchdog.sh", target="scheduler", no_agent=True,
         deliver="telegram", name="memory-watchdog")
 ```
 
@@ -896,7 +902,7 @@ fi
 ```text
 cronjob(action="create", name="process-feed",
         schedule="every 30m",
-        script="feed-changed.sh",
+        script="feed-changed.sh", target="scheduler",
         prompt="A new ~/data/feed.json has landed. Summarize what changed.")
 ```
 
@@ -916,7 +922,7 @@ fi
 ```text
 cronjob(action="create", name="nightly-analysis",
         schedule="0 9 * * *",
-        script="flag-ready.sh",
+        script="flag-ready.sh", target="scheduler",
         prompt="Run the nightly analysis over today's batch.")
 ```
 
@@ -939,7 +945,7 @@ else:
 ```text
 cronjob(action="create", name="summarize-new-msgs",
         schedule="every 2h",
-        script="new-rows.py",
+        script="new-rows.py", target="scheduler",
         prompt="Summarize the new messages from the last 2 hours.")
 ```
 

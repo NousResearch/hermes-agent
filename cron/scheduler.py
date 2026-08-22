@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -59,6 +60,10 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
+)
+from tools.terminal_tool import (
+    get_effective_terminal_backend,
+    terminal_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -4117,6 +4122,196 @@ def _run_job_script(
         return False, f"Script execution failed: {exc}"
 
 
+def _redact_backend_script_output(value: object, command: str) -> str:
+    """Apply terminal-equivalent redaction to scheduler-consumed backend output."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    from agent.redact import redact_terminal_output
+    return redact_terminal_output(text, command)
+
+
+def _kill_backend_process(
+    process_registry: object,
+    session_id: str,
+    source: str,
+    command: str,
+) -> str | None:
+    """Terminate a tracked process and report cleanup failure without hiding it."""
+    try:
+        result = process_registry.kill_process(session_id, source=source)
+    except Exception as exc:
+        return _redact_backend_script_output(exc, command)
+    if not isinstance(result, dict):
+        return "process registry returned no termination result"
+    if result.get("status") not in {"killed", "already_exited"}:
+        return _redact_backend_script_output(
+            result.get("error") or result.get("status") or "unknown termination error",
+            command,
+        )
+    return None
+
+
+def _wait_for_backend_process(
+    session_id: str,
+    script_timeout: int,
+    command: str = "",
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Collect a tracked backend script process without relaxing terminal foreground limits."""
+    from tools.process_registry import process_registry
+
+    deadline = time.monotonic() + script_timeout
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_cancelled",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script was cancelled{suffix}"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        # ProcessRegistry applies its own configured per-wait limit. Repeating
+        # bounded waits lets cron own the documented script deadline without
+        # extending a normal terminal foreground call.
+        try:
+            result = process_registry.wait(
+                session_id,
+                timeout=max(1, min(int(remaining), 1 if cancel_event is not None else 180)),
+            )
+        except Exception as exc:
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_wait_error",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script wait failed: {_redact_backend_script_output(exc, command)}{suffix}"
+        status = result.get("status")
+        if status == "exited":
+            exit_code = result.get("exit_code", 1)
+            log = process_registry.read_log(session_id, offset=0, limit=1_000_000)
+            output = _redact_backend_script_output(
+                log.get("output") or result.get("output") or "",
+                command,
+            )
+            if exit_code != 0:
+                details = output or f"exit code {exit_code}"
+                return False, f"Script exited with code {exit_code}: {details}"
+            return True, output
+        if status == "not_found":
+            return False, f"Backend script process disappeared: {session_id}"
+        if status == "interrupted":
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_interrupted",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script wait was interrupted{suffix}"
+
+    cleanup_error = _kill_backend_process(
+        process_registry,
+        session_id,
+        "cron.script_timeout",
+        command,
+    )
+    suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+    return False, f"Script timed out after {script_timeout}s{suffix}"
+
+
+def _run_job_script_in_backend(
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Run a cron script through the active profile terminal backend.
+
+    Cron never directly creates a host subprocess. The terminal backend is local
+    for a trusted local profile and sandboxed/remote for configured profiles, so
+    scheduled scripts have the same execution boundary as terminal tool calls.
+    """
+    raw = str(script_path or "").strip()
+    if not raw or "\x00" in raw:
+        return False, "Blocked: cron script path is empty or contains a NUL byte"
+
+    path = Path(raw)
+    if not path.is_absolute():
+        return False, f"Backend script path must be absolute: {raw!r}."
+    backend_path = str(path)
+    backend_cwd = workdir or str(path.parent)
+    interpreter = "bash" if path.suffix.lower() in {".sh", ".bash"} else "python3"
+    command = f"{interpreter} {shlex.quote(backend_path)}"
+
+    try:
+        preflight_raw = terminal_tool(
+            command=f"test -f {shlex.quote(backend_path)}",
+            timeout=30,
+            workdir=backend_cwd,
+        )
+        preflight = json.loads(preflight_raw) if isinstance(preflight_raw, str) else preflight_raw
+        if not isinstance(preflight, dict) or preflight.get("exit_code") != 0:
+            return False, f"Script not found in terminal backend: {backend_path}"
+
+        started_raw = terminal_tool(
+            command=command,
+            background=True,
+            workdir=backend_cwd,
+        )
+        started = json.loads(started_raw) if isinstance(started_raw, str) else started_raw
+        session_id = str((started or {}).get("session_id") or "").strip()
+        if not session_id:
+            details = _redact_backend_script_output(
+                (started or {}).get("error") or (started or {}).get("output") or "unknown error",
+                command,
+            )
+            return False, f"Backend script failed to start: {details}"
+        return _wait_for_backend_process(
+            session_id,
+            _get_script_timeout(),
+            command,
+            cancel_event,
+        )
+    except Exception as exc:
+        details = _redact_backend_script_output(exc, command)
+        return False, f"Script execution through terminal backend failed: {details}"
+
+
+def _run_job_script_for_target(
+    job: dict,
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Run a script in its declared target; missing target preserves host behavior."""
+    target = str(job.get("target") or "scheduler").strip().lower()
+    if target == "scheduler":
+        if cancel_event is None:
+            return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+    if target == "backend":
+        # A local terminal backend shares the scheduler host and has no sandbox
+        # boundary. Reuse the scheduler runner so its path containment is
+        # enforced again at execution time.
+        if get_effective_terminal_backend() == "local":
+            if cancel_event is None:
+                return _run_job_script(script_path, workdir=workdir)
+            return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        if cancel_event is None:
+            return _run_job_script_in_backend(script_path, workdir=workdir)
+        return _run_job_script_in_backend(
+            script_path, workdir=workdir, cancel_event=cancel_event,
+        )
+    return False, f"Unsupported cron script target: {target!r}"
+
+
 def _run_job_script_with_claim_heartbeat(
     job: dict,
     script_path: str,
@@ -4143,7 +4338,9 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -4174,10 +4371,14 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -4248,7 +4449,7 @@ def _build_job_prompt(
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script_for_target(job, script_path)
         if success:
             if script_output:
                 prompt = (
@@ -5104,17 +5305,9 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is passed as the subprocess cwd so the
-        # Python process cwd is NEVER mutated — avoiding the global-side-effect
-        # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
+        # Workdirs are backend-visible paths. Do not probe them from the
+        # scheduler host: /workspace may only exist inside a container.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        if _job_workdir and not Path(_job_workdir).is_dir():
-            logger.warning(
-                "Job '%s': configured workdir %r no longer exists — running without it",
-                job_id, _job_workdir,
-            )
-            _job_workdir = None
 
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
@@ -5329,8 +5522,12 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
+        _script_workdir = (job.get("workdir") or "").strip() or None
         prerun_script = _run_job_script_with_claim_heartbeat(
-            job, script_path, cancel_event=cancel_event,
+            job,
+            script_path,
+            workdir=_script_workdir,
+            cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):

@@ -54,6 +54,11 @@ def cron_env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
     monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
 
+    # Creation validates scheduler-local script paths. Materialize the fixture
+    # script before persisting the job, not only immediately before its tick.
+    script = hermes_home / "scripts" / "probe.py"
+    script.write_text("print('ok')\n")
+
     job = jobs_mod.create_job(
         prompt="probe",
         schedule="every 10m",
@@ -62,9 +67,6 @@ def cron_env(tmp_path, monkeypatch):
     )
     now = datetime.now(timezone.utc)
     jobs_mod.update_job(job["id"], {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
-
-    script = hermes_home / "scripts" / "probe.py"
-    script.write_text("print('ok')\n")
 
     return {"home": hermes_home, "job_id": job["id"]}
 

@@ -282,6 +282,27 @@ def derive_title(user_message: str) -> Optional[str]:
     return line or None
 
 
+def _is_response_format_rejection(exc: BaseException) -> bool:
+    """True when the provider rejected the response_format field itself.
+
+    DeepSeek and a few other OpenAI-compatible endpoints return HTTP 400 with
+    a message like "This response_format type is unavailable now" when handed
+    a ``json_schema`` response_format they don't support. We must NOT retry
+    (or fail) on unrelated errors — only when the request itself was refused
+    because of the structured-output field, which is safe to drop.
+    """
+    if not exc:
+        return False
+    msg = str(exc)
+    if "response_format" not in msg:
+        return False
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return status == 400
+    # Non-SDK exceptions (e.g. httpx) may only carry the message.
+    return "400" in msg
+
+
 def _extract_title_text(content: str) -> str:
     """Pull the title out of a model response.
 
@@ -400,17 +421,40 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                # A title is a handful of tokens. The old 500-token ceiling let a
+                # chatty model burn seconds generating prose we then threw away.
+                max_tokens=64,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as e:
+            # Some providers (e.g. DeepSeek) reject the json_schema
+            # response_format outright with HTTP 400 ("This response_format
+            # type is unavailable now"). Retry once WITHOUT the schema; the
+            # prompt still asks for JSON-only output and _extract_title_text
+            # falls back through a loose JSON scan, so titling survives on
+            # providers that can't honor structured output.
+            if _is_response_format_rejection(e):
+                logger.warning(
+                    "Title generation: provider rejected response_format (%s); "
+                    "retrying without it", e,
+                )
+                response = call_llm(
+                    task="title_generation",
+                    messages=messages,
+                    max_tokens=64,
+                    temperature=0.3,
+                    timeout=timeout,
+                    main_runtime=main_runtime,
+                )
+            else:
+                raise
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

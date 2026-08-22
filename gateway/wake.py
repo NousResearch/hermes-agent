@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Optional
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +60,18 @@ async def deliver_wake(
     *,
     text: str,
     session_id: str = "",
+    session_key: str = "",
     source: Any = None,
+    profile: str = "",
 ) -> None:
     """Deliver a wake turn to the session behind ``adapter``.
 
     ``session_id`` is the RAW session id (the ``X-Hermes-Session-Id`` value /
     ``state.db`` key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` used to build the synthetic event — required for
-    push-capable adapters.
+    push-capable adapters. When both ``session_key`` and ``session_id`` are
+    supplied for a push adapter, the gateway rejects the event if that route
+    was reset or replaced before delivery.
 
     Raises on failure (bad arguments, exhausted retries, HTTP error) so the
     caller can rewind/retry instead of treating the wake as delivered.
@@ -82,6 +88,15 @@ async def deliver_wake(
             message_type=MessageType.TEXT,
             source=source,
             internal=True,
+            metadata=(
+                {
+                    "gateway_session_key": session_key,
+                    "gateway_session_id": session_id,
+                    "gateway_session_strict": True,
+                }
+                if session_key and session_id
+                else {}
+            ),
         )
         await adapter.handle_message(synth_event)
         return
@@ -91,11 +106,25 @@ async def deliver_wake(
             "deliver_wake: non-push adapter (supports_async_delivery=False) "
             "requires the raw session id to self-post the wake turn"
         )
-    await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+    if str(profile or "").strip() not in {"", "default", "custom"}:
+        await _self_post_chat_completion(
+            adapter,
+            text=text,
+            session_id=session_id,
+            profile=profile,
+        )
+    else:
+        # Preserve the long-standing internal call contract for ordinary
+        # single-profile wake paths and test/operator monkeypatches.
+        await _self_post_chat_completion(
+            adapter,
+            text=text,
+            session_id=session_id,
+        )
 
 
 async def _self_post_chat_completion(
-    adapter: Any, *, text: str, session_id: str
+    adapter: Any, *, text: str, session_id: str, profile: str = ""
 ) -> None:
     """POST the wake text to the in-pod API server as a normal session turn.
 
@@ -122,7 +151,14 @@ async def _self_post_chat_completion(
 
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"  # bare IPv6 literal
-    url = f"http://{host}:{port}/v1/chat/completions"
+    clean_profile = str(profile or "").strip()
+    if clean_profile and clean_profile not in {"default", "custom"}:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", clean_profile):
+            raise ValueError("wake self-post received an invalid profile name")
+        route_prefix = f"/p/{quote(clean_profile, safe='')}"
+    else:
+        route_prefix = ""
+    url = f"http://{host}:{port}{route_prefix}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-Hermes-Session-Id": session_id,

@@ -284,6 +284,9 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "session_name": session_name,
             "bb_session_id": session_data["id"],
             "cdp_url": cdp_url,
+            # Passwordless human-control surface for a short-lived Hermes
+            # handoff. It remains task-scoped until a handoff is requested.
+            "live_url": session_data.get("liveUrl"),
             # Browser Use sessions have a fixed server-side lifetime. Preserve
             # the authority returned by the API so the dispatcher can retire an
             # expired CDP endpoint instead of reconnecting to it indefinitely.

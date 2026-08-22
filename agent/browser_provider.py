@@ -97,6 +97,7 @@ class BrowserProvider(abc.ABC):
                 "session_name": str,    # unique name for agent-browser --session
                 "bb_session_id": str,   # provider session ID (for close/cleanup)
                 "cdp_url": str,         # CDP websocket URL
+                "live_url": str,        # optional human-control URL
                 "expires_at": str,      # optional provider-authoritative ISO timestamp
                 "features": dict,       # feature flags that were enabled
             }

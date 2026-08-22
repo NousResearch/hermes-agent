@@ -118,6 +118,25 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 )
 
 
+def _browser_handoff_wait_message(tool_messages: List[Dict[str, Any]]) -> str:
+    """Return a terminal turn message after a successful browser handoff."""
+    for message in tool_messages:
+        if message.get("role") != "tool" or message.get("name") != "browser_exec":
+            continue
+        content = message.get("content")
+        try:
+            payload = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        meta = payload.get("meta")
+        if isinstance(meta, dict) and meta.get("browser_handoff") is True:
+            output = str(payload.get("output") or "").strip()
+            return output or "Waiting for the browser handoff to be completed."
+    return ""
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
@@ -7330,7 +7349,10 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                _tool_result_start = len(messages)
+                agent._execute_tool_calls(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
@@ -7362,6 +7384,31 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                # A successful browser handoff is a deterministic turn
+                # boundary. Do not ask the model for another action while the
+                # owner controls the browser; Done will inject the next user
+                # turn into this exact persisted session.
+                _handoff_wait = _browser_handoff_wait_message(
+                    messages[_tool_result_start:]
+                )
+                if _handoff_wait:
+                    _turn_exit_reason = "waiting_for_browser_handoff"
+                    # Normal finalization tears down task browsers at every
+                    # turn boundary. This one must survive until Done, expiry,
+                    # or explicit session cleanup.
+                    agent._preserve_browser_after_turn = True
+                    final_response = _handoff_wait
+                    append_message(
+                        messages, {"role": "assistant", "content": final_response}
+                    )
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
                     break
 
                 # Reset per-turn retry counters after successful tool

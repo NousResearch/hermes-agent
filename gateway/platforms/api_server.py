@@ -58,8 +58,10 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -108,10 +110,12 @@ def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> lis
 
 try:
     from aiohttp import web
+    from aiohttp.web_log import AccessLogger
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+    AccessLogger = object  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -170,6 +174,39 @@ def _get_scoped_secret(name, default=None):
 
 
 logger = logging.getLogger(__name__)
+
+
+_BROWSER_HANDOFF_LOG_PATH_RE = re.compile(
+    r"^(?P<prefix>/p/[^/]+)?/browser-handoff/[^/]+(?P<complete>/complete)?$"
+)
+
+
+def _redact_browser_handoff_log_path(path: str) -> str:
+    match = _BROWSER_HANDOFF_LOG_PATH_RE.match(path)
+    if match is None:
+        return path
+    return (
+        f"{match.group('prefix') or ''}/browser-handoff/[REDACTED]"
+        f"{match.group('complete') or ''}"
+    )
+
+
+class _RedactingAccessLogger(AccessLogger):
+    """Keep handoff bearer tokens out of aiohttp access logs."""
+
+    def log(self, request, response, elapsed: float) -> None:
+        redacted = _redact_browser_handoff_log_path(str(request.path))
+        if redacted != request.path:
+            self.logger.info(
+                '%s "%s %s" %s %.3fs',
+                request.remote or "-",
+                request.method,
+                redacted,
+                response.status,
+                elapsed,
+            )
+            return
+        super().log(request, response, elapsed)
 
 
 def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
@@ -1589,6 +1626,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # _inject_browser_control_artifacts().
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
+        self._browser_handoff_attempts: "OrderedDict[str, List[float]]" = (
+            OrderedDict()
+        )
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -2175,6 +2215,230 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return profile_prefix_middleware
 
+    def _browser_handoff_rate_limited(self, request: "web.Request", token: str) -> bool:
+        """Bound token probing without retaining raw bearer URLs in memory."""
+        now = time.monotonic()
+        peer = request.remote or "unknown"
+        peer_key = "ip:" + hashlib.sha256(peer.encode("utf-8")).hexdigest()
+        token_key = "token:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+        buckets = self._browser_handoff_attempts
+        if not isinstance(buckets, OrderedDict):
+            buckets = OrderedDict(buckets)
+            self._browser_handoff_attempts = buckets
+
+        def record(key: str, limit: int) -> bool:
+            attempts = buckets.get(key)
+            if attempts is None:
+                # Hard cap first, then insert. OrderedDict gives O(1) LRU
+                # eviction even under distributed random-token probing.
+                while len(buckets) >= 2048:
+                    buckets.popitem(last=False)
+                attempts = []
+                buckets[key] = attempts
+            else:
+                buckets.move_to_end(key)
+            attempts[:] = [stamp for stamp in attempts if now - stamp < 60]
+            attempts.append(now)
+            return len(attempts) > limit
+
+        # Once a peer is blocked, do not allocate a bucket for its arbitrary
+        # token. This prevents one attacker from growing token state at all.
+        if record(peer_key, 60):
+            return True
+        return record(token_key, 30)
+
+    @staticmethod
+    def _browser_handoff_response(body: str, status: int) -> "web.Response":
+        from gateway.browser_handoff import security_headers
+
+        return web.Response(
+            text=body,
+            status=status,
+            content_type="text/html",
+            charset="utf-8",
+            headers=security_headers(),
+        )
+
+    async def _handle_browser_handoff_get(self, request: "web.Request") -> "web.Response":
+        from gateway.browser_handoff import (
+            BrowserHandoffStore,
+            load_browser_handoff_config,
+            render_handoff_page,
+        )
+
+        token = str(request.match_info.get("token") or "")
+        if self._browser_handoff_rate_limited(request, token):
+            body, _ = render_handoff_page(None)
+            return self._browser_handoff_response(body, 429)
+        cfg = load_browser_handoff_config()
+        record = (
+            await asyncio.to_thread(BrowserHandoffStore().lookup, token)
+            if cfg.enabled
+            else None
+        )
+        body, status = render_handoff_page(
+            record, complete_path=f"{request.path.rstrip('/')}/complete"
+        )
+        return self._browser_handoff_response(body, status)
+
+    async def _deliver_browser_handoff_wake(self, record_id: int) -> None:
+        from gateway.browser_handoff import (
+            BrowserHandoffStore,
+            EXPIRED_WAKE_MESSAGE,
+            WAKE_MESSAGE,
+        )
+        from gateway.session import SessionSource
+        from gateway.wake import adapter_supports_push, deliver_wake
+
+        store = BrowserHandoffStore()
+        record = await asyncio.to_thread(store.claim_wake, record_id)
+        if record is None:
+            return
+        delivered = False
+        try:
+            source = SessionSource.from_dict(record.source) if record.source else None
+            runner = self.gateway_runner
+            if runner is None and self._app is not None:
+                runner = self._app.get("gateway_runner")
+            adapter = None
+            session_key = ""
+            if source is not None and runner is not None:
+                resolver = getattr(runner, "_adapter_for_source", None)
+                if callable(resolver):
+                    adapter = resolver(source)
+                if adapter is not None and adapter_supports_push(adapter):
+                    key_resolver = getattr(runner, "_session_key_for_source", None)
+                    if callable(key_resolver):
+                        session_key = str(key_resolver(source) or "")
+                    if session_key:
+                        entry = await runner.async_session_store.lookup_by_session_key(
+                            session_key
+                        )
+                        if entry is None or entry.session_id != record.session_id:
+                            # A /new, reset or replacement occurred while the human
+                            # had control. Never wake the replacement conversation.
+                            logger.warning(
+                                "[api_server] discarding browser handoff wake for "
+                                "stale session row %s",
+                                record_id,
+                            )
+                            delivered = True
+                            return
+                else:
+                    # API-server sessions live under the raw session id and do
+                    # not have a gateway routing-key row to validate.
+                    adapter = self
+                    source = None
+            # Programmatic/cron origins have no push adapter. The API server's
+            # raw-session wake path resumes the exact SessionDB entry instead.
+            if adapter is None:
+                adapter = self
+                source = None
+            await deliver_wake(
+                adapter,
+                text=(
+                    EXPIRED_WAKE_MESSAGE
+                    if record.status == "expired"
+                    else WAKE_MESSAGE
+                ),
+                session_id=record.session_id,
+                session_key=session_key,
+                source=source,
+                profile=str(record.source.get("profile") or ""),
+            )
+            delivered = True
+        except Exception:
+            logger.exception(
+                "[api_server] browser handoff wake failed for row %s; will retry",
+                record_id,
+            )
+        finally:
+            await asyncio.to_thread(store.finish_wake, record_id, delivered=delivered)
+
+    def _schedule_browser_handoff_wake(self, record_id: int) -> None:
+        task = asyncio.create_task(self._deliver_browser_handoff_wake(record_id))
+        try:
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except (AttributeError, TypeError):
+            pass
+
+    async def _handle_browser_handoff_complete(self, request: "web.Request") -> "web.Response":
+        from gateway.browser_handoff import (
+            BrowserHandoffStore,
+            load_browser_handoff_config,
+            render_handoff_page,
+        )
+
+        token = str(request.match_info.get("token") or "")
+        if self._browser_handoff_rate_limited(request, token):
+            body, _ = render_handoff_page(None)
+            return self._browser_handoff_response(body, 429)
+
+        # Ordinary browser form posts include Origin. Reject a cross-origin
+        # submit, while allowing privacy tools that omit Origin entirely.
+        origin = str(request.headers.get("Origin") or "").rstrip("/")
+        cfg = load_browser_handoff_config()
+        expected_url = urlparse(cfg.public_base_url)
+        expected_origin = (
+            f"{expected_url.scheme}://{expected_url.netloc}" if expected_url.netloc else ""
+        ).lower()
+        if not cfg.enabled or (
+            origin
+            and (
+                not expected_origin
+                or not hmac.compare_digest(origin.lower(), expected_origin)
+            )
+        ):
+            body, _ = render_handoff_page(None)
+            return self._browser_handoff_response(body, 403)
+
+        store = BrowserHandoffStore()
+        record = await asyncio.to_thread(store.complete, token)
+        if record is not None and record.status == "completed" and record.wake_status != "delivered":
+            self._schedule_browser_handoff_wake(record.id)
+        body, status = render_handoff_page(record)
+        return self._browser_handoff_response(body, status)
+
+    def _browser_handoff_sweep_profiles(self) -> list[Optional[str]]:
+        runner_cfg = getattr(getattr(self, "gateway_runner", None), "config", None)
+        if not bool(getattr(runner_cfg, "multiplex_profiles", False)):
+            return [None]
+        from hermes_cli.profiles import profiles_to_serve
+
+        served = profiles_to_serve(
+            multiplex=True,
+            profile_allowlist=getattr(
+                runner_cfg, "multiplex_profile_allowlist", None
+            ),
+        )
+        return [None if name == "default" else name for name, _ in served]
+
+    async def _sweep_browser_handoff_wakes(self) -> None:
+        from gateway.browser_handoff import (
+            BrowserHandoffStore,
+            load_browser_handoff_config,
+        )
+
+        while True:
+            await asyncio.sleep(15)
+            for profile in self._browser_handoff_sweep_profiles():
+                try:
+                    with self._profile_scope(profile):
+                        if not load_browser_handoff_config().enabled:
+                            continue
+                        ids = await asyncio.to_thread(
+                            BrowserHandoffStore().pending_wake_ids
+                        )
+                        for record_id in ids:
+                            self._schedule_browser_handoff_wake(record_id)
+                except Exception:
+                    logger.debug(
+                        "Browser handoff wake sweep failed for profile %s",
+                        profile or "default",
+                        exc_info=True,
+                    )
+
     def _http_route_table(self) -> List[tuple]:
         """Return (method, path, handler) rows registered by ``connect()``.
 
@@ -2182,6 +2446,15 @@ class APIServerAdapter(BasePlatformAdapter):
         mirrors without starting a real aiohttp listener.
         """
         routes: List[tuple] = [
+            # Deliberately outside API_SERVER_KEY auth: possession of the
+            # random 256-bit URL token is the handoff credential. Handlers
+            # apply their own expiry, one-shot state, origin and rate checks.
+            ("GET", "/browser-handoff/{token}", self._handle_browser_handoff_get),
+            (
+                "POST",
+                "/browser-handoff/{token}/complete",
+                self._handle_browser_handoff_complete,
+            ),
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
             ("GET", "/v1/health", self._handle_health),
@@ -8326,6 +8599,22 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
+            # Always start one lightweight handoff sweep. It scopes each pass
+            # across every served profile and skips profiles where the feature
+            # is disabled; checking only the default profile here would strand
+            # secondary-profile handoffs after a restart.
+            handoff_sweep_task = asyncio.create_task(
+                self._sweep_browser_handoff_wakes()
+            )
+            try:
+                self._background_tasks.add(handoff_sweep_task)
+            except TypeError:
+                pass
+            if hasattr(handoff_sweep_task, "add_done_callback"):
+                handoff_sweep_task.add_done_callback(
+                    self._background_tasks.discard
+                )
+
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the
             # agent's terminal/file tools as the host user; on a public bind
@@ -8354,7 +8643,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         self.name, self._host,
                     )
 
-            self._runner = web.AppRunner(self._app)
+            self._runner = web.AppRunner(
+                self._app, access_log_class=_RedactingAccessLogger
+            )
             await self._runner.setup()
             # Bind directly instead of probing 127.0.0.1 first — the old
             # single-family pre-probe raced the real bind and reported a

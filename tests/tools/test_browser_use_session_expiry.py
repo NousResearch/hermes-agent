@@ -22,6 +22,7 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
     response.json.return_value = {
         "id": "browser-session-1",
         "cdpUrl": "ws://browser-use.example/devtools/browser/1",
+        "liveUrl": "https://live.browser-use.com/?session=one",
         "timeoutAt": "2030-01-01T00:05:00Z",
     }
 
@@ -39,6 +40,7 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
     session = provider.create_session("task-1")
 
     assert session["expires_at"] == "2030-01-01T00:05:00Z"
+    assert session["live_url"] == "https://live.browser-use.com/?session=one"
 
 
 def test_live_cloud_session_is_reused(monkeypatch):

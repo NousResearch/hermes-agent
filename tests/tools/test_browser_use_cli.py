@@ -294,13 +294,25 @@ class TestLegacyCloudMigration:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
-    def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
+    def test_migrated_config_reuses_hermes_provider_session(self, tmp_path, monkeypatch):
+        import tools.browser_tool as bt
+
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:$BU_AUTOSPAWN"\n')
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(
+            bt,
+            "_get_session_info",
+            lambda key: {"cdp_url": "wss://browser.example/cdp/owned"},
+        )
+        cli = _fake_cli(
+            tmp_path,
+            'cat > /dev/null\necho "autospawn:${BU_AUTOSPAWN:-} ws:$BU_CDP_WS"\n',
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)"))
-        assert "autospawn:1" in result["output"]
+        assert "autospawn: ws:wss://browser.example/cdp/owned" in result["output"]
 
     def test_explicit_backend_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -396,9 +408,7 @@ class TestBackendCdpResolution:
         assert err and "no" in err.lower() and "CDP" in err
 
     def test_named_session_composes_with_provider_backend(self, tmp_path, monkeypatch):
-        """session=<name> composes with a configured provider backend: the
-        name keys its OWN provider browser (bu-named-<name>), so concurrent
-        named sessions never share one browser (#86894)."""
+        """A named session gets one provider browser inside its bot scope."""
         import tools.browser_tool as bt
 
         seen = []
@@ -412,16 +422,17 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+        result = json.loads(
+            bu_cli.browser_exec("print(1)", session="r7k2", task_id="bot-A")
+        )
+        key = bu_cli._provider_session_cache_key("bot-A", "r7k2")
         assert result["success"] is True
-        assert seen == ["bu-named-r7k2"]
-        assert "bu:r7k2" in result["output"]
-        assert "ws:wss://browser.example/cdp/bu-named-r7k2" in result["output"]
+        assert seen == [key]
+        assert f"bu:{bu_cli._harness_session_name('bot-A', 'r7k2')}" in result["output"]
+        assert f"ws:wss://browser.example/cdp/{key}" in result["output"]
 
-    def test_named_session_key_stable_across_tasks(self, monkeypatch):
-        """The same session name maps to the same provider cache key no
-        matter which task calls it — that is what lets a follow-up call
-        reattach to the same cloud browser."""
+    def test_same_named_session_is_isolated_across_bots(self, monkeypatch):
+        """Two bots cannot collide even when they choose the same name."""
         import tools.browser_tool as bt
 
         seen = []
@@ -434,34 +445,76 @@ class TestBackendCdpResolution:
         env1, env2 = {}, {}
         assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
         assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
-        assert seen == ["bu-named-research", "bu-named-research"]
+        assert seen == [
+            bu_cli._provider_session_cache_key("task-A", "research"),
+            bu_cli._provider_session_cache_key("task-B", "research"),
+        ]
+        assert seen[0] != seen[1]
 
-    def test_named_session_direct_api_bu_cloud_still_skips_provider(
-        self, tmp_path, monkeypatch
-    ):
-        """Direct-API Browser Use cloud configs keep the native named-daemon
-        path: resolving through the provider would double-session and
-        double-bill."""
+    def test_unnamed_sessions_are_stable_per_bot_and_isolated(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        seen = []
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(
+            bt,
+            "_get_session_info",
+            lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
+        )
+
+        for task_id in ("task-A", "task-A", "task-B"):
+            assert bu_cli._resolve_backend_cdp({}, task_id) is None
+
+        assert seen[0] == seen[1]
+        assert seen[0] != seen[2]
+
+    def test_task_cleanup_closes_all_bot_owned_provider_browsers(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        closed = []
+        monkeypatch.setattr(
+            bt,
+            "_active_sessions",
+            {
+                "bu-task-a": {"owner_task_id": "task-A"},
+                "bu-task-b": {"owner_task_id": "task-A"},
+                "bu-task-other": {"owner_task_id": "task-B"},
+            },
+        )
+        monkeypatch.setattr(bt, "_session_last_activity", {})
+        monkeypatch.setattr(bt, "_last_active_session_key", {})
+        monkeypatch.setattr(
+            bt, "_cleanup_single_browser_session", lambda key: closed.append(key)
+        )
+
+        bt.cleanup_browser("task-A")
+
+        assert closed == ["task-A", "bu-task-a", "bu-task-b"]
+
+    def test_named_session_direct_api_bu_cloud_reuses_provider(self, monkeypatch):
+        """Direct Browser Use sessions are Hermes-owned so liveUrl survives."""
         import tools.browser_tool as bt
 
         class _BUProvider:
             name = "browser-use"
 
+        seen = []
         monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BUProvider())
         monkeypatch.setattr(
             bt, "_get_session_info",
-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
+            lambda key: seen.append(key) or {"cdp_url": "wss://browser.example/cdp/owned"},
         )
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+        assert seen == [bu_cli._provider_session_cache_key("t1", "r7k2")]
+        assert env["BU_CDP_WS"] == "wss://browser.example/cdp/owned"
 
 
 class TestOwnTabPreamble:
-    """Named sessions on SHARED browsers get the own-tab preamble prepended;
-    private per-name browsers and unnamed sessions do not."""
+    """Bot daemons on shared browsers pin a tab; private browsers do not."""
 
     def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
         import tools.browser_tool as bt
@@ -487,10 +540,10 @@ class TestOwnTabPreamble:
         # model code still present, after the preamble
         assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
 
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
+    def test_unnamed_session_gets_preamble_on_shared_browser(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="")
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
+        assert "_hermes_ensure_own_tab" in result["output"]
 
     def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
         """Per-name provider browsers are private — preamble would leak a tab."""
@@ -803,15 +856,28 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
-        assert 'got:print("hi")' in result["output"]
+        assert result["output"].rstrip().endswith('print("hi")')
         assert "session" not in result
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
-        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
-        assert "bu:r7k2" in result["output"]
+        result = json.loads(
+            bu_cli.browser_exec("print(1)", session="r7k2", task_id="bot-A")
+        )
+        assert f"bu:{bu_cli._harness_session_name('bot-A', 'r7k2')}" in result["output"]
         assert result["session"] == "r7k2"
+
+    def test_unnamed_bots_get_separate_background_daemons(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        first = json.loads(bu_cli.browser_exec("print(1)", task_id="bot-A"))
+        repeat = json.loads(bu_cli.browser_exec("print(1)", task_id="bot-A"))
+        other = json.loads(bu_cli.browser_exec("print(1)", task_id="bot-B"))
+
+        assert first["output"] == repeat["output"]
+        assert first["output"] != other["output"]
 
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):
         cli = _fake_cli(tmp_path, "cat > /dev/null\n")

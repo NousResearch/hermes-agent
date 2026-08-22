@@ -1780,7 +1780,20 @@ def _cleanup_inactive_browser_sessions():
     with _cleanup_lock:
         for task_id, last_time in list(_session_last_activity.items()):
             if current_time - last_time > BROWSER_SESSION_INACTIVITY_TIMEOUT:
-                sessions_to_cleanup.append(task_id)
+                session_info = _active_sessions.get(task_id) or {}
+                browser_id = str(session_info.get("bb_session_id") or "")
+                preserve = False
+                if bool((session_info.get("features") or {}).get("browser_use")):
+                    try:
+                        from gateway.browser_handoff import (
+                            browser_handoff_retains_browser,
+                        )
+
+                        preserve = browser_handoff_retains_browser(browser_id)
+                    except Exception:
+                        preserve = False
+                if not preserve:
+                    sessions_to_cleanup.append(task_id)
 
     for task_id in sessions_to_cleanup:
         try:
@@ -4908,8 +4921,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if task_id is None:
         task_id = "default"
 
-    # Expand to the full set of session keys to reap. For a bare task_id
-    # that includes the cloud/primary key + the local sidecar if one exists.
+    # Expand to the full set of session keys to reap. For a bare task_id that
+    # includes the cloud/primary key, local sidecar, and any opaque provider
+    # keys owned by this bot (for example Browser Use per-bot isolation).
     if _is_local_sidecar_key(task_id):
         session_keys = [task_id]
         bare_task_id = task_id[: -len(_LOCAL_SUFFIX)]
@@ -4919,6 +4933,12 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         with _cleanup_lock:
             if sidecar_key in _active_sessions:
                 session_keys.append(sidecar_key)
+            session_keys.extend(
+                key
+                for key, info in _active_sessions.items()
+                if key not in session_keys
+                and str(info.get("owner_task_id") or "") == task_id
+            )
         bare_task_id = task_id
 
     for session_key in session_keys:
@@ -4964,6 +4984,16 @@ def _cleanup_single_browser_session(task_id: str) -> None:
     if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
+
+        # Revoke any public live-control link before the provider browser is
+        # closed, regardless of the link's nominal expiration time.
+        if bool((session_info.get("features") or {}).get("browser_use")):
+            try:
+                from gateway.browser_handoff import cancel_browser_handoffs
+
+                cancel_browser_handoffs(str(bb_session_id))
+            except Exception:
+                logger.debug("Browser handoff revocation failed", exc_info=True)
 
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)

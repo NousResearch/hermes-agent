@@ -61,6 +61,18 @@ class TestApiServerProfileResolution:
             is _PROFILE_REJECTED
         )
 
+    def test_handoff_sweeper_visits_every_served_profile(self, monkeypatch):
+        adapter = _make_adapter(multiplex=True, allowlist=["worker"])
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert adapter._browser_handoff_sweep_profiles() == [None, "worker"]
+
 
 class TestApiServerRouteTable:
     def test_route_table_includes_models_options_and_chat(self):

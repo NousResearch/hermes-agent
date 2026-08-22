@@ -4,6 +4,7 @@ When browser.backend is "browser-use", the model gets ``browser_exec`` tool
 instead of default browser tools
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -25,15 +26,39 @@ BACKEND_DISABLED = "off"
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 # Internal marker set by _resolve_backend_cdp on the env dict when the
-# resolved browser is EXCLUSIVE to this named session (per-name provider
-# browser, or a named Browser Use cloud browser). Popped before the
+# resolved browser is EXCLUSIVE to this bot/task (a provider-managed browser).
+# Popped before the
 # subprocess launches — never exported to the CLI.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Preamble prepended to the model's code for named sessions on SHARED
+
+def _browser_instance_digest(
+    task_id: Optional[str], session_name: str = ""
+) -> str:
+    """Return a stable, non-sensitive scope for one bot browser instance."""
+    owner = str(task_id or "browser-exec-default")
+    material = f"{owner}\0{session_name}".encode("utf-8", errors="replace")
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def _provider_session_cache_key(
+    task_id: Optional[str], session_name: str = ""
+) -> str:
+    """Key the provider browser by bot/task, with an optional sub-session."""
+    return f"bu-task-{_browser_instance_digest(task_id, session_name)}"
+
+
+def _harness_session_name(
+    task_id: Optional[str], session_name: str = ""
+) -> str:
+    """Namespace the background harness daemon for the same browser scope."""
+    return f"hermes-{_browser_instance_digest(task_id, session_name)}"
+
+
+# Preamble prepended to the model's code for bot daemons on SHARED
 # browsers (local Chrome / CDP override). The harness daemon attaches to the
 # first existing page at startup, so two fresh named daemons can land on the
-# SAME tab; steering this daemon onto a tab it created keeps concurrent named
+# SAME tab; steering this daemon onto a tab it created keeps concurrent bot
 # sessions from clobbering each other before their first new_tab(). Runs
 # once per daemon (marker file keyed by BU_NAME under the harness runtime
 # state), costs one IPC round-trip on later calls.
@@ -463,14 +488,11 @@ def _resolve_backend_cdp(
        ``_get_session_info()`` so browser_exec shares the SAME provider
        session machinery — per-task session cache, expiry replacement,
        inactivity reaper, and atexit cleanup — instead of duplicating it.
-    4. Nothing configured: return None; the harness attaches to local
-       Chrome (or Browser Use cloud via BU_AUTOSPAWN for legacy configs).
+    4. Nothing configured: return None; the harness attaches to local Chrome.
 
-    ``session_name`` (the tool's ``session`` argument / BU_NAME) keys the
-    provider session cache when set, so every distinct name gets its OWN
-    cloud browser and the same name reuses one — that is what makes named
-    sessions actually concurrent-safe on provider backends instead of all
-    names sharing a single per-task browser.
+    Every bot/task gets its OWN provider browser and harness daemon. The
+    optional ``session_name`` creates an additional isolated browser within
+    that bot without allowing two bots that chose the same name to collide.
 
     Returns an error string on provider failure, None on success.
     """
@@ -503,27 +525,13 @@ def _resolve_backend_cdp(
     if provider is None:
         return None
 
-    # Browser Use direct-API configs: the CLI talks to Browser Use cloud
-    # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
-    # provider here would just create a second, redundant session. The
-    # Nous-gateway variant (use_gateway: true) DOES resolve through the
-    # provider: the gateway provisions the cloud browser server-side and
-    # returns its CDP URL, giving subscribers CLI mode with no raw key.
-    provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not is_truthy_value(
-        _read_browser_cfg().get("use_gateway"), default=False
-    ):
-        # Named BU cloud browsers are exclusive to their daemon — no shared
-        # tab to isolate from.
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
-        return None
-
     try:
-        # Named sessions get their OWN provider browser, keyed by name so the
-        # same name reuses one browser across calls and tasks, and different
-        # names never collide. Unnamed calls keep the per-task key.
-        cache_key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+        cache_key = _provider_session_cache_key(task_id, session_name)
         session_info = _get_session_info(cache_key)
+        # cleanup_browser() receives the public Hermes task id. Preserve that
+        # ownership even though the provider cache key is intentionally opaque.
+        if isinstance(session_info, dict):
+            session_info["owner_task_id"] = str(task_id or "browser-exec-default")
     except Exception as e:
         return (
             f"Cloud browser provider {type(provider).__name__} failed to "
@@ -538,22 +546,48 @@ def _resolve_backend_cdp(
             "the built-in browser tools for this provider."
         )
     env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
-    # A provider browser keyed bu-named-<name> is exclusive to this session —
-    # the own-tab preamble is unnecessary there (it would just leak a blank
-    # tab into a browser nobody else touches).
-    if session_name:
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
+    # Every provider browser is exclusive to this bot/task scope. The own-tab
+    # preamble is unnecessary there (it would leak a blank tab into a browser
+    # nobody else touches).
+    env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return None
 
 
 def browser_exec(
-    code: str,
+    code: str = "",
     session: str = "",
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
+    action: str = "exec",
+    instruction: str = "",
 ):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
+
+    if action == "handoff":
+        try:
+            from gateway.browser_handoff import create_browser_handoff
+
+            result = create_browser_handoff(
+                instruction=instruction,
+                task_id=task_id or "",
+                session_name=session,
+            )
+            return tool_result(
+                {
+                    "success": True,
+                    "output": result["message"],
+                    "meta": {
+                        "browser_handoff": True,
+                        "handoff_id": result["handoff_id"],
+                        "expires_at": result["expires_at"],
+                    },
+                },
+            )
+        except Exception as exc:
+            return tool_error(str(exc))
+    if action != "exec":
+        return tool_error("Invalid browser_exec action; use 'exec' or 'handoff'.")
 
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -572,42 +606,37 @@ def browser_exec(
         )
 
     env = _base_subprocess_env()
-    if session:
-        if not _SESSION_RE.match(session):
-            return tool_error(
-                f"Invalid session name {session!r}: use 1-64 letters, digits, "
-                "dashes, or underscores (e.g. 'r7k2')."
-            )
-        env["BU_NAME"] = session
+    if session and not _SESSION_RE.match(session):
+        return tool_error(
+            f"Invalid session name {session!r}: use 1-64 letters, digits, "
+            "dashes, or underscores (e.g. 'r7k2')."
+        )
+    # Never use the harness default daemon. A bot-scoped BU_NAME lets browser
+    # work continue in the background and prevents concurrent bots from
+    # sharing daemon IPC state, even when the model omitted session=<name>.
+    env["BU_NAME"] = _harness_session_name(task_id, session)
     # Route through the configured browser backend (Browserbase, Firecrawl,
-    # Nous gateway, CDP override, local Chrome, …). Named sessions compose
-    # with the backend: BU_NAME namespaces the harness daemon (its IPC
-    # socket, log, and pid), and on provider backends the name additionally
-    # keys its own cloud browser — so concurrent sessions stop clobbering
-    # each other's daemon (#86894). Browser Use direct-API cloud configs
-    # are the one exception: the CLI manages named cloud browsers natively,
-    # and _resolve_backend_cdp skips provider resolution for them.
+    # Nous gateway, CDP override, local Chrome, …). BU_NAME namespaces one
+    # background harness daemon per bot/task and provider backends add one
+    # fresh managed Chrome instance per scope. Browser Use cloud also resolves
+    # through this provider path so Hermes retains its browser ID and live URL
+    # for a possible human handoff while the CLI attaches over CDP.
     backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
     if backend_err:
         return tool_error(backend_err)
 
-    # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
+    # On a SHARED browser (local Chrome / CDP override) a fresh bot daemon
     # attaches to the first existing page — the same page a sibling daemon
-    # may hold. Pin each named session to a tab it created before running
-    # the model's code. Private per-name browsers (provider-keyed or BU
-    # cloud) skip this: no one to collide with, and the extra tab would leak.
+    # may hold. Pin each bot scope to a tab it created before running the
+    # model's code. Private provider browsers (including Browser Use cloud)
+    # skip this: no one to collide with, and the extra tab would leak.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
-    if session and not private_browser:
+    if not private_browser:
         code = _OWN_TAB_PREAMBLE + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
-
-    # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no
-    # local Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
-        env["BU_AUTOSPAWN"] = "1"
 
     try:
         timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
@@ -698,9 +727,10 @@ _HEADER_BASE = (
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
     "call, so progress survives timeouts. For an isolated concurrent "
-    "browser session (parallel tasks that must not share tabs), pass "
-    "session=<name> (never BU_NAME env syntax) and reuse the same name on "
-    "every related call."
+    "browser session inside the same bot, pass session=<name> (never BU_NAME "
+    "env syntax) and reuse the same name on every related call. Separate bots "
+    "are isolated automatically; a cloud provider gives each one a separate "
+    "managed Chrome, while local Chrome can provide only separate tabs."
 )
 
 _HEADER_VISION = (
@@ -763,7 +793,9 @@ _HELPERS_DIGEST = (
     "role/name/backendDOMNodeId (filter in Python before printing; it is "
     "thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) gives "
     "click coordinates. ensure_real_tab() recovers from a stale/internal "
-    "tab. Login walls: stop and ask the user; never guess credentials."
+    "tab. Login/CAPTCHA walls: never guess credentials or bypass them. If "
+    "browser handoff is configured, call this tool with action='handoff' and "
+    "a precise instruction, then end the turn and wait for the resumed session."
 )
 
 
@@ -793,13 +825,35 @@ BROWSER_EXEC_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["exec", "handoff"],
+                "description": (
+                    "Use exec to control or inspect the browser. Use handoff only "
+                    "when a human must solve a login, CAPTCHA, or similar blocker; "
+                    "it DMs the owner a 30-minute remote-control link and pauses "
+                    "this session."
+                ),
+                "default": "exec",
+            },
             "code": {
                 "type": "string",
-                "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back.",
+                "description": (
+                    "For action=exec: Python code using the pre-imported browser "
+                    "helpers. Use print(...) for data you need back."
+                ),
+            },
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "For action=handoff: a concise description of exactly what the "
+                    "human must do, such as 'Complete the CAPTCHA and sign in with "
+                    "your account'."
+                ),
             },
             "session": {
                 "type": "string",
-                "description": "Named isolated browser session (sets BU_NAME): each name gets its own harness daemon — and on cloud backends its own browser — so concurrent tasks don't clobber each other. Omit for the shared default session. Reuse the same name across calls to keep working in that session (and the name passed to start_remote_daemon(), if used).",
+                "description": "Optional additional isolated browser within this bot. Reuse the same name across related calls. Bot/task isolation is automatic even when omitted; on cloud backends every bot gets its own managed Chrome.",
             },
             "timeout_s": {
                 "type": "integer",
@@ -807,7 +861,7 @@ BROWSER_EXEC_SCHEMA = {
                 "default": _DEFAULT_TIMEOUT_S,
             },
         },
-        "required": ["code"],
+        "required": [],
     },
 }
 
@@ -826,6 +880,8 @@ registry.register(
         session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
         task_id=kw.get("task_id"),
+        action=args.get("action", "exec") or "exec",
+        instruction=args.get("instruction", "") or "",
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

@@ -530,6 +530,16 @@ DEFAULT_CONFIG = {
         # "off"         — force the built-in browser tools
         #                 (browser_navigate, browser_click, …)
         "backend": "",
+        # Optional passwordless human takeover for Browser Use cloud sessions.
+        # The public URL must reverse-proxy the gateway API server's
+        # /browser-handoff/ path over HTTPS. Tokens are one-shot and TTL is
+        # hard-capped at 30 minutes.
+        "handoff": {
+            "enabled": False,
+            "public_base_url": "",
+            "ttl_minutes": 30,
+            "discord_user_id": "",
+        },
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos

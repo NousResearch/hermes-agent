@@ -3221,13 +3221,26 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
     try:
+        preserve_handoff_browser = bool(
+            getattr(agent, "_preserve_browser_after_turn", False)
+        )
+        # One turn only. Explicit AIAgent.close()/session cleanup still owns a
+        # hard teardown, while the browser inactivity reaper independently
+        # keeps only browsers with a live pending handoff.
+        agent._preserve_browser_after_turn = False
         headed = False
         try:
             from tools.browser_tool import _is_headed_mode
             headed = _is_headed_mode()
         except Exception:
             headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
-        if headed:
+        if preserve_handoff_browser:
+            if agent.verbose_logging:
+                logging.debug(
+                    "Skipping per-turn cleanup_browser for pending human "
+                    f"handoff {task_id}"
+                )
+        elif headed:
             if agent.verbose_logging:
                 logging.debug(
                     f"Skipping per-turn cleanup_browser for headed session {task_id}; "

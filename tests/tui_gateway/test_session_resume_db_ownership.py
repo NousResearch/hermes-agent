@@ -159,7 +159,14 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         return db
 
     monkeypatch.setattr("hermes_state.SessionDB", _factory)
-    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: ("live-sid", {}))
+    live_session = {}
+    with server._sessions_lock:
+        server._sessions["live-sid"] = live_session
+    monkeypatch.setattr(
+        server,
+        "_find_live_session_by_key",
+        lambda _key: ("live-sid", live_session),
+    )
     monkeypatch.setattr(
         server,
         "_live_session_payload",

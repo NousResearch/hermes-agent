@@ -2574,7 +2574,30 @@ def _normalize_completion_path(path_part: str) -> str:
             and normalized[0].isalpha()
         ):
             return f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
+        # A POSIX host still receives Windows-style queries from remote/SSH
+        # sessions, so fold `\` to `/` here too — otherwise the navigation
+        # branch's os.path.dirname/basename can't split the path and lists
+        # nothing.  On a real Windows host os.path handles `\` natively, so
+        # the nt path is left untouched.
+        return normalized
     return expanded
+
+
+def _is_path_navigation(path_part: str) -> bool:
+    """True when the query carries explicit navigation intent — a POSIX ``/``,
+    a Windows ``\\``, or a ``C:``-style drive prefix — so it should fall through
+    to directory listing rather than repo-wide fuzzy basename search.
+
+    The fuzzy-vs-navigation decision runs on the RAW query, before
+    ``_normalize_completion_path`` converts ``\\`` and drive letters, so the
+    guard must recognise those forms itself or a Windows path like
+    ``ui-tui\\src\\components\\app`` gets misrouted into fuzzy search.
+    """
+    return (
+        "/" in path_part
+        or "\\" in path_part
+        or (len(path_part) >= 2 and path_part[0].isalpha() and path_part[1] == ":")
+    )
 
 
 def _completion_cwd(params: dict | None = None) -> str:

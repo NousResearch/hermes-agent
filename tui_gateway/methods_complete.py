@@ -190,13 +190,14 @@ def _(rid, params: dict) -> dict:
         # name with no path separator — `@appChrome` surfaces every file
         # whose basename matches, regardless of directory depth. Matches what
         # editors like Cursor / VS Code do for Cmd-P. Path-ish queries (with
-        # `/`, `./`, `~/`, `/abs`) fall through to the directory-listing
-        # path so explicit navigation intent is preserved.
+        # `/`, `\`, `./`, `~/`, `/abs`, or a `C:\` drive prefix) fall through
+        # to the directory-listing path so explicit navigation intent is
+        # preserved.
         if (
             is_context
             and path_part
             and len(path_part.strip()) >= 2
-            and "/" not in path_part
+            and not _is_path_navigation(path_part)
             and prefix_tag != "folder"
         ):
             ranked: list[tuple[tuple[int, int], str, str, bool]] = []

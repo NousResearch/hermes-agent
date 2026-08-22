@@ -9,7 +9,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from acp_adapter import session as acp_session
-from acp_adapter.session import SessionManager, SessionState
+from acp_adapter.session import (
+    ACP_TOOL_PROFILE_DECISION_ONLY,
+    SessionManager,
+    SessionState,
+)
 from hermes_state import SessionDB
 
 
@@ -112,6 +116,102 @@ class TestCreateSession:
 
 
 
+
+    @pytest.mark.parametrize(
+        ("tool_profile", "expected_toolsets"),
+        [
+            (None, ["hermes-acp", "mcp-configured"]),
+            (ACP_TOOL_PROFILE_DECISION_ONLY, []),
+        ],
+    )
+    def test_acp_tool_profile_reduces_native_and_configured_capabilities(
+        self, monkeypatch, tool_profile, expected_toolsets
+    ):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.enabled_toolsets = kwargs["enabled_toolsets"]
+                self.kwargs = kwargs
+                self.tools = [{"function": {"name": "native_memory_write"}}]
+                self.valid_tool_names = {"native_memory_write"}
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"default": "fake-model"},
+                "mcp_servers": {"configured": {"enabled": True}},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "acp_adapter.session._register_task_cwd", lambda task_id, cwd: None
+        )
+
+        state = SessionManager(db=None).create_session(
+            cwd="/tmp/project", tool_profile=tool_profile
+        )
+
+        assert state.tool_profile == tool_profile
+        assert state.agent.enabled_toolsets == expected_toolsets
+        if tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY:
+            assert "hermes-acp" not in state.agent.enabled_toolsets
+            assert "mcp-configured" not in state.agent.enabled_toolsets
+            assert state.agent.tools == []
+            assert state.agent.valid_tool_names == set()
+            assert state.agent._skip_mcp_refresh is True
+
+    def test_decision_only_profile_survives_persisted_restore(self, monkeypatch, tmp_path):
+        created_toolsets = []
+
+        class FakeAgent:
+            model = "fake-model"
+            provider = None
+            base_url = None
+            api_mode = None
+
+            def __init__(self, **kwargs):
+                self.enabled_toolsets = kwargs["enabled_toolsets"]
+                self._session_db = None
+                self._session_db_created = False
+                created_toolsets.append(list(self.enabled_toolsets))
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"default": "fake-model"}, "mcp_servers": {}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "acp_adapter.session._register_task_cwd", lambda task_id, cwd: None
+        )
+
+        first = SessionManager(db=db)
+        state = first.create_session(
+            cwd="/tmp/project", tool_profile=ACP_TOOL_PROFILE_DECISION_ONLY
+        )
+        first._sessions.clear()
+        restored = first.get_session(state.session_id)
+
+        assert restored is not None
+        assert restored.tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY
+        assert created_toolsets == [[], []]
 
 # ---------------------------------------------------------------------------
 # WSL cwd translation

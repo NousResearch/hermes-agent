@@ -41,7 +41,7 @@ from acp_adapter.server import (
     HermesACPAgent,
     HERMES_VERSION,
 )
-from acp_adapter.session import SessionManager
+from acp_adapter.session import ACP_TOOL_PROFILE_DECISION_ONLY, SessionManager
 from hermes_state import SessionDB
 
 
@@ -69,6 +69,24 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
         ("accept_edits", "Accept Edits"),
         ("dont_ask", "Don't Ask"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_new_session_applies_decision_only_profile_from_hermes_meta(agent):
+    resp = await agent.new_session(
+        cwd="/tmp",
+        hermes={"toolProfile": ACP_TOOL_PROFILE_DECISION_ONLY},
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert state is not None
+    assert state.tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY
+
+
+@pytest.mark.asyncio
+async def test_new_session_rejects_unknown_hermes_tool_profile(agent):
+    with pytest.raises(ValueError, match="unsupported Hermes ACP tool profile"):
+        await agent.new_session(cwd="/tmp", hermes={"toolProfile": "full-access"})
 
 
 @pytest.mark.asyncio
@@ -709,6 +727,94 @@ class TestRegisterSessionMcpServers:
         }
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_decision_only_session_adds_only_explicit_mcp_toolset(
+        self, agent, mock_manager
+    ):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(
+            cwd="/tmp", tool_profile=ACP_TOOL_PROFILE_DECISION_ONLY
+        )
+        state.agent.enabled_toolsets = []
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        server = McpServerStdio(
+            name="buzz-dev-mcp", command="buzz-dev-mcp", args=[], env=[]
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=["read_file"]), \
+             patch("model_tools.get_tool_definitions", return_value=[]) as mock_defs:
+            await agent._register_session_mcp_servers(state, [server])
+
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["mcp-buzz-dev-mcp"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+        )
+        assert state.agent.enabled_toolsets == ["mcp-buzz-dev-mcp"]
+        assert "hermes-acp" not in state.agent.enabled_toolsets
+
+    @pytest.mark.parametrize("switch_path", ["slash", "protocol"])
+    @pytest.mark.asyncio
+    async def test_decision_only_model_switch_restores_explicit_mcp_only(
+        self, agent, mock_manager, switch_path
+    ):
+        state = mock_manager.create_session(
+            cwd="/tmp", tool_profile=ACP_TOOL_PROFILE_DECISION_ONLY
+        )
+        state.acp_mcp_server_names = ["buzz-dev-mcp"]
+        state.agent.provider = "openai-codex"
+        state.agent.model = "old-model"
+
+        replacement = MagicMock(name="ReplacementDecisionAgent")
+        replacement.enabled_toolsets = []
+        replacement.disabled_toolsets = None
+        replacement.tools = []
+        replacement.valid_tool_names = set()
+        replacement.provider = "openai-codex"
+        replacement.model = "new-model"
+        replacement.base_url = None
+        replacement.api_mode = "codex_app_server"
+
+        decision_tools = [
+            {"function": {"name": "jobs_accept"}},
+            {"function": {"name": "jobs_reject"}},
+        ]
+        with patch.object(
+            mock_manager, "_make_agent", return_value=replacement
+        ) as make_agent, patch.object(
+            agent,
+            "_resolve_model_selection",
+            return_value=("openai-codex", "new-model"),
+        ), patch(
+            "model_tools.get_tool_definitions", return_value=decision_tools
+        ) as get_defs, patch(
+            "agent.memory_manager.inject_memory_provider_tools"
+        ) as inject_memory:
+            if switch_path == "slash":
+                response = agent._cmd_model("new-model", state)
+                assert response.startswith("Model switched to: new-model")
+            else:
+                response = await agent.set_session_model(
+                    "new-model", state.session_id
+                )
+                assert isinstance(response, SetSessionModelResponse)
+
+        assert make_agent.call_args.kwargs["tool_profile"] == (
+            ACP_TOOL_PROFILE_DECISION_ONLY
+        )
+        get_defs.assert_called_once_with(
+            enabled_toolsets=["mcp-buzz-dev-mcp"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+        )
+        inject_memory.assert_not_called()
+        assert replacement.enabled_toolsets == ["mcp-buzz-dev-mcp"]
+        assert replacement.valid_tool_names == {"jobs_accept", "jobs_reject"}
+        assert "hermes-acp" not in replacement.enabled_toolsets
 
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):

@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+ACP_TOOL_PROFILE_DECISION_ONLY = "decision-only"
+
 
 def _translate_acp_cwd(cwd: str) -> str:
     """Translate Windows ACP cwd values when Hermes itself is running in WSL.
@@ -143,7 +145,8 @@ def _expand_acp_enabled_toolsets(
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    selected = ["hermes-acp"] if toolsets is None else toolsets
+    for name in list(selected):
         if name and name not in expanded:
             expanded.append(name)
 
@@ -174,6 +177,14 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    # ACP client-requested capability reduction. This is persisted so a
+    # restored evaluation session cannot silently regain the default tools.
+    tool_profile: str | None = None
+    # Names of MCP servers supplied by the ACP client for this live session.
+    # The registry itself is process-global; retaining only names is sufficient
+    # to restore the permitted toolsets after an in-session agent rebuild
+    # without persisting command arguments or environment secrets.
+    acp_mcp_server_names: List[str] = field(default_factory=list)
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -207,18 +218,23 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
+    def create_session(
+        self, cwd: str = ".", tool_profile: str | None = None
+    ) -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(
+            session_id=session_id, cwd=cwd, tool_profile=tool_profile
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
+            tool_profile=tool_profile,
             cancel_event=threading.Event(),
         )
         with self._lock:
@@ -264,12 +280,14 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            tool_profile=original.tool_profile,
         )
         state = SessionState(
             session_id=new_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
+            tool_profile=original.tool_profile,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
         )
@@ -433,6 +451,8 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.tool_profile:
+            session_meta["acp_tool_profile"] = state.tool_profile
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -452,7 +472,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -532,6 +552,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        tool_profile = None
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +562,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    tool_profile = meta.get("acp_tool_profile") or tool_profile
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -567,6 +589,7 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                tool_profile=tool_profile,
             )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -577,6 +600,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
+            tool_profile=tool_profile,
             history=history,
             cancel_event=threading.Event(),
         )
@@ -608,6 +632,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        tool_profile: str | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -632,11 +657,18 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        if tool_profile not in (None, ACP_TOOL_PROFILE_DECISION_ONLY):
+            raise ValueError(f"unsupported ACP tool profile: {tool_profile}")
+        native_toolsets = [] if tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY else ["hermes-acp"]
+        mcp_server_names = (
+            [] if tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY else configured_mcp_servers
+        )
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
+                native_toolsets,
+                mcp_server_names=mcp_server_names,
             ),
             "quiet_mode": True,
             "session_id": session_id,
@@ -685,6 +717,14 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
+        if tool_profile == ACP_TOOL_PROFILE_DECISION_ONLY:
+            # AIAgent appends memory/context-engine schemas after registry
+            # filtering. Remove those native additions as well: the ACP server
+            # will add only the explicitly supplied constrained decision MCP.
+            agent.tools = []
+            agent.valid_tool_names = set()
+            agent._context_engine_tool_names = set()
+            agent._skip_mcp_refresh = True
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

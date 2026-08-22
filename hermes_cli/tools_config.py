@@ -270,16 +270,24 @@ TOOL_CATEGORIES = {
         "icon": "🔍",
         # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
         # non-provider firecrawl setup-flow rows live here: managed via Nous subscription, and self-hosted.
+        # Plus one deliberate exception, listed LAST: "Anthropic Web Search & Fetch" is a real backend that cannot
+        # be a plugin row. It is not a WebSearchProvider at all — it binds web_search/web_extract onto Anthropic's
+        # server-side tools, which run inside the Messages API request rather than through any client-side
+        # dispatch, so _plugin_web_search_providers() has nothing to enumerate. It must not be index 0:
+        # _detect_active_provider_index falls back to the first row, and an opt-in paid backend that only works on
+        # Anthropic-served models must never be the pre-selected default. The docs table
+        # (website/docs/user-guide/features/web-search.md) lists it second-to-last, just before xAI; plugin rows
+        # are appended after this whole block, so last-of-the-hardcoded-rows is the closest the picker can get.
         "providers": [
-            {"name": "Anthropic Web Search & Fetch", "badge": "native",
-             "tag": "Uses the Anthropic key already configured for the model",
-             "web_backend": "anthropic", "env_vars": []},
             {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed Firecrawl billed to your subscription",
              "web_backend": "firecrawl", "env_vars": [], **_NOUS, "managed_nous_feature": "web",
              "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"]},
             {"name": "Firecrawl Self-Hosted", "badge": "free · self-hosted", "tag": "Run your own Firecrawl instance (Docker)",
              "web_backend": "firecrawl",
              "env_vars": [_key("FIRECRAWL_API_URL", "Your Firecrawl instance URL (e.g., http://localhost:3002)")]},
+            {"name": "Anthropic Web Search & Fetch", "badge": "native",
+             "tag": "Uses the Anthropic key already configured for the model",
+             "web_backend": "anthropic", "env_vars": []},
         ],
     },
     "image_gen": {

@@ -73,6 +73,42 @@ image_gen:
 to the global tool-worker limit, so image providers receive bounded parallel
 requests without allowing an image batch to bypass the agent's concurrency cap.
 
+### Codex images with a named credential provider
+
+The `openai-codex` image backend normally reads Hermes-managed ChatGPT/Codex
+OAuth credentials. It can instead reuse an existing named provider, including
+one backed by [`key_cmd`](/integrations/providers#command-minted-credentials-key_cmd):
+
+```yaml
+providers:
+  codex-passive:
+    api: https://chatgpt.com/backend-api/codex
+    transport: codex_responses
+    key_cmd: "my-auth-helper print-token"
+    extra_headers:
+      ChatGPT-Account-ID: "your-account-id"
+
+image_gen:
+  provider: openai-codex
+  openai-codex:
+    auth_provider: codex-passive
+```
+
+The image request uses that provider's base URL, bearer credential, and extra
+headers. Command-minted tokens retain the same expiry-aware cache and
+secret-safe error handling as normal inference. If `auth_provider` is omitted,
+the existing `hermes auth add openai-codex` flow is unchanged.
+
+Two guardrails are worth knowing about:
+
+- `extra_headers` is for route and account metadata. `Authorization`, `Accept`,
+  and `Content-Type` are owned by the request and are ignored (in any casing)
+  if the provider declares them, so config can never shadow the freshly
+  resolved bearer token.
+- A named provider that is missing, disabled (`enabled: false`), or has no
+  credential is an error — Hermes does **not** quietly fall back to
+  Hermes-managed Codex OAuth or to any other provider.
+
 ### OpenRouter: the full Image API catalog
 
 With `image_gen.provider: openrouter`, the model picker lists OpenRouter's

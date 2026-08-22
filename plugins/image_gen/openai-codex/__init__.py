@@ -24,8 +24,9 @@ import base64
 import json
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -179,6 +180,132 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+class _CodexImageAuth(NamedTuple):
+    """Resolved credential and route for one Codex image request."""
+
+    token: str
+    base_url: str
+    extra_headers: Dict[str, str]
+
+
+def _configured_auth_provider() -> str:
+    """Return the optional named provider used for Codex image auth."""
+    cfg = _load_image_gen_config()
+    sub = cfg.get("openai-codex")
+    if not isinstance(sub, dict):
+        return ""
+    value = sub.get("auth_provider")
+    return value.strip() if isinstance(value, str) else ""
+
+
+@lru_cache(maxsize=16)
+def _cached_command_token_source(
+    key_cmd: str,
+    provider_label: str,
+) -> Callable[[], str]:
+    """Reuse ``key_cmd`` expiry caching across image-generation calls."""
+    from agent.command_token_source import build_command_token_provider
+
+    source = build_command_token_provider(key_cmd, provider_label)
+    if source is None:  # Defensive: callers only pass non-empty commands.
+        raise RuntimeError(
+            f"Image auth provider {provider_label!r} has an empty key_cmd"
+        )
+    return source
+
+
+class _NamedProviderRoute(NamedTuple):
+    """A named provider's identity and route, resolved without minting."""
+
+    requested: str
+    entry: Dict[str, Any]
+    label: str
+    base_url: str
+    extra_headers: Dict[str, str]
+
+
+def _lookup_named_provider(provider_name: str) -> _NamedProviderRoute:
+    """Find the ``providers.<name>`` entry backing Codex image auth.
+
+    Lookup only — this deliberately does NOT run ``key_cmd``, so availability
+    probes can validate configuration without the side effect of invoking the
+    user's auth helper. Raises when the entry is missing, disabled, or has no
+    route, so a typo can never silently fall through to a different provider.
+    """
+    from hermes_cli.config import normalize_extra_headers
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+
+    requested = provider_name.strip()
+    if not requested.lower().startswith("custom:"):
+        requested = f"custom:{requested}"
+
+    # Returns None for entries that are absent OR carry ``enabled: false``,
+    # so a disabled provider fails closed rather than resolving anyway.
+    entry = _get_named_custom_provider(requested)
+    if not isinstance(entry, dict):
+        raise RuntimeError(
+            f"Named image auth provider {provider_name!r} was not found or is disabled"
+        )
+
+    label = str(entry.get("name") or provider_name).strip() or provider_name
+    base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError(f"Image auth provider {label!r} has no base URL")
+    return _NamedProviderRoute(
+        requested,
+        entry,
+        label,
+        base_url,
+        normalize_extra_headers(entry.get("extra_headers")),
+    )
+
+
+def _resolve_named_provider_auth(provider_name: str) -> _CodexImageAuth:
+    """Resolve a named custom provider for the Codex image backend.
+
+    ``providers.<name>.key_cmd`` is deliberately handled through the shared
+    command-token source so its expiry cache and no-secret error contract stay
+    identical to normal inference. Static named-provider credentials continue
+    through the canonical runtime resolver.
+    """
+    from hermes_cli.config import normalize_extra_headers
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    route = _lookup_named_provider(provider_name)
+    label = route.label
+    base_url = route.base_url
+    extra_headers = route.extra_headers
+
+    key_cmd = str(route.entry.get("key_cmd") or "").strip()
+    if key_cmd:
+        token = _cached_command_token_source(key_cmd, label)()
+    else:
+        runtime = resolve_runtime_provider(requested=route.requested)
+        # resolve_runtime_provider() walks a fallback chain and will happily
+        # return a BUILT-IN provider (codex, openai, openrouter, …) when a name
+        # doesn't land on a custom entry. Adopting that would silently send the
+        # image request to an unrelated endpoint with an unrelated key, so
+        # require it to have resolved to the custom entry we just looked up.
+        if str(runtime.get("provider") or "").strip().lower() != "custom":
+            raise RuntimeError(
+                f"Image auth provider {label!r} resolved to built-in provider "
+                f"{str(runtime.get('provider') or 'unknown')!r}; refusing to "
+                "route image generation through an unrelated provider"
+            )
+        api_key = runtime.get("api_key")
+        token = api_key() if callable(api_key) else str(api_key or "").strip()
+        base_url = str(runtime.get("base_url") or base_url).strip().rstrip("/")
+        runtime_headers = normalize_extra_headers(runtime.get("extra_headers"))
+        if runtime_headers:
+            extra_headers = _merge_request_headers(extra_headers, runtime_headers)
+
+    # "no-key-required" is the resolver's sentinel for an open endpoint. The
+    # Codex Responses route is never open, so treat it as "no credential".
+    if not token or token == "no-key-required":
+        raise RuntimeError(f"Image auth provider {label!r} produced no credential")
+    return _CodexImageAuth(token, base_url, extra_headers)
+
+
 def _read_codex_access_token() -> Optional[str]:
     """Return a usable Codex OAuth token, or None.
 
@@ -195,6 +322,37 @@ def _read_codex_access_token() -> Optional[str]:
     except Exception as exc:
         logger.debug("Could not resolve Codex access token: %s", exc)
         return None
+
+
+def _resolve_codex_image_auth() -> Optional[_CodexImageAuth]:
+    """Resolve named-provider auth, then fall back to Hermes Codex OAuth."""
+    auth_provider = _configured_auth_provider()
+    if auth_provider:
+        return _resolve_named_provider_auth(auth_provider)
+    token = _read_codex_access_token()
+    if not token:
+        return None
+    return _CodexImageAuth(token, _CODEX_BASE_URL, {})
+
+
+def _codex_image_auth_available() -> bool:
+    """Cheap availability probe for :meth:`OpenAICodexImageGenProvider.is_available`.
+
+    ``is_available()`` is a fast, side-effect-free hot-path check: the image
+    registry calls it while resolving the active backend and the pet/tool paths
+    call it repeatedly. So a ``key_cmd`` provider is reported available on
+    CONFIGURATION alone — minting here would run the user's auth helper as a
+    side effect of a liveness question, once per probe. A helper that is broken
+    or expired still surfaces a precise error from ``generate()``.
+    """
+    auth_provider = _configured_auth_provider()
+    if not auth_provider:
+        return bool(_read_codex_access_token())
+    route = _lookup_named_provider(auth_provider)
+    if str(route.entry.get("key_cmd") or "").strip():
+        return True
+    # Static credential: resolving it is a config/env read, not a subprocess.
+    return bool(_resolve_named_provider_auth(auth_provider).token)
 
 
 def _sniff_image_mime(raw: bytes) -> Optional[str]:
@@ -452,6 +610,50 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
+# Headers this request owns outright. A named provider's ``extra_headers`` may
+# legitimately carry route/account metadata (ChatGPT-Account-ID, Cloudflare
+# Access service tokens), but it must never reach the wire as a competing
+# Authorization header.
+_RESERVED_REQUEST_HEADERS = frozenset({"accept", "authorization", "content-type"})
+
+
+def _merge_request_headers(
+    base: Dict[str, str],
+    extra: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    """Overlay config *extra* headers on *base*, case-insensitively.
+
+    Two rules, both of which a plain ``dict.update()`` gets wrong:
+
+    1. Reserved headers are dropped. HTTP header names are case-insensitive but
+       ``dict`` keys are not, and httpx does NOT de-duplicate — a config entry
+       spelled ``authorization`` survives alongside the ``Authorization`` the
+       caller sets, and BOTH are sent, with the config-supplied one first. Most
+       upstreams honour the first, so config could otherwise override the
+       freshly minted bearer. Only the name is logged; values carry secrets.
+    2. Non-reserved overrides replace the existing key in place rather than
+       adding a case-variant twin, so ``chatgpt-account-id`` overrides
+       ``ChatGPT-Account-ID`` instead of being sent next to it.
+    """
+    merged = dict(base)
+    by_lower = {key.lower(): key for key in merged}
+    for raw_key, value in (extra or {}).items():
+        name = str(raw_key).strip()
+        if not name:
+            continue
+        lowered = name.lower()
+        if lowered in _RESERVED_REQUEST_HEADERS:
+            logger.debug(
+                "Ignoring reserved header %r from image auth provider config; "
+                "the resolved credential and content type are authoritative",
+                name,
+            )
+            continue
+        merged[by_lower.get(lowered, name)] = str(value)
+        by_lower.setdefault(lowered, name)
+    return merged
+
+
 def _collect_image_b64(
     token: str,
     *,
@@ -459,6 +661,8 @@ def _collect_image_b64(
     size: str,
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
+    base_url: str = _CODEX_BASE_URL,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, str]]:
     """Stream a Codex Responses image_generation call.
 
@@ -471,7 +675,10 @@ def _collect_image_b64(
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
-    headers = _codex_cloudflare_headers(token)
+    # Named-provider headers supply route/account metadata. Authentication and
+    # content-negotiation headers stay authoritative so config cannot replace
+    # the freshly resolved bearer token.
+    headers = _merge_request_headers(_codex_cloudflare_headers(token), extra_headers)
     headers.update({
         "Accept": "text/event-stream",
         "Authorization": f"Bearer {token}",
@@ -488,7 +695,9 @@ def _collect_image_b64(
     final_b64: Optional[str] = None
     partial_b64: Optional[str] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
+        with http.stream(
+            "POST", f"{base_url.rstrip('/')}/responses", json=payload
+        ) as response:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -528,7 +737,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return "OpenAI (Codex auth)"
 
     def is_available(self) -> bool:
-        if not _read_codex_access_token():
+        try:
+            if not _codex_image_auth_available():
+                return False
+        except Exception as exc:
+            logger.debug("Could not resolve Codex image auth: %s", exc)
             return False
         try:
             import httpx  # noqa: F401
@@ -590,7 +803,16 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not _read_codex_access_token():
+        try:
+            auth = _resolve_codex_image_auth()
+        except Exception as exc:
+            return error_response(
+                error=f"Could not resolve configured Codex image authentication: {exc}",
+                error_type="auth_required",
+                provider="openai-codex",
+                aspect_ratio=aspect,
+            )
+        if auth is None:
             return error_response(
                 error=(
                     "No Codex/ChatGPT OAuth credentials available. Run "
@@ -614,20 +836,6 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
 
-        token = _read_codex_access_token()
-        if not token:
-            return error_response(
-                error=(
-                    "No Codex/ChatGPT OAuth credentials available. Run "
-                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
-                ),
-                error_type="auth_required",
-                provider="openai-codex",
-                model=tier_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
-
         try:
             input_images = _normalize_input_images(image_url, reference_image_urls)
         except Exception as exc:
@@ -644,11 +852,13 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             collected: Optional[Dict[str, str]] = None
             for attempt in range(_NONFINAL_RETRIES + 1):
                 collected = _collect_image_b64(
-                    token,
+                    auth.token,
                     prompt=prompt,
                     size=size,
                     quality=meta["quality"],
                     input_images=input_images or None,
+                    base_url=auth.base_url,
+                    extra_headers=auth.extra_headers,
                 )
                 if collected and collected.get("source") == "final" and collected.get("b64"):
                     break

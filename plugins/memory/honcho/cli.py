@@ -264,7 +264,7 @@ def _read_config() -> dict:
     path = _config_path()
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             pass
     return {}

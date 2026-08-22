@@ -102,7 +102,7 @@ def resolve_active_host() -> str:
         try:
             path = resolve_config_path()
             if path.exists():
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(path.read_text(encoding="utf-8-sig"))
                 default_host = str(raw.get("defaultHost", "")).strip()
                 if default_host:
                     return default_host
@@ -552,7 +552,7 @@ class HonchoClientConfig:
             return cls.from_env(host=resolved_host)
 
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
@@ -1004,7 +1004,7 @@ def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
         # the supported path for background threads).
         path = resolve_config_path()
         if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
             block = _host_block(raw, resolve_active_host())
             oauth_block = block.get("oauth")
             if isinstance(oauth_block, dict) and oauth_block.get("refreshToken"):
@@ -1124,7 +1124,7 @@ def _honcho_json_timeout() -> float | None:
 
         timeout = None
         if mtime_ns != -1:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
             host_block = _host_block(raw, resolve_active_host())
             timeout = _resolve_optional_float(
                 host_block.get("timeout"),

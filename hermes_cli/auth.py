@@ -2685,7 +2685,7 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
             code="qwen_auth_missing",
         )
     try:
-        data = json.loads(auth_path.read_text(encoding="utf-8"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise AuthError(
             f"Failed to read Qwen CLI credentials from {auth_path}: {exc}",

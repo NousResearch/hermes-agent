@@ -121,6 +121,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import { resolveDesktopPrimaryProfile } from './desktop-primary-profile'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -9869,11 +9870,33 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   await wait(1000)
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// Read the CLI's sticky profile file (written by `hermes profile use <name>`).
+// Lives at <HERMES_HOME>/active_profile — the same path the CLI itself reads
+// via hermes_cli.profiles.get_active_profile_name(). Returns the trimmed name
+// when present, or null when missing/empty so callers can layer their own
+// fallback on top.
+function readCliStickyProfile() {
+  try {
+    const raw = fs.readFileSync(path.join(HERMES_HOME, 'active_profile'), 'utf8')
+
+    return raw.trim() || null
+  } catch {
+    return null
+  }
+}
+
+// The profile the primary (window) backend runs as. Precedence:
+//   1. The desktop's own per-machine preference (active-profile.json), so a
+//      user who explicitly set "always open desktop as security-analyst" is
+//      honored regardless of the CLI sticky.
+//   2. The CLI sticky profile (hermes profile use) so a fresh desktop install
+//      mirrors whatever `hermes chat` would launch — fixing the historical
+//      drift where CLI defaulted to e.g. software-engineer while desktop
+//      defaulted to 'default'.
+//   3. 'default' (the root profile).
+// See desktop-primary-profile.ts for the pure resolver + tests.
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return resolveDesktopPrimaryProfile(readActiveDesktopProfile(), readCliStickyProfile())
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
@@ -10664,12 +10687,15 @@ async function startHermes() {
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
-    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
-    // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI.
+    // primaryProfileKey() falls back through the desktop's own preference,
+    // then the CLI's sticky active_profile, so this stays in sync with the
+    // routing decisions in ensureBackend()/resolveRemoteBackend(). Skip the
+    // flag when the resolved profile is the root 'default' so legacy
+    // launches are byte-identical for users with no preference.
+    const activeProfile = primaryProfileKey()
 
-    if (activeProfile) {
+    if (activeProfile !== 'default') {
       backendArgs.unshift('--profile', activeProfile)
     }
 
@@ -13312,7 +13338,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Renderer boot (use-gateway-boot.ts) calls this to learn which profile the
+// primary window backend came up as, to seed $activeGatewayProfile — the
+// switcher's displayed/highlighted profile. Must agree with primaryProfileKey()
+// (desktop preference → CLI's sticky active_profile → "default"), not just the
+// desktop's own preference, or the switcher shows "default" on first launch
+// even when the backend actually booted into the CLI's sticky profile (#57757).
+ipcMain.handle('hermes:profile:get', async () => ({ profile: primaryProfileKey() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

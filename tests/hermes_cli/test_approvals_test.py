@@ -79,6 +79,17 @@ class TestVerdicts:
         assert "user-deny" in out
         assert "git push *" in out
 
+    def test_user_ask_rule_reports_ask_even_under_off(self, isolated_approvals,
+                                                      capsys, monkeypatch):
+        monkeypatch.setattr(
+            A, "_get_approval_config",
+            lambda: {"mode": "off", "ask": ["ssh *"]})
+        rc = at.approvals_test_command(_args(["ssh", "host", "'echo hi'"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+        assert "approvals.ask" in out
+
     def test_container_env_type_skips_guards_like_runtime(self, isolated_approvals,
                                                           capsys):
         # Mirrors check_all_command_guards: isolated docker skips BEFORE the

@@ -667,6 +667,79 @@ def _user_deny_block_result(pattern: str) -> dict:
     }
 
 
+def _match_user_ask_rule(command: str) -> str | None:
+    """Return the matching ``approvals.ask`` glob, or None.
+
+    ``approvals.ask`` in config.yaml is the middle tier of the user-editable
+    rule lists: ``deny`` blocks unconditionally, ``command_allowlist``
+    auto-approves, and ``ask`` forces the human-approval prompt — BEFORE the
+    yolo / mode=off bypass, because the whole point of an ask rule is "show
+    me this one even when approvals are otherwise off". Matching mirrors
+    :func:`_match_user_deny_rule` (same normalized / deobfuscated command
+    variants, case-insensitive fnmatch) so quoting tricks can't sidestep a
+    rule. Empty/absent list = no-op.
+    """
+    try:
+        ask_patterns = _get_approval_config().get("ask") or []
+    except Exception:
+        return None
+    if not ask_patterns:
+        return None
+    globs = [p.strip() for p in ask_patterns
+             if isinstance(p, str) and p.strip()]
+    if not globs:
+        return None
+    for command_variant in _command_detection_variants(command):
+        candidate = command_variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+
+
+def _user_ask_gate(pattern: str, command: str,
+                   approval_callback=None) -> dict:
+    """Route an ``approvals.ask`` match through the shared approval gate.
+
+    Uses a synthetic ``ask_rule:<glob>`` pattern key so an answer of
+    ``[a]lways`` persists per-rule in the same allowlist machinery as
+    dangerous-command approvals — each glob is independently
+    approvable-once/session/always. No-human contexts fail CLOSED: an ask
+    rule is an explicit demand for a human decision, so with no human
+    reachable the command must not run (unlike the historical fail-open
+    dangerous-pattern path).
+    """
+    return _run_approval_gate(
+        pattern_key=f"ask_rule:{pattern}",
+        description=(f"user-defined ask rule '{pattern}' (approvals.ask in "
+                     "config.yaml) requires your approval"),
+        display_target=command,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: Command matches the user-defined ask rule '{pattern}' "
+            "(approvals.ask in config.yaml) but cron jobs run without a user "
+            "present to approve it. Find an alternative approach, or remove "
+            "this ask rule if the command is safe unattended."
+        ),
+        single_query_deny_message=(
+            f"BLOCKED: Command matches the user-defined ask rule '{pattern}' "
+            "(approvals.ask in config.yaml) but single-query mode (-q) runs "
+            "without a user present to approve it. Find an alternative "
+            "approach, or remove this ask rule if the command is safe "
+            "without a human."
+        ),
+        autoapprove_log_prefix="approvals.ask rule",
+        honor_yolo_bypass=False,
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            f"BLOCKED: Command matches the user-defined ask rule '{pattern}' "
+            "(approvals.ask in config.yaml) but no interactive user or "
+            "gateway is present to approve it. An ask rule explicitly "
+            "demands a human decision."
+        ),
+    )
+
+
 def _save_blocked_payload(command: str) -> Optional[str]:
     """Persist a parser-limit-blocked command as a runnable script.
 
@@ -3423,6 +3496,7 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    honor_yolo_bypass: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -3468,8 +3542,11 @@ def _run_approval_gate(
     """
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
-    # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    # here only skips the recoverable approval layer. approvals.ask rules
+    # pass honor_yolo_bypass=False — their whole point is to surface a
+    # prompt even while approvals are otherwise bypassed.
+    if honor_yolo_bypass and (
+            _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
@@ -3753,6 +3830,17 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    # User-defined ask rules (approvals.ask in config.yaml): also fire BEFORE
+    # the yolo bypass — an ask rule is the user saying "always show me this,
+    # even when approvals are otherwise bypassed". Unlike deny, a match does
+    # not block; it routes through the shared human-approval gate.
+    ask_pattern = _match_user_ask_rule(command)
+    if ask_pattern is not None:
+        logger.info("User ask rule %r requires approval: %s",
+                    ask_pattern, command[:200])
+        return _user_ask_gate(ask_pattern, command,
+                              approval_callback=approval_callback)
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
@@ -4386,6 +4474,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    # User-defined ask rules (approvals.ask): same pre-yolo placement as in
+    # check_dangerous_command — prompt even under yolo / mode=off.
+    ask_pattern = _match_user_ask_rule(command)
+    if ask_pattern is not None:
+        logger.info("User ask rule %r requires approval: %s",
+                    ask_pattern, command[:200])
+        return _user_ask_gate(ask_pattern, command,
+                              approval_callback=approval_callback)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

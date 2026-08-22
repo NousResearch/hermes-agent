@@ -139,6 +139,26 @@ Like the rest of the approval config, changes take effect immediately (the confi
 Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
 :::
 
+### User-Defined Ask Rules (`approvals.ask`)
+
+`approvals.ask` completes the Claude Code-style trio: `deny` blocks, `command_allowlist` auto-approves, and **`ask` prompts**. An ask rule raises the interactive approval prompt for matching commands — also **before** `--yolo`, `/yolo`, and `approvals.mode: off` — so a command surfaces even while approvals are otherwise bypassed. Use it for yolo-with-checkpoints: "let the agent do everything, but always show me these first."
+
+```yaml
+approvals:
+  mode: off          # everything else runs without prompts
+  ask:
+    - "ssh *"
+    - "scp *"
+    - "kubectl delete *"
+```
+
+Details:
+
+- Matching semantics are identical to deny rules (fnmatch globs, case-insensitive, run over the normalized/deobfuscated command variants; quote patterns in YAML).
+- The prompt is the same gate dangerous commands use: `[o]nce / [s]ession / [a]lways / [d]eny`. Answering **always** persists that specific rule in the permanent allowlist, so a command you trust stops asking.
+- Ordering within one command: hardline blocklist → sudo stdin guard → `deny` → `ask` → allowlist/dangerous detection. A command matching both `deny` and `ask` is denied — deny always wins.
+- In contexts with no human reachable (cron jobs, single-query `-q`, bare scripts), an ask match **fails closed**: the command is blocked with an explanation instead of running unattended. If the command is safe unattended, remove it from the ask list rather than relying on a timeout.
+
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).

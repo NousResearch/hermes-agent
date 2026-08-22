@@ -112,6 +112,17 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "config.yaml (blocked even under --yolo / mode=off)",
         )
 
+    # 4.5 User-defined approvals.ask rules — also fire before yolo/off,
+    # but unlike deny they PROMPT instead of blocking.
+    ask_pattern = approval._match_user_ask_rule(command)
+    if ask_pattern is not None:
+        return result(
+            "ask-approval", rule=f"approvals.ask: {ask_pattern}",
+            detail="matches a user-defined approvals.ask rule in config.yaml; "
+                   "the runtime raises an approval prompt even under "
+                   "--yolo / approvals.mode=off",
+        )
+
     # 5. Yolo / approvals.mode=off bypass.
     if (approval._YOLO_MODE_FROZEN
             or approval.is_current_session_yolo_enabled()

@@ -2369,6 +2369,19 @@ DEFAULT_CONFIG = {
         #     - "git push --force*"
         #     - "*curl*|*sh*"
         "deny": [],
+        # User-defined ask rules: fnmatch globs matched against terminal
+        # commands (same matching semantics as deny). A match raises the
+        # interactive approval prompt — BEFORE the --yolo / /yolo /
+        # mode=off bypass — so a command can be surfaced to the user even
+        # while approvals are otherwise bypassed. Claude Code-style
+        # ask/allow/deny trio: deny blocks, command_allowlist auto-approves,
+        # ask prompts. Answering [a]lways persists per-rule. In cron /
+        # single-query (no human present) an ask match fails closed.
+        # Example:
+        #   ask:
+        #     - "ssh *"
+        #     - "scp *"
+        "ask": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

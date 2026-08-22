@@ -76,6 +76,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "max_runtime_seconds": t.max_runtime_seconds,
+        "progress_timeout_seconds": t.progress_timeout_seconds,
+        "last_heartbeat_at": t.last_heartbeat_at,
+        "last_progress_at": t.last_progress_at,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
         "session_id": t.session_id,
@@ -354,6 +358,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
+    p_create.add_argument("--progress-timeout", default=None,
+                          help="Per-task semantic-progress cap. Accepts the same "
+                               "duration syntax as --max-runtime. When exceeded "
+                               "without a noted kanban_heartbeat, the dispatcher "
+                               "reclaims the worker and re-queues the task.")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
@@ -1554,6 +1563,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
+    try:
+        progress_timeout = _parse_duration(getattr(args, "progress_timeout", None))
+    except ValueError as exc:
+        print(f"kanban: --progress-timeout: {exc}", file=sys.stderr)
+        return 2
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         print(
@@ -1579,6 +1593,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
+            progress_timeout_seconds=progress_timeout,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
@@ -2673,6 +2688,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
+            "progress_stalled": res.progress_stalled,
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
@@ -2696,6 +2712,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Timed out:    {len(res.timed_out)}")
     if res.timed_out:
         print(f"  {', '.join(res.timed_out)}")
+    print(f"Progress stalled: {len(res.progress_stalled)}")
+    if res.progress_stalled:
+        print(f"  {', '.join(res.progress_stalled)}")
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
@@ -2829,7 +2848,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             print(
                 f"[{_fmt_ts(int(time.time()))}] "
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
-                f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
+                f"timed_out={len(res.timed_out)} progress_stalled={len(res.progress_stalled)} "
+                f"stale={len(res.stale)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
                 f"auto_blocked={len(res.auto_blocked)}",
                 flush=True,

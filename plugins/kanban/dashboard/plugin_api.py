@@ -225,6 +225,8 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "worker_pid": r.worker_pid,
         "max_runtime_seconds": r.max_runtime_seconds,
         "last_heartbeat_at": r.last_heartbeat_at,
+        "last_progress_at": r.last_progress_at,
+        "progress_timeout_seconds": r.progress_timeout_seconds,
         "started_at": r.started_at,
         "ended_at": r.ended_at,
         "outcome": r.outcome,

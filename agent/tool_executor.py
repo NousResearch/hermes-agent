@@ -310,6 +310,38 @@ def _emit_terminal_post_tool_call(
         )
     except Exception:
         pass
+    _maybe_record_kanban_automatic_progress(
+        function_name=function_name,
+        function_args=function_args,
+        result=result,
+        status=status,
+    )
+
+
+def _maybe_record_kanban_automatic_progress(
+    *,
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    status: str | None,
+) -> None:
+    """Record kanban automatic progress for qualifying successful tool calls."""
+    if status is not None:
+        return
+    try:
+        from agent.tool_result_classification import classify_automatic_progress_evidence
+        from tools.kanban_tools import record_automatic_progress_from_env
+
+        evidence = classify_automatic_progress_evidence(
+            function_name,
+            function_args or {},
+            result,
+        )
+        if evidence is None:
+            return
+        record_automatic_progress_from_env(evidence[0], evidence[1])
+    except Exception:
+        pass
 
 
 def _cancelled_tool_result(reason: str = "user interrupt") -> str:

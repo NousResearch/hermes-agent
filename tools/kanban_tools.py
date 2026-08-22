@@ -357,6 +357,48 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def record_automatic_progress_from_env(evidence_type: str, detail: str) -> bool:
+    """Best-effort: record automatic progress for the current kanban worker.
+
+    Uses ``HERMES_KANBAN_TASK`` / ``HERMES_KANBAN_RUN_ID`` identity from the
+    dispatcher-spawned worker environment. Never raises into the agent loop.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return False
+    try:
+        kb, conn = _connect()
+        try:
+            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+            run_id: Optional[int]
+            try:
+                run_id = int(run_id_raw) if run_id_raw else None
+            except (TypeError, ValueError):
+                run_id = None
+            try:
+                kb.record_automatic_progress(
+                    conn,
+                    tid,
+                    evidence_type,
+                    detail,
+                    expected_run_id=run_id,
+                )
+            except Exception:
+                logger.debug(
+                    "auto-progress: record_automatic_progress failed",
+                    exc_info=True,
+                )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logger.debug("auto-progress: bridge failed", exc_info=True)
+        return False
+
+
 # Live operator-note injection: poll the worker's task for new comments and
 # fold them into the running agent via the OUT-OF-BAND steer channel, so a user
 # can "talk to" a running kanban task without the block → comment → unblock

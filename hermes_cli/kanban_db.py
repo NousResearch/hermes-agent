@@ -337,6 +337,7 @@ def _fire_dispatch_tick_hook(
             result.crashed,
             result.stale,
             result.timed_out,
+            result.progress_stalled,
             result.auto_blocked,
             result.rate_limited,
             result.auto_assigned_default,
@@ -1075,6 +1076,7 @@ class Task:
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
+    #   * progress_stalled outcome (worker exceeded progress_timeout_seconds)
     #   * crashed outcome (worker PID vanished)
     # Reset to 0 only on a successful completion. See
     # ``_record_task_failure`` for the circuit-breaker trip rule.
@@ -1086,6 +1088,11 @@ class Task:
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
+    # Last semantic progress event (``kanban_heartbeat`` with a non-empty
+    # note). NULL until the first noted heartbeat or claim initialization.
+    last_progress_at: Optional[int] = None
+    # Opt-in cap on semantic-progress silence per run. NULL = disabled.
+    progress_timeout_seconds: Optional[int] = None
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -1194,6 +1201,14 @@ class Task:
             last_heartbeat_at=(
                 row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
             ),
+            last_progress_at=(
+                row["last_progress_at"] if "last_progress_at" in keys else None
+            ),
+            progress_timeout_seconds=(
+                row["progress_timeout_seconds"]
+                if "progress_timeout_seconds" in keys
+                else None
+            ),
             current_run_id=(
                 row["current_run_id"] if "current_run_id" in keys else None
             ),
@@ -1259,6 +1274,8 @@ class Run:
     worker_pid: Optional[int]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
+    last_progress_at: Optional[int]
+    progress_timeout_seconds: Optional[int]
     started_at: int
     ended_at: Optional[int]
     outcome: Optional[str]
@@ -1283,6 +1300,14 @@ class Run:
             worker_pid=row["worker_pid"],
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
+            last_progress_at=(
+                row["last_progress_at"] if "last_progress_at" in row.keys() else None
+            ),
+            progress_timeout_seconds=(
+                row["progress_timeout_seconds"]
+                if "progress_timeout_seconds" in row.keys()
+                else None
+            ),
             started_at=int(row["started_at"]),
             ended_at=(int(row["ended_at"]) if row["ended_at"] is not None else None),
             outcome=row["outcome"],
@@ -1363,6 +1388,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    last_progress_at     INTEGER,
+    progress_timeout_seconds INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -1467,11 +1494,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_pid          INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    last_progress_at  INTEGER,
+    progress_timeout_seconds INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
-    -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    -- outcome: completed | blocked | crashed | timed_out | progress_stalled |
+    --          spawn_failed | gave_up | reclaimed | stale | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -2598,6 +2627,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
         )
+    if "last_progress_at" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "last_progress_at", "last_progress_at INTEGER"
+        )
+    if "progress_timeout_seconds" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "progress_timeout_seconds",
+            "progress_timeout_seconds INTEGER",
+        )
     if "current_run_id" not in cols:
         _add_column_if_missing(
             conn, "tasks", "current_run_id", "current_run_id INTEGER"
@@ -2818,7 +2858,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                         (int(time.time()), cur.lastrowid),
                     )
 
-    # One-shot event-kind rename pass. The old names ("ready", "priority",
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "last_progress_at" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "last_progress_at", "last_progress_at INTEGER"
+            )
+        if "progress_timeout_seconds" not in run_cols:
+            _add_column_if_missing(
+                conn,
+                "task_runs",
+                "progress_timeout_seconds",
+                "progress_timeout_seconds INTEGER",
+            )
+
+    # One-shot event-kind rename pass.
     # "spawn_auto_blocked") still worked but were awkward on the wire;
     # rename them in-place so existing DBs migrate cleanly. Fires once
     # per DB because after the UPDATE no rows match the old kinds.
@@ -2874,7 +2929,8 @@ _REBUILD_SPECS = {
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
-        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " last_heartbeat_at INTEGER, last_progress_at INTEGER,"
+        " progress_timeout_seconds INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
         (
@@ -3171,6 +3227,7 @@ def create_task(
     triage: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
+    progress_timeout_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
@@ -3200,6 +3257,10 @@ def create_task(
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
     re-queues the task. ``None`` means no cap (default).
+
+    ``progress_timeout_seconds`` caps how long a worker may go without a
+    semantic progress heartbeat (``kanban_heartbeat`` with a non-empty
+    note) before the dispatcher reclaims it. ``None`` disables the check.
 
     ``skills`` is an optional list of skill names to force-load into
     the worker when dispatched. Stored as JSON; the dispatcher passes
@@ -3494,11 +3555,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
-                        max_runtime_seconds,
+                        max_runtime_seconds, progress_timeout_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3516,6 +3577,11 @@ def create_task(
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
+                        (
+                            int(progress_timeout_seconds)
+                            if progress_timeout_seconds is not None
+                            else None
+                        ),
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         model_override,
@@ -4693,7 +4759,8 @@ def claim_task(
         # Look up the current task row so we can populate the run with
         # its assignee / step / runtime cap.
         trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "SELECT assignee, max_runtime_seconds, progress_timeout_seconds, "
+            "current_step_key "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -4702,8 +4769,9 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
+                progress_timeout_seconds, last_progress_at,
                 started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4712,13 +4780,15 @@ def claim_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                trow["progress_timeout_seconds"] if trow else None,
+                now,
                 now,
             ),
         )
         run_id = run_cur.lastrowid
         conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
+            "UPDATE tasks SET current_run_id = ?, last_progress_at = ? WHERE id = ?",
+            (run_id, now, task_id),
         )
         _append_event(
             conn, task_id, "claimed",
@@ -4791,7 +4861,8 @@ def claim_review_task(
         if cur.rowcount != 1:
             return None
         trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "SELECT assignee, max_runtime_seconds, progress_timeout_seconds, "
+            "current_step_key "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -4800,8 +4871,9 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
+                progress_timeout_seconds, last_progress_at,
                 started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4810,13 +4882,15 @@ def claim_review_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                trow["progress_timeout_seconds"] if trow else None,
+                now,
                 now,
             ),
         )
         run_id = run_cur.lastrowid
         conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
+            "UPDATE tasks SET current_run_id = ?, last_progress_at = ? WHERE id = ?",
+            (run_id, now, task_id),
         )
         _append_event(
             conn, task_id, "claimed",
@@ -8055,6 +8129,8 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    progress_stalled: list[str] = field(default_factory=list)
+    """Task ids whose workers exceeded ``progress_timeout_seconds``."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
@@ -8369,6 +8445,11 @@ def _defer_reclaim_for_live_worker(
         _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
+def _is_semantic_progress_note(note: Optional[str]) -> bool:
+    """True when a heartbeat note counts as semantic progress."""
+    return bool(note and str(note).strip())
+
+
 def heartbeat_worker(
     conn: sqlite3.Connection,
     task_id: str,
@@ -8376,7 +8457,11 @@ def heartbeat_worker(
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
+    """Record a ``heartbeat`` event and touch liveness / progress timestamps.
+
+    Automatic heartbeats (``note=None`` or whitespace-only) update only
+    ``last_heartbeat_at``. A non-empty note is a semantic progress event and
+    also advances ``last_progress_at`` on the task and active run.
 
     Called by long-running workers as a liveness signal orthogonal to
     the PID check. A worker that forks a long-lived child (train loop,
@@ -8387,16 +8472,96 @@ def heartbeat_worker(
     should be heartbeating (not running, or claim expired).
     """
     now = int(time.time())
+    semantic = _is_semantic_progress_note(note)
+    with write_txn(conn):
+        if expected_run_id is None:
+            if semantic:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ?, last_progress_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (now, now, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (now, task_id),
+                )
+        else:
+            if semantic:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ?, last_progress_at = ? "
+                    "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                    (now, now, task_id, int(expected_run_id)),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                    (now, task_id, int(expected_run_id)),
+                )
+        if cur.rowcount != 1:
+            return False
+        run_id = (
+            int(expected_run_id)
+            if expected_run_id is not None
+            else _current_run_id(conn, task_id)
+        )
+        if run_id is not None:
+            if semantic:
+                conn.execute(
+                    "UPDATE task_runs SET last_heartbeat_at = ?, last_progress_at = ? "
+                    "WHERE id = ?",
+                    (now, now, run_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
+                    (now, run_id),
+                )
+        _append_event(
+            conn, task_id, "heartbeat",
+            {"note": note} if note else None,
+            run_id=run_id,
+        )
+    return True
+
+
+def record_automatic_progress(
+    conn: sqlite3.Connection,
+    task_id: str,
+    evidence_type: str,
+    detail: str,
+    *,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Record automatic progress evidence for the active worker run.
+
+    Internal DB operation — not exposed as a model tool. Updates
+    ``last_progress_at`` on the task and active run, appends an
+    ``automatic_progress`` event, and deliberately does **not** touch
+    ``last_heartbeat_at`` (runtime liveness heartbeats remain separate).
+
+    Returns False when the task is not running, the run id is stale,
+    or the evidence fields fail validation.
+    """
+    from agent.tool_result_classification import normalize_automatic_progress_evidence
+
+    normalized = normalize_automatic_progress_evidence(evidence_type, detail)
+    if normalized is None:
+        return False
+    evidence_type, detail = normalized
+    now = int(time.time())
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_progress_at = ? "
                 "WHERE id = ? AND status = 'running'",
                 (now, task_id),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
+                "UPDATE tasks SET last_progress_at = ? "
                 "WHERE id = ? AND status = 'running' AND current_run_id = ?",
                 (now, task_id, int(expected_run_id)),
             )
@@ -8409,15 +8574,141 @@ def heartbeat_worker(
         )
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
+                "UPDATE task_runs SET last_progress_at = ? WHERE id = ?",
                 (now, run_id),
             )
         _append_event(
-            conn, task_id, "heartbeat",
-            {"note": note} if note else None,
+            conn,
+            task_id,
+            "automatic_progress",
+            {"evidence_type": evidence_type, "detail": detail},
             run_id=run_id,
         )
     return True
+
+
+def enforce_progress_timeout(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> list[str]:
+    """Terminate workers that exceeded their semantic-progress silence budget.
+
+    Only tasks with a positive ``progress_timeout_seconds`` are candidates.
+    Progress age is measured from the active run's ``last_progress_at``,
+    falling back to the task row, then the run's ``started_at``.
+
+    Uses the same host-local termination and duplicate-worker deferral as
+    ``detect_stale_running``. Emits ``progress_stalled`` and counts the
+    outcome toward the consecutive-failure circuit breaker.
+    """
+    stalled: list[str] = []
+    now = int(time.time())
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.progress_timeout_seconds, "
+        "       t.last_progress_at AS task_last_progress_at, t.claim_lock, "
+        "       r.last_progress_at AS run_last_progress_at, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' "
+        "  AND t.progress_timeout_seconds IS NOT NULL "
+        "  AND t.progress_timeout_seconds > 0 "
+        "  AND t.worker_pid IS NOT NULL"
+    ).fetchall()
+
+    for row in rows:
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+
+        limit = int(row["progress_timeout_seconds"])
+        last_progress = row["run_last_progress_at"]
+        if last_progress is None:
+            last_progress = row["task_last_progress_at"]
+        if last_progress is None:
+            last_progress = row["active_started_at"]
+        if last_progress is None:
+            continue
+
+        progress_age = now - int(last_progress)
+        if progress_age < limit:
+            continue
+
+        pid = int(row["worker_pid"])
+        tid = row["id"]
+
+        termination = _terminate_reclaimed_worker(
+            pid, lock, signal_fn=signal_fn,
+        )
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, lock, now, termination,
+                reason="progress_stalled_worker_alive",
+            )
+            continue
+
+        reclaimed = False
+        retry_status = "ready"
+        with write_txn(conn):
+            retry_status = _retry_status_for_run(conn, tid)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_pid = ? AND claim_lock IS ?",
+                (retry_status, tid, pid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            reclaimed = True
+
+            payload = {
+                "pid": pid,
+                "progress_age_seconds": int(progress_age),
+                "last_progress_at": int(last_progress),
+                "limit_seconds": limit,
+                "retry_status": retry_status,
+            }
+            payload.update(termination)
+
+            run_id = _end_run(
+                conn, tid,
+                outcome="progress_stalled", status="progress_stalled",
+                error=(
+                    f"no semantic progress for {int(progress_age)}s "
+                    f"> limit {limit}s"
+                ),
+                metadata=payload,
+            )
+            _append_event(
+                conn, tid, "progress_stalled", payload, run_id=run_id,
+            )
+            stalled.append(tid)
+
+        if reclaimed:
+            _record_task_failure(
+                conn, tid,
+                error=(
+                    f"no semantic progress for {int(progress_age)}s "
+                    f"> limit {limit}s"
+                ),
+                outcome="progress_stalled",
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={
+                    "pid": pid,
+                    "progress_age_seconds": int(progress_age),
+                    "limit_seconds": limit,
+                    "retry_status": retry_status,
+                    "sigkill": termination.get("sigkill"),
+                },
+            )
+
+    return stalled
 
 
 def enforce_max_runtime(
@@ -8496,7 +8787,7 @@ def enforce_max_runtime(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, tid, pid, row["claim_lock"]),
@@ -8627,7 +8918,7 @@ def detect_stale_running(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
                 (retry_status, tid, row["claim_lock"]),
@@ -8723,7 +9014,7 @@ def reconcile_orphaned_running(
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
                 (tid, row["claim_lock"], row["claim_expires"]),
@@ -9968,6 +10259,7 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    result.progress_stalled = enforce_progress_timeout(conn)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
@@ -11059,6 +11351,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+    if task.progress_timeout_seconds is not None:
+        lines.append(f"Progress timeout: {task.progress_timeout_seconds}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")

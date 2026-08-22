@@ -300,7 +300,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
-| `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
+| `kanban_heartbeat` | Signal liveness during long operations. Empty `note` touches liveness only; a non-empty `note` is **semantic progress** (model-authored milestone). Qualifying completed tool calls also record **automatic progress** internally (see below). | optional `note` |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
@@ -398,7 +398,9 @@ Every profile that works kanban tasks automatically gets the worker lifecycle �
 
 1. On spawn, call `kanban_show()` to read title + body + parent handoffs + prior attempts + full comment thread.
 2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
-3. Call `kanban_heartbeat(note="...")` every few minutes during long operations. **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. A reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
+3. Call `kanban_heartbeat(note="...")` when you want to narrate a milestone the board should treat as semantic progress (optional `note`; empty heartbeats are liveness-only). **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. A reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
+
+   Tasks with `--progress-timeout` also watch **progress silence**: semantic notes and automatic evidence both advance `last_progress_at`; ordinary liveness heartbeats and reads/searches do not. Automatic evidence is recorded internally when qualifying tool calls succeed — verified `write_file` / `patch`, or terminal commands classified as tests, build, typecheck, lint, compile, `git commit`, or `graphify update` (sanitized labels only; never command text, paths, or output). Reads, exploratory terminal commands, failed/cancelled tools, and arbitrary successful shell commands do not count.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
 
 That final `kanban_complete` / `kanban_block` call is part of the worker
@@ -727,6 +729,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--branch <name>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
                                 [--max-runtime 30m|2h|1d|<seconds>]
+                                [--progress-timeout 30m|2h|1d|<seconds>]
                                 [--max-retries N]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
@@ -1147,10 +1150,12 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | Kind | Payload | When |
 |---|---|---|
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
-| `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
+| `heartbeat` | `{note?}` | Worker called `kanban_heartbeat`. Empty or omitted `note` touches liveness only (`last_heartbeat_at`). A non-empty `note` is semantic progress and also advances `last_progress_at`. |
+| `automatic_progress` | `{evidence_type, detail}` | Internal automatic progress from a qualifying completed tool call (verified file mutation, or terminal tests/build/typecheck/lint/compile/commit/graphify success). Sanitized labels only — never command text, paths, or output. Also advances `last_progress_at` without touching `last_heartbeat_at`. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. |
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
+| `progress_stalled` | `{pid, progress_age_seconds, last_progress_at, limit_seconds, retry_status, …termination}` | `progress_timeout_seconds` exceeded without semantic or automatic progress; dispatcher terminated the host-local worker (if any), closed the run, and re-queued. Counts toward the consecutive-failure circuit breaker like `timed_out`. |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
 | `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |

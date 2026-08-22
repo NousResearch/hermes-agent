@@ -606,9 +606,9 @@ def _write_through_provider_state_to_global_root(
     ``invalid_grant`` once its access token expires.
 
     Only updates ``providers.<provider_id>`` in the root store; never touches
-    the profile store (the caller already saved that). Swallows all errors — a
-    failed write-through degrades to the pre-existing behavior (root stale), it
-    must never break the profile's own successful save. Mirrors
+    the profile store. Persistence errors propagate to the caller: a rotating
+    provider has already consumed the old refresh token, so reporting success
+    without durably storing the replacement would lose the token chain. Mirrors
     ``hermes_cli.auth._write_through_xai_oauth_to_global_root`` (which covers
     the non-pool xAI refresh path) for the credential-pool refresh path.
     """
@@ -632,19 +632,12 @@ def _write_through_provider_state_to_global_root(
                     return
             except Exception:
                 return
-    try:
-        auth_mod._persist_provider_state_to_store(
-            provider_id,
-            state,
-            global_path,
-            set_active=False,
-        )
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.debug(
-            "%s pool refresh: write-through to global root failed: %s",
-            provider_id,
-            exc,
-        )
+    auth_mod._persist_provider_state_to_store(
+        provider_id,
+        state,
+        global_path,
+        set_active=False,
+    )
 
 
 class CredentialPool:
@@ -1011,7 +1004,9 @@ class CredentialPool:
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "xai-oauth")
+                state, _source_path = auth_mod._load_xai_oauth_singleton_state_with_source(
+                    auth_store
+                )
             if not isinstance(state, dict):
                 return entry
             tokens = state.get("tokens")
@@ -1228,8 +1223,8 @@ class CredentialPool:
                     if not isinstance(state, dict):
                         return
                 elif self.provider == "xai-oauth":
-                    state, source_path = _load_provider_state_with_source(
-                        auth_store, "xai-oauth"
+                    state, source_path = auth_mod._load_xai_oauth_singleton_state_with_source(
+                        auth_store
                     )
                     if not isinstance(state, dict):
                         return
@@ -1303,6 +1298,8 @@ class CredentialPool:
                     _save_auth_store(auth_store)
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
+            if self.provider == "xai-oauth":
+                raise
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
@@ -1320,14 +1317,27 @@ class CredentialPool:
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
         if self.provider in ("openai-codex", "xai-oauth"):
-            sync_entry = (
-                self._sync_codex_entry_from_auth_store
-                if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
-            )
-            with _auth_store_lock(
-                timeout_seconds=self._single_use_refresh_lock_timeout()
-            ):
+            if self.provider == "openai-codex":
+                sync_entry = self._sync_codex_entry_from_auth_store
+                refresh_transaction = _auth_store_lock(
+                    timeout_seconds=self._single_use_refresh_lock_timeout()
+                )
+            else:
+                # Singleton-seeded xAI entries can resolve from the global
+                # root while each profile persists its own pool mirror.  The
+                # profile pool row is therefore not authoritative across
+                # profiles; re-read the singleton while holding both the
+                # profile and root locks.  Manual entries remain profile-local
+                # and sync from their exact pool row as before.
+                sync_entry = (
+                    self._sync_xai_oauth_entry_from_auth_store
+                    if entry.source == "device_code"
+                    else self._sync_xai_oauth_entry_from_pool_store
+                )
+                refresh_transaction = auth_mod._xai_oauth_refresh_transaction(
+                    timeout_seconds=self._single_use_refresh_lock_timeout()
+                )
+            with refresh_transaction:
                 synced = sync_entry(entry)
                 if self.provider == "openai-codex":
                     if synced is not entry:
@@ -1517,7 +1527,12 @@ class CredentialPool:
                     try:
                         with _auth_store_lock():
                             auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "xai-oauth") or {}
+                            state, source_path = (
+                                auth_mod._load_xai_oauth_singleton_state_with_source(
+                                    auth_store
+                                )
+                            )
+                            state = dict(state or {})
                             if isinstance(state, dict):
                                 tokens = state.get("tokens") or {}
                                 if isinstance(tokens, dict):
@@ -1535,8 +1550,26 @@ class CredentialPool:
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
-                                        _save_provider_state(auth_store, "xai-oauth", state)
-                                        _save_auth_store(auth_store)
+                                        global_root = _global_auth_file_path()
+                                        if (
+                                            source_path is not None
+                                            and global_root is not None
+                                            and _same_path(source_path, global_root)
+                                        ):
+                                            auth_mod._persist_provider_state_to_store(
+                                                "xai-oauth",
+                                                state,
+                                                global_root,
+                                                set_active=False,
+                                            )
+                                        else:
+                                            _store_provider_state(
+                                                auth_store,
+                                                "xai-oauth",
+                                                state,
+                                                set_active=False,
+                                            )
+                                            _save_auth_store(auth_store)
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc
@@ -2839,7 +2872,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # (``providers["xai-oauth"]``).  Surface them in the pool too so
         # ``hermes auth list`` reflects the logged-in state and so the pool
         # is the single source of truth for refresh during runtime resolution.
-        state = _load_provider_state(auth_store, "xai-oauth")
+        state, _source_path = auth_mod._load_xai_oauth_singleton_state_with_source(auth_store)
         tokens = state.get("tokens") if isinstance(state, dict) else None
         if isinstance(tokens, dict) and tokens.get("access_token"):
             # Device code is the only supported xAI OAuth flow; the singleton is

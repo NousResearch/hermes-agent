@@ -1471,6 +1471,37 @@ def _provider_state_transaction(provider_id: str):
             yield auth_store, source_state, source_path
 
 
+@contextmanager
+def _xai_oauth_refresh_transaction(
+    *,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
+    """Serialize one xAI refresh across profiles sharing the global root.
+
+    xAI refresh tokens rotate on every use.  A profile lock alone is not a
+    shared boundary: two profiles can each hold their own ``auth.lock`` while
+    spending the same root-fallback refresh token.  Hold the active profile
+    lock and, when distinct, the global-root auth lock for the entire
+    re-read -> refresh POST -> persist sequence.
+
+    The profile-before-root order matches the existing write-through paths,
+    avoiding a lock inversion during rolling upgrades with older processes.
+    Profiles with independent xAI grants are conservatively serialized too;
+    refreshes are rare and correctness is more important than parallelism.
+    """
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
+        active_path = _auth_file_path()
+        global_path = _global_auth_file_path()
+        if global_path is None or _same_path(global_path, active_path):
+            yield
+            return
+        with _auth_store_lock(
+            timeout_seconds=timeout_seconds,
+            target_path=global_path,
+        ):
+            yield
+
+
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
     """Return a provider's persisted state.
 
@@ -4543,9 +4574,24 @@ def _pool_codex_access_token() -> str:
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
+def _xai_oauth_provider_state_from_store(
+    auth_store: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return the local ``providers.xai-oauth`` block without fallback."""
+    providers = auth_store.get("providers")
+    raw_state = (
+        providers.get("xai-oauth") if isinstance(providers, dict) else None
+    )
+    return dict(raw_state) if isinstance(raw_state, dict) else None
+
+
 def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return usable xAI OAuth state from provider state or credential pool."""
-    state = _load_provider_state(auth_store, "xai-oauth")
+    """Return usable xAI OAuth state from this store's provider or pool."""
+    # Inspect only the store passed by the caller.  Using
+    # ``_load_provider_state`` here would silently fall back to the global
+    # root, making it impossible for refresh code to identify where the
+    # rotating token chain actually came from.
+    state = _xai_oauth_provider_state_from_store(auth_store)
     tokens = state.get("tokens") if isinstance(state, dict) else None
     if isinstance(tokens, dict):
         access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4590,17 +4636,63 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _load_xai_oauth_state_with_source(
+    auth_store: Dict[str, Any],
+) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
+    """Resolve usable xAI state and the exact store that owns its token chain.
+
+    Unlike generic provider shadowing, an unusable local xAI provider block
+    must not hide a usable global grant.  Refresh tokens rotate after one use,
+    so selecting the global grant but later saving by local key presence would
+    strand the rotated pair in the profile and leave root stale.
+    """
+    local_state = _xai_oauth_state_from_store(auth_store)
+    if _xai_oauth_state_has_usable_tokens(local_state):
+        return local_state, _auth_file_path()
+
+    global_path = _global_auth_file_path()
+    global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+    if _xai_oauth_state_has_usable_tokens(global_state):
+        return global_state, global_path
+
+    # Preserve a local invalid-shape state for useful diagnostics and for an
+    # intentional profile-scoped login.  An unusable root block is not a
+    # refresh source and must not redirect a fresh profile login into root.
+    if isinstance(local_state, dict):
+        return local_state, _auth_file_path()
+    return None, None
+
+
+def _load_xai_oauth_singleton_state_with_source(
+    auth_store: Dict[str, Any],
+) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
+    """Resolve a singleton-seeded xAI pool entry to its provider store.
+
+    Profile pools contain mirrors of root singleton credentials.  Those local
+    rows must never become the apparent source after refresh, or sync-back
+    writes the rotated chain into the profile and leaves the root stale.
+    """
+    local_state = _xai_oauth_provider_state_from_store(auth_store)
+    if _xai_oauth_state_has_usable_tokens(local_state):
+        return local_state, _auth_file_path()
+
+    global_path = _global_auth_file_path()
+    global_state = _xai_oauth_provider_state_from_store(_load_global_auth_store())
+    if _xai_oauth_state_has_usable_tokens(global_state):
+        return global_state, global_path
+
+    if isinstance(local_state, dict):
+        return local_state, _auth_file_path()
+    return None, None
+
+
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _xai_oauth_state_from_store(auth_store)
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
+    state, _source_path = _load_xai_oauth_state_with_source(auth_store)
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -4661,10 +4753,9 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
     and every other profile reading the stale root grant dies with
     ``invalid_grant`` once its access token expires.
 
-    Only updates ``providers.xai-oauth`` in the root store; never touches the
-    profile store (the caller already saved that). Swallows all errors — a
-    failed write-through degrades to the pre-existing behavior (root stale),
-    it must never break the profile's own successful save.
+    Only updates ``providers.xai-oauth`` in the root store.  Persistence errors
+    are fatal: xAI has already consumed the one-use refresh token, so reporting
+    success without durably storing its replacement would lose the token chain.
     """
     global_path = _global_auth_file_path()
     if global_path is None:
@@ -4683,15 +4774,12 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
                     return
             except Exception:
                 return
-    try:
-        _persist_provider_state_to_store(
-            "xai-oauth",
-            state,
-            global_path,
-            set_active=False,
-        )
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
+    _persist_provider_state_to_store(
+        "xai-oauth",
+        state,
+        global_path,
+        set_active=False,
+    )
 
 
 def _save_xai_oauth_tokens(
@@ -4725,9 +4813,7 @@ def _save_xai_oauth_tokens(
         # unconditionally creates that key below. Use
         # _load_provider_state_with_source to learn where the grant was
         # resolved from and write back only to that source.
-        state, source_path = _load_provider_state_with_source(
-            auth_store, "xai-oauth"
-        )
+        state, source_path = _load_xai_oauth_state_with_source(auth_store)
         if state is None:
             state = {}
         state["tokens"] = tokens
@@ -5119,7 +5205,12 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        with _xai_oauth_refresh_transaction(
+            timeout_seconds=max(
+                float(AUTH_LOCK_TIMEOUT_SECONDS),
+                refresh_timeout_seconds + 5.0,
+            )
+        ):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -5152,7 +5243,10 @@ def resolve_xai_oauth_runtime_credentials(
                         # without a network retry. Mirrors credential_pool.py quarantine.
                         try:
                             _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
+                            _q_state, _q_source_path = (
+                                _load_xai_oauth_state_with_source(_q_store)
+                            )
+                            _q_state = dict(_q_state or {})
                             _q_tokens = dict(_q_state.get("tokens") or {})
                             _q_tokens.pop("access_token", None)
                             _q_tokens.pop("refresh_token", None)
@@ -5165,8 +5259,26 @@ def resolve_xai_oauth_runtime_credentials(
                                 "relogin_required": True,
                                 "at": datetime.now(timezone.utc).isoformat(),
                             }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
+                            _q_global_path = _global_auth_file_path()
+                            if (
+                                _q_source_path is not None
+                                and _q_global_path is not None
+                                and _same_path(_q_source_path, _q_global_path)
+                            ):
+                                _persist_provider_state_to_store(
+                                    "xai-oauth",
+                                    _q_state,
+                                    _q_global_path,
+                                    set_active=False,
+                                )
+                            else:
+                                _store_provider_state(
+                                    _q_store,
+                                    "xai-oauth",
+                                    _q_state,
+                                    set_active=False,
+                                )
+                                _save_auth_store(_q_store)
                         except Exception as _save_exc:
                             logger.debug(
                                 "xAI OAuth: failed to persist quarantined state: %s", _save_exc,

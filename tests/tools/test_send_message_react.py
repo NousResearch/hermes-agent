@@ -50,6 +50,35 @@ def test_react_dispatches_to_add_reaction():
     assert adapter.calls == [("add", "+15551234567", "❤️", None)]
 
 
+def test_react_without_a_chat_uses_the_current_turn(monkeypatch):
+    """A bare platform target means "here", not the home channel."""
+    adapter = _FakePhotonAdapter()
+    monkeypatch.setattr("gateway.session_context.get_session_env", lambda k, d="": {
+        "HERMES_SESSION_PLATFORM": "photon",
+        "HERMES_SESSION_CHAT_ID": "+15559998888",
+    }.get(k, d))
+    with patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)):
+        result = _call({"action": "react", "target": "photon", "emoji": "🟢"})
+    assert result["success"] is True
+    assert adapter.calls == [("add", "+15559998888", "🟢", None)]
+
+
+def test_react_without_a_chat_ignores_a_different_platforms_turn(monkeypatch):
+    """The current chat only applies to the platform the turn is running on."""
+    adapter = _FakePhotonAdapter()
+    monkeypatch.setattr("gateway.session_context.get_session_env", lambda k, d="": {
+        "HERMES_SESSION_PLATFORM": "discord",
+        "HERMES_SESSION_CHAT_ID": "999",
+    }.get(k, d))
+    home = SimpleNamespace(chat_id="+15551110000")
+    config = SimpleNamespace(get_home_channel=lambda _p: home)
+    with patch("gateway.run._gateway_runner_ref", lambda: _runner_with(adapter)), \
+            patch("gateway.config.load_gateway_config", lambda: config):
+        result = _call({"action": "react", "target": "photon", "emoji": "🟢"})
+    assert result["success"] is True
+    assert adapter.calls == [("add", "+15551110000", "🟢", None)]
+
+
 def test_react_without_live_gateway():
     with patch("gateway.run._gateway_runner_ref", lambda: None):
         result = _call(

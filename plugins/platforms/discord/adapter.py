@@ -83,6 +83,8 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+# How many agent-added reactions to remember for retraction (per gateway run).
+_AGENT_REACTION_MEMORY = 1024
 _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
@@ -1161,6 +1163,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Last inbound message ID per chat, recorded at processing start so
+        # agent-facing reactions can default to "the message that triggered
+        # this turn" instead of making the model thread ids through the tool
+        # call. Keyed by the chat the agent is in AND (for auto-threaded
+        # turns) the parent channel the trigger message actually lives in.
+        self._last_inbound_by_chat: Dict[str, str] = {}
+        # Emoji the agent reacted with, per (chat_id, message_id), so an
+        # unreact knows what to retract without stripping the lifecycle ack.
+        # Lost on restart — retraction is best-effort, as on photon.
+        self._agent_reactions: Dict[Tuple[str, str], str] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -3344,9 +3356,150 @@ class DiscordAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    # -- Agent-facing reactions (send_message action="react") ---------------
+    #
+    # Unlike the lifecycle hooks below, these are deliberate agent intents,
+    # so they are NOT gated by DISCORD_REACTIONS (that env var exists to mute
+    # the automatic 👀/✅ ack, not explicit requests).
+
+    def _record_inbound_reaction_target(self, event: MessageEvent) -> None:
+        """Remember the message that triggered this turn, per chat."""
+        source = getattr(event, "source", None)
+        message_id = str(
+            getattr(event, "message_id", "")
+            or getattr(getattr(event, "raw_message", None), "id", "")
+            or ""
+        )
+        if not message_id:
+            return
+        # An auto-threaded turn runs with chat_id set to the new thread while
+        # the trigger message sits in the parent channel; record both so the
+        # agent can target either.
+        for key in (
+            getattr(source, "chat_id", None),
+            getattr(source, "parent_chat_id", None),
+        ):
+            if key:
+                self._last_inbound_by_chat[str(key)] = message_id
+
+    async def _fetch_reaction_target(self, chat_id: str, message_id: str) -> Optional[Any]:
+        """Fetch a message to react to, falling back to a thread's parent.
+
+        Auto-threaded turns address the thread, but the message that started
+        them belongs to the parent channel, so both are tried.
+        """
+        if not self._client:
+            return None
+        try:
+            channel_key = int(chat_id)
+            target_id = int(message_id)
+        except (TypeError, ValueError):
+            return None
+        channel = self._client.get_channel(channel_key)
+        if not channel:
+            try:
+                channel = await self._client.fetch_channel(channel_key)
+            except Exception as e:
+                logger.debug("[%s] reaction channel fetch failed: %s", self.name, e)
+                return None
+        if not channel:
+            return None
+        candidates = [channel]
+        parent = self._thread_parent_channel(channel)
+        if parent is not None and parent is not channel:
+            candidates.append(parent)
+        for candidate in candidates:
+            fetch = getattr(candidate, "fetch_message", None)
+            if not callable(fetch):
+                continue
+            try:
+                message = await fetch(target_id)
+            except Exception as e:
+                logger.debug("[%s] reaction message fetch failed: %s", self.name, e)
+                continue
+            if message:
+                return message
+        return None
+
+    def _resolve_reaction_target_id(
+        self, chat_id: str, message_id: Optional[str]
+    ) -> Optional[str]:
+        target = message_id or self._last_inbound_by_chat.get(str(chat_id))
+        return str(target) if target else None
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """React with ``emoji`` to a message in ``chat_id``.
+
+        Without ``message_id``, targets the message that triggered this turn
+        (the one the agent is responding to).
+        """
+        target = self._resolve_reaction_target_id(chat_id, message_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no inbound "
+                "message seen in this chat since the gateway started)",
+            }
+        message = await self._fetch_reaction_target(chat_id, target)
+        if message is None:
+            return {
+                "success": False,
+                "error": f"message {target} not found in chat {chat_id}",
+            }
+        if not await self._add_reaction(message, emoji):
+            return {
+                "success": False,
+                "error": "reaction failed (see gateway debug log)",
+            }
+        self._remember_agent_reaction(chat_id, target, emoji)
+        return {"success": True, "message_id": target}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract the reaction the agent added to a message."""
+        target = self._resolve_reaction_target_id(chat_id, message_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        emoji = self._agent_reactions.get((str(chat_id), target))
+        if not emoji:
+            return {
+                "success": False,
+                "error": f"no reaction of ours to retract on message {target} "
+                "(only reactions added since the gateway started are tracked)",
+            }
+        message = await self._fetch_reaction_target(chat_id, target)
+        if message is None:
+            return {
+                "success": False,
+                "error": f"message {target} not found in chat {chat_id}",
+            }
+        if not await self._remove_reaction(message, emoji):
+            return {
+                "success": False,
+                "error": "unreact failed (see gateway debug log)",
+            }
+        self._agent_reactions.pop((str(chat_id), target), None)
+        return {"success": True, "message_id": target}
+
+    def _remember_agent_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        """Track an agent reaction so unreact knows what to retract."""
+        self._agent_reactions[(str(chat_id), str(message_id))] = emoji
+        while len(self._agent_reactions) > _AGENT_REACTION_MEMORY:
+            self._agent_reactions.pop(next(iter(self._agent_reactions)))
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
+        self._record_inbound_reaction_target(event)
         acked = False
         if self._reactions_enabled() and hasattr(message, "add_reaction"):
             acked = await self._add_reaction(message, "👀")

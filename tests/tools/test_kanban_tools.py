@@ -980,17 +980,17 @@ def test_a2a_session_create_auto_subscribes(worker_env):
     (platform='a2a', chat_id=<context_id>, notifier_profile=<gateway
     profile>) so the kanban notifier can push the completion back to the
     A2A peer on the same contextId. Regression for the A2A completion
-    push-back gap (t_58a1df7d): the A2A adapter never bound the session
+    push-back gap: the A2A adapter never bound the session
     vars, so _maybe_auto_subscribe returned False and no sub row existed."""
     from gateway.session_context import reset_session_vars, set_session_vars
 
     tokens = set_session_vars(
         platform="a2a",
-        chat_id="sherlock-a2a-od-verify-diagram-20260813",
+        chat_id="peer-a2a-session-ctx-1",
         thread_id="task-abc",
         chat_type="dm",
         user_id="ip:127.0.0.1",
-        profile="sprite",
+        profile="worker-a",
     )
     try:
         from tools import kanban_tools as kt
@@ -1008,8 +1008,8 @@ def test_a2a_session_create_auto_subscribes(worker_env):
     subs = _sub_index(_list_subs_for_task(d["task_id"]))
     assert any(
         s["platform"] == "a2a"
-        and s["chat_id"] == "sherlock-a2a-od-verify-diagram-20260813"
-        and s["notifier_profile"] == "sprite"
+        and s["chat_id"] == "peer-a2a-session-ctx-1"
+        and s["notifier_profile"] == "worker-a"
         for s in subs
     ), subs
 

@@ -190,9 +190,9 @@ def _current_a2a_origin_target(platform_name: str) -> dict:
     context) and that context has a recorded origin session on
     ``platform_name`` (e.g. the Discord thread where the exchange started),
     a confirmation must return to the origin's chat/thread — the session
-    that initiated the call — not the platform home channel (2026-08-13
-    fleet rule; the home fallback was posting A2A confirmations to
-    #orchestration instead of the originating thread). Returns
+    that initiated the call — not the platform home channel (the home
+    fallback otherwise posts A2A confirmations to the platform-wide default
+    channel instead of the originating thread). Returns
     ``{"chat_id", "thread_id", "chat_type"}`` or {} when not applicable.
     """
     try:
@@ -235,8 +235,8 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     # to the peer. The context may have been born on ANY platform (discord,
     # telegram, CLI/ACP, api_server) — the local gateway only learns peers
     # from inbound A2A tasks, so without this an outbound-originated context
-    # has no peer entry and _push_out_of_band drops the completion (Gate 3
-    # from the 2026-08-12 roundtrip test). Best-effort: registration must
+    # has no peer entry and _push_out_of_band drops the completion. Best-effort:
+    # registration must
     # never fail the call.
     try:
         from .adapter import A2AAdapter
@@ -262,7 +262,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     except Exception:
         logger.debug("A2A: could not derive own sender identity", exc_info=True)
     sender = dict(sender or {})
-    # Advertise this client's read patience on the wire (spec B): the
+    # Advertise this client's read patience on the wire: the
     # receiving gateway computes patience = sender.timeout → its configured
     # a2a_agents[peer].timeout → 120, and pushes the reply out-of-band when
     # elapsed > patience + margin instead of writing into a dead socket.

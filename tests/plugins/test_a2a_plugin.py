@@ -199,8 +199,8 @@ class TestAudit:
     def test_audit_writes_jsonl(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         security.audit("inbound", "peer-y", "task-1", "hello world")
-        # Outbound rows must carry the context id — the evidence trail the
-        # 2026-08-13 round-2 diagnosis relied on (rows without it read
+        # Outbound rows must carry the context id so a pushed reply can be
+        # correlated with its originating exchange (rows without it read
         # ctx=None while the response body carries the context).
         security.audit("outbound", "peer-y", "task-2", "reply", context_id="ctx-9")
         audit_file = tmp_path / "a2a_audit.jsonl"
@@ -480,12 +480,12 @@ class TestClientTools:
 
     def test_discover_summarizes_v1_card(self, monkeypatch):
         card = protocol.build_agent_card(
-            name="researcher", url="http://localhost:9999/",
+            name="researcher", url="http://localhost:8805/",
             description="finds things",
             skills=[{"id": "s", "name": "search", "description": "web search"}],
         )
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: card)
-        out = tools.a2a_discover({"url": "http://localhost:9999"})
+        out = tools.a2a_discover({"url": "http://localhost:8805"})
         assert "researcher" in out
         assert "search" in out
         assert "JSONRPC v1.0" in out
@@ -493,7 +493,7 @@ class TestClientTools:
     def test_call_sends_v1_message(self, monkeypatch):
         """Outbound params: contextId inside the message, v1.0 role, no kind."""
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
 
         captured = {}
@@ -523,7 +523,7 @@ class TestClientTools:
 
     def test_call_reports_input_required(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
 
         def fake_post(url, body, headers, timeout):
@@ -588,7 +588,7 @@ class TestRegistryDispatchConvention:
         """Models reach for 'agent_name' (observed live). Accept it as an
         alias for 'agent' so the call doesn't fail the required-arg guard."""
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
         captured = {}
 
@@ -715,7 +715,7 @@ class TestOutOfBandReply:
         adapter = self._adapter_with_peer()
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
         )
         captured = {}
 
@@ -735,7 +735,7 @@ class TestOutOfBandReply:
 
         res = asyncio.run(run())
         assert res.success is True
-        assert captured["url"] == "http://localhost:9999"
+        assert captured["url"] == "http://localhost:8805"
         msg = captured["body"]["params"]["message"]
         assert msg["contextId"] == "ctx-x"  # same context → same caller session
         assert msg["role"] == "ROLE_USER"
@@ -766,7 +766,7 @@ class TestOutOfBandReply:
         adapter = self._adapter_with_peer()
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
         )
 
         def fake_post(url, body, headers, timeout):
@@ -814,9 +814,9 @@ class TestOutOfBandReply:
         )
 
         async def run():
-            # Marked like the kanban notifier's delivery (c709315aad): an
-            # unmarked send to a loopback peer is a session reply and is
-            # dropped by the self-push guard before reaching the push path.
+            # Marked like the task notifier's delivery: an unmarked send to
+            # a loopback peer is a session reply and is dropped by the
+            # self-push guard before reaching the push path.
             return await adapter.send(
                 "ctx-loop", "push me back",
                 metadata={"notify": True, "a2a_push": True},
@@ -840,7 +840,7 @@ class TestOutOfBandReply:
         adapter = self._adapter_with_peer()
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
         )
 
         def fake_post(url, body, headers, timeout):
@@ -892,7 +892,7 @@ class TestContextOriginWake:
         self._patch_persistence(monkeypatch)
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}},
         )
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
 
@@ -911,7 +911,7 @@ class TestContextOriginWake:
 
         tokens = set_session_vars(
             platform="discord", chat_id="chan-9", chat_type="group",
-            user_id="user-9", profile="sherlock", session_id="sid-9",
+            user_id="user-9", profile="worker-a", session_id="sid-9",
         )
         try:
             out = tools.a2a_call({
@@ -926,7 +926,7 @@ class TestContextOriginWake:
         assert origin["chat_id"] == "chan-9"
         assert origin["chat_type"] == "group"
         assert origin["user_id"] == "user-9"
-        assert origin["profile"] == "sherlock"
+        assert origin["profile"] == "worker-a"
         assert origin["session_id"] == "sid-9"
 
     def test_no_origin_recorded_without_session_context(self, monkeypatch):
@@ -946,7 +946,7 @@ class TestContextOriginWake:
         self._patch_persistence(monkeypatch)
         adapter._context_sessions["ctx-wake"] = {
             "platform": "discord", "chat_id": "chan-1", "chat_type": "group",
-            "thread_id": "", "user_id": "user-1", "profile": "sherlock",
+            "thread_id": "", "user_id": "user-1", "profile": "worker-a",
             "session_id": "sid-1",
         }
         fake_discord = SimpleNamespace(platform=Platform.DISCORD)
@@ -976,7 +976,7 @@ class TestContextOriginWake:
         assert src.chat_id == "chan-1"
         assert src.chat_type == "group"
         assert src.user_id == "user-1"
-        assert src.profile == "sherlock"
+        assert src.profile == "worker-a"
         assert src.thread_id is None
 
     def test_no_wake_when_context_unknown(self, monkeypatch):
@@ -1244,9 +1244,9 @@ class TestDeadClientReplyPush:
     the dead waiter: the liveness probe drops the stale pending task so the
     reply takes the out-of-band push path (which wakes the caller's session
     on the peer's gateway). A write-failure safety net catches the probe race
-    window. Regression for the 2026-08-13 round-2 drop: raven's second report
-    on sherlock-staging-test-loop-20260813 was consumed by a dead waiter and
-    written into a closed socket — the reply vanished and sherlock never woke.
+    window. Regression: a peer report was once consumed by a dead waiter and
+    written into a closed socket — the reply vanished and the calling
+    gateway never woke.
     """
 
     def _adapter_with_peer(self):
@@ -1272,7 +1272,7 @@ class TestDeadClientReplyPush:
         monkeypatch.setattr(adapter_mod, "_SSE_KEEPALIVE", 0.05)
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
         )
         captured = {}
 
@@ -1338,7 +1338,7 @@ class TestDeadClientReplyPush:
         """End-to-end wake chain: dead a2a_call client → liveness probe
         drops the stale waiter → the late reply takes the out-of-band push
         → the push re-enters the gateway (in-process loopback delivery,
-        the same-host fleet path) → the ORIGIN session is actually woken
+        the same-host loopback path) → the ORIGIN session is actually woken
         via deliver_wake. The round-2 drop broke exactly this chain: the
         reply vanished into a dead socket and the caller's session never
         woke. The other tests here prove the push fires; this one proves
@@ -1355,7 +1355,7 @@ class TestDeadClientReplyPush:
         # lands on this gateway.
         adapter._context_sessions["ctx-dead"] = {
             "platform": "discord", "chat_id": "chan-1", "chat_type": "group",
-            "thread_id": "", "user_id": "user-1", "profile": "sherlock",
+            "thread_id": "", "user_id": "user-1", "profile": "worker-a",
             "session_id": "sid-1",
         }
         fake_discord = SimpleNamespace(platform=Platform.DISCORD)
@@ -1415,7 +1415,7 @@ class TestDeadClientReplyPush:
 
         # 2) The agent finishes LATER; with no waiter the reply is pushed
         #    out-of-band. Deliver it the way the loopback fallback does —
-        #    in-process re-entry on this same gateway (127.0.0.1 fleet) —
+        #    in-process re-entry on this same gateway (shared host) —
         #    so the push takes the real inbound path (_prepare_task).
         monkeypatch.setattr(
             adapter, "_push_out_of_band",
@@ -1446,7 +1446,7 @@ class TestDeadClientReplyPush:
         src = woke["source"]
         assert src.chat_id == "chan-1"
         assert src.chat_type == "group"
-        assert src.profile == "sherlock"
+        assert src.profile == "worker-a"
         assert src.thread_id is None
         assert src.platform == Platform.DISCORD
 

@@ -1,4 +1,4 @@
-"""A2A delivery-loss fixes A–F — the six spec tests (a2a-delivery-loss-fix-spec.md).
+"""A2A delivery-loss regression coverage: eight focused scenarios.
 
 Covers:
 1. Regression: two in-process adapters, A→B with a 2s client timeout while B's
@@ -14,12 +14,12 @@ Covers:
    {agentId, name, url, timeout}; the recipient refines to the real peer.
 6. Self-loop guard: unresolvable loopback + unmarked reply → audit
    push_dropped, success=False.
-7. Spec F inbound dedupe: the same wire message (contextId, messageId)
+7. Inbound dedupe: the same wire message (contextId, messageId)
    inside _INBOUND_DEDUPE_WINDOW is dropped — _prepare_task rejects it
    without dispatching — accepted again once outside the window, and the
    seen map stays bounded at _INBOUND_DEDUPE_MAX.
 8. Rescue flag: the _push_reply_after_client_gone rescue pushes with
-   want_reply=True (spec A) so the peer's answer round-trips; failed
+   want_reply=True so the peer's answer round-trips; failed
    tasks push nothing.
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ def test_lost_push_regression_two_adapters(monkeypatch, tmp_path):
     """A→B with a 2s client timeout; B's handler sleeps 10s. B's reply must
     arrive at A's session on the SAME contextId via push, exactly once (no
     socket + push double delivery). Pre-fix this reply vanished into the
-    half-closed socket (case 1) or was eaten by the push client (case 3)."""
+    half-closed socket or was eaten by the push client."""
     from plugins.platforms.a2a import adapter as adapter_mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -143,7 +143,7 @@ def test_lost_push_regression_two_adapters(monkeypatch, tmp_path):
     try:
         ctx = "ctx-regress-1"
         # A calls B with a 2s client timeout — the reply (10s) cannot ride
-        # this connection; urllib gives up at 2s and CLOSES (spec E).
+        # this connection; urllib gives up at 2s and CLOSES.
         with pytest.raises((urllib.error.URLError, TimeoutError)):
             tools._send_task(
                 "b", {"url": f"http://127.0.0.1:{adapter_b.port}", "auth": {}, "timeout": 2},
@@ -177,19 +177,19 @@ def test_lost_push_regression_two_adapters(monkeypatch, tmp_path):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. Round-trip push (case 3 shape)
+# 2. Round-trip push
 # ═════════════════════════════════════════════════════════════════════════════
 
 
 def test_push_round_trip_surfaces_peer_reply(monkeypatch, tmp_path):
     """A pushes to B with want_reply=True; B's session answers inside the
-    push's HTTP response (case 3: Ada's verdict was discarded here). The
+    push's HTTP response (previously the reply was discarded here). The
     reply must re-enter A's session on the same contextId — and B must NOT
     also push it out-of-band (its send resolved a waiter)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"bob": {"url": "http://127.0.0.1:9999"}}},
+        lambda: {"a2a_agents": {"bob": {"url": "http://127.0.0.1:8805"}}},
     )
     monkeypatch.setattr(tools, "_fetch_card", lambda *a, **k: None)
 
@@ -254,7 +254,7 @@ def test_patience_exceeded_pushes_and_skips_socket_write(monkeypatch, tmp_path):
     """Reply resolves after patience+margin → the push path is taken and the
     socket write is skipped entirely (_rpc_message_send returns None). The
     client that stays connected but would discard is invisible to any probe —
-    patience is the deterministic backstop (spec B)."""
+    patience is the deterministic backstop."""
     from plugins.platforms.a2a import adapter as adapter_mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -287,14 +287,14 @@ def test_patience_exceeded_pushes_and_skips_socket_write(monkeypatch, tmp_path):
         )
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:9999"}}},
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
         )
         params = {
             "message": protocol.text_message(
                 protocol.ROLE_USER, "slow turn", context_id="ctx-p",
                 sender={
                     "agentId": "alice", "name": "alice",
-                    "url": "http://127.0.0.1:9999", "timeout": 0.3,
+                    "url": "http://127.0.0.1:8805", "timeout": 0.3,
                 },
             ),
         }
@@ -329,7 +329,7 @@ def test_post_write_eof_is_not_a_rescue(monkeypatch):
     """Client closes; the reply resolves before the next probe tick; the
     write goes into the closed socket without raising.
 
-    Corrected mechanism (verified live 2026-08-13): there is NO post-write
+    Corrected mechanism (verified against live traffic): there is NO post-write
     MSG_PEEK probe — a client that reads the response and closes cleanly
     (urllib ``Connection: close``) surfaces as EOF too, so probing after the
     write would double-deliver every clean exchange and ping-pong between
@@ -342,7 +342,7 @@ def test_post_write_eof_is_not_a_rescue(monkeypatch):
     can still silently lose the write — the kernel buffer accepts it, so no
     exception fires and no patience trigger arms. If at-least-once delivery
     is ever required, the deterministic closure is an application-level ACK
-    (ack-loss → rescue push → spec F dedupe absorbs the duplicate), never
+    (ack-loss → rescue push → inbound dedupe absorbs the duplicate), never
     another socket probe."""
     from plugins.platforms.a2a.adapter import A2ARequestHandler
 
@@ -382,7 +382,7 @@ def test_post_write_eof_is_not_a_rescue(monkeypatch):
 
 
 def test_write_failure_pushes_and_skips_reprobe(monkeypatch):
-    """A write that raises (OSError — broad catch, spec B) pushes once and
+    """A write that raises (OSError — broad catch) pushes once and
     does not double-push via the post-write re-probe."""
     from plugins.platforms.a2a.adapter import A2ARequestHandler
 
@@ -418,19 +418,19 @@ def test_write_failure_pushes_and_skips_reprobe(monkeypatch):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. Sender stamping (spec D)
+# 5. Sender stamping
 # ═════════════════════════════════════════════════════════════════════════════
 
 
 def test_send_task_stamps_sender_with_timeout_no_live_adapter(monkeypatch, tmp_path):
     """_send_task with NO live adapter must still stamp the full sender block
-    {agentId, name, url, timeout} (config/env fallback — spec D), and the
+    {agentId, name, url, timeout} (config/env fallback), and the
     recipient must refine the loopback identity to the real peer."""
     from plugins.platforms.a2a.adapter import A2AAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("A2A_AGENT_NAME", "helper-agent")
-    monkeypatch.setenv("A2A_PORT", "9911")
+    monkeypatch.setenv("A2A_PORT", "8806")
     monkeypatch.setattr(tools, "_fetch_card", lambda *a, **k: None)
     posted: dict = {}
 
@@ -445,7 +445,7 @@ def test_send_task_stamps_sender_with_timeout_no_live_adapter(monkeypatch, tmp_p
 
     with _ADAPTERS_CLEARED():
         reply, _ctx, _state = tools._send_task(
-            "bob", {"url": "http://127.0.0.1:9999", "auth": {}, "timeout": 7},
+            "bob", {"url": "http://127.0.0.1:8805", "auth": {}, "timeout": 7},
             "hello bob", "ctx-s",
         )
         assert reply == "ok"
@@ -453,7 +453,7 @@ def test_send_task_stamps_sender_with_timeout_no_live_adapter(monkeypatch, tmp_p
         assert sent["sender"] == {
             "agentId": "helper-agent",
             "name": "helper-agent",
-            "url": "http://127.0.0.1:9911",
+            "url": "http://127.0.0.1:8806",
             "timeout": 7,
         }
 
@@ -463,20 +463,20 @@ def test_send_task_stamps_sender_with_timeout_no_live_adapter(monkeypatch, tmp_p
     try:
         monkeypatch.setattr(tools, "_load_config", lambda: {})
         refined = adapter._refine_peer_identity("ip:127.0.0.1", {"message": sent}, "ctx-s")
-        assert refined == "http://127.0.0.1:9911"
+        assert refined == "http://127.0.0.1:8806"
     finally:
         adapter._unregister_adapter()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 6. Self-loop guard (spec C)
+# 6. Self-loop guard
 # ═════════════════════════════════════════════════════════════════════════════
 
 
 def test_unresolvable_loopback_reply_is_loud_failure(monkeypatch, tmp_path):
     """An unmarked session reply whose peer is an unresolvable loopback
     identity must NOT return success=True: audit push_dropped, warning, and
-    SendResult(success=False) so the notifier rewinds (spec C)."""
+    SendResult(success=False) so the notifier rewinds."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _patch_persistence(monkeypatch)
 
@@ -521,7 +521,7 @@ def test_unresolvable_loopback_reply_is_loud_failure(monkeypatch, tmp_path):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 7. Spec F — inbound dedupe (_is_duplicate_inbound)
+# 7. Inbound dedupe (_is_duplicate_inbound)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
@@ -643,12 +643,12 @@ def test_inbound_dedupe_rejects_duplicate_at_prepare_task(monkeypatch, tmp_path)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 8. Rescue push flag (spec A)
+# 8. Rescue push flag
 # ═════════════════════════════════════════════════════════════════════════════
 
 
 def test_rescue_push_after_client_gone_uses_want_reply(monkeypatch):
-    """The client-gone rescue pushes with want_reply=True (spec A) so the
+    """The client-gone rescue pushes with want_reply=True so the
     peer's answer to the pushed reply re-enters our session from the push's
     HTTP response instead of being discarded. The write-failure tests above
     stub _push_reply_after_client_gone, so they pin that the rescue FIRES

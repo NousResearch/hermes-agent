@@ -1,5 +1,5 @@
 """
-Origin-session routing tests (operator scope addition, card t_8ff5b2a1).
+Origin-session routing tests (operator scope addition).
 
 When an A2A context is born in a real gateway session (e.g. a Discord
 thread), push-wakes and agent confirmations for that context must deliver to
@@ -33,9 +33,9 @@ def test_origin_delivery_target_resolves_recorded_thread(monkeypatch, tmp_path):
     try:
         adapter._register_context_session("ctx-origin-1", {
             "platform": "discord",
-            "chat_id": "1519511454594764951",
+            "chat_id": "1300000000000000101",
             "chat_type": "thread",
-            "thread_id": "1519511454594764951",
+            "thread_id": "1300000000000000101",
             "user_id": "u1",
             "profile": "",
             "session_id": "sid-1",
@@ -43,8 +43,8 @@ def test_origin_delivery_target_resolves_recorded_thread(monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
 
         target = A2AAdapter._origin_delivery_target("ctx-origin-1", "discord")
-        assert target["chat_id"] == "1519511454594764951"
-        assert target["thread_id"] == "1519511454594764951"
+        assert target["chat_id"] == "1300000000000000101"
+        assert target["thread_id"] == "1300000000000000101"
         assert target["chat_type"] == "thread"
         # Wrong platform / unknown context → no origin target (home fallback).
         assert A2AAdapter._origin_delivery_target("ctx-origin-1", "telegram") == {}
@@ -65,9 +65,9 @@ def test_a2a_confirmation_routes_to_origin_thread(monkeypatch, tmp_path):
     try:
         adapter._register_context_session("ctx-confirm-1", {
             "platform": "discord",
-            "chat_id": "1519511454594764951",
+            "chat_id": "1300000000000000101",
             "chat_type": "thread",
-            "thread_id": "1519511454594764951",
+            "thread_id": "1300000000000000101",
             "user_id": "u1",
             "profile": "",
             "session_id": "sid-1",
@@ -93,7 +93,7 @@ def test_a2a_confirmation_routes_to_origin_thread(monkeypatch, tmp_path):
             fake_config = SimpleNamespace(
                 platforms={},
                 get_home_channel=lambda p: SimpleNamespace(
-                    chat_id="1504241367965241364"  # #orchestration home
+                    chat_id="1200000000000000200"  # home fallback channel
                 ),
             )
             from gateway.config import Platform
@@ -103,8 +103,8 @@ def test_a2a_confirmation_routes_to_origin_thread(monkeypatch, tmp_path):
             out = smt._handle_send({"target": "discord", "message": "confirm"})
             assert json.loads(out).get("success") is True
             # Routed to the originating thread — NOT the home channel.
-            assert sent["chat_id"] == "1519511454594764951"
-            assert sent["thread_id"] == "1519511454594764951"
+            assert sent["chat_id"] == "1300000000000000101"
+            assert sent["thread_id"] == "1300000000000000101"
         finally:
             clear_session_vars(tokens)
     finally:
@@ -113,7 +113,7 @@ def test_a2a_confirmation_routes_to_origin_thread(monkeypatch, tmp_path):
 
 def test_a2a_confirmation_without_origin_uses_home(monkeypatch, tmp_path):
     """Home channel remains the fallback when the A2A context has no
-    recorded origin (Randy's rule: home only when no origin exists)."""
+    recorded origin (home only when no origin exists)."""
     import tools.send_message_tool as smt
     from gateway.config import PlatformConfig
     from gateway.session_context import clear_session_vars, set_session_vars
@@ -140,7 +140,7 @@ def test_a2a_confirmation_without_origin_uses_home(monkeypatch, tmp_path):
         fake_config = SimpleNamespace(
             platforms={},
             get_home_channel=lambda p: SimpleNamespace(
-                chat_id="1504241367965241364"
+                chat_id="1200000000000000200"
             ),
         )
         from gateway.config import Platform
@@ -149,7 +149,7 @@ def test_a2a_confirmation_without_origin_uses_home(monkeypatch, tmp_path):
 
         out = smt._handle_send({"target": "discord", "message": "confirm"})
         assert json.loads(out).get("success") is True
-        assert sent["chat_id"] == "1504241367965241364"  # home fallback
+        assert sent["chat_id"] == "1200000000000000200"  # home fallback
     finally:
         clear_session_vars(tokens)
 
@@ -164,11 +164,11 @@ def test_wake_carries_origin_thread_target(monkeypatch, tmp_path):
     adapter = _bare_adapter()
     adapter._context_sessions["ctx-wake-1"] = {
         "platform": "discord",
-        "chat_id": "1519511454594764951",
+        "chat_id": "1300000000000000101",
         "chat_type": "thread",
-        "thread_id": "1519511454594764951",
+        "thread_id": "1300000000000000101",
         "user_id": "u1",
-        "profile": "newton",
+        "profile": "worker-a",
         "session_id": "sid-1",
     }
     fake_discord = SimpleNamespace(platform=Platform.DISCORD)
@@ -187,8 +187,8 @@ def test_wake_carries_origin_thread_target(monkeypatch, tmp_path):
     try:
         asyncio.run(adapter._wake_origin_session("ctx-wake-1", "push text"))
         assert woke["session_id"] == "sid-1"
-        assert woke["source"].chat_id == "1519511454594764951"
-        assert woke["source"].thread_id == "1519511454594764951"
+        assert woke["source"].chat_id == "1300000000000000101"
+        assert woke["source"].thread_id == "1300000000000000101"
         assert woke["source"].chat_type == "thread"
     finally:
         adapter._unregister_adapter()

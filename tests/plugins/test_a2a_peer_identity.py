@@ -1,10 +1,9 @@
 """A2A peer identity refinement — port-less ip: identities get a routable peer.
 
-Regression tests for the 2026-08-13 roundtrip failure (t_01c8b44a): sprite's
-gateway recorded the inbound caller as ``ip:127.0.0.1`` (localhost-only mode
-authenticates by client IP only — no port), so the kanban completion push
-fell back to sprite's OWN loopback endpoint and sherlock's gateway received
-nothing.
+Regression tests: a same-host gateway recorded the inbound caller as
+``ip:127.0.0.1`` (localhost-only mode authenticates by client IP only — no
+port), so the completion push fell back to the receiving gateway's own
+loopback endpoint and the calling gateway received nothing.
 
 The fix has two halves:
 
@@ -50,10 +49,10 @@ def _sender_message(text: str = "hello", **sender) -> dict:
 def test_text_message_stamps_sender():
     msg = protocol.text_message(
         protocol.ROLE_USER, "hi", context_id="ctx-1",
-        sender={"agentId": "sherlock", "name": "sherlock", "url": "http://127.0.0.1:9901"},
+        sender={"agentId": "peer-a", "name": "peer-a", "url": "http://127.0.0.1:8802"},
     )
     assert msg["sender"] == {
-        "agentId": "sherlock", "name": "sherlock", "url": "http://127.0.0.1:9901",
+        "agentId": "peer-a", "name": "peer-a", "url": "http://127.0.0.1:8802",
     }
     # Without sender, the message shape is unchanged (v0.3 peers etc.).
     bare = protocol.text_message(protocol.ROLE_USER, "hi", context_id="ctx-1")
@@ -70,10 +69,10 @@ def test_sender_identity_includes_port():
 
 
 def test_own_sender_config_fallback_without_live_adapter(monkeypatch):
-    """Spec D: no live adapter (CLI/helper process) must still yield a
+    """No live adapter (CLI/helper process) must still yield a
     sender identity derived from config/env — helper-sent messages that
     carried no sender refined to ip:127.0.0.1 and their replies were
-    silently dropped (case 2-delivery-1)."""
+    silently dropped."""
     monkeypatch.setenv("A2A_AGENT_NAME", "helper-agent")
     monkeypatch.setenv("A2A_PORT", "12345")
     with _ADAPTERS_CLEARED():
@@ -103,7 +102,7 @@ def test_refine_keeps_bearer_identity(monkeypatch):
     adapter = _bare_adapter()
     # Bearer-authenticated identities are token-derived names — already
     # resolvable, never rewritten from the body.
-    assert adapter._refine_peer_identity("sherlock-gateway", {"message": _sender_message()}, "ctx-1") == "sherlock-gateway"
+    assert adapter._refine_peer_identity("bearer-peer-name", {"message": _sender_message()}, "ctx-1") == "bearer-peer-name"
 
 
 def test_refine_unchanged_without_sender(monkeypatch):
@@ -115,28 +114,28 @@ def test_refine_unchanged_without_sender(monkeypatch):
 def test_refine_matches_configured_agent_id(monkeypatch):
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"sherlock": {"url": "http://127.0.0.1:9901"}}},
+        lambda: {"a2a_agents": {"peer-a": {"url": "http://127.0.0.1:8802"}}},
     )
     adapter = _bare_adapter()
-    params = {"message": _sender_message(agentId="sherlock", name="sherlock", url="http://127.0.0.1:9901")}
-    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "sherlock"
+    params = {"message": _sender_message(agentId="peer-a", name="peer-a", url="http://127.0.0.1:8802")}
+    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "peer-a"
 
 
 def test_refine_matches_configured_name(monkeypatch):
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"sherlock": {"url": "http://127.0.0.1:9901"}}},
+        lambda: {"a2a_agents": {"peer-a": {"url": "http://127.0.0.1:8802"}}},
     )
     adapter = _bare_adapter()
-    params = {"message": _sender_message(name="sherlock")}
-    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "sherlock"
+    params = {"message": _sender_message(name="peer-a")}
+    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "peer-a"
 
 
 def test_refine_uses_loopback_sender_url(monkeypatch):
     monkeypatch.setattr(tools, "_load_config", lambda: {})
     adapter = _bare_adapter()
-    params = {"message": _sender_message(url="http://127.0.0.1:9901")}
-    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "http://127.0.0.1:9901"
+    params = {"message": _sender_message(url="http://127.0.0.1:8802")}
+    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "http://127.0.0.1:8802"
 
 
 def test_refine_accepts_configured_host_url(monkeypatch):
@@ -144,17 +143,17 @@ def test_refine_accepts_configured_host_url(monkeypatch):
     # honored (defense in depth against body-supplied external targets).
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"ada": {"url": "http://100.64.0.5:9902"}}},
+        lambda: {"a2a_agents": {"remote-peer": {"url": "http://100.64.0.5:8803"}}},
     )
     adapter = _bare_adapter()
-    params = {"message": _sender_message(url="http://100.64.0.5:9902")}
-    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "http://100.64.0.5:9902"
+    params = {"message": _sender_message(url="http://100.64.0.5:8803")}
+    assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "http://100.64.0.5:8803"
 
 
 def test_refine_rejects_unconfigured_external_url(monkeypatch):
     monkeypatch.setattr(tools, "_load_config", lambda: {})
     adapter = _bare_adapter()
-    params = {"message": _sender_message(url="http://evil.example:9901")}
+    params = {"message": _sender_message(url="http://evil.example:8804")}
     assert adapter._refine_peer_identity("ip:127.0.0.1", params, "ctx-1") == "ip:127.0.0.1"
 
 
@@ -178,7 +177,7 @@ def test_prepare_task_registers_refined_peer(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"sherlock": {"url": "http://127.0.0.1:9901"}}},
+        lambda: {"a2a_agents": {"peer-a": {"url": "http://127.0.0.1:8802"}}},
     )
     adapter = _bare_adapter()
     loop = asyncio.new_event_loop()
@@ -194,17 +193,17 @@ def test_prepare_task_registers_refined_peer(monkeypatch, tmp_path):
         params = {
             "message": protocol.text_message(
                 protocol.ROLE_USER, "roundtrip test", context_id="ctx-roundtrip-1",
-                sender={"agentId": "sherlock", "name": "sherlock", "url": "http://127.0.0.1:9901"},
+                sender={"agentId": "peer-a", "name": "peer-a", "url": "http://127.0.0.1:8802"},
             ),
         }
         terminal, pending = adapter._prepare_task(params, "ip:127.0.0.1")
         assert terminal is None
         assert pending is not None
         with adapter._context_peers_lock:
-            assert adapter._context_peers.get("ctx-roundtrip-1") == "sherlock"
+            assert adapter._context_peers.get("ctx-roundtrip-1") == "peer-a"
         # Persisted too — survives gateway restarts.
         peers_file = tmp_path / "a2a_context_peers.json"
-        assert json.loads(peers_file.read_text())["ctx-roundtrip-1"] == "sherlock"
+        assert json.loads(peers_file.read_text())["ctx-roundtrip-1"] == "peer-a"
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
@@ -218,13 +217,13 @@ def test_prepare_task_registers_refined_peer(monkeypatch, tmp_path):
 
 def test_push_out_of_band_hits_refined_peer_url(monkeypatch, tmp_path):
     """_push_out_of_band must POST to the refined peer's gateway (with port),
-    not fall back to this gateway's own endpoint (the 21:27:15,755 log line
-    \"identity 'ip:127.0.0.1' not in a2a_agents; falling back to local
-    endpoint http://127.0.0.1:9908\" is exactly the failure this fixes)."""
+    not fall back to this gateway's own endpoint when the loopback identity
+    refines to a configured peer URL — that fallback is exactly the failure
+    this fixes."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"sherlock": {"url": "http://127.0.0.1:9901"}}},
+        lambda: {"a2a_agents": {"peer-a": {"url": "http://127.0.0.1:8802"}}},
     )
     monkeypatch.setattr(tools, "_fetch_card", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("no card")))
     posted: dict = {}
@@ -238,9 +237,9 @@ def test_push_out_of_band_hits_refined_peer_url(monkeypatch, tmp_path):
 
     adapter = _bare_adapter()
     try:
-        adapter._register_context_peer("ctx-roundtrip-1", "sherlock")
+        adapter._register_context_peer("ctx-roundtrip-1", "peer-a")
         adapter._push_out_of_band("ctx-roundtrip-1", "✔ task done")
-        assert posted["url"] == "http://127.0.0.1:9901"
+        assert posted["url"] == "http://127.0.0.1:8802"
         sent_msg = posted["body"]["params"]["message"]
         assert sent_msg["contextId"] == "ctx-roundtrip-1"
         # The pushed message itself carries the sender so the receiving
@@ -288,10 +287,10 @@ def test_push_out_of_band_own_endpoint_delivers_in_process(monkeypatch, tmp_path
 def test_is_own_endpoint():
     from plugins.platforms.a2a.adapter import _is_own_endpoint
 
-    assert _is_own_endpoint("http://127.0.0.1:9908", "127.0.0.1", 9908) is True
-    assert _is_own_endpoint("http://127.0.0.1:9901", "127.0.0.1", 9908) is False
-    assert _is_own_endpoint("http://100.64.0.5:9908", "127.0.0.1", 9908) is False
-    assert _is_own_endpoint("ftp://127.0.0.1:9908", "127.0.0.1", 9908) is False
+    assert _is_own_endpoint("http://127.0.0.1:8801", "127.0.0.1", 8801) is True
+    assert _is_own_endpoint("http://127.0.0.1:8802", "127.0.0.1", 8801) is False
+    assert _is_own_endpoint("http://100.64.0.5:8801", "127.0.0.1", 8801) is False
+    assert _is_own_endpoint("ftp://127.0.0.1:8801", "127.0.0.1", 8801) is False
 
 
 def test_send_task_stamps_sender_on_outbound(monkeypatch, tmp_path):
@@ -313,8 +312,8 @@ def test_send_task_stamps_sender_on_outbound(monkeypatch, tmp_path):
     adapter = _bare_adapter()
     try:
         reply, _ctx, _state = tools._send_task(
-            "sprite", {"url": "http://127.0.0.1:9908", "auth": {}, "timeout": 5},
-            "hello sprite", "ctx-out-1",
+            "peer-agent", {"url": "http://127.0.0.1:8801", "auth": {}, "timeout": 5},
+            "hello peer-agent", "ctx-out-1",
         )
         assert reply == "ok"
         sent = posted["body"]["params"]["message"]

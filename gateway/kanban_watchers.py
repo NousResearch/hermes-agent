@@ -686,8 +686,7 @@ class GatewayKanbanWatchersMixin:
                             # otherwise in-memory only and are wiped by a
                             # gateway restart, so without this the completion
                             # push for a pre-restart context finds no peer and
-                            # drops (the 2026-08-12 roundtrip failure, Gate 3
-                            # post-restart variant). Best-effort: seeding must
+                            # drops. Best-effort: seeding must
                             # never fail the delivery.
                             if platform_str == "a2a":
                                 # Mark this send as an out-of-band push
@@ -698,9 +697,9 @@ class GatewayKanbanWatchersMixin:
                                 # completion must re-enter the owning session.
                                 # Unmarked sends to a loopback peer are
                                 # session replies and are dropped by the
-                                # adapter (2026-08-12 self-ping-pong guard in
+                                # adapter (self-ping-pong guard in
                                 # A2AAdapter.send), so this marker is what
-                                # lets the kanban delivery fire.
+                                # lets the notifier delivery fire.
                                 notify_metadata["a2a_push"] = True
                             if platform_str == "a2a" and sub.get("user_id"):
                                 try:

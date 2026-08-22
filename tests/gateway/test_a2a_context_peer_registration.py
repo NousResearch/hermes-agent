@@ -1,8 +1,8 @@
-"""Cross-platform A2A context-peer registration (Gate 3 of t_f0aee411).
+"""Cross-platform A2A context-peer registration.
 
 The A2A adapter's ``_context_peers`` map only learned peers from inbound
 A2A tasks. A context born on another platform (discord, telegram, CLI/ACP,
-api_server) had no peer entry, so the kanban notifier's out-of-band
+api_server) had no peer entry, so the task notifier's out-of-band
 completion push found no peer and dropped the message. The outbound client
 tools now register the context→peer mapping on every live local adapter
 before the A2A call, so the completion push has a target regardless of
@@ -32,7 +32,7 @@ def test_outbound_call_registers_context_peer_on_local_adapter(monkeypatch):
     try:
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"sprite": {"url": "http://127.0.0.1:9908"}}},
+            lambda: {"a2a_agents": {"peer-agent": {"url": "http://127.0.0.1:8801"}}},
         )
 
         def fake_post(url, body, headers, timeout):
@@ -44,14 +44,14 @@ def test_outbound_call_registers_context_peer_on_local_adapter(monkeypatch):
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
 
         out = tools.a2a_call(
-            {"agent": "sprite", "message": "ping", "context_id": "ctx-discord-born"}
+            {"agent": "peer-agent", "message": "ping", "context_id": "ctx-discord-born"}
         )
         assert "ok" in out
 
         # The context was born on discord — no A2A inbound ever touched the
         # adapter — yet the outbound call must have registered the peer.
         with adapter._context_peers_lock:
-            assert adapter._context_peers.get("ctx-discord-born") == "sprite"
+            assert adapter._context_peers.get("ctx-discord-born") == "peer-agent"
     finally:
         adapter._unregister_adapter()
 
@@ -60,7 +60,7 @@ def test_outbound_registration_is_best_effort(monkeypatch):
     """Registration must never fail the call, even with no live adapter."""
     monkeypatch.setattr(
         tools, "_load_config",
-        lambda: {"a2a_agents": {"sprite": {"url": "http://127.0.0.1:9908"}}},
+        lambda: {"a2a_agents": {"peer-agent": {"url": "http://127.0.0.1:8801"}}},
     )
 
     def fake_post(url, body, headers, timeout):
@@ -71,13 +71,13 @@ def test_outbound_registration_is_best_effort(monkeypatch):
 
     monkeypatch.setattr(tools, "_http_post_json", fake_post)
 
-    out = tools.a2a_call({"agent": "sprite", "message": "ping", "context_id": "ctx-x"})
+    out = tools.a2a_call({"agent": "peer-agent", "message": "ping", "context_id": "ctx-x"})
     assert "ok" in out
 
 
 def test_push_out_of_band_writes_push_audit(monkeypatch, tmp_path):
     """The out-of-band push now writes the documented 'push' audit direction
-    (Signal 3 of the roundtrip test was never written before)."""
+    (the push audit row was previously never written)."""
     audit_file = tmp_path / "a2a_audit.jsonl"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # security._audit_path resolves via hermes_constants; force the file by
@@ -93,10 +93,10 @@ def test_push_out_of_band_writes_push_audit(monkeypatch, tmp_path):
 
     adapter = _bare_adapter()
     try:
-        adapter._context_peers["ctx-audit"] = "sprite"
+        adapter._context_peers["ctx-audit"] = "peer-agent"
         monkeypatch.setattr(
             tools, "_load_config",
-            lambda: {"a2a_agents": {"sprite": {"url": "http://127.0.0.1:9908"}}},
+            lambda: {"a2a_agents": {"peer-agent": {"url": "http://127.0.0.1:8801"}}},
         )
 
         def fake_post(url, body, headers, timeout):

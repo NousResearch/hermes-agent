@@ -1,6 +1,6 @@
 """A2A inbound binds session-context vars before agent dispatch.
 
-Regression test for the kanban completion push-back gap (t_58a1df7d): the
+Regression test for the task-completion push-back gap: the
 A2A adapter never set the session-context vars that kanban
 ``_maybe_auto_subscribe`` reads (``HERMES_SESSION_PLATFORM`` /
 ``HERMES_SESSION_CHAT_ID`` / ``HERMES_SESSION_THREAD_ID``), so cards
@@ -94,8 +94,8 @@ def test_prepare_task_binds_session_vars_into_dispatched_context(monkeypatch, tm
 
         params = {
             "message": {
-                "parts": [{"text": "hello from sherlock"}],
-                "contextId": "sherlock-a2a-test-ctx",
+                "parts": [{"text": "hello from peer-a"}],
+                "contextId": "peer-a2a-test-ctx",
             },
         }
         _, pending = adapter._prepare_task(params, "ip:127.0.0.1")
@@ -109,12 +109,12 @@ def test_prepare_task_binds_session_vars_into_dispatched_context(monkeypatch, tm
 
         got = captured[0]
         assert got["platform_cv"] is not _UNSET and got["platform_cv"] == "a2a"
-        assert got["chat_id_cv"] is not _UNSET and got["chat_id_cv"] == "sherlock-a2a-test-ctx"
+        assert got["chat_id_cv"] is not _UNSET and got["chat_id_cv"] == "peer-a2a-test-ctx"
         assert got["thread_id_cv"] is not _UNSET and got["thread_id_cv"] == task_id
         assert got["platform"] == "a2a"
-        assert got["chat_id"] == "sherlock-a2a-test-ctx"
+        assert got["chat_id"] == "peer-a2a-test-ctx"
         assert got["thread_id"] == task_id
-        assert got["event_chat_id"] == "sherlock-a2a-test-ctx"
+        assert got["event_chat_id"] == "peer-a2a-test-ctx"
         assert got["event_message_id"] == task_id
     finally:
         loop.call_soon_threadsafe(loop.stop)
@@ -149,7 +149,7 @@ def test_worker_thread_context_is_reset_after_dispatch(monkeypatch, tmp_path):
         params = {
             "message": {
                 "parts": [{"text": "hello"}],
-                "contextId": "sherlock-a2a-reset-ctx",
+                "contextId": "peer-a2a-reset-ctx",
             },
         }
         _, pending = adapter._prepare_task(params, "ip:127.0.0.1")
@@ -196,16 +196,16 @@ def test_forward_to_profile_carries_session_vars_in_child_env(monkeypatch, tmp_p
         adapter._lookup_forward_session = lambda *a, **k: ""  # type: ignore[method-assign]
         adapter._latest_a2a_session = lambda *a, **k: ""  # type: ignore[method-assign]
 
-        agent = {"slug": "sprite", "profile": "sprite", "local": False, "timeout": 30}
+        agent = {"slug": "worker-a", "profile": "worker-a", "local": False, "timeout": 30}
         reply, state = adapter._forward_to_profile(
-            agent, "ip:127.0.0.1", "sherlock-a2a-fwd-ctx", "hello", "task-fwd-1"
+            agent, "ip:127.0.0.1", "worker-a2a-fwd-ctx", "hello", "task-fwd-1"
         )
         assert state == protocol.STATE_COMPLETED
         assert reply == "ok"
 
         env = captured["env"]
         assert env["HERMES_SESSION_PLATFORM"] == "a2a"
-        assert env["HERMES_SESSION_CHAT_ID"] == "sherlock-a2a-fwd-ctx"
+        assert env["HERMES_SESSION_CHAT_ID"] == "worker-a2a-fwd-ctx"
         assert env["HERMES_SESSION_THREAD_ID"] == "task-fwd-1"
         assert env["HERMES_A2A_PEER"] == "ip:127.0.0.1"
     finally:

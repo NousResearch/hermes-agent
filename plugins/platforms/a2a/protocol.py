@@ -264,8 +264,8 @@ def text_message(role: str, text: str, context_id: str = "", sender: Optional[di
     ``sender`` is the v1.0 AgentName identity of the sending agent
     (``agentId`` / ``name`` / optional ``url``). Peers use it to learn this
     gateway's real endpoint so out-of-band completion pushes can be routed
-    back with the port included — the gap that made ``ip:`` identities
-    unresolvable in the 2026-08-12 roundtrip.
+    back with the port included — the gap that left port-less ``ip:``
+    identities unresolvable as push targets.
     """
     msg: dict[str, Any] = {
         "role": role,  # ROLE_USER | ROLE_AGENT

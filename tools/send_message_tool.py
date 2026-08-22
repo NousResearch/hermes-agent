@@ -441,13 +441,13 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        # A2A origin rule (2026-08-13 fleet rule): a confirmation emitted
+        # A2A origin rule: a confirmation emitted
         # from an A2A session for a context that was born in a real gateway
         # session (e.g. a Discord thread) must return to that origin's
         # chat/thread — the session that initiated the A2A exchange. The
         # home channel is only the fallback when no origin exists; without
-        # this, A2A confirmations posted to #orchestration instead of the
-        # originating thread.
+        # this, A2A confirmations post to the platform-wide default channel
+        # instead of the originating thread.
         try:
             from plugins.platforms.a2a.tools import _current_a2a_origin_target
             origin_target = _current_a2a_origin_target(platform_name)

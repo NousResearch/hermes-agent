@@ -74,9 +74,10 @@ _MAX_CONTEXT_PEERS = 4096  # cap on the context→peer map (LRU-ish, insertion o
 # the server assumes the client gave up and marks the pending task
 # out_of_band_only. The MSG_PEEK probe catches clients that CLOSE; this is
 # the deterministic backstop for clients that stay connected but will
-# discard the reply (the 21:04 delivery-2 loss — server saw "alive").
+# discard the reply (the reply was consumed although the server saw
+# "alive").
 _PATIENCE_MARGIN = 30
-# Short-window inbound dedupe (spec F): the same wire message
+# Short-window inbound dedupe: the same wire message
 # (contextId, messageId) must not be dispatched twice.
 _INBOUND_DEDUPE_WINDOW = 60.0
 _INBOUND_DEDUPE_MAX = 1024
@@ -87,9 +88,8 @@ _INBOUND_DEDUPE_MAX = 1024
 # makes an outbound A2A call from ANY platform origin (discord, telegram,
 # CLI/ACP, api_server). Without this, _context_peers only ever learns peers
 # from inbound A2A tasks, so a completion push for a context that was born on
-# another platform finds no peer and is dropped (the Gate 3 failure from the
-# 2026-08-12 roundtrip test: sprite was spawned from discord #orchestration,
-# no A2A inbound ever touched its contextId, so the push had nowhere to go).
+# another platform finds no peer: no A2A inbound ever touched its contextId,
+# so the push had nowhere to go).
 _ADAPTERS: "dict[int, weakref.ReferenceType[A2AAdapter]]" = {}
 _ADAPTERS_GUARD = threading.Lock()
 
@@ -97,9 +97,8 @@ _ADAPTERS_GUARD = threading.Lock()
 # _context_peers is otherwise in-memory only. A gateway restart wipes every
 # registration, and nothing re-registers afterwards unless a fresh inbound
 # A2A task or outbound a2a_call touches the same context — so out-of-band
-# completion pushes silently drop until then (the 2026-08-12 roundtrip
-# failure: notifier woke the agent post-restart, adapter.send() had no peer
-# for ctx-a2a-roundtrip-primary-20260812, and the push never fired). We
+# completion pushes silently drop until then: the notifier wakes the agent
+# post-restart, adapter.send() has no peer, and the push never fires. We
 # write-through on registration and reload on adapter start so the mapping
 # survives restarts. Best-effort: persistence must never fail the call.
 _CONTEXT_PEERS_FILE = "a2a_context_peers.json"
@@ -108,7 +107,8 @@ _CONTEXT_PEERS_FILE = "a2a_context_peers.json"
 # Which LOCAL gateway session created each outbound A2A context (recorded by
 # the client tools at a2a_call time). When an out-of-band push later arrives
 # on that context, the adapter wakes the originating session via the same
-# self-post mechanism the kanban watcher uses — agency, not visibility.
+# self-post mechanism the task watchers use — an explicit wake rather than a
+# polled store read.
 # Persisted alongside the peer map so the mapping survives a gateway restart
 # (a context born before a restart must still wake its session afterwards).
 _CONTEXT_SESSIONS_FILE = "a2a_context_sessions.json"
@@ -264,7 +264,7 @@ def _own_a2a_url(host: str, port: int) -> str:
 def _sender_url_acceptable(url: str, peers_cfg: dict) -> bool:
     """Whether a message ``sender.url`` may be trusted as a push target.
 
-    Only http(s) URLs whose host is loopback (the single-host fleet case —
+    Only http(s) URLs whose host is loopback (the shared-host case —
     every local gateway is ``127.0.0.1`` with a distinct port) or whose host
     already appears in a configured ``a2a_agents`` entry are accepted. This
     keeps a body-supplied URL from routing pushes to arbitrary external
@@ -297,7 +297,7 @@ def _is_own_endpoint(url: str, host: str, port: int) -> bool:
     """Whether ``url`` points at this gateway's own A2A endpoint.
 
     A loopback-hosted URL whose port matches ours can only be this gateway
-    on a single-host fleet (each gateway binds a distinct port). Used by
+    when several gateways share one host (each binds a distinct port). Used by
     ``_push_out_of_band`` to catch a context→peer map that was refined to
     our own URL (an in-process loopback push stamps our own sender, and the
     inbound refinement accepts it) and deliver in-process instead of a
@@ -326,7 +326,7 @@ def _loopback_fallback_url(identity: str, host: str, port: int) -> str:
     inbound caller as ``ip:<addr>`` — the caller's listening port is not part
     of the identity, so the only port we can know is this gateway's own. The
     push re-enters the local gateway on the same contextId, which the owning
-    session sees as the follow-up (the t_ba760ea9 acceptance signal 4)."""
+    session sees as the follow-up."""
     if not identity.startswith("ip:"):
         return ""
     addr = identity[3:].strip().lower()
@@ -526,8 +526,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         long before the reply is ready when processing takes minutes. A stale
         pending task whose client is gone must be dropped so the reply takes
         the out-of-band push path instead of being written into a dead socket
-        (2026-08-13 round-2 drop: reply consumed by a dead waiter, vanished —
-        the peer's session never woke). Mirrors the SSE path's keepalive
+        (otherwise a reply is consumed by a dead waiter and vanishes —
+        the peer's session never wakes). Mirrors the SSE path's keepalive
         disconnect detection for the plain POST path.
 
         Non-destructive: ``select`` + ``MSG_PEEK``, never consumes data.
@@ -558,7 +558,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         and push the completed reply out-of-band on the same contextId so the
         caller's session still receives it (and wakes).
 
-        Spec B layering:
+        Spec layering for this protection:
         - the liveness probe pops the stale waiter while the reply is pending
           (fast path);
         - patience (sender.timeout + margin) is the deterministic backstop
@@ -567,7 +567,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
           for clients that RST the connection instead of reading.
 
         There is deliberately NO post-write liveness probe (deviation from
-        the literal spec, verified live 2026-08-13): a client that reads the
+        the literal spec, verified against live traffic): a client that reads the
         response and closes cleanly (urllib sends ``Connection: close`` and
         closes right after reading) is indistinguishable from a client that
         closed without reading — both surface as EOF to MSG_PEEK — so a
@@ -744,9 +744,9 @@ class A2AAdapter(BasePlatformAdapter):
         self._context_sessions: Dict[str, dict] = {}
         self._context_sessions_lock = threading.Lock()
 
-        # Short-window inbound dedupe (spec F): (contextId, messageId) → first
+        # Short-window inbound dedupe: (contextId, messageId) → first
         # arrival time. The same wire message must not be dispatched twice
-        # (duplicate handoffs were observed on 2026-08-13, and the push+retry
+        # (duplicate handoffs were observed in testing, and the push+retry
         # paths make double-delivery possible).
         self._inbound_seen: Dict[tuple[str, str], float] = {}
         self._inbound_seen_lock = threading.Lock()
@@ -770,10 +770,8 @@ class A2AAdapter(BasePlatformAdapter):
         that was born on ANY platform (discord, telegram, CLI/ACP,
         api_server) is known to the local gateway. Without this, an
         out-of-band completion push for that context finds no peer in
-        ``_context_peers`` and is dropped — the Gate 3 failure from the
-        2026-08-12 roundtrip test (sprite spawned from discord
-        #orchestration, no A2A inbound ever reached its gateway, so the
-        push had nowhere to go).
+        ``_context_peers`` and is dropped: no A2A inbound ever reached its
+        gateway, so the push had nowhere to go.
 
         The peer identity is the *local* handle for the remote agent (the
         ``a2a_agents`` config key / URL), which is exactly what
@@ -795,10 +793,10 @@ class A2AAdapter(BasePlatformAdapter):
                 if len(adapter._context_peers) > _MAX_CONTEXT_PEERS:
                     adapter._context_peers.pop(next(iter(adapter._context_peers)), None)
                 union.update(adapter._context_peers)
-        # Write-through so the registration survives a gateway restart (the
-        # 2026-08-12 roundtrip failure: restart wiped the in-memory map and
-        # no later inbound/outbound task re-registered the context, so the
-        # completion push was dropped before any side effect). Merge with
+        # Write-through so the registration survives a gateway restart:
+        # a restart wipes the in-memory map and no later inbound/outbound
+        # task re-registered the context, so the completion push would be
+        # dropped before any side effect. Merge with
         # the on-disk state so a registration made with no live adapters
         # (e.g. a CLI/ACP process) is still persisted for the next gateway
         # start, and never clobber the disk map with an empty union.
@@ -812,9 +810,9 @@ class A2AAdapter(BasePlatformAdapter):
 
         Called by the outbound client tools before an A2A call (the same
         moment they register the context→peer mapping), so a later out-of-band
-        push on this context can WAKE the originating session — the session
+        push on this context can WAKE that originating session — the session
         that called a2a_call gets a fresh turn when the peer pushes back,
-        exactly like the kanban watcher wakes a task creator.
+        the same way a task-completion watcher wakes a task creator.
 
         ``origin`` carries the session identity captured from the session
         ContextVars at call time: platform, chat_id, chat_type, thread_id,
@@ -839,7 +837,7 @@ class A2AAdapter(BasePlatformAdapter):
                 union.update(adapter._context_sessions)
         # Write-through so the mapping survives a gateway restart — a context
         # born before a restart must still wake its session afterwards (the
-        # same restart-wipe failure the peer map suffered on 2026-08-12).
+        # same restart-wipe failure the peer map suffered).
         # setdefault the direct entry too: with no live adapter in this
         # process (CLI/one-shot) union is empty, and the registration must
         # still land on disk for the next gateway start.
@@ -860,8 +858,8 @@ class A2AAdapter(BasePlatformAdapter):
         derived from config/env (``_sender_from_config``), so the sender
         block is ALWAYS stamped — the receiver can refine the loopback
         identity to a routable peer instead of leaving ``ip:127.0.0.1``
-        (spec D; case 2-delivery-1's helper-sent messages carried no
-        sender and their replies were silently dropped).
+        (helper-sent messages without a sender had their replies
+        silently dropped).
         """
         with _ADAPTERS_GUARD:
             refs = list(_ADAPTERS.values())
@@ -878,7 +876,7 @@ class A2AAdapter(BasePlatformAdapter):
         Derives ``{agentId, name, url}`` from A2A_AGENT_NAME / A2A_PUBLIC_URL
         / A2A_PORT (env first, then the HERMES_HOME config's
         ``platforms.a2a.port``), so every outbound wire message stamps a
-        routable sender the receiving gateway can refine to (spec D).
+        routable sender the receiving gateway can refine to.
         """
         name = os.getenv("A2A_AGENT_NAME", "").strip() or _default_agent_name()
         port = _DEFAULT_PORT
@@ -913,10 +911,10 @@ class A2AAdapter(BasePlatformAdapter):
 
         Localhost-only mode authenticates every inbound caller as
         ``ip:<addr>`` — the caller's listening port is not part of the
-        identity, so on a single-host fleet every peer (and this gateway
-        itself) looks identical and an out-of-band push has nowhere real to
-        go (the 2026-08-12 roundtrip: sprite pushed the completion to its
-        OWN loopback endpoint instead of sherlock's gateway).
+        identity, so when several gateways share one host every peer (and
+        this gateway itself) looks identical and an out-of-band push has
+        nowhere real to go (the completion was pushed to the receiving
+        gateway's OWN loopback endpoint instead of the calling gateway).
 
         The A2A v1.0 ``sender`` AgentName on the inbound message carries the
         peer's real endpoint. Prefer a configured ``a2a_agents`` key match
@@ -961,7 +959,7 @@ class A2AAdapter(BasePlatformAdapter):
         When an A2A context was born in a real gateway session (e.g. a
         Discord thread), confirmations the agent emits for that context must
         return to the origin session's chat/thread — not the platform home
-        channel (2026-08-13 fleet rule: deliveries return to whichever
+        channel (deliveries return to whichever
         session started the A2A exchange; home only when no origin exists).
         Returns ``{"chat_id": ..., "thread_id": ..., "chat_type": ...}`` or
         ``{}`` when the origin is unknown, unrecorded, or on another platform.
@@ -1056,8 +1054,8 @@ class A2AAdapter(BasePlatformAdapter):
         # Reload context→peer registrations persisted by a previous gateway
         # run. Without this, a restart wipes every registration and out-of-band
         # completion pushes drop until a fresh inbound task re-registers the
-        # context (the 2026-08-12 roundtrip failure: root gateway restarted
-        # at 14:59, card completed at 15:12, push had no peer).
+        # context: the gateway restarted between the original call and the
+        # completion, and the push had no peer.
         with self._context_peers_lock:
             restored = _load_context_peers()
             merged = _merge_context_peers(self._context_peers, restored)
@@ -1358,8 +1356,8 @@ class A2AAdapter(BasePlatformAdapter):
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
         # Localhost-only mode authenticates the caller as "ip:<addr>" with no
-        # port — unresolvable as a push target on a single-host fleet where
-        # every gateway (including this one) is 127.0.0.1. Refine the
+        # port — unresolvable as a push target when every gateway (including
+        # this one) shares one host. Refine the
         # identity from the message's A2A v1.0 sender AgentName so the
         # context→peer registration below routes out-of-band pushes back to
         # the peer's REAL endpoint, port included.
@@ -1367,10 +1365,9 @@ class A2AAdapter(BasePlatformAdapter):
 
         # F: inbound dedupe — the same wire message (contextId + messageId)
         # must not be dispatched twice within a short window. Duplicate
-        # handoffs were already observed on 2026-08-13 (the 21:04 retry),
-        # and the push+retry paths make double-delivery possible once the
-        # A/B fixes land. Keyed by the peer-stamped messageId so consecutive
-        # turns on one context never collide.
+        # handoffs were already observed in testing, and the push+retry
+        # paths make double-delivery possible. Keyed by the peer-stamped
+        # messageId so consecutive turns on one context never collide.
         msg_for_id = params.get("message") if isinstance(params, dict) else None
         message_id = str((msg_for_id.get("messageId") or "") if isinstance(msg_for_id, dict) else "").strip()
         if context_id and message_id and self._is_duplicate_inbound(context_id, message_id):
@@ -1416,7 +1413,7 @@ class A2AAdapter(BasePlatformAdapter):
 
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         # Bind the session identity for this A2A context so session-aware
-        # tooling (kanban _maybe_auto_subscribe, notifier routing) can send
+        # tooling (task auto-subscription, notifier routing) can send
         # notifications back to the peer's context. ContextVars (NOT a
         # process-global os.environ write) are the mechanism the tool
         # process reads via get_session_env: the asyncio Task created by
@@ -1448,9 +1445,9 @@ class A2AAdapter(BasePlatformAdapter):
             if len(self._context_peers) > _MAX_CONTEXT_PEERS:
                 self._context_peers.pop(next(iter(self._context_peers)), None)
             # Write-through on inbound registration too: a gateway restart
-            # wipes the in-memory map, and the wake self-post path (kanban
+            # wipes the in-memory map, and the wake self-post path (the task
             # notifier) bypasses this handler — so the disk copy is the only
-            # thing that survives to the next start (2026-08-12 roundtrip).
+            # thing that survives to the next start.
             _persist_context_peers(_merge_context_peers(_load_context_peers(), {context_id: peer}))
         self._register_inline_push(task_id, params, agent=agent)
 
@@ -1518,10 +1515,11 @@ class A2AAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
 
-        # Wake the originating local session (agency, not visibility): when
-        # this context was born in a real gateway session via a2a_call, the
-        # inbound message must ALSO trigger a fresh turn there — the kanban
-        # watcher's self-post pattern — so the agent that made the call can
+        # Wake the originating local session (an explicit fresh turn, not a
+        # polled store read): when this context was born in a real gateway
+        # session via a2a_call, the inbound message must ALSO trigger a fresh
+        # turn there — the same self-post pattern the task watchers use — so
+        # the agent that made the call can
         # act on the push. Fire-and-forget: the wake must never block or
         # fail the inbound dispatch (best-effort, logged inside).
         try:
@@ -1565,12 +1563,12 @@ class A2AAdapter(BasePlatformAdapter):
 
         The inbound message has been dispatched into the a2a session (its
         normal path, protocol continuity preserved). When the context was
-        born in a REAL gateway session — sherlock's discord session called
-        a2a_call, the kanban notifier / workflow engine pushed a completion
+        born in a REAL gateway session — a discord session called
+        a2a_call, and a task notifier / workflow engine pushed a completion
         back on the same contextId — that originating session must ALSO get
         a fresh agent turn so the agent can ACT on the push (deliver
         artifacts, dispatch follow-ups), the same self-post mechanism the
-        kanban watcher uses to wake a task creator. Visibility without a
+        task watcher uses to wake a task creator. Visibility without a
         turn is what this fixes: the push used to land only in the
         conversation store, invisible unless manually polled.
 
@@ -1728,8 +1726,8 @@ class A2AAdapter(BasePlatformAdapter):
             env["HERMES_A2A_PEER"] = peer
             # Carry the A2A session identity into the forwarded profile's
             # agent subprocess. A CLI process reads these via
-            # get_session_env's os.environ fallback, so kanban
-            # auto-subscribe + notifier routing can push completions back to
+            # get_session_env's os.environ fallback, so task
+            # auto-subscription + notifier routing can push completions back to
             # this context. Set on the child env only — never on the
             # process-global os.environ (last-writer-wins across concurrent
             # A2A contexts).
@@ -1789,7 +1787,7 @@ class A2AAdapter(BasePlatformAdapter):
         return state, reply
 
     def _patience_for(self, params: dict, peer: str) -> float:
-        """Client patience for a blocking message/send (spec B).
+        """Client patience for a blocking message/send.
 
         Priority: the message's stamped ``sender.timeout`` (the client's
         own advertised read timeout) → the configured
@@ -1822,7 +1820,7 @@ class A2AAdapter(BasePlatformAdapter):
         return 120.0
 
     def _mark_out_of_band(self, pending: dict, reason: str, pop_waiter: bool) -> None:
-        """Record that a pending task's client is gone (spec B).
+        """Record that a pending task's client is gone.
 
         ``reason`` is the audit marker (``[client patience exceeded]`` or
         ``[client disconnected]``). ``pop_waiter=True`` (probe-death) removes
@@ -1856,7 +1854,7 @@ class A2AAdapter(BasePlatformAdapter):
         )
 
     def _try_push_reply(self, pending: dict, state: str, reply: str) -> bool:
-        """Push a completed reply out-of-band (spec B), dedupe-guarded.
+        """Push a completed reply out-of-band, dedupe-guarded.
 
         Returns True when the reply was pushed (or a concurrent path already
         pushed it). Never raises into the caller.
@@ -1878,7 +1876,7 @@ class A2AAdapter(BasePlatformAdapter):
         return True
 
     def _is_duplicate_inbound(self, context_id: str, message_id: str) -> bool:
-        """Windowed (contextId, messageId) dedupe (spec F).
+        """Windowed (contextId, messageId) dedupe.
 
         Bounded map; expired entries are pruned when the cap is hit. Returns
         True when the same wire message was seen within the window.
@@ -1908,10 +1906,10 @@ class A2AAdapter(BasePlatformAdapter):
         late reply takes the push path.
 
         ``patience`` (POST message/send only) is the client's advertised
-        read timeout (spec B). When elapsed > patience + _PATIENCE_MARGIN
+        read timeout. When elapsed > patience + _PATIENCE_MARGIN
         the client has given up — or will discard — even if the socket
         still looks alive (the alive-but-will-discard client is invisible
-        to any probe; the 21:04 delivery-2 loss). The task is marked
+        to any probe; its reply is silently consumed). The task is marked
         out_of_band_only and the loop KEEPS waiting for the reply so it can
         be pushed directly instead of written into the dead socket.
 
@@ -1966,7 +1964,7 @@ class A2AAdapter(BasePlatformAdapter):
         client pops the pending task so the eventual reply takes the
         out-of-band push path instead of vanishing into the closed socket.
 
-        Patience (spec B) is the deterministic backstop: when the client's
+        Patience is the deterministic backstop: when the client's
         advertised read timeout (+ margin) passes without a reply, the task
         is marked out_of_band_only and the reply — when it resolves — is
         pushed directly.
@@ -1997,7 +1995,7 @@ class A2AAdapter(BasePlatformAdapter):
             # The client was known gone when the reply resolved (patience
             # exceeded) or was already detected dead (probe). A completed
             # reply must NOT be written into the dead socket — push it
-            # directly and skip the write (spec B). Probe-death markers
+            # directly and skip the write. Probe-death markers
             # carry no reply text and return the FAILED result as before.
             if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED) and reply:
                 if self._try_push_reply(pending, state, reply):
@@ -2070,7 +2068,7 @@ class A2AAdapter(BasePlatformAdapter):
             state, reply, _ = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"),
                 # SSE clients stay connected for the whole stream; the client
-                # patience (spec B) applies only to the blocking POST path.
+                # patience applies only to the blocking POST path.
                 patience=None,
             )
             state, reply = self._finalize_task(pending, state, reply)
@@ -2300,24 +2298,24 @@ class A2AAdapter(BasePlatformAdapter):
         # No waiter (e.g. a late chunk or out-of-band send) — push the message
         # back to the peer that owns this context as a NEW task, reusing the
         # same contextId so it lands in the caller's session (session
-        # continuity). Without this, kanban notifier wake replies and late
+        # continuity). Without this, task-notifier wake replies and late
         # completions were silently dropped while reporting success.
         #
         # Loopback self-push guard: in localhost-only mode every inbound
         # caller authenticates as "ip:<addr>" with no port, so the only
         # resolvable target for a loopback identity is THIS gateway's own
-        # endpoint. Self-pushing is correct for the kanban notifier's
+        # endpoint. Self-pushing is correct for the notifier's
         # completion delivery — the sub's user_id is the loopback identity
         # and the message must re-enter the owning session (the watcher marks
         # that send with metadata["a2a_push"]=True). A session's own REPLY
         # must never be re-queued into the same session: that produced an
-        # unbounded self-ping-pong (2026-08-12, right after 83039bfc17 made
-        # the loopback fallback resolvable — every reply was pushed back,
-        # processed, and answered again forever). Unmarked sends to a
-        # loopback peer are replies with no external destination — and per
-        # spec C that is a LOUD failure, not a silent success: case
-        # 2-delivery-1's helper-sent message refined to "ip:127.0.0.1" and
-        # the 4148-char reply was dropped here with success=True and no
+        # unbounded self-ping-pong once the loopback fallback became
+        # resolvable — every reply was pushed back,
+        # processed, and answered again forever. Unmarked sends to a
+        # loopback peer are replies with no external destination — that is
+        # a LOUD failure, not a silent success: a
+        # helper-sent message refined to "ip:127.0.0.1" and its long reply
+        # was dropped here with success=True and no
         # audit. The notifier/engine must rewind instead of advancing past a
         # lost event.
         if not (metadata or {}).get("a2a_push"):
@@ -2340,8 +2338,8 @@ class A2AAdapter(BasePlatformAdapter):
                 )
         try:
             # want_reply=True for session-reply pushes (the peer answers
-            # inside the push's HTTP response — spec A round-trip); False
-            # for kanban-notifier pushes (fire-and-forget, unchanged).
+            # inside the push's HTTP response — the round-trip path); False
+            # for notifier pushes (fire-and-forget, unchanged).
             await asyncio.to_thread(
                 self._push_out_of_band, chat_id, content or "",
                 not (metadata or {}).get("a2a_push"),
@@ -2362,16 +2360,16 @@ class A2AAdapter(BasePlatformAdapter):
 
         ``want_reply=True`` for session-reply pushes (``adapter.send()``
         without ``metadata["a2a_push"]``, and the dead-client rescues) —
-        spec A round-trip: the peer answers inside the push's HTTP response
-        (case 3: Ada's verdict arrived as the push response body and was
+        the round-trip path: the peer answers inside the push's HTTP response
+        (a verdict arriving this way was previously
         discarded), so a non-empty reply is re-dispatched into the LOCAL
         gateway as an inbound message on the same contextId (loopback
         in-process path, origin-session wake). Never raises into the push
-        caller. ``want_reply=False`` for kanban-notifier pushes —
+        caller. ``want_reply=False`` for notifier pushes —
         fire-and-forget, unchanged.
 
-        Reply-path pushes never fall back to this gateway's own endpoint
-        (spec C): an unresolvable reply peer is a LOUD failure (audit
+        Reply-path pushes never fall back to this gateway's own endpoint:
+        an unresolvable reply peer is a LOUD failure (audit
         ``push_dropped`` + warning), not a self-ping-pong or a silent drop.
         The own-gateway loopback fallback is reserved for ``a2a_push``
         notifications.
@@ -2387,12 +2385,12 @@ class A2AAdapter(BasePlatformAdapter):
         if not entry or not entry.get("url"):
             # Localhost-only mode records inbound callers as "ip:<addr>" with
             # no port, and there is no a2a_agents key for the raw identity.
-            # When the identity is a loopback address, the NOTIFIER path
+            # When the identity is a loopback address, the notifier path
             # falls back to this gateway's own A2A endpoint — the one local
             # endpoint guaranteed to route a same-contextId follow-up into
-            # the session that owns the conversation (the 2026-08-12
-            # roundtrip failure: identity "ip:127.0.0.1" was registered but
-            # unresolvable, push dropped).
+            # the session that owns the conversation (a registered
+            # loopback "ip:" identity carries no port, so without the
+            # fallback the push dropped).
             fallback = _loopback_fallback_url(peer, self.host, self.port)
             if fallback:
                 if want_reply:
@@ -2407,10 +2405,9 @@ class A2AAdapter(BasePlatformAdapter):
                 # built from self.host/self.port), so an HTTP round-trip
                 # would be a synchronous self-call: the inbound handler only
                 # answers after the agent session processes the message,
-                # which routinely exceeds the client timeout (2026-08-12
-                # loopback push: delivered 16:05:51, client gave up
-                # 16:07:52 — the push audit row + reply log never ran and
-                # the notifier logged a false failure). Deliver in-process
+                # which routinely exceeds the client timeout — the audit
+                # row + reply log never ran and the notifier logged a false
+                # failure. Deliver in-process
                 # instead: the exact same code path as an inbound
                 # message/send, minus the connection and the wait.
                 self._push_loopback_in_process(context_id, peer, text)
@@ -2424,10 +2421,9 @@ class A2AAdapter(BasePlatformAdapter):
         # loopback push stamps our own sender, and the inbound refinement
         # accepts it), deliver in-process instead of a synchronous HTTP
         # self-call. The inbound handler only answers after the session
-        # processes the message, which routinely exceeds the client timeout
-        # (2026-08-12 loopback push: delivered 16:05:51, client gave up
-        # 16:07:52). Reply pushes (want_reply=True) refuse this fallback per
-        # spec C — an unresolvable reply peer fails loudly.
+        # processes the message, which routinely exceeds the client timeout.
+        # Reply pushes (want_reply=True) refuse this fallback — an
+        # unresolvable reply peer fails loudly.
         if _is_own_endpoint(base_url, self.host, self.port):
             if want_reply:
                 self._drop_unresolvable_reply(context_id, peer)
@@ -2466,20 +2462,19 @@ class A2AAdapter(BasePlatformAdapter):
             # Bookkeeping runs even when the client times out: the receiving
             # gateway answers only after its agent session finishes, which
             # can exceed the client timeout even though the message was
-            # delivered (2026-08-12 loopback push: delivered 16:05:51,
-            # client gave up 16:07:52). The audit row + reply log are the
-            # acceptance signals the notifier path relies on.
+            # delivered. The audit row + reply log are the
+            # delivery records the notifier path relies on.
             protocol.persist_message(context_id, "agent", text)
             # The 'push' audit direction is documented in security.py but had no
             # caller — every out-of-band push was invisible in a2a_audit.jsonl,
-            # which made diagnosing the roundtrip pipeline harder (Signal 3 of
-            # the 2026-08-12 test was never written). Best-effort, like every
-            # other audit call.
+            # which made diagnosing the push pipeline harder. Best-effort, like
+            # every other audit call.
             security.audit("push", peer, rpc_body["id"], text, context_id=context_id)
             logger.info("A2A: pushed out-of-band reply for context %s to peer %s", context_id, peer)
         if want_reply and resp is not None:
-            # Round-trip (spec A): the peer answered inside the push's HTTP
-            # response — case 3's verdict was discarded exactly here. Surface
+            # Round-trip: the peer answered inside the push's HTTP
+            # response — a verdict arriving this way was previously
+            # discarded exactly here. Surface
             # a non-empty reply into the LOCAL gateway as an inbound message
             # on the same contextId, the exact path a remote push would take
             # (wrap_inbound framing + origin-session wake). Never raises into
@@ -2497,10 +2492,10 @@ class A2AAdapter(BasePlatformAdapter):
     def _drop_unresolvable_reply(self, context_id: str, peer: str) -> None:
         """Loud failure for a reply push with no resolvable external target.
 
-        Spec C: an unmarked session reply whose peer is an unresolvable
-        loopback identity must never be silently dropped (case 2-delivery-1)
-        and must never self-loop into this gateway's own session (the
-        2026-08-12 self-ping-pong). Audit ``push_dropped`` + warn; the
+        An unmarked session reply whose peer is an unresolvable
+        loopback identity must never be silently dropped
+        and must never self-loop into this gateway's own session
+        (unbounded self-ping-pong). Audit ``push_dropped`` + warn; the
         caller surfaces success=False.
         """
         security.audit(
@@ -2520,7 +2515,7 @@ class A2AAdapter(BasePlatformAdapter):
         ``a2a_call`` client can time out (120s) and close the connection
         while the agent is still working; the reply then resolves the stale
         pending task and the JSON-RPC response write hits the closed socket
-        (2026-08-13 round-2 drop: reply consumed by a dead waiter and
+        (a round-2 drop: a reply was consumed by a dead waiter and
         written into a dead connection — the caller's session never woke).
         The liveness probe in ``_rpc_message_send`` pops the stale waiter in
         the common case; this catches the probe-race window where the client
@@ -2549,7 +2544,7 @@ class A2AAdapter(BasePlatformAdapter):
             reply = protocol.extract_text((task.get("status") or {}).get("message", {}) or {})
             if not reply:
                 return
-            # Session-reply rescue: want_reply=True (spec A) so the peer's
+            # Session-reply rescue: want_reply=True so the peer's
             # answer to this pushed reply re-enters our session from the
             # push's HTTP response instead of being discarded.
             self._push_out_of_band(context_id, reply, want_reply=True)

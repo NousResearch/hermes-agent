@@ -68,7 +68,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
-from tools.shell_heredoc import strip_inert_heredoc_bodies
+from tools.shell_heredoc import detect_unquoted_heredoc_file_write, strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -2770,6 +2770,19 @@ def terminal_tool(
                     "error": guidance,
                     "status": "error",
                 }, ensure_ascii=False)
+
+        # Guardrail: an unquoted heredoc writing a file lets bash expand
+        # backticks/$()/$VAR in the body before it reaches disk, silently
+        # corrupting content with no error. Block it in favor of write_file,
+        # which this tool's own description already says to use here.
+        heredoc_warning = detect_unquoted_heredoc_file_write(command)
+        if heredoc_warning:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": heredoc_warning,
+                "status": "error",
+            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()

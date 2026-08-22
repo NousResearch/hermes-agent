@@ -317,6 +317,7 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -11013,11 +11014,17 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
-  win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
-
-    return { action: 'deny' }
-  })
+  // Deny every window-open request and NEVER open a URL as a side effect here.
+  // Trusted external links go through the audited `hermes:openExternal` IPC
+  // channel; the only content that reaches this handler is what we did not
+  // initiate — including untrusted HTML in sandboxed `allow-scripts` iframes.
+  // Opening `details.url` here is the GHSA-9f4c-93c8-jc8g (CVE-2026-70608)
+  // vector: a sandboxed iframe with no `allow-popups` and no user gesture can
+  // force the OS browser to an attacker URL. No fixed 40.x Electron exists, so
+  // we close it at the seam. See electron/window-open-policy.ts.
+  win.webContents.setWindowOpenHandler(
+    createWindowOpenHandler(url => rememberLog(`[window-open] denied: ${url}`))
+  )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

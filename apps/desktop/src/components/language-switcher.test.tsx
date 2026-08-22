@@ -40,4 +40,31 @@ describe('LanguageSwitcher', () => {
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
     expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
   })
+
+  it('offers Russian and persists its locale code', async () => {
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+    const latestConfig: HermesConfigRecord = { display: { language: 'en', skin: 'slate' } }
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue(latestConfig),
+      saveConfig
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageSwitcher />
+      </I18nProvider>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Switch language' }).hasAttribute('disabled')).toBe(false)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+    expect(screen.getByText('Русский')).not.toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /Русский/i }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ru', skin: 'slate' } })
+  })
 })

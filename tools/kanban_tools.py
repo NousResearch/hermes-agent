@@ -119,6 +119,39 @@ def _check_kanban_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _configured_orchestrator_profile() -> str:
+    """``kanban.orchestrator_profile`` as a normalized name, or ""."""
+    try:
+        cfg = load_config()
+        kcfg = cfg.get("kanban") or {}
+        if not isinstance(kcfg, dict):
+            return ""
+        return (kcfg.get("orchestrator_profile") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_orchestrator_worker() -> bool:
+    """True when THIS dispatched worker run is the board's orchestrator.
+
+    The dispatcher exports ``HERMES_PROFILE`` for the assignee it spawns
+    (see kanban_db._worker_env). A worker run of
+    ``kanban.orchestrator_profile`` is the board-health agent: its whole
+    job is to sweep the board, so denying it ``kanban_list`` leaves it
+    able to read only the ids handed to it and forces it to route a
+    read-only inventory card to another profile just to see the board.
+    That is the autonomy gap. Any OTHER profile's worker stays scoped to
+    its own card, which is the behavior this gate was written for.
+    """
+    orchestrator = _configured_orchestrator_profile()
+    if not orchestrator:
+        return False
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip().lower()
+    if not profile or profile != orchestrator:
+        return False
+    return bool(os.environ.get("HERMES_KANBAN_TASK")) and _is_dispatcher_owned_worker()
+
+
 def _check_kanban_orchestrator_mode() -> bool:
     """Board-routing tools (kanban_list, kanban_unblock) are intentionally
     hidden from task workers.
@@ -127,11 +160,17 @@ def _check_kanban_orchestrator_mode() -> bool:
     lifecycle tools (complete/block/heartbeat), not enumerate or unblock
     board state. Profiles that explicitly opt into the kanban toolset
     and are NOT scoped to a single task are the orchestrator surface.
+
+    The one exception is a dispatched worker run of the configured
+    ``kanban.orchestrator_profile``: that profile IS the board-routing
+    surface, and it must carry the same kanban_* tools as its
+    interactive session or autonomous board sweeps cannot enumerate the
+    board at all.
     """
     if _is_delegated_child_context():
         return False
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
-        return False
+        return _is_orchestrator_worker()
     return _profile_has_kanban_toolset()
 
 
@@ -472,8 +511,13 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     or test harness routes a worker to one of them anyway, return a
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
+
+    Mirrors ``_check_kanban_orchestrator_mode`` exactly: a worker run of
+    the configured ``kanban.orchestrator_profile`` is the board-routing
+    surface and is allowed through. If this guard stayed a blanket
+    refusal it would defeat the schema fix at call time.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and not _is_orchestrator_worker():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "

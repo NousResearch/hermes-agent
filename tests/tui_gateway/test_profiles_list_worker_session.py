@@ -66,6 +66,7 @@ def test_worker_session_reports_newest_worker_and_keeps_last_session_clean(home)
     assert worker["id"] == "work-new"
     assert worker["source"] == "kanban"
     assert worker["last_active"] >= 3000
+    assert row["session_count"] == 3
     # The conversation preview still never surfaces worker rows.
     assert row["last_session"]["id"] == "chat1"
 
@@ -100,3 +101,25 @@ def test_include_sessions_false_omits_worker_session(home):
     row = _row(_profiles({"include_sessions": False}), "default")
     assert "worker_session" not in row
     assert "last_session" not in row
+    assert "session_count" not in row
+
+
+def test_worker_flood_does_not_hide_older_human_session(home):
+    db = _db(home)
+    _add_session(db, "chat1", source="cli", title="Chat", ts=1000, text="hello")
+    for index in range(25):
+        _add_session(
+            db,
+            f"work-{index}",
+            source="kanban",
+            title=f"Task {index}",
+            ts=2000 + index,
+            text=f"work kanban task {index}",
+        )
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["last_session"]["id"] == "chat1"
+    assert row["worker_session"]["id"] == "work-24"
+    assert row["session_count"] == 26

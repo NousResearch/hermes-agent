@@ -134,7 +134,7 @@ def _(rid, params: dict) -> dict:
             return None
 
     def _latest_profile_session_rows(profile_path):
-        """(newest human-facing session, newest worker session) for a profile.
+        """(newest human session, newest worker, total count) for a profile.
 
         First element mirrors session.list's deny-list (drops ``tool``
         sub-agent rows and ``kanban`` dispatcher workers). Second element is
@@ -144,37 +144,43 @@ def _(rid, params: dict) -> dict:
         Workers heartbeat ``last_activity_at`` every ≤60s while running
         (#72016), so a live worker's ``last_active`` stays fresh and the
         client can apply its own liveness window. Best-effort: any failure
-        (missing state.db, locked db, older schema) degrades to (None, None)
+        (missing state.db, locked db, older schema) degrades to (None, None, 0)
         rather than failing the whole profiles.list call.
+
+        Query the two source classes independently.  A fixed mixed recency
+        window made ``last_session`` disappear whenever more than 20 worker
+        rows were newer than the profile's latest conversation, which made a
+        busy specialist look like it had zero history even though state.db was
+        populated.  ``session_count`` is the authoritative all-source count
+        from that same profile-scoped database.
         """
         try:
             from pathlib import Path
 
             db_path = Path(profile_path) / "state.db"
             if not db_path.exists():
-                return None, None
+                return None, None, 0
             from hermes_state import SessionDB
 
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
+                total = db.session_count()
+                human_rows = db.list_sessions_rich(
+                    exclude_sources=list(deny),
+                    limit=1,
+                    order_by_last_active=True,
+                    compact_rows=True,
+                )
+                worker_rows = db.list_sessions_rich(
+                    sources=list(deny),
+                    limit=1,
+                    order_by_last_active=True,
+                    compact_rows=True,
+                )
                 human = None
-                worker = None
-                for s in db.list_sessions_rich(
-                    source=None, limit=20, order_by_last_active=True, compact_rows=True
-                ):
-                    src = (s.get("source") or "").strip().lower()
-                    if src in deny:
-                        if worker is None:
-                            worker = {
-                                "id": s["id"],
-                                "source": src,
-                                "title": s.get("title") or "",
-                                "last_active": s.get("last_active") or s.get("started_at") or 0,
-                            }
-                        continue
-                    if human is not None:
-                        continue
+                if human_rows:
+                    s = human_rows[0]
                     row = {
                         "id": s["id"],
                         "title": s.get("title") or "",
@@ -194,16 +200,23 @@ def _(rid, params: dict) -> dict:
                     except Exception:
                         pass
                     human = row
-                    if worker is not None:
-                        break
-                return human, worker
+                worker = None
+                if worker_rows:
+                    s = worker_rows[0]
+                    worker = {
+                        "id": s["id"],
+                        "source": (s.get("source") or "").strip().lower(),
+                        "title": s.get("title") or "",
+                        "last_active": s.get("last_active") or s.get("started_at") or 0,
+                    }
+                return human, worker, total
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
         except Exception:
-            return None, None
+            return None, None, 0
 
     try:
         from hermes_cli.profiles import list_profiles
@@ -222,8 +235,12 @@ def _(rid, params: dict) -> dict:
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:
-                last_row, worker_row = _latest_profile_session_rows(p.path)
+                last_row, worker_row, session_count = _latest_profile_session_rows(p.path)
                 row["last_session"] = last_row
+                # All sources, read from this profile's canonical state.db.
+                # Lets clients distinguish "no visible conversation" from
+                # "no history" without inspecting the vestigial sessions/ dir.
+                row["session_count"] = session_count
                 # Freshest kanban/tool worker (or None) — lets rosters count
                 # a profile as active while its worker runs (#90268). Older
                 # clients ignore the extra field.

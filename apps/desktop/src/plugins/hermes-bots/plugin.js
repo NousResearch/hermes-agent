@@ -5982,7 +5982,10 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const displayPreview = stripPreviewMarkdown(
     fromBot
       ? (previewSession?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…'
-      : previewSession?.preview || bot.description || 'No conversations yet — say hi'
+      : previewSession?.preview ||
+          (bot.session_count
+            ? `${bot.session_count} saved session${bot.session_count === 1 ? '' : 's'}`
+            : bot.description || 'No conversations yet — say hi')
   )
 
   const warm = () => {

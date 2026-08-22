@@ -88,5 +88,78 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decomposed_children_inherit_root_priority(kanban_home):
+    """Regression: children were inserted without a priority column, so
+    they landed at the SQL default 0 and queued behind every card on a
+    board whose live band sits far above 0. Dispatch is strictly
+    highest-priority-first, so every auto-decomposed subtree was starved
+    and autonomous orchestration looked like it never fired.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="high-band root", triage=True, priority=97)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "child A", "assignee": "researcher"},
+                {"title": "child B", "assignee": "engineer", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+    assert child_ids is not None
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        priorities = [kb.get_task(conn, cid).priority for cid in child_ids]
+
+    assert root.priority == 97
+    assert priorities == [97, 97], (
+        "auto-decomposed children must inherit the root's priority so the "
+        f"subtree dispatches in the same band; got {priorities}"
+    )
+
+
+def test_decomposed_child_can_override_priority(kanban_home):
+    """Inheritance is the default, not a ceiling: an explicit per-child
+    priority still wins so a decomposer can deprioritize one leaf."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="root", triage=True, priority=90)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "inherits"},
+                {"title": "explicit", "priority": 12},
+            ],
+            author="decomposer",
+        )
+    assert child_ids is not None
+
+    with kb.connect() as conn:
+        priorities = [kb.get_task(conn, cid).priority for cid in child_ids]
+
+    assert priorities == [90, 12]
+
+
+def test_decomposed_children_inherit_zero_priority_root(kanban_home):
+    """A root genuinely at 0 still yields children at 0 — the fix is
+    inheritance, not a hardcoded floor."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="root", triage=True, priority=0)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[{"title": "child A"}],
+            author="decomposer",
+        )
+    assert child_ids is not None
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child_ids[0]).priority == 0
+
+
 
 

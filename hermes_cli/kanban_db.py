@@ -7370,7 +7370,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, priority, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7379,6 +7379,16 @@ def decompose_triage_task(
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        # Children inherit the ROOT's priority. Dispatch is strictly
+        # highest-priority-first with a per-profile in-flight cap, so a
+        # child emitted at the column default (0) queues behind every
+        # hand-created card on a board whose live band sits in the 90s
+        # and never visibly moves. That is not starvation of one card:
+        # every auto-decomposed subtree lands below the floor, which is
+        # what makes autonomous orchestration look like it never fires.
+        # A child dict may still override with its own 'priority'.
+        root_priority = root_row["priority"] or 0
+
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
         # rather than throwaway scratch tmp dirs. A child dict can still
@@ -7416,16 +7426,25 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            child_priority = child.get("priority")
+            try:
+                child_priority = (
+                    int(child_priority) if child_priority is not None
+                    else root_priority
+                )
+            except (TypeError, ValueError):
+                child_priority = root_priority
             conn.execute(
                 "INSERT INTO tasks "
-                "(id, title, body, assignee, status, workspace_kind, "
+                "(id, title, body, assignee, status, priority, workspace_kind, "
                 " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_priority,
                     child_ws_kind,
                     child_ws_path,
                     tenant,

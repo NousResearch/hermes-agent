@@ -408,6 +408,44 @@ def test_prefers_fresh_final_streaming_for_dm_topic_tables():
     ) is True
 
 
+# ----------------------------------------------------------------------
+# _should_retry_without_dm_topic_reply_anchor: a synthetic/resumed DM-topic
+# send (loop wakeup, watch notification, restart-resumed follow-up) routes
+# via direct_messages_topic_id instead of a reply anchor. If Telegram rejects
+# that topic id, the send must degrade to a plain DM instead of hard-failing.
+# The alias-only case (telegram_direct_messages_topic_id, same key the
+# fresh-final gate above accepts per bad2ed866c) must be honored too.
+# ----------------------------------------------------------------------
+def test_should_retry_without_dm_topic_reply_anchor_honors_alias_only_metadata():
+    base_metadata = {"telegram_dm_topic_reply_fallback": True}
+    topic_error = BadRequest("Bad Request: TOPIC_DELETED")
+
+    # Raw key (pre-existing, must keep working).
+    assert TelegramAdapter._should_retry_without_dm_topic_reply_anchor(
+        topic_error, {**base_metadata, "direct_messages_topic_id": "20189"}, None,
+    ) is True
+
+    # Alias-only metadata (telegram_-prefixed) must be honored through the
+    # same canonical accessor the send path uses (_thread_kwargs_for_send),
+    # not a raw dict lookup that only recognizes the unprefixed key.
+    assert TelegramAdapter._should_retry_without_dm_topic_reply_anchor(
+        topic_error, {**base_metadata, "telegram_direct_messages_topic_id": "20189"}, None,
+    ) is True
+
+    # No dm-topic-fallback flag at all: never retries, alias or not.
+    assert TelegramAdapter._should_retry_without_dm_topic_reply_anchor(
+        topic_error, {"telegram_direct_messages_topic_id": "20189"}, None,
+    ) is False
+
+    # Alias present, but the error text isn't a topic/thread rejection:
+    # must not retry on an unrelated BadRequest.
+    assert TelegramAdapter._should_retry_without_dm_topic_reply_anchor(
+        BadRequest("Bad Request: chat not found"),
+        {**base_metadata, "telegram_direct_messages_topic_id": "20189"},
+        None,
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
     """A plain draft must not force the persistent final to MarkdownV2."""

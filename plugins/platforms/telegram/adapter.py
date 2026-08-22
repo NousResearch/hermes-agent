@@ -1760,8 +1760,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         # Synthetic / resumed sends route via ``direct_messages_topic_id``
         # instead of a reply anchor. If Telegram rejects the topic id, fall
-        # back to a plain DM send.
-        if metadata.get("direct_messages_topic_id"):
+        # back to a plain DM send. Route through the canonical accessor so
+        # the documented ``telegram_``-prefixed alias (gateway/delivery.py
+        # treats the two keys as equivalent) also degrades gracefully
+        # instead of hard-failing the send.
+        if cls._metadata_direct_messages_topic_id(metadata):
             topic_markers = (
                 "direct_messages_topic",
                 "message thread not found",

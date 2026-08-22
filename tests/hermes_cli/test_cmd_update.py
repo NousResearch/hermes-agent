@@ -252,6 +252,19 @@ class TestCmdUpdateBranchFallback:
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
+    def test_official_origin_with_embedded_credentials_is_not_fork(self):
+        from hermes_cli import main as hm
+
+        assert not hm._is_fork(
+            "https://ghp_example@github.com/NousResearch/hermes-agent.git"
+        )
+        assert not hm._is_fork(
+            "https://user:token@github.com/NousResearch/hermes-agent.git"
+        )
+        assert hm._is_fork(
+            "https://ghp_example@github.com/example/hermes-agent.git"
+        )
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(

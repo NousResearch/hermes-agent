@@ -919,6 +919,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver_extra": self._render_delivery_extra(
                 route_config.get("deliver_extra", {}), payload
             ),
+            "completion_script": route_config.get("completion_script"),
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -994,6 +995,35 @@ class WebhookAdapter(BasePlatformAdapter):
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
         await self._end_webhook_session(event, event.source.chat_id)
+        await self._run_completion_script(event.source.chat_id, outcome)
+
+    async def _run_completion_script(self, session_chat_id: str, outcome: Any) -> None:
+        """Run a route's ``completion_script`` (if configured) after the run.
+
+        Uses the SAME sandboxed script runner as transform scripts
+        (profile scripts root, timeout, redacted output, no-shell Python
+        subprocess). The script receives the outcome envelope on stdin; its
+        return value is ignored — completion scripts are fire-and-forget
+        hooks, not a second delivery path (#80531).
+        """
+        delivery = self._delivery_info.get(session_chat_id, {})
+        script = delivery.get("completion_script")
+        if not script:
+            return
+        try:
+            envelope = {
+                "chat_id": session_chat_id,
+                "outcome": str(outcome)[:2000] if outcome is not None else None,
+            }
+            await asyncio.to_thread(
+                self._route_processor.run_route_script, script, envelope
+            )
+        except Exception:
+            # Completion scripts are best-effort; a failure must never break
+            # the already-finished run or its session closeout.
+            logger.exception(
+                "[webhook] completion_script failed for %s", session_chat_id
+            )
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

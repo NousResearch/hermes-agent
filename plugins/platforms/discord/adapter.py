@@ -1600,6 +1600,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 is_dm=is_dm,
                 channel_ids=msg_channel_ids,
             ):
+                # Observable receipt for every ordinary-message refusal
+                # (#91919): with a configured allowlist the drop was fully
+                # silent (the fail-closed warning only covers the
+                # no-allowlist case), so a user's message could vanish with
+                # no operator-visible trace. Structured IDs only — never
+                # message content or secrets. Deduplicated events cannot
+                # reach here twice (the dedup check runs before admission).
+                guild_id = str(getattr(msg_guild, "id", "")) if msg_guild else ""
+                channel_id = (
+                    "" if is_dm else str(getattr(message.channel, "id", ""))
+                )
+                logger.warning(
+                    "[%s] Discord message refused: sender_id=%s %s channel_id=%s "
+                    "message_id=%s reason=sender_not_in_allowlist",
+                    self.name,
+                    message.author.id,
+                    f"guild_id={guild_id}" if guild_id else "dm",
+                    channel_id,
+                    getattr(message, "id", ""),
+                )
                 self._warn_if_fail_closed_default()
                 return False, False
             role_authorized = bool(getattr(self, "_allowed_role_ids", set()))

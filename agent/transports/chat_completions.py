@@ -92,6 +92,18 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
+def _merge_extra_body(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge request-body mappings, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Return the model's wire-compatible reasoning config.
 
@@ -690,16 +702,23 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")
-        if additions:
-            extra_body.update(additions)
+        if isinstance(additions, dict):
+            extra_body = _merge_extra_body(extra_body, additions)
+
+        # Request overrides are explicit user configuration. Merge their
+        # extra_body recursively so nested user options preserve provider
+        # generated siblings (for example Ollama options.num_ctx).
+        overrides = params.get("request_overrides")
+        if overrides:
+            override_body = overrides.get("extra_body")
+            if isinstance(override_body, dict):
+                extra_body = _merge_extra_body(extra_body, override_body)
+            api_kwargs.update(
+                {key: value for key, value in overrides.items() if key != "extra_body"}
+            )
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
-
-        # Request overrides last (service_tier etc.)
-        overrides = params.get("request_overrides")
-        if overrides:
-            api_kwargs.update(overrides)
 
         _add_prompt_cache_key(
             api_kwargs,
@@ -821,23 +840,23 @@ class ChatCompletionsTransport(ProviderTransport):
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         if profile_body:
-            extra_body.update(profile_body)
+            extra_body = _merge_extra_body(extra_body, profile_body)
 
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:
-            extra_body.update(extra_body_from_profile)
+            extra_body = _merge_extra_body(extra_body, extra_body_from_profile)
 
         # Merge any pre-built extra_body additions from the caller
         additions = params.get("extra_body_additions")
-        if additions:
-            extra_body.update(additions)
+        if isinstance(additions, dict):
+            extra_body = _merge_extra_body(extra_body, additions)
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
+                    extra_body = _merge_extra_body(extra_body, v)
                 else:
                     api_kwargs[k] = v
 

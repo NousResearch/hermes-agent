@@ -2289,19 +2289,37 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # gateway scan — killing that bootstrap takes the detached gateway it
     # spawned down with it.
     #
-    # Probe the record with cleanup_stale=False so the sweep never deletes
-    # the registration it is about to use as exclusion evidence.  With the
-    # default cleanup, a record that fails liveness validation is unlinked
-    # mid-sweep; the recorded PID then never joins the exclusion set, and a
+    # Exclusion evidence comes from the RAW registration record, not the
+    # liveness-validated probe.  ``get_running_pid`` (any flags) returns
+    # None whenever a record fails validation — start-time mismatch after
+    # PID-reuse checks, argv drift, lock hiccups — which is exactly when a
     # healthy standalone gateway (no service supervisor — e.g. `hermes
-    # gateway run` on Windows) is hard-killed by the sweep.  On Windows
-    # SIGTERM is TerminateProcess, so the gateway's own planned-stop watcher
-    # never gets a chance to shut down gracefully.
+    # gateway run` on Windows) is at risk: its PID never joins the
+    # exclusion set and the sweep hard-kills it.  On Windows SIGTERM is
+    # TerminateProcess, so the gateway's planned-stop watcher never gets a
+    # chance to drain.  Reading the raw pidfile + lock records (no
+    # validation, no unlink side effects) is strictly safer for a KILL
+    # exclusion list: a stale recorded PID at worst spares one process this
+    # sweep, while a validation false-negative would kill a live gateway.
+    # The validated probe is still consulted for the runtime-status
+    # fallback PID it can surface when no pidfile exists.
     try:
-        from gateway.status import get_running_pid
+        from gateway.status import (
+            _pid_from_record,
+            _read_gateway_lock_record,
+            _read_pid_record,
+            get_running_pid,
+        )
 
-        recorded = get_running_pid(cleanup_stale=False)
-        if recorded and recorded > 0:
+        recorded_pids = set()
+        for _record in (_read_pid_record(), _read_gateway_lock_record()):
+            _raw_pid = _pid_from_record(_record)
+            if _raw_pid and _raw_pid > 0:
+                recorded_pids.add(_raw_pid)
+        _probed = get_running_pid(cleanup_stale=False)
+        if _probed and _probed > 0:
+            recorded_pids.add(_probed)
+        for recorded in recorded_pids:
             own.add(recorded)
             try:
                 import psutil  # type: ignore

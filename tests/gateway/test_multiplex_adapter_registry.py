@@ -71,6 +71,43 @@ class TestCredentialFingerprint:
         assert a is not None and b is not None
         assert a != b
 
+    def test_matrix_password_account_has_stable_credential_fingerprint(
+        self, monkeypatch, tmp_path
+    ):
+        """Password-only Matrix profiles must not consume one account twice."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def matrix_adapter(user_id, password):
+            return MatrixAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "homeserver": "https://matrix.example.org",
+                        "user_id": user_id,
+                        "password": password,
+                        "encryption": False,
+                    },
+                )
+            )
+
+        first = GatewayRunner._adapter_credential_fingerprint(
+            matrix_adapter("@bot:example.org", "password-one")
+        )
+        same_account = GatewayRunner._adapter_credential_fingerprint(
+            matrix_adapter("@bot:example.org", "password-two")
+        )
+        different_account = GatewayRunner._adapter_credential_fingerprint(
+            matrix_adapter("@other:example.org", "password-one")
+        )
+
+        assert first is not None
+        assert first == same_account
+        assert first != different_account
+        assert "@bot:example.org" not in first
+        assert "password-one" not in first
+
 
 class TestProfileMessageHandler:
     @pytest.mark.asyncio
@@ -637,5 +674,4 @@ class TestFeishuPortBindingConditional:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # no error, just nothing connected
-
 

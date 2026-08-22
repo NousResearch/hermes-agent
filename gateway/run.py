@@ -15952,6 +15952,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         token = None
         for attr in (
+            # Adapters with non-token authentication expose a stable external
+            # account identity so multiplex preflight can reject duplicates.
+            # The value is hashed below and never logged.
+            "_credential_identity",
             "token",
             "bot_token",
             "_token",

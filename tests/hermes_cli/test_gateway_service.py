@@ -262,6 +262,30 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+    def test_launchd_plist_honors_no_start_on_login(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+
+        plist = plistlib.loads(
+            gateway_cli.generate_launchd_plist(start_on_login=False).encode()
+        )
+
+        assert plist["RunAtLoad"] is False
+        assert plist["KeepAlive"] is True
+
+    def test_launchd_plist_preserves_installed_run_at_load(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_bytes(plistlib.dumps({"RunAtLoad": False}))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode())
+
+        assert plist["RunAtLoad"] is False
+
 
 
 class TestGatewayStopCleanup:
@@ -2199,6 +2223,119 @@ class TestLaunchctlBootstrapEioRetry:
         with pytest.raises(subprocess.CalledProcessError) as excinfo:
             gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
         assert excinfo.value.returncode == 5
+
+
+class TestLaunchdInstallForce:
+    def test_force_boots_out_existing_label_before_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway"
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_refuse_temp_home_service_write",
+            lambda definition, kind: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda timeout, force_after=None: calls.append(["wait", timeout, force_after])
+            or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(cmd)
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_bootstrap",
+            lambda domain, path, label, timeout=30: calls.append(
+                ["bootstrap", domain, str(path), label, timeout]
+            ),
+        )
+
+        gateway_cli.launchd_install(force=True, start_on_login=False)
+
+        assert calls[:3] == [
+            ["launchctl", "bootout", "gui/501/ai.hermes.gateway"],
+            ["wait", 0, None],
+            ["bootstrap", "gui/501", str(plist_path), "ai.hermes.gateway", 30],
+        ]
+        plist = plistlib.loads(plist_path.read_bytes())
+        assert plist["RunAtLoad"] is False
+
+    def test_unsupported_launchd_fallback_removes_plist(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_refuse_temp_home_service_write",
+            lambda definition, kind: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_bootstrap",
+            lambda *a, **k: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(5, ["launchctl", "bootstrap"])
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "_spawn_detached_gateway", lambda: True)
+
+        gateway_cli.launchd_install(force=False, start_on_login=False)
+
+        assert not plist_path.exists()
+        out = capsys.readouterr().out
+        assert "Started gateway as a background process instead" in out
+        assert "will NOT auto-start at login" in out
+
+    def test_gateway_install_passes_start_on_login_to_launchd(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_install",
+            lambda force=False, *, start_on_login=None: captured.update(
+                {"force": force, "start_on_login": start_on_login}
+            ),
+        )
+
+        args = SimpleNamespace(
+            gateway_command="install",
+            force=True,
+            system=False,
+            run_as_user=None,
+            start_now=None,
+            start_on_login=False,
+            elevated_handoff=False,
+        )
+
+        gateway_cli._gateway_command_inner(args)
+
+        assert captured == {"force": True, "start_on_login": False}
 
 
 class TestRetryLaunchctlBootstrapUntilRegistered:

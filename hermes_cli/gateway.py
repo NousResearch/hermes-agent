@@ -4784,7 +4784,21 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
     return False
 
 
-def generate_launchd_plist() -> str:
+def _launchd_plist_run_at_load(plist_path: Path | None = None) -> bool:
+    """Return the installed launchd RunAtLoad value, defaulting to enabled."""
+    import plistlib
+
+    path = plist_path or get_launchd_plist_path()
+    try:
+        with path.open("rb") as fh:
+            data = plistlib.load(fh)
+        value = data.get("RunAtLoad") if isinstance(data, dict) else None
+        return bool(value) if isinstance(value, bool) else True
+    except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
+        return True
+
+
+def generate_launchd_plist(*, start_on_login: bool | None = None) -> str:
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -4811,6 +4825,8 @@ def generate_launchd_plist() -> str:
     )
 
     err_path = log_dir / "gateway.error.log"
+    run_at_load = _launchd_plist_run_at_load() if start_on_login is None else start_on_login
+    run_at_load_xml = "<true/>" if run_at_load else "<false/>"
 
     # Build ProgramArguments array, including --profile when using a named profile.
     # The stderr wrapper preserves launchd's restart semantics while adding
@@ -4877,7 +4893,7 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>RunAtLoad</key>
-    <true/>
+    {run_at_load_xml}
     
     <key>KeepAlive</key>
     <true/>
@@ -5126,7 +5142,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
-def launchd_install(force: bool = False):
+def launchd_install(force: bool = False, *, start_on_login: bool | None = None):
     plist_path = get_launchd_plist_path()
 
     if plist_path.exists() and not force:
@@ -5140,19 +5156,36 @@ def launchd_install(force: bool = False):
         return
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    new_plist = generate_launchd_plist()
+    new_plist = generate_launchd_plist(start_on_login=start_on_login)
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(new_plist, encoding="utf-8")
 
-    try:
-        _launchctl_bootstrap(
-            _launchd_domain(), plist_path, get_launchd_label(), timeout=30
+    label = get_launchd_label()
+    domain = _launchd_domain()
+    if force:
+        # `launchctl bootstrap` returns EIO (5) when the label is already
+        # loaded. A forced reinstall is explicitly asking to replace the
+        # existing job, so boot it out before bootstrapping instead of first
+        # misreporting an unsupported launchd domain and falling back to a bare
+        # background process (#91549).
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            check=False,
+            timeout=90,
         )
+        _wait_for_gateway_exit(timeout=_get_restart_drain_timeout(), force_after=None)
+
+    try:
+        _launchctl_bootstrap(domain, plist_path, label, timeout=30)
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
             raise
+        try:
+            plist_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
         return
 
@@ -7817,7 +7850,7 @@ def _gateway_command_inner(args):
             if start_now:
                 systemd_start(system=system)
         elif is_macos():
-            launchd_install(force)
+            launchd_install(force, start_on_login=getattr(args, "start_on_login", None))
         elif is_windows():
             from hermes_cli import gateway_windows
 

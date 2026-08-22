@@ -327,7 +327,7 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+    if result.get("failed") or result.get("partial"):
         return 2
 
     if not (response or "").strip():

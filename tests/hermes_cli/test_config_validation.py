@@ -111,6 +111,43 @@ class TestVoiceSubmitModeValidation:
         )
 
 
+class TestAcpWorkspaceValidation:
+    def test_default_route_is_disabled(self):
+        assert DEFAULT_CONFIG["acp"]["workspace"] == {}
+
+    def test_valid_ssh_workspace_route(self):
+        issues = validate_config_structure({
+            "acp": {
+                "workspace": {
+                    "backend": "ssh",
+                    "host": "workspace.example",
+                    "user": "developer",
+                    "port": 2222,
+                    "key": "~/.ssh/workspace",
+                    "sync": False,
+                }
+            }
+        })
+        assert not any("acp.workspace" in issue.message for issue in issues)
+
+    def test_invalid_ssh_workspace_route_is_reported(self):
+        issues = validate_config_structure({
+            "acp": {
+                "workspace": {
+                    "backend": "ssh",
+                    "host": "",
+                    "user": "developer",
+                    "port": 70000,
+                    "sync": "no",
+                }
+            }
+        })
+        messages = [issue.message for issue in issues if issue.severity == "error"]
+        assert any("acp.workspace.host" in message for message in messages)
+        assert any("acp.workspace.port" in message for message in messages)
+        assert any("acp.workspace.sync" in message for message in messages)
+
+
 class TestUnknownTopLevelKeys:
     """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 

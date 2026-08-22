@@ -1379,11 +1379,16 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     false``): each session's task_id is its own container key, so a fresh
     chat gets a fresh sandbox with only ITS mounts — a previous session's
     workspace can no longer appear in a new session's container.
-    ``delegate_task`` children keep sharing the parent's container via the
-    alias registry (``register_container_alias``).
+    ``delegate_task`` children keep sharing the parent's selected environment
+    through the alias registry (``register_container_alias``), including
+    session-scoped SSH routes.
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
+    if task_id:
+        parent = _resolve_container_alias(task_id)
+        if parent != task_id and _has_isolation_overrides(parent):
+            return parent
     if task_id and _docker_session_isolation_enabled():
         return _resolve_container_alias(task_id)
     return "default"
@@ -1711,19 +1716,26 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
-def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+def _ssh_config_from_config(
+    config: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None
+) -> dict:
     """Build the ``ssh_config`` dict passed to :func:`_create_environment`.
 
     Shared by the terminal tool's own get-or-create path and the lazy
     :func:`ensure_task_env` bring-up so both derive SSH connection settings
-    from the resolved config identically.
+    from the resolved config identically. Session-scoped overrides take
+    precedence without changing the profile-wide backend.
     """
+    overrides = overrides or {}
     return {
-        "host": config.get("ssh_host", ""),
-        "user": config.get("ssh_user", ""),
-        "port": config.get("ssh_port", 22),
-        "key": config.get("ssh_key", ""),
-        "persistent": config.get("ssh_persistent", False),
+        "host": overrides.get("ssh_host") or config.get("ssh_host", ""),
+        "user": overrides.get("ssh_user") or config.get("ssh_user", ""),
+        "port": overrides.get("ssh_port", config.get("ssh_port", 22)),
+        "key": overrides.get("ssh_key", config.get("ssh_key", "")),
+        "persistent": overrides.get(
+            "ssh_persistent", config.get("ssh_persistent", False)
+        ),
+        "sync": overrides.get("ssh_sync", config.get("ssh_sync", True)),
     }
 
 
@@ -1934,6 +1946,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             user=ssh_config["user"],
             port=ssh_config.get("port", 22),
             key_path=ssh_config.get("key", ""),
+            sync=ssh_config.get("sync", True),
             cwd=cwd,
             timeout=timeout,
         )
@@ -2657,9 +2670,11 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        # Get configuration
+        # Let this task/session select a backend without changing the
+        # profile-wide default used by other sessions.
         config = _get_env_config()
-        env_type = config["env_type"]
+        overrides = resolve_task_overrides(task_id)
+        env_type = overrides.get("env_type") or config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
@@ -2673,8 +2688,6 @@ def terminal_tool(
         # CWD-only override (which collapses ``effective_task_id`` to
         # ``"default"``) is still found under its originating session id while
         # isolation-keyed RL/benchmark overrides keep resolving as before.
-        overrides = resolve_task_overrides(task_id)
-        
         # Select image based on env type, with per-task override support
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -2797,7 +2810,11 @@ def terminal_tool(
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
+                        ssh_config = (
+                            _ssh_config_from_config(config, overrides)
+                            if env_type == "ssh"
+                            else None
+                        )
                         container_config = (
                             _container_config_from_config(config)
                             if env_type in _CONTAINER_BACKENDS else None

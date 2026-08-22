@@ -2069,6 +2069,64 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
             ))
 
+    # ── acp.workspace: optional session-scoped SSH route ──────────────────
+    acp_cfg = config.get("acp")
+    if acp_cfg is not None and not isinstance(acp_cfg, dict):
+        issues.append(ConfigIssue(
+            "error",
+            f"acp must be a dict, got {type(acp_cfg).__name__}",
+            "Use: acp:\n  workspace: {}",
+        ))
+    elif isinstance(acp_cfg, dict):
+        workspace = acp_cfg.get("workspace")
+        if workspace not in (None, {}) and not isinstance(workspace, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"acp.workspace must be a dict, got {type(workspace).__name__}",
+                "Configure backend, host, user, port, key, and sync under acp.workspace",
+            ))
+        elif isinstance(workspace, dict) and workspace:
+            backend = workspace.get("backend")
+            if backend != "ssh":
+                issues.append(ConfigIssue(
+                    "error",
+                    f"acp.workspace.backend must be 'ssh', got {backend!r}",
+                    "Set acp.workspace.backend to ssh",
+                ))
+            for required_key in ("host", "user"):
+                value = workspace.get(required_key)
+                if not isinstance(value, str) or not value.strip():
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"acp.workspace.{required_key} must be a non-empty string",
+                        f"Set acp.workspace.{required_key}",
+                    ))
+            port = workspace.get("port", 22)
+            if (
+                not isinstance(port, int)
+                or isinstance(port, bool)
+                or not 1 <= port <= 65535
+            ):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"acp.workspace.port must be an integer from 1 to 65535, got {port!r}",
+                    "Set acp.workspace.port to the SSH port (usually 22)",
+                ))
+            key = workspace.get("key", "")
+            if not isinstance(key, str):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"acp.workspace.key must be a string, got {type(key).__name__}",
+                    "Set acp.workspace.key to an SSH private-key path or omit it",
+                ))
+            sync = workspace.get("sync", False)
+            if not isinstance(sync, bool):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"acp.workspace.sync must be true or false, got {sync!r}",
+                    "Set acp.workspace.sync to false to use the remote workspace in place",
+                ))
+
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
     if cp is not None:

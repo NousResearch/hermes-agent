@@ -120,21 +120,98 @@ def _acp_stderr_print(*args, **kwargs) -> None:
     print(*args, **kwargs)
 
 
-def _register_task_cwd(task_id: str, cwd: str) -> None:
-    """Bind a task/session id to the editor's working directory for tools.
+def _normalize_acp_workspace_route(value: Any) -> Optional[Dict[str, Any]]:
+    """Return a validated, persistence-safe ACP workspace route."""
+    if not isinstance(value, dict) or value.get("backend") != "ssh":
+        return None
+    host = value.get("host")
+    user = value.get("user")
+    if not isinstance(host, str) or not host.strip():
+        return None
+    if not isinstance(user, str) or not user.strip():
+        return None
+    port = value.get("port", 22)
+    sync = value.get("sync", False)
+    key = value.get("key", "")
+    if (
+        not isinstance(port, int)
+        or isinstance(port, bool)
+        or not 1 <= port <= 65535
+    ):
+        return None
+    if not isinstance(sync, bool) or not isinstance(key, str):
+        return None
+    return {
+        "backend": "ssh",
+        "host": host.strip(),
+        "user": user.strip(),
+        "port": port,
+        "key": key,
+        "sync": sync,
+    }
 
-    Zed can launch Hermes from a Windows workspace while the ACP process runs
-    inside WSL. In that case ACP sends cwd as e.g. ``E:\\Projects\\POTI``;
-    local tools need the WSL mount equivalent or subprocess creation fails
-    before the command can run.
-    """
+
+def _validated_acp_workspace_route(
+    value: Any,
+    *,
+    source: str,
+) -> Optional[Dict[str, Any]]:
+    """Return a valid route, or fail instead of silently executing locally."""
+    if value is None or value == {}:
+        return None
+    route = _normalize_acp_workspace_route(value)
+    if route is None:
+        raise ValueError(
+            f"Invalid {source}: expected an SSH route with non-empty host/user, "
+            "port 1-65535, string key, and boolean sync"
+        )
+    return route
+
+
+def _configured_acp_workspace_route() -> Optional[Dict[str, Any]]:
+    """Load the optional session-scoped workspace route from profile config."""
+    from hermes_cli.config import read_raw_config
+
+    config = read_raw_config()
+    acp_config = config.get("acp", {})
+    if not isinstance(acp_config, dict):
+        raise ValueError("Invalid acp config: expected a mapping")
+    return _validated_acp_workspace_route(
+        acp_config.get("workspace"),
+        source="acp.workspace",
+    )
+
+
+def _register_task_cwd(
+    task_id: str,
+    cwd: str,
+    workspace_route: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Bind an ACP session to its editor cwd and optional SSH workspace."""
     if not task_id:
         return
+    overrides: Dict[str, Any] = {"cwd": _translate_acp_cwd(cwd)}
+    route = _validated_acp_workspace_route(
+        workspace_route,
+        source="ACP session workspace route",
+    )
+    if route is not None:
+        overrides.update(
+            {
+                "env_type": "ssh",
+                "ssh_host": route["host"],
+                "ssh_user": route["user"],
+                "ssh_port": route["port"],
+                "ssh_key": route["key"],
+                "ssh_sync": route["sync"],
+            }
+        )
     try:
         from tools.terminal_tool import register_task_env_overrides
-        register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
+
+        register_task_env_overrides(task_id, overrides)
     except Exception:
-        logger.debug("Failed to register ACP task cwd override", exc_info=True)
+        logger.debug("Failed to register ACP task workspace override", exc_info=True)
 
 
 def _expand_acp_enabled_toolsets(
@@ -174,6 +251,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    workspace_route: Optional[Dict[str, Any]] = None
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -213,17 +291,23 @@ class SessionManager:
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        workspace_route = _configured_acp_workspace_route()
+        _register_task_cwd(session_id, cwd, workspace_route)
+        try:
+            agent = self._make_agent(session_id=session_id, cwd=cwd)
+        except Exception:
+            _clear_task_cwd(session_id)
+            raise
         state = SessionState(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
+            workspace_route=workspace_route,
             cancel_event=threading.Event(),
         )
         with self._lock:
             self._sessions[session_id] = state
-        _register_task_cwd(session_id, cwd)
         self._persist(state)
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
@@ -260,22 +344,28 @@ class SessionManager:
             return None
 
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(
-            session_id=new_id,
-            cwd=cwd,
-            model=original.model or None,
-        )
+        workspace_route = copy.deepcopy(original.workspace_route)
+        _register_task_cwd(new_id, cwd, workspace_route)
+        try:
+            agent = self._make_agent(
+                session_id=new_id,
+                cwd=cwd,
+                model=original.model or None,
+            )
+        except Exception:
+            _clear_task_cwd(new_id)
+            raise
         state = SessionState(
             session_id=new_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
+            workspace_route=workspace_route,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
         )
         with self._lock:
             self._sessions[new_id] = state
-        _register_task_cwd(new_id, cwd)
         self._persist(state)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
@@ -361,7 +451,7 @@ class SessionManager:
         if state is None:
             return None
         state.cwd = cwd
-        _register_task_cwd(session_id, cwd)
+        _register_task_cwd(session_id, cwd, state.workspace_route)
         self._persist(state)
         return state
 
@@ -432,7 +522,9 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta: Dict[str, Any] = {"cwd": state.cwd}
+        if state.workspace_route is not None:
+            session_meta["workspace_route"] = state.workspace_route
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -452,7 +544,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -527,8 +619,9 @@ class SessionManager:
         if row.get("source") != "acp":
             return None
 
-        # Extract cwd from model_config.
+        # Extract cwd and workspace route from model_config.
         cwd = "."
+        workspace_route = None
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
@@ -538,6 +631,10 @@ class SessionManager:
                 meta = json.loads(mc)
                 if isinstance(meta, dict):
                     cwd = meta.get("cwd", ".")
+                    workspace_route = _validated_acp_workspace_route(
+                        meta.get("workspace_route"),
+                        source="persisted ACP workspace route",
+                    )
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
@@ -559,6 +656,7 @@ class SessionManager:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
+        _register_task_cwd(session_id, cwd, workspace_route)
         try:
             agent = self._make_agent(
                 session_id=session_id,
@@ -569,6 +667,7 @@ class SessionManager:
                 api_mode=restored_api_mode,
             )
         except Exception:
+            _clear_task_cwd(session_id)
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
 
@@ -577,12 +676,12 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
+            workspace_route=workspace_route,
             history=history,
             cancel_event=threading.Event(),
         )
         with self._lock:
             self._sessions[session_id] = state
-        _register_task_cwd(session_id, cwd)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -659,7 +758,8 @@ class SessionManager:
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
-        _register_task_cwd(session_id, cwd)
+        # Callers register the complete session workspace before agent creation
+        # so tool initialization sees the session-scoped backend.
 
         # Bounded wait for background MCP discovery so already-spawning fast
         # servers land in the agent's tool snapshot.  ACP entry.py fires

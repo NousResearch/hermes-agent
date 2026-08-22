@@ -122,13 +122,20 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
           // project labels it alternates with (`Home`, and whatever the user
           // named theirs) — profile keys are stored lowercase.
           label={
-            <SidebarRowLink
-              aria-label={t.profiles.switchToProfile(group.label)}
-              labelClassName="capitalize hover:text-foreground hover:underline"
-              onClick={() => selectProfile(group.id)}
-            >
-              {group.label}
-            </SidebarRowLink>
+            <>
+              <SidebarRowLink
+                aria-label={t.profiles.switchToProfile(group.label)}
+                labelClassName="capitalize hover:text-foreground hover:underline"
+                onClick={() => selectProfile(group.id)}
+              >
+                {group.label}
+              </SidebarRowLink>
+              {/* Session count, so the header answers "how busy is this bot?"
+                  at a glance even while the group is collapsed (#89347). */}
+              <span className="shrink-0 text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                {group.sessions.length}
+              </span>
+            </>
           }
           lead={
             <SidebarRowLead>

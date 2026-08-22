@@ -21,7 +21,43 @@ import type { Msg, Usage } from '../types.js'
 import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
+const SUBAGENT_FRAME_MS = 320
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const SUBAGENT_NODE_CYCLE = ['◌', '◔', '◑', '◕', '●', '◕', '◑', '◔'] as const
+const SUBAGENT_NODE_OFFSETS = [0, 1, 2, 1, 0, 1, 2, 1] as const
+
+export function subagentNodeFrame(count: number, tick: number) {
+  return Array.from({ length: Math.max(0, Math.floor(count)) }, (_, index) => {
+    const phase = (SUBAGENT_NODE_OFFSETS[index % SUBAGENT_NODE_OFFSETS.length] + tick) % SUBAGENT_NODE_CYCLE.length
+
+    return SUBAGENT_NODE_CYCLE[phase]
+  }).join('─')
+}
+
+export function subagentNodeStyle(glyph: string, t: Theme): { color: string; dim?: boolean } {
+  switch (glyph) {
+    case '◌':
+      return { color: t.color.muted, dim: true }
+
+    case '◔':
+      return { color: t.color.muted }
+
+    case '◑':
+      return { color: t.color.label }
+
+    case '◕':
+      return { color: t.color.primary }
+
+    case '●':
+      return { color: t.color.accent }
+
+    case '─':
+      return { color: t.color.border }
+
+    default:
+      return { color: t.color.muted }
+  }
+}
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
@@ -463,6 +499,29 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+export function AnimatedSubagentNodes({ children, count, t }: { children: string; count: number; t: Theme }) {
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(current => current + 1), SUBAGENT_FRAME_MS)
+
+    return () => clearInterval(id)
+  }, [])
+
+  const frame = tick === 0 ? children : subagentNodeFrame(count, tick)
+
+  return (
+    <Box flexShrink={0}>
+      <Text color={t.color.muted}>{' │ '}</Text>
+      {[...frame].map((glyph, index) => (
+        <Box flexShrink={0} key={index}>
+          <Text {...subagentNodeStyle(glyph, t)}>{glyph}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export function StatusRule({
   battery,
   focusView,
@@ -588,14 +647,15 @@ export function StatusRule({
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
-  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+  const subagentFrame = subagentNodeFrame(subagentCount, 0)
+  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(subagentFrame))
 
   // Parked-background reassurance: a top-level delegate_task runs in the
   // background, so the turn ends (idle) while the subagent keeps working and its
   // result re-enters as a fresh turn later. When idle with work still in flight,
   // spell out that the agent resumes on its own — no spinner, nothing to poll.
   // Width-budgeted like every tail segment, so it drops first on a tight
-  // terminal where ⛓ already carries the signal.
+  // terminal where the linked nodes already carry the signal.
   const resumeHintText =
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
@@ -724,9 +784,9 @@ export function StatusRule({
           </Text>
         ) : null}
         {showSubagents ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}⛓ {subagentCount}
-          </Text>
+          <AnimatedSubagentNodes count={subagentCount} t={t}>
+            {subagentFrame}
+          </AnimatedSubagentNodes>
         ) : null}
         {showResumeHint ? (
           <Text color={t.color.muted} dim wrap="truncate-end">

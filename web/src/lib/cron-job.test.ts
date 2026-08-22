@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCronJobPayload,
+  cronJobBaseUrlDisplay,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  cronJobModelDisplay,
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
@@ -102,6 +104,21 @@ describe("cronJobHasExecutionContent", () => {
     const payload = buildCronJobPayload(form({ prompt: "", skills: [], script: "" }));
 
     expect(cronJobHasExecutionContent(payload)).toBe(false);
+  });
+});
+
+describe("cron job assignment displays", () => {
+  it("distinguishes inherited assignments from pinned provider/model pairs", () => {
+    expect(cronJobModelDisplay({})).toBe("default");
+    expect(
+      cronJobModelDisplay({ provider: "openai-codex", model: "gpt-5.4-mini" }),
+    ).toBe("openai-codex/gpt-5.4-mini");
+  });
+
+  it("keeps endpoint overrides visible without surrounding whitespace", () => {
+    expect(
+      cronJobBaseUrlDisplay({ base_url: " https://example.invalid/v1 " }),
+    ).toBe("https://example.invalid/v1");
   });
 });
 

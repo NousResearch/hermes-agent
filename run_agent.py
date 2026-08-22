@@ -5810,13 +5810,55 @@ class AIAgent:
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         active_key = str(self.api_key or "").strip()
         if singleton_key and active_key and singleton_key != active_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; "
-                "skipping singleton force-refresh to avoid silent account swap. "
-                "Reactive credential rotation should go through the pool.",
+            # Intentional non-singleton credentials (manual pool entries for a
+            # different account, explicit api_key=) must NOT be rewritten onto
+            # the device_code singleton — that is a silent account swap.
+            # Leave those to credential-pool rotation.
+            #
+            # Long-lived Desktop agents can also hold an *orphan* access token
+            # that no longer matches any pool entry or the rotated singleton
+            # (xAI 403 unauthenticated:bad-credentials). Single-entry pools
+            # then return None from unmatched rotation and the session dies.
+            # On force recovery, adopt the current singleton only when the
+            # active key is not present in the bound pool (or there is no
+            # pool). Never force-mint here — that would burn a single-use
+            # refresh token for an agent that was not on the singleton.
+            active_in_pool = False
+            pool = getattr(self, "_credential_pool", None)
+            if pool is not None:
+                try:
+                    entries = pool.entries() if callable(getattr(pool, "entries", None)) else []
+                    active_in_pool = any(
+                        str(getattr(entry, "runtime_api_key", "") or "").strip() == active_key
+                        for entry in entries
+                    )
+                except Exception:
+                    active_in_pool = False
+            if active_in_pool or not force:
+                logger.debug(
+                    "%s singleton tokens differ from the active api_key; "
+                    "skipping singleton force-refresh to avoid silent account swap. "
+                    "Reactive credential rotation should go through the pool.",
+                    self.provider,
+                )
+                return False
+            base_url = str(singleton_now.get("base_url") or self.base_url or "").strip()
+            if not base_url:
+                return False
+            self.api_key = singleton_key
+            self.base_url = base_url.rstrip("/")
+            self._client_kwargs["api_key"] = self.api_key
+            self._client_kwargs["base_url"] = self.base_url
+            if not self._replace_primary_openai_client(
+                reason=f"{self.provider}_orphan_singleton_adopt"
+            ):
+                return False
+            logger.info(
+                "%s adopted current singleton credentials after orphan/stale "
+                "api_key mismatch (active key not in credential pool)",
                 self.provider,
             )
-            return False
+            return True
 
         try:
             if self.provider == "openai-codex":

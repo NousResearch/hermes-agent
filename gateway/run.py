@@ -5313,6 +5313,13 @@ class TurnRunner:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
             return
+        _raw_status_text = _redact_gateway_user_facing_secrets(str(message or ""))
+        _provider_error_status_reply = None
+        if (
+            _gateway_platform_value(ctx.source.platform) == "telegram"
+            and _looks_like_gateway_provider_error(_raw_status_text)
+        ):
+            _provider_error_status_reply = _gateway_provider_error_reply(_raw_status_text)
         prepared_message = _prepare_gateway_status_message(
             ctx.source.platform,
             event_type,
@@ -5334,6 +5341,11 @@ class TurnRunner:
         )
         if _fut is None:
             return
+        if (
+            _provider_error_status_reply
+            and prepared_message == _provider_error_status_reply
+        ):
+            ctx._provider_error_status_futures.append((prepared_message, _fut))
         if ctx._cleanup_progress:
             def _track_status_id(fut) -> None:
                 try:
@@ -20896,7 +20908,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
+            _already_visible_provider_error = bool(
+                agent_result.get("status_provider_error_delivered")
+            )
+            if agent_result.get("already_sent") and (
+                not agent_result.get("failed") or _already_visible_provider_error
+            ):
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
@@ -29023,6 +29040,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         _notify_task = asyncio.create_task(_notify_long_running())
 
+        async def _provider_error_status_already_delivered(final_text: str) -> bool:
+            if not turn_ctx._provider_error_status_futures or not final_text:
+                return False
+            if _gateway_platform_value(source.platform) != "telegram":
+                return False
+            final_reply = _sanitize_gateway_final_response(source.platform, final_text)
+            for status_reply, fut in list(turn_ctx._provider_error_status_futures):
+                if status_reply != final_reply:
+                    continue
+                try:
+                    if not fut.done():
+                        result = await asyncio.wait_for(
+                            asyncio.wrap_future(fut),
+                            timeout=2.0,
+                        )
+                    else:
+                        result = fut.result()
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    continue
+                if getattr(result, "success", False):
+                    return True
+            return False
+
         def _stream_confirmed_final_delivery(
             consumer,
             final_text: str,
@@ -29831,6 +29873,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
+        if isinstance(response, dict):
+            _provider_error_final = response.get("final_response") or ""
+            if await _provider_error_status_already_delivered(_provider_error_final):
+                logger.info(
+                    "Suppressing normal final send for session %s: provider error already delivered as threaded status.",
+                    session_key or "?",
+                )
+                response["already_sent"] = True
+                response["status_provider_error_delivered"] = True
+
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"

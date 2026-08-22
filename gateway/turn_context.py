@@ -143,3 +143,7 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # Provider-error status send futures, tracked so the final-response path
+    # can avoid sending the same sanitized error a second time.
+    _provider_error_status_futures: List[tuple] = field(default_factory=list)

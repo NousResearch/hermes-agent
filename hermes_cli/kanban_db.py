@@ -8023,6 +8023,11 @@ class DispatchResult:
     """Task ids requeued by :func:`reconcile_orphaned_running` this tick —
     ``running`` cards whose claim bookkeeping was broken (no valid claim,
     dead/gone worker). See the reconciliation pass for details."""
+    reconciled_runs: list[int] = field(default_factory=list)
+    """Detached ``task_runs`` ids closed by
+    :func:`reconcile_stale_task_runs`. These are run rows still marked
+    ``running`` after their task left the running phase or moved to a newer
+    run; the task row itself is never moved by this repair."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -8675,6 +8680,72 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
+def reconcile_stale_task_runs(conn: sqlite3.Connection) -> list[int]:
+    """Close detached ``running`` run rows without changing their task.
+
+    A terminal/block/recovery transition is supposed to close the active run,
+    but older databases and interrupted writers can leave a ``task_runs`` row
+    marked ``running`` after the task has left that run. Card-level recovery
+    cannot see this debt because the owning task may already be blocked or
+    terminal.
+
+    Reconciliation is conservative: a row is eligible only when it is no
+    longer the current run of a running task, and a recorded live PID defers
+    repair. The guarded run update and ``run_reconciled`` audit event commit in
+    one transaction. The task's workflow state is never modified.
+    """
+    now = int(time.time())
+    reconciled: list[int] = []
+    rows = conn.execute(
+        "SELECT r.id AS run_id, r.task_id, r.worker_pid, "
+        "       t.status AS task_status, t.current_run_id "
+        "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.status = 'running' AND r.ended_at IS NULL "
+        "  AND (t.status != 'running' OR t.current_run_id IS NOT r.id) "
+        "ORDER BY r.id"
+    ).fetchall()
+    for row in rows:
+        run_id = int(row["run_id"])
+        pid = row["worker_pid"]
+        if pid and _pid_alive(int(pid)):
+            _log.debug(
+                "kanban reconcile: detached run %s still has live pid %s — deferring",
+                run_id, pid,
+            )
+            continue
+        reason = (
+            "task_not_running"
+            if row["task_status"] != "running"
+            else "superseded_run"
+        )
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE task_runs SET status='reconciled', outcome='reconciled', "
+                "ended_at=?, error=COALESCE(error, ?), claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL "
+                "WHERE id=? AND status='running' AND ended_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=task_runs.task_id "
+                "AND (t.status != 'running' OR t.current_run_id IS NOT task_runs.id))",
+                (now, f"stale run reconciliation: {reason}", run_id),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                row["task_id"],
+                "run_reconciled",
+                {
+                    "reason": reason,
+                    "task_status": row["task_status"],
+                    "prior_current_run_id": row["current_run_id"],
+                    "worker_pid": int(pid) if pid else None,
+                },
+                run_id=run_id,
+            )
+            reconciled.append(run_id)
+    return reconciled
 
 
 def reconcile_orphaned_running(
@@ -9944,6 +10015,9 @@ def _dispatch_once_locked(
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     if reconcile_orphans:
+        # Run-level reconciliation is distinct from card-level orphan repair:
+        # close detached run rows without moving already-blocked/terminal tasks.
+        result.reconciled_runs = reconcile_stale_task_runs(conn)
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
         # bookkeeping is broken (no valid claim, dead/gone worker) that the
         # TTL/crash/stale paths can never see. See reconcile_orphaned_running.

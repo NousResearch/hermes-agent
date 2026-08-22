@@ -104,6 +104,149 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
     return None
 
 
+# Marker the recheck trailer prints the landed URL behind. Long and unlikely
+# to occur in page text, so a page that echoes it cannot forge a "safe" URL:
+# the last occurrence wins (see _landed_url), and the trailer always runs
+# after any page output.
+_LANDED_URL_MARKER = "__HERMES_BROWSER_EXEC_LANDED_URL__:"
+
+# Env keys the model can control via the first (untrusted) invocation and
+# that may trigger harness/workspace bootstrap code auto-loading on a NEW
+# subprocess (ref. the harness's $BH_AGENT_WORKSPACE/agent_helpers.py seam).
+# The trusted probe must not inherit these, or the model could poison its
+# js/print helpers the same way it can the main script.
+_MODEL_CONTROLLED_PROBE_ENV = frozenset({
+    "BH_AGENT_WORKSPACE",
+    "BU_WORKSPACE",
+})
+
+# Matches ONLY the trailer's landing-report line: the marker immediately
+# followed by an absolute http(s) URL. Used to strip exactly that line from
+# output without touching page content that happens to echo the marker.
+_URL_RECHECK_REPORT_RE = re.compile(
+    r"^" + re.escape(_LANDED_URL_MARKER) + r"\s*https?://\S+$"
+)
+
+# Appended to exec code so the *executed* navigation target can be checked,
+# not just the literals the pre-check could see in the source. Mirrors
+# browser_tool's _current_page_private_url, which reads window.location.href
+# after an eval for exactly this reason. Wrapped in try/except so a session
+# with no page open (or a helper that raises) degrades to "no marker" rather
+# than turning a working exec into an error.
+# The marker literal is split across a concatenation so the trailer's own
+# source text never contains it: the code is echoed back by some CLI modes,
+# and a source echo must not read as a landing report.
+_URL_RECHECK_TRAILER = (
+    "\ntry:\n"
+    "    print({head!r} + {tail!r} + str(js('window.location.href')))\n"
+    "except Exception:\n"
+    "    pass\n"
+).format(head=_LANDED_URL_MARKER[:16], tail=_LANDED_URL_MARKER[16:])
+
+
+# ---------------------------------------------------------------
+# Trusted-boundary landed-URL observation (P1 review).
+#
+# The appended in-script trailer runs in the SAME namespace as the
+# model's untrusted code, so the model can rebind js/print/str and forge
+# a safe landing marker. The authoritative observation must therefore be
+# produced OUTSIDE that namespace: run a SECOND Browser Use subprocess
+# whose only input is Hermes-authored probe code (no model code), against
+# the same session/CDP. That fresh namespace cannot be rebound, so its
+# reported window.location.href is a trusted attestation of browser state.
+# ---------------------------------------------------------------
+def _trusted_landing_probe_code() -> str:
+    """Hermes-authored probe reading window.location.href in a fresh CLI.
+
+    No caller code is present, so js/print/str are the CLI's own builtins
+    and cannot have been rebound. The marker is produced by trusted code.
+    """
+    head = _LANDED_URL_MARKER[:16]
+    tail = _LANDED_URL_MARKER[16:]
+    return (
+        f"print({head!r} + {tail!r} + str(js('window.location.href')))"
+    )
+
+
+def _trusted_landed_url(cmd, env, popen_extra, timeout) -> Optional[str]:
+    """Run a fresh, trusted CLI probe and return the observed landed URL.
+
+    P1 hardening: the probe MUST NOT inherit any model-controlled workspace
+    or bootstrap state. ``BH_AGENT_WORKSPACE`` (and the harness's auto-loaded
+    ``agent_helpers.py`` seam) carry code the model can write in the first
+    invocation — loading it into the probe would let the model poison the
+    ``js``/``print`` helpers again. So this strips those env keys before the
+    probe runs, leaving only the trusted, Hermes-authored probe code with the
+    CLI's own builtins. Returns None if the probe could not run or reported
+    nothing trustworthy (fail-open: no result means no claim).
+    """
+    probe_env = dict(env)
+    for key in _MODEL_CONTROLLED_PROBE_ENV:
+        probe_env.pop(key, None)
+    probe = _trusted_landing_probe_code()
+    try:
+        p = subprocess.run(
+            cmd, input=probe, capture_output=True,
+            text=True, timeout=timeout, env=probe_env, **popen_extra,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return _landed_url(p.stdout)
+
+
+def _with_url_recheck(code: str) -> str:
+    """Append the landed-URL probe when doing so cannot break the caller's code.
+
+    ``ast.parse`` succeeding means the code is a syntactically complete
+    module, so appending another top-level statement is guaranteed to keep it
+    parseable. Code that does not parse is returned unchanged: it cannot
+    navigate anywhere, and mangling it would replace the CLI's own syntax
+    error with a confusing one.
+    """
+    import ast
+
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return code
+    return code + _URL_RECHECK_TRAILER
+
+
+def _landed_url(stdout: str) -> Optional[str]:
+    """Return the URL the browser actually ended on, or None if unknown.
+
+    Only an absolute http(s) URL counts. Anything else — a helper that
+    returned None, a truncated line, page text that happens to carry the
+    marker — is treated as "probe produced nothing", which fails open rather
+    than blocking on a value that was never a navigation target.
+    """
+    landed = None
+    for line in (stdout or "").splitlines():
+        idx = line.rfind(_LANDED_URL_MARKER)
+        if idx == -1:
+            continue
+        candidate = line[idx + len(_LANDED_URL_MARKER):].strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            landed = candidate
+    return landed
+
+
+def _strip_landed_url_marker(stdout: str) -> str:
+    """Drop the probe's landing-report line so it stays invisible.
+
+    Only the line that carried the *landed URL* (the trailer's actual
+    output) is removed. A content line that merely happens to contain the
+    marker string is preserved — it is page data, not the probe report,
+    and dropping it would lose legitimate output (Point 3 review).
+    """
+    if _LANDED_URL_MARKER not in (stdout or ""):
+        return stdout
+    kept = [ln for ln in stdout.splitlines()
+            if not (_URL_RECHECK_REPORT_RE.match(ln))]
+    stripped = "\n".join(kept)
+    return stripped + "\n" if stdout.endswith("\n") and stripped else stripped
+
+
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
 
@@ -552,7 +695,22 @@ def browser_exec(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
 ):
-    """Run Python code through the browser-use CLI, and return its output"""
+    """Run Python code through the browser-use CLI, and return its output
+
+    Security posture (Point 1 review — residual gap, documented):
+    - ``_blocked_url_in_code`` checks URL *literals* in the source up front.
+    - ``_with_url_recheck`` appends a trailer that reports the *final* landed
+      URL (window.location.href) after execution; if that landing is blocked,
+      the whole output is withheld.
+    - This is an END-STATE check, not a per-navigation one. Model-authored
+      code could navigate to an internal/IMDS address, ``print()`` its content
+      (stdout is the exfiltration channel), then navigate back to a public URL
+      before the trailer runs — the final landing looks safe while the data
+      already reached stdout. The guard narrows (catches constructed URLs and
+      redirects that end on a blocked address) but does NOT close this
+      intermediate-hop exfiltration gap. Do not treat it as full SSRF
+      coverage.
+    """
     from tools.registry import tool_error, tool_result
 
     if not code or not code.strip():
@@ -631,7 +789,7 @@ def browser_exec(
     try:
         proc = subprocess.run(
             cmd,
-            input=code,
+            input=_with_url_recheck(code),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -649,10 +807,58 @@ def browser_exec(
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
+    # Post-navigation recheck. The pre-check can only see URL literals in the
+    # source; this observes where the browser actually ended up. Per the P1
+    # review, the observation MUST come from outside the model's namespace:
+    # the in-script trailer can be forged by rebinding js/print/str, and the
+    # model could poison the workspace agent_helpers.py the probe would
+    # otherwise auto-load, so the authoritative URL is taken from a SECOND,
+    # trusted CLI subprocess that runs only Hermes-authored probe code and
+    # INHERITS NO model-controlled workspace/bootstrap env (so a planted
+    # helper cannot rewrite it). Output is withheld rather than annotated.
+    landed = _trusted_landed_url(cmd, env, popen_extra, timeout)
+    if landed:
+        # Force SSRF protection for browser_exec regardless of backend
+        # posture. evaluate_url_safety() gates the private-address block on
+        # `not _is_local_backend()` — correct for browser_navigate, which is
+        # a single navigation under the operator's own browser, but NOT for
+        # browser_exec, which pipes arbitrary model-authored Python into the
+        # CLI. The model's code (not the operator) decides the navigation
+        # target, so a private-IP or IMDS landing must be blocked even when
+        # the browser itself is local. This is the same ungated check
+        # _current_page_private_url() uses.
+        from tools.browser_tool import _is_always_blocked_url, _is_safe_url
+        if _is_always_blocked_url(landed):
+            logger.warning(
+                "browser_exec output withheld: page ended on a URL the "
+                "navigation policy rejects (%s)", landed,
+            )
+            return tool_error(
+                f"Blocked: URL targets a cloud metadata endpoint — the "
+                "browser ended on this address after the code ran, so the "
+                "page output was withheld. The pre-execution check only sees "
+                "URL literals in the code; this was reached at runtime (a "
+                "constructed URL, or a redirect from the page that was "
+                "opened)."
+            )
+        if not _is_safe_url(landed):
+            logger.warning(
+                "browser_exec output withheld: page ended on a URL the "
+                "navigation policy rejects (%s)", landed,
+            )
+            return tool_error(
+                f"Blocked: URL targets a private or internal address — the "
+                "browser ended on this address after the code ran, so the "
+                "page output was withheld. The pre-execution check only sees "
+                "URL literals in the code; this was reached at runtime (a "
+                "constructed URL, or a redirect from the page that was "
+                "opened)."
+            )
+
     result = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": proc.stdout,
+        "output": _strip_landed_url_marker(proc.stdout),
     }
     if workspace:
         result["workspace"] = workspace

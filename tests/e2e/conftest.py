@@ -75,6 +75,77 @@ def _ensure_discord_mock():
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
     )
+
+    # ui.View / ui.Button / ui.Select must be REAL classes, and ui.button a
+    # real pass-through decorator.  This conftest imports the production
+    # DiscordAdapter module at import time, and that import runs
+    # _define_discord_view_classes(), which does `class ExecApprovalView(
+    # discord.ui.View)`.  Left as MagicMock auto-attributes, every component
+    # view class (ExecApprovalView / SlashConfirmView / UpdatePromptView /
+    # ModelPickerView / ClarifyChoiceView) is created as a MagicMock instead
+    # of a class — and because the adapter module is then cached in
+    # sys.modules with those MagicMocks bound, every later test file in the
+    # same process inherits them (tests/e2e sorts before tests/gateway, so
+    # tests/gateway/conftest.py's comprehensive mock arrives too late to
+    # help).  Mirrors the canonical mock in tests/gateway/conftest.py.
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+
+        def add_item(self, item):
+            self.children.append(item)
+
+        def remove_item(self, item):
+            if item in self.children:
+                self.children.remove(item)
+
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+
+    discord_mod.ui = SimpleNamespace(
+        View=_FakeView,
+        Button=_FakeButton,
+        Select=_FakeSelect,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    discord_mod.SelectOption = _FakeSelectOption
+    discord_mod.ButtonStyle = SimpleNamespace(
+        success=1, primary=2, secondary=2, danger=3,
+        green=1, grey=2, blurple=2, red=3,
+    )
+    discord_mod.Color = SimpleNamespace(
+        orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        gold=lambda: 7,
+    )
     discord_mod.opus.is_loaded.return_value = True
 
     ext_mod = MagicMock()

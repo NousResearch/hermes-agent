@@ -4936,8 +4936,13 @@ def heartbeat_claim(
         if cur.rowcount == 1:
             run_id = _current_run_id(conn, task_id)
             if run_id is not None:
+                # ``ended_at IS NULL`` guard (same as elsewhere): never
+                # write a new expiry onto a run row that has already been
+                # closed (reclaimed/archived/crashed), even if the task
+                # row still looks running (#76196).
                 conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    "UPDATE task_runs SET claim_expires = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
                     (expires, run_id),
                 )
             return True
@@ -7510,7 +7515,49 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    force: bool = False,
+    signal_fn=None,
+) -> bool:
+    """Archive a task, refusing to orphan a live running worker.
+
+    A task whose worker process is still alive is **not** archived unless
+    ``force=True`` (CLI ``--force``): archiving it would null the claim
+    while the worker keeps running, so its terminal ``complete``/``block``
+    handoff would be silently discarded (#76196).
+
+    With ``force=True`` the worker is terminated first via the same
+    best-effort path the dispatcher uses for reclaims
+    (:func:`_terminate_reclaimed_worker`). If a host-local worker survives
+    termination the archive is refused rather than risking an orphaned
+    process — mirroring the reclaim guard. An ``archived_while_running``
+    event (worker pid + termination metadata) is recorded for auditability.
+    """
+    # Pre-flight check outside the write txn: never flip DB rows on a task
+    # whose worker process is still alive unless the operator forced it.
+    live_worker: Optional[int] = None
+    termination: Optional[dict[str, Any]] = None
+    row = conn.execute(
+        "SELECT status, worker_pid, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is not None and row["status"] == "running" and row["worker_pid"]:
+        pid = int(row["worker_pid"])
+        if _pid_alive(pid):
+            if not force:
+                return False
+            live_worker = pid
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"], signal_fn=signal_fn,
+            )
+            if _worker_survived_termination(termination):
+                # Host-local worker we signalled is still alive; archiving
+                # now would orphan it. Keep the task running so the
+                # operator can retry (same guard as reclaim paths).
+                return False
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7528,7 +7575,19 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        if live_worker is not None:
+            payload: Optional[dict[str, Any]] = {
+                "worker_pid": live_worker,
+                "forced": True,
+            }
+            if termination:
+                payload.update(termination)
+            _append_event(
+                conn, task_id, "archived_while_running",
+                payload, run_id=run_id,
+            )
+        else:
+            _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.

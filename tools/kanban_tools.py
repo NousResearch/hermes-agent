@@ -1053,7 +1053,18 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            still_owner = kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            if not still_owner:
+                # Claim was revoked (task reclaimed, reassigned, or
+                # archived out from under us). Keep heartbeating would be
+                # pointless — the worker no longer owns the task, so its
+                # terminal handoff would be discarded. Signal the agent to
+                # stop immediately (#76196).
+                return tool_error(
+                    f"claim revoked for {tid}: the task was reclaimed, "
+                    "reassigned, or archived by an operator — stop working "
+                    "on this task immediately (do not complete or block it)"
+                )
 
             ok = kb.heartbeat_worker(
                 conn,

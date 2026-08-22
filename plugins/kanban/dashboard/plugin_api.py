@@ -935,6 +935,18 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
+                if not ok:
+                    # A live worker makes archive refuse; surface why
+                    # instead of the generic transition error (#76196).
+                    current = kanban_db.get_task(conn, task_id)
+                    if current is not None and current.status == "running":
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Cannot archive: task is running with a live "
+                                "worker (terminate/reclaim it first)"
+                            ),
+                        )
             elif s == "running":
                 raise HTTPException(
                     status_code=400,
@@ -1337,7 +1349,17 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     continue
                 if payload.archive:
                     if not kanban_db.archive_task(conn, tid):
-                        entry.update(ok=False, error="archive refused")
+                        # Live running workers refuse to archive; tell the
+                        # UI why instead of the generic refusal (#76196).
+                        entry.update(
+                            ok=False,
+                            error=(
+                                "archive refused: task is running with a "
+                                "live worker"
+                            )
+                            if task.status == "running"
+                            else "archive refused",
+                        )
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":

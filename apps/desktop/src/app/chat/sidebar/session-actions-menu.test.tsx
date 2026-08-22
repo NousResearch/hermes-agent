@@ -1,10 +1,27 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import type * as Nanostores from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { openProjectCreateMove } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
+
+// $projectDialog is a real nanostore atom in the app; recreate it here so the
+// openProjectCreateMove mock can drive it faithfully (vi.mock factories are
+// hoisted, so the atom must exist before the factory runs).
+const { $projectDialog } = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
+
+  return {
+    $projectDialog: atom<null | {
+      mode: 'create'
+      moveSessionAfter?: { profile?: null | string; sessionId: string }
+    }>(null)
+  }
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -41,6 +58,7 @@ vi.mock('@/i18n', () => ({
           moveNoProjects: 'No other projects',
           movedTo: (name: string) => `Moved to ${name}`,
           moveToProject: 'Move to project',
+          newButton: 'New project',
           noColor: 'No color'
         },
         row: {
@@ -76,8 +94,12 @@ vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/projects', () => ({
+  $projectDialog,
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
+  openProjectCreateMove: vi.fn((sessionId: string, profile?: null | string) => {
+    $projectDialog.set({ mode: 'create', moveSessionAfter: { profile, sessionId } })
+  }),
   projectIdForCwd: vi.fn(() => null),
   projectRootCwd: vi.fn(() => '')
 }))
@@ -121,6 +143,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  beforeEach(() => {
+    $projectDialog.set(null)
+  })
+
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
 
@@ -284,5 +310,59 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  // Opens the kebab menu, then the Move-to-project submenu (its trigger is a
+  // menuitem; clicking it toggles the Radix sub open).
+  async function openMoveToProjectSubmenu() {
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to project' }))
+  }
+
+  it('renders the New project item in Move to project even with no other targets', async () => {
+    renderMenu()
+    await openMoveToProjectSubmenu()
+
+    expect(await screen.findByRole('menuitem', { name: 'New project' })).toBeTruthy()
+
+    // The empty-state hint still shows below it, disabled.
+    const noProjects = screen.getByRole('menuitem', { name: 'No other projects' })
+    expect(noProjects.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('opens the create dialog with the row as the move-after target', async () => {
+    renderMenu()
+    await openMoveToProjectSubmenu()
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New project' }))
+
+    expect(openProjectCreateMove).toHaveBeenCalledWith('s1', undefined)
+    expect($projectDialog.get()).toEqual({
+      mode: 'create',
+      moveSessionAfter: { profile: undefined, sessionId: 's1' }
+    })
+  })
+
+  it('forwards the row profile to the create opener', async () => {
+    render(
+      <SessionActionsMenu profile="work" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+    await openMoveToProjectSubmenu()
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New project' }))
+
+    expect(openProjectCreateMove).toHaveBeenCalledWith('s1', 'work')
+    expect($projectDialog.get()).toEqual({
+      mode: 'create',
+      moveSessionAfter: { profile: 'work', sessionId: 's1' }
+    })
   })
 })

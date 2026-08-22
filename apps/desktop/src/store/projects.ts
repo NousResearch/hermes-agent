@@ -1132,21 +1132,42 @@ export interface ProjectDialogState {
   mode: 'add-folder' | 'create' | 'rename'
   projectId?: string
   name?: string
+  /** When set, a successful create also re-homes this session into the new
+   *  project (the Move-to-project submenu's "New project" flow). */
+  moveSessionAfter?: { profile?: null | string; sessionId: string }
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+// A backend that predates the projects.* RPC surface cannot create projects;
+// warn once per attempt instead of opening a dialog that is doomed to fail.
+function projectsCreateBlocked(): boolean {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
       message: translateNow('sidebar.projects.staleBackend')
     })
 
+    return true
+  }
+
+  return false
+}
+
+export function openProjectCreate(): void {
+  if (projectsCreateBlocked()) {
     return
   }
 
   $projectDialog.set({ mode: 'create' })
+}
+
+export function openProjectCreateMove(sessionId: string, profile?: null | string): void {
+  if (projectsCreateBlocked()) {
+    return
+  }
+
+  $projectDialog.set({ mode: 'create', moveSessionAfter: { sessionId, profile } })
 }
 
 export function openProjectRename(project: { id: string; name: string }): void {

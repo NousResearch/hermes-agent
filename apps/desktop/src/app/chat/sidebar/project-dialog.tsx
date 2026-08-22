@@ -18,13 +18,14 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $projectDialog,
   addProjectFolder,
   closeProjectDialog,
   createProject,
   generateProjectIdea,
+  moveSessionToProject,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
@@ -124,7 +125,25 @@ export function ProjectDialog() {
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
     if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+      // When the dialog was opened from the session menu's Move-to-project →
+      // New project item, keep the app's active scope where the user is
+      // (use: false) and re-home the session once the project exists.
+      const move = state?.moveSessionAfter
+
+      await runSubmit(async () => {
+        const created = await createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: !move })
+
+        if (created && move) {
+          try {
+            await moveSessionToProject(move.sessionId, created.id, move.profile)
+            notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(created.name || created.id) })
+          } catch (err) {
+            // The project exists regardless; surface the failed move and let
+            // runSubmit close the dialog (a create failure keeps it open).
+            notifyError(err, p.moveFailed)
+          }
+        }
+      })
     }
   }
 

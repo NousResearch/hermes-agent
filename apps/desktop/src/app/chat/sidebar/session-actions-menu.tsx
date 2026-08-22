@@ -31,7 +31,13 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  moveSessionToProject,
+  openProjectCreateMove,
+  projectIdForCwd,
+  projectRootCwd
+} from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -149,7 +155,17 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
-function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
+function MoveToProjectItems({
+  kit,
+  onOpenCreateProject,
+  sessionId,
+  profile
+}: {
+  kit: MenuKit
+  onOpenCreateProject: () => void
+  sessionId: string
+  profile?: string
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const tree = useStore($projectTree)
@@ -158,25 +174,33 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
 
-  if (targets.length === 0) {
-    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
-  }
-
   return (
     <>
-      {targets.map(node => (
-        <kit.Item
-          key={node.id}
-          onSelect={() => {
-            triggerHaptic('selection')
-            moveSessionToProject(sessionId, node.id, profile)
-              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
-              .catch(err => notifyError(err, p.moveFailed))
-          }}
-        >
-          {node.label}
-        </kit.Item>
-      ))}
+      <kit.Item
+        onSelect={() => {
+          triggerHaptic('selection')
+          onOpenCreateProject()
+        }}
+      >
+        {p.newButton}
+      </kit.Item>
+      {targets.length === 0 ? (
+        <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+      ) : (
+        targets.map(node => (
+          <kit.Item
+            key={node.id}
+            onSelect={() => {
+              triggerHaptic('selection')
+              moveSessionToProject(sessionId, node.id, profile)
+                .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
+                .catch(err => notifyError(err, p.moveFailed))
+            }}
+          >
+            {node.label}
+          </kit.Item>
+        ))
+      )}
     </>
   )
 }
@@ -487,7 +511,17 @@ function useSessionActions({
           <span>{t.sidebar.projects.moveToProject}</span>
         </kit.SubTrigger>
         <kit.SubContent>
-          <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+          <MoveToProjectItems
+            kit={kit}
+            onOpenCreateProject={() => {
+              // Same guard as Rename: keep Radix from restoring focus to the
+              // row trigger when the menu closes, or the dialog input loses it.
+              suppressCloseFocusRef.current = true
+              openProjectCreateMove(sessionId, profile)
+            }}
+            profile={profile}
+            sessionId={sessionId}
+          />
         </kit.SubContent>
       </kit.Sub>
       {tabItems.length > 0 && (

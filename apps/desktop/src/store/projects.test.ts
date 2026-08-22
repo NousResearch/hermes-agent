@@ -8,6 +8,7 @@ import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaul
 
 import {
   $activeProjectId,
+  $projectDialog,
   $projects,
   $projectScope,
   $projectsRpcAvailable,
@@ -23,6 +24,7 @@ import {
   exitProjectScope,
   fetchProjectSessions,
   openProjectCreate,
+  openProjectCreateMove,
   pickProjectFolder,
   projectIdForCwd,
   projectNameForCwd,
@@ -490,6 +492,43 @@ describe('projects RPC capability', () => {
 
     openProjectCreate()
 
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
+    )
+  })
+})
+
+describe('openProjectCreateMove', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projectDialog.set(null)
+    $projectsRpcAvailable.set(null)
+  })
+
+  it('opens the create dialog with the session pinned as the move-after target', () => {
+    openProjectCreateMove('sess-1', 'work')
+
+    expect($projectDialog.get()).toEqual({
+      mode: 'create',
+      moveSessionAfter: { profile: 'work', sessionId: 'sess-1' }
+    })
+  })
+
+  it('passes an absent profile through (local-profile rows)', () => {
+    openProjectCreateMove('sess-1')
+
+    expect($projectDialog.get()).toEqual({
+      mode: 'create',
+      moveSessionAfter: { profile: undefined, sessionId: 'sess-1' }
+    })
+  })
+
+  it('honors the stale-backend guard like openProjectCreate', () => {
+    $projectsRpcAvailable.set(false)
+
+    openProjectCreateMove('sess-1')
+
+    expect($projectDialog.get()).toBeNull()
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
     )

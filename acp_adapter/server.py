@@ -2589,6 +2589,7 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                existing_agent=state.agent,
             )
             self.session_manager.save_session(session_id)
             logger.info(

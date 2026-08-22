@@ -608,6 +608,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        existing_agent: Any = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -656,8 +657,26 @@ class SessionManager:
                     "args": list(runtime.get("args") or []),
                 }
             )
-        except Exception:
-            logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+        except Exception as e:
+            logger.error(
+                "ACP session failed to resolve runtime provider: %s", e, exc_info=True
+            )
+            if existing_agent is not None:
+                # Fall back to the existing agent's provider configuration
+                logger.info("ACP session falling back to existing agent's provider")
+                kwargs.update(
+                    {
+                        "provider": getattr(existing_agent, "provider", None),
+                        "api_mode": api_mode or getattr(existing_agent, "api_mode", None),
+                        "base_url": base_url or getattr(existing_agent, "base_url", None),
+                        "api_key": getattr(existing_agent, "api_key", None),
+                        "command": getattr(existing_agent, "command", None),
+                        "args": list(getattr(existing_agent, "args", []) or []),
+                    }
+                )
+            else:
+                # Re-raise the exception if no fallback agent is available
+                raise
 
         _register_task_cwd(session_id, cwd)
 

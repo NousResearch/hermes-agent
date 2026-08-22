@@ -2600,7 +2600,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-            if fb_provider == "openai-codex":
+            if fb_provider in {"openai-codex", "xai-oauth"}:
+                # xai-oauth serves grok models via /v1/responses only — the
+                # primary path pins codex_responses for it
+                # (runtime_provider.py); the fallback path must match or every
+                # request lands on /chat/completions and 404s.
                 fb_api_mode = "codex_responses"
             elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
                 # Portal is dual-wire: anthropic/* must land on /v1/messages.

@@ -799,6 +799,144 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.message_type.value, "command")
         self.assertEqual(event.text, "/help test")
 
+    def test_inbound_thread_message_populates_source_message_id_anchor(self):
+        """A topic/thread inbound message must populate source.message_id
+        with a stable om_ thread anchor (the topic root) so synthetic /
+        resumed sends (async-delegation completions, terminal background
+        notifications) route into the topic via the reply API instead of an
+        invalid create-by-thread-id path."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt_topic_abc",
+            root_id="om_root_msg",
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"hi in topic"}',
+            message_id="om_user_msg",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_user_msg",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        # source.message_id carries the topic root, not the omt_ thread id.
+        self.assertEqual(event.source.thread_id, "omt_topic_abc")
+        self.assertEqual(event.source.message_id, "om_root_msg")
+        # event.reply_to_message_id is unchanged — still the root for context.
+        self.assertEqual(event.reply_to_message_id, "om_root_msg")
+
+    def test_inbound_thread_seed_message_populates_source_message_id_self(self):
+        """A seed message (the first message of a new topic, no root_id yet)
+        populates source.message_id with the message itself — it IS the root."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="omt_topic_new",
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"new topic"}',
+            message_id="om_seed_msg",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_seed_msg",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.message_id, "om_seed_msg")
+
+    def test_audio_thread_without_anchor_resolves_message_before_send(self):
+        """Removing create-by-thread-id must not bypass the audio fallback.
+
+        Audio sends without a captured anchor resolve a real om_ message first
+        and enter the reply API path instead of succeeding as a top-level chat
+        create before the old 99992402 retry can run.
+        """
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = Mock(spec=FeishuAdapter)
+        adapter._client = Mock()
+        adapter._resolve_outbound_file_routing.return_value = ("opus", "audio")
+        adapter._get_audio_duration_ms.return_value = 250
+        adapter._build_file_upload_body.return_value = object()
+        adapter._build_file_upload_request.return_value = object()
+        adapter._run_blocking = AsyncMock(
+            return_value=SimpleNamespace(success=lambda: True)
+        )
+        adapter._extract_response_field.return_value = "file_key"
+        adapter._fetch_last_message_in_thread = AsyncMock(
+            return_value="om_last_in_thread"
+        )
+        adapter._feishu_send_with_retry = AsyncMock(
+            return_value=SimpleNamespace(success=lambda: True)
+        )
+        adapter._response_succeeded.return_value = True
+        adapter._finalize_send_result.return_value = SimpleNamespace(success=True)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audio_path = Path(tmp_dir) / "voice.ogg"
+            audio_path.write_bytes(b"opus")
+            result = asyncio.run(
+                FeishuAdapter._send_uploaded_file_message(
+                    adapter,
+                    chat_id="oc_main_chat",
+                    file_path=str(audio_path),
+                    reply_to=None,
+                    metadata={"thread_id": "omt_topic_abc"},
+                    outbound_message_type="audio",
+                )
+            )
+
+        self.assertTrue(result.success)
+        adapter._fetch_last_message_in_thread.assert_awaited_once_with(
+            "omt_topic_abc"
+        )
+        adapter._feishu_send_with_retry.assert_awaited_once()
+        send_kwargs = adapter._feishu_send_with_retry.await_args.kwargs
+        self.assertEqual(send_kwargs["reply_to"], "om_last_in_thread")
+        self.assertEqual(send_kwargs["metadata"], {"thread_id": "omt_topic_abc"})
+
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
@@ -2465,5 +2603,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

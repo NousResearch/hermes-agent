@@ -175,6 +175,81 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_event_carries_message_id_single():
+    """Single-task dispatch threads message_id onto the completion event so
+    the synthetic re-entry routes into the original topic/thread via the
+    platform reply API."""
+    def runner():
+        return {"status": "completed", "summary": "ok", "api_calls": 1,
+                "duration_seconds": 1.0, "model": "m"}
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(message_id="om_thread_root")
+    try:
+        res = ad.dispatch_async_delegation(
+            goal="g", context=None, toolsets=None, role="leaf", model="m",
+            session_key="agent:main:feishu:group:oc_chat:omt_topic",
+            runner=runner, max_async_children=3,
+        )
+    finally:
+        clear_session_vars(tokens)
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt.get("message_id") == "om_thread_root"
+
+
+def test_completion_event_carries_message_id_batch():
+    """Batch dispatch threads message_id onto the combined completion event."""
+    def runner():
+        return {"results": [{"status": "completed", "summary": "ok"}],
+                "total_duration_seconds": 1.0}
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(message_id="om_thread_root")
+    try:
+        res = ad.dispatch_async_delegation_batch(
+            goals=["g1", "g2"], context=None, toolsets=None, role="orchestrator",
+            model="m", session_key="agent:main:feishu:group:oc_chat:omt_topic",
+            runner=runner, max_async_children=3,
+        )
+    finally:
+        clear_session_vars(tokens)
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt.get("is_batch") is True
+    assert evt.get("message_id") == "om_thread_root"
+
+
+def test_completion_event_message_id_defaults_empty():
+    """When no message_id is supplied (CLI / cron / pre-anchor sessions),
+    the event carries an empty string, not a missing key — the gateway reads
+    it unconditionally and an absent key would raise."""
+    def runner():
+        return {"status": "completed", "summary": "ok", "api_calls": 0,
+                "duration_seconds": 0.0, "model": "m"}
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(message_id="")
+    try:
+        ad.dispatch_async_delegation(
+            goal="g", context=None, toolsets=None, role="leaf", model="m",
+            session_key="", runner=runner, max_async_children=3,
+        )
+    finally:
+        clear_session_vars(tokens)
+    evt = _drain_one()
+    assert evt is not None
+    assert "message_id" in evt
+    assert evt["message_id"] == ""
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -824,4 +899,3 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
     assert banner_pos > clean_pos
-

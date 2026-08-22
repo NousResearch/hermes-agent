@@ -3346,14 +3346,29 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        root_id = getattr(message, "root_id", None)
+        thread_id = getattr(message, "thread_id", None) or root_id or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
+            or root_id
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        # Feishu has no "send by thread_id" API — a message lands in a topic
+        # only via the reply API with reply_in_thread=true against an ``om_``
+        # message id.  Thread replies on real inbound messages route off
+        # ``event.reply_to_message_id``; synthetic / resumed sends (async
+        # delegation completions, terminal background notifications, cron
+        # deliveries) only see ``event.message_id`` plus ``source.message_id``
+        # (the latter is persisted on the session origin and rehydrated by the
+        # gateway).  Populate ``source.message_id`` with a stable thread anchor
+        # — the topic root when present, otherwise the message itself (which
+        # IS the root for a seed message) — so every downstream path that
+        # resolves a reply anchor for a Feishu thread can find a valid ``om_``
+        # id instead of falling into an invalid ``receive_id_type=thread_id``
+        # create branch.
+        thread_reply_anchor = root_id or message_id
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3385,6 +3400,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=thread_reply_anchor,
         )
         normalized = MessageEvent(
             text=text,
@@ -4748,43 +4764,51 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
+                payload = json.dumps({"file_key": file_key}, ensure_ascii=False)
+                send_reply_to = reply_to
+                resolved_thread_anchor = False
+                if (
+                    resolved_message_type == "audio"
+                    and (metadata or {}).get("thread_id")
+                    and not send_reply_to
+                ):
+                    # Audio previously relied on the invalid thread_id create
+                    # request failing with 99992402 before resolving a real
+                    # om_ reply anchor. Resolve first now that anchorless
+                    # threaded sends correctly avoid that invalid API call.
+                    resolved_thread_anchor = True
+                    send_reply_to = (metadata or {}).get("reply_to_message_id")
+                    if not send_reply_to:
+                        send_reply_to = await self._fetch_last_message_in_thread(
+                            (metadata or {}).get("thread_id")
+                        )
+                    if send_reply_to:
+                        logger.info("[Feishu] Audio: sending via reply API in thread")
+
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
+                    payload=payload,
+                    reply_to=send_reply_to,
+                    # No valid thread anchor means there is no legal threaded
+                    # request. Send top-level directly instead of first
+                    # emitting receive_id_type=thread_id and waiting for the
+                    # server to reject it.
+                    metadata=metadata if send_reply_to or not resolved_thread_anchor else None,
                 )
-                # Audio messages may fail with 99992402 when using thread_id routing.
-                # Try replying to the last message in the thread, then fall back to chat_id.
-                if (not self._response_succeeded(message_response)
-                        and getattr(message_response, "code", None) == 99992402
-                        and resolved_message_type == "audio"
-                        and (metadata or {}).get("thread_id")):
-                    # Try reply API with thread_id as reply anchor
-                    thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                    if not thread_msg_id:
-                        thread_msg_id = await self._fetch_last_message_in_thread(
-                            (metadata or {}).get("thread_id")
-                        )
-                    if thread_msg_id:
-                        logger.info("[Feishu] Audio: retrying via reply API in thread")
-                        message_response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=resolved_message_type,
-                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                            reply_to=thread_msg_id,
-                            metadata=metadata,
-                        )
-                    if not self._response_succeeded(message_response):
-                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                        message_response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=resolved_message_type,
-                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                            reply_to=None,
-                            metadata=None,
-                        )
+                if (
+                    resolved_thread_anchor
+                    and send_reply_to
+                    and not self._response_succeeded(message_response)
+                ):
+                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                    message_response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type=resolved_message_type,
+                        payload=payload,
+                        reply_to=None,
+                        metadata=None,
+                    )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -4835,34 +4859,45 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
+        # No reply anchor available.  Feishu's create-message API only
+        # accepts receive_id_type in {open_id, union_id, user_id, email,
+        # chat_id} — there is NO ``thread_id`` receive_id_type, so a topic
+        # message cannot be created by threading off the ``omt_`` thread id.
+        # Landing in a topic requires the reply API above against a real
+        # ``om_`` message id.  When a threaded send reaches this point anyway
+        # (a synthetic / resumed event whose source.message_id and metadata
+        # both lacked an anchor), fall back to a top-level chat create and
+        # warn loudly rather than emitting an invalid ``receive_id_type=
+        # thread_id`` request that the server rejects with
+        # ``[99992402] field validation failed``.  Thread context is lost on
+        # this fallback, which is strictly better than a hard send failure —
+        # the routing layer is expected to keep source.message_id populated
+        # so this branch stays unreached in normal operation.
+        if (metadata or {}).get("thread_id") and not effective_reply_to:
+            logger.warning(
+                "[Feishu] Thread send with no reply anchor for chat %s thread %s; "
+                "falling back to top-level chat send (thread context will be lost). "
+                "Ensure the inbound source.message_id and async-delegation / "
+                "terminal notification message_id are populated so threaded "
+                "sends route via the reply API.",
+                chat_id,
+                (metadata or {}).get("thread_id"),
             )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

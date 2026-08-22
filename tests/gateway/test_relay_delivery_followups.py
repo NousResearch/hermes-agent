@@ -375,13 +375,14 @@ async def test_disconnect_idempotent_second_pass():
 
 
 # ---------------------------------------------------------------------------
-# 6. Durable routing origin: scope_id survives dispatch -> restart -> replay
+# 6. Durable routing origin survives dispatch -> restart -> replay
 # ---------------------------------------------------------------------------
 
-def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
+def test_durable_dispatch_persists_and_recovers_routing_origin(tmp_path, monkeypatch):
     """End-to-end restart shape: dispatch with a scoped session context bound,
     simulate owner death, recover — the recovered completion event must carry
-    scope_id/user_id, and the reconstructed SessionSource must prime them."""
+    scope_id/user_id/message_id, and the reconstructed event must preserve
+    both relay identity and the platform reply anchor."""
     import tools.async_delegation as ad
     from gateway.session_context import clear_session_vars, set_session_vars
 
@@ -394,6 +395,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
         chat_type="group",
         user_id="U9",
         scope_id="G777",
+        message_id="om_thread_root",
         session_key="agent:main:discord:group:C123:U9",
     )
     try:
@@ -410,6 +412,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
         assert record.get("scope_id") == "G777", (
             "dispatch-time capture must snapshot HERMES_SESSION_SCOPE_ID"
         )
+        assert record.get("message_id") == "om_thread_root"
         ad._persist_dispatch(record)
     finally:
         clear_session_vars(tokens)
@@ -432,6 +435,9 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
         "relay egress would be declined by the connector's tenant guard"
     )
     assert evt.get("user_id") == "U9"
+    assert evt.get("message_id") == "om_thread_root", (
+        "recovered completion event lost the platform reply anchor"
+    )
 
     # The gateway-side fallback reconstruction must carry it into the source.
     runner = _fallback_runner()
@@ -441,7 +447,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     assert source.user_id == "U9"
 
 
-def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
+def test_live_completion_event_carries_routing_origin(tmp_path, monkeypatch):
     """The live (non-restart) completion event must carry the dispatch-time
     routing origin too, so priming works even when the in-memory source
     cache was evicted."""
@@ -452,6 +458,7 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
         "session_key": "agent:main:discord:group:C123:U9",
         "scope_id": "G777",
         "user_id": "U9",
+        "message_id": "om_thread_root",
         "goal": "g",
         "dispatched_at": 100.0,
         "completed_at": 101.0,
@@ -473,3 +480,4 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
     ad._push_completion_event(record, {"summary": "ok"}, "completed")
     assert captured.get("scope_id") == "G777"
     assert captured.get("user_id") == "U9"
+    assert captured.get("message_id") == "om_thread_root"

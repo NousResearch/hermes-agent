@@ -56,7 +56,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(session_id="proc_test", thread_id="", message_id=""):
     d = {
         "session_id": session_id,
         "check_interval": 0,
@@ -65,6 +65,8 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     }
     if thread_id:
         d["thread_id"] = thread_id
+    if message_id:
+        d["message_id"] = message_id
     return d
 
 
@@ -193,6 +195,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
             thread_id="42",
             user_id="123",
             user_name="Emiliyan",
+            message_id="om_thread_root",
         )
     )
 
@@ -212,6 +215,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+    assert synth_event.message_id == "om_thread_root"
 
 
 @pytest.mark.asyncio
@@ -431,13 +435,51 @@ async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_p
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     adapter = runner.adapters[Platform.TELEGRAM]
 
-    await runner._run_process_watcher(_watcher_dict())
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_topic", message_id="om_thread_root")
+    )
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
     assert sent_text.startswith("✅ Background task finished")
     assert "Here's the final output" not in sent_text
     assert "5000" not in sent_text
+    assert adapter.send.await_args.kwargs["reply_to"] == "om_thread_root"
+
+
+@pytest.mark.asyncio
+async def test_all_mode_threads_interim_and_final_notifications(monkeypatch, tmp_path):
+    """Both direct watcher send paths preserve the captured reply anchor."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(
+        output_buffer="building\n", exited=False, exit_code=None,
+        command="make", started_at=None,
+    )
+    done = SimpleNamespace(
+        output_buffer="building\ndone\n", exited=True, exit_code=0,
+        command="make", started_at=None,
+    )
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry([running, done], consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_topic", message_id="om_thread_root")
+    )
+
+    assert adapter.send.await_count == 2
+    assert all(
+        call.kwargs["reply_to"] == "om_thread_root"
+        for call in adapter.send.await_args_list
+    )
 
 
 @pytest.mark.asyncio

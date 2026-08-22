@@ -209,11 +209,9 @@ def _capture_routing_origin() -> Dict[str, Any]:
     carry the contextvars) and persisted with the durable record, so a
     completion replayed after a restart can reconstruct a full SessionSource
     even when the session-store origin and in-memory source cache are gone.
-    scope_id matters most: on a relay-fronted deployment the connector's
-    fail-closed egress guard needs the tenant discriminator (or a user
-    binding) to route a scoped reply; without it, post-restart scoped
-    completions bounce with "target not routed to an onboarded tenant"
-    (staging 2026-08-09 defect #4). Best-effort — empty values are simply
+    scope_id matters most for relay egress, while message_id preserves the
+    platform reply anchor used by topic/thread-capable adapters after a live
+    completion or process restart. Best-effort — empty values are simply
     omitted so CLI/contextvar-unaware paths persist nothing new.
     """
     origin: Dict[str, Any] = {}
@@ -224,6 +222,7 @@ def _capture_routing_origin() -> Dict[str, Any]:
             ("scope_id", "HERMES_SESSION_SCOPE_ID"),
             ("user_id", "HERMES_SESSION_USER_ID"),
             ("user_name", "HERMES_SESSION_USER_NAME"),
+            ("message_id", "HERMES_SESSION_MESSAGE_ID"),
         ):
             value = get_session_env(env_name, "")
             if value:
@@ -244,10 +243,10 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         key: record.get(key)
         for key in (
             "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
-            # Routing origin (scope_id/user_id/user_name): persisted so a
+            # Routing origin (scope/user/message): persisted so a
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
-            "scope_id", "user_id", "user_name",
+            "scope_id", "user_id", "user_name", "message_id",
         )
         if key in record
     }
@@ -373,9 +372,9 @@ def recover_abandoned_delegations() -> int:
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             # Routing origin persisted at dispatch (see _capture_routing_origin):
-            # restores scope_id/user_id for the reconstructed SessionSource so
-            # relay egress priming works after a restart.
-            for _k in ("scope_id", "user_id", "user_name"):
+            # restores relay identity and the platform reply anchor after a
+            # restart.
+            for _k in ("scope_id", "user_id", "user_name", "message_id"):
                 if task.get(_k):
                     event[_k] = task[_k]
             result = {"status": "unknown", "summary": None, "error": event["error"]}
@@ -798,9 +797,9 @@ def dispatch_async_delegation(
         stale-detection block at the top of this module). When omitted, the
         delegation is not monitored.
     max_async_children
-        Concurrency cap. When at capacity the dispatch is REJECTED (the caller
-        should fall back to sync or tell the user) rather than queued, so a
-        runaway model can't pile up unbounded background work.
+        Concurrency cap. When at capacity the dispatch is REJECTED (the
+        caller should fall back to sync or tell the user) rather than queued,
+        so a runaway model can't pile up unbounded background work.
 
     Returns
     -------
@@ -969,6 +968,10 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        # message_id carries the triggering message id back onto the
+        # synthetic re-entry event so topic/thread-capable platforms route
+        # the result via the reply API instead of an invalid create path.
+        "message_id": record.get("message_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -1181,6 +1184,10 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        # message_id routes the synthetic re-entry message into the original
+        # topic/thread via the platform reply API; empty when the dispatching
+        # session had no anchor (CLI / cron / stateless HTTP).
+        "message_id": event_record.get("message_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

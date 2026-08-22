@@ -1412,6 +1412,18 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Honors saveMessages: false — the provider then never persists raw
         turns to Honcho (read/tools paths stay fully functional).
+
+        ``observationOptOutPhrases`` (config) lets a user mark a turn as
+        "don't observe" by including one of a configured list of
+        case-insensitive substrings anywhere in their message (e.g. "off
+        the record"). Matched turns are still written to Honcho — so
+        honcho_search/honcho_context and conversation continuity keep
+        working — but are flagged ``no_observe=True`` on both message
+        chunks, which HonchoSessionManager._message_configuration_for
+        translates into ``configuration.reasoning.enabled=False`` on the
+        wire, excluding them from observe_me/observe_others peer
+        representation building. Empty by default (opt-out is off unless
+        the user configures phrases).
         """
         if self._cron_skipped:
             return
@@ -1440,15 +1452,23 @@ class HonchoMemoryProvider(MemoryProvider):
         if not clean_user_content and not clean_assistant_content:
             return
 
+        # Match against the sanitized text that actually gets stored, not the
+        # raw input: sanitize_context strips injected context blocks and system
+        # notes, so raw matching could (a) trip the opt-out on a phrase the user
+        # never wrote that merely appeared inside an injected block, and (b)
+        # disagree with the content the flag is attached to. One string is the
+        # source of truth for both the decision and the payload.
+        no_observe = self._matches_observation_opt_out(clean_user_content)
+
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
                 if clean_user_content:
                     for chunk in self._chunk_message(clean_user_content, msg_limit):
-                        session.add_message("user", chunk)
+                        session.add_message("user", chunk, no_observe=no_observe)
                 if clean_assistant_content:
                     for chunk in self._chunk_message(clean_assistant_content, msg_limit):
-                        session.add_message("assistant", chunk)
+                        session.add_message("assistant", chunk, no_observe=no_observe)
                 # Route through save() so writeFrequency is honored —
                 # _flush_session() directly bypassed "session"/N batching
                 # and flushed every turn regardless of config.
@@ -1460,6 +1480,25 @@ class HonchoMemoryProvider(MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = spawn_context_thread(_sync, name="honcho-sync")
         self._sync_thread.start()
+
+    def _matches_observation_opt_out(self, user_content: str) -> bool:
+        """Return True if ``user_content`` contains a configured opt-out phrase.
+
+        Case-insensitive substring match against ``observationOptOutPhrases``
+        (empty list = feature off, the default). Uses ``casefold()`` rather
+        than ``lower()`` on both haystack and phrases: ``lower()`` misses
+        some non-ASCII case folds (e.g. German "STRASSE" does not
+        lower-case to "straße"), which would silently fail to match a
+        phrase the user configured. Provider-local: no core
+        MemoryManager/MemoryProvider change needed since this only affects
+        Honcho's own per-message ``no_observe`` flag on the chunks it writes.
+        """
+        cfg = self._config
+        phrases = getattr(cfg, "observation_opt_out_phrases", None) if cfg else None
+        if not phrases or not user_content:
+            return False
+        haystack = user_content.casefold()
+        return any(phrase.casefold() in haystack for phrase in phrases if phrase)
 
     def on_memory_write(
         self,

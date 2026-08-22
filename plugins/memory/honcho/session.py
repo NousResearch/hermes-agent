@@ -657,6 +657,39 @@ class HonchoSessionManager:
             self._cache[key] = session
         return session
 
+    @staticmethod
+    def _message_configuration_for(msg: dict[str, Any]) -> dict[str, Any] | None:
+        """Build a per-message configuration dict honoring a local opt-out.
+
+        A message cached with ``no_observe=True`` (set via
+        ``HonchoSession.add_message(..., no_observe=True)``) is sent to
+        Honcho with ``configuration.reasoning.enabled=False`` so that
+        specific turn is stored (searchable, replayable) but never fed
+        into the reasoning pipeline that builds peer representations or
+        conclusions. Messages without the flag get no configuration
+        override (``None``), preserving prior wire behavior exactly.
+
+        This returns a plain JSON-shaped dict, not an SDK model instance.
+        ``Peer.message(..., configuration=...)`` accepts a ``dict`` and
+        constructs ``MessageConfiguration(**configuration)`` internally; it
+        does not accept an already-built ``MessageConfiguration`` object
+        (spreading a dict's ``**`` onto a pydantic model instance raises
+        ``TypeError``). Returning only a dict here removes any dependency
+        on SDK types/imports, so there is no import-failure branch to fail
+        closed against anymore.
+
+        Fail-closed contract is preserved one level up: the real SDK's
+        ``@validate_call`` on ``Peer.message`` validates this dict shape at
+        call time, and any failure there (or anywhere else in the sync) is
+        caught by ``_flush_session``'s outer try/except, which sends no
+        batch at all and leaves the message unsynced for retry -- same as
+        any other sync failure. We never silently fall back to sending the
+        message unflagged.
+        """
+        if not msg.get("no_observe"):
+            return None
+        return {"reasoning": {"enabled": False}}
+
     def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
         if not session.messages:
@@ -675,10 +708,19 @@ class HonchoSessionManager:
                 honcho_session, _ = self._get_or_create_honcho_session(
                     session.honcho_session_id, user_peer, assistant_peer
                 )
-            honcho_messages = [
-                (user_peer if m["role"] == "user" else assistant_peer).message(m["content"])
-                for m in new_messages
-            ]
+            honcho_messages = []
+            for m in new_messages:
+                peer = user_peer if m["role"] == "user" else assistant_peer
+                configuration = self._message_configuration_for(m)
+                # Only pass `configuration` when there's an actual override —
+                # keeps the call shape identical to before this opt-out
+                # existed for the (overwhelming majority) unflagged case.
+                if configuration is not None:
+                    honcho_messages.append(
+                        peer.message(m["content"], configuration=configuration)
+                    )
+                else:
+                    honcho_messages.append(peer.message(m["content"]))
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
 

@@ -267,6 +267,324 @@ class TestConcludeToolDispatch:
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
 
 
+class TestObservationOptOutPhrasesSyncTurn:
+    """sync_turn(...) marks a turn no_observe when the user message contains
+    a configured observationOptOutPhrases entry (provider-local, Honcho-only)."""
+
+    def _make_provider(self, phrases):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = SimpleNamespace(
+            message_max_chars=25000,
+            observation_opt_out_phrases=phrases,
+        )
+        session = MagicMock()
+        provider._manager.get_or_create.return_value = session
+        return provider, session
+
+    def test_matching_phrase_marks_no_observe(self):
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn("This is off the record, ok?", "sure thing")
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_count == 2
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is True
+
+    def test_matching_is_case_insensitive(self):
+        provider, session = self._make_provider(["Off The Record"])
+        provider.sync_turn("please keep this OFF THE RECORD", "ok")
+        provider._sync_thread.join(timeout=1.0)
+
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is True
+
+    def test_no_match_keeps_no_observe_false(self):
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn("totally normal message", "reply")
+        provider._sync_thread.join(timeout=1.0)
+
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is False
+
+    def test_empty_phrase_list_never_flags(self):
+        provider, session = self._make_provider([])
+        provider.sync_turn("off the record maybe", "reply")
+        provider._sync_thread.join(timeout=1.0)
+
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is False
+
+    def test_missing_config_defaults_to_false(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = None
+        session = MagicMock()
+        provider._manager.get_or_create.return_value = session
+
+        provider.sync_turn("off the record", "reply")
+        provider._sync_thread.join(timeout=1.0)
+
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is False
+
+    def test_matches_observation_opt_out_helper_directly(self):
+        provider, _ = self._make_provider(["secret", "confidential"])
+        assert provider._matches_observation_opt_out("this is SECRET info") is True
+        assert provider._matches_observation_opt_out("plain text") is False
+        assert provider._matches_observation_opt_out("") is False
+
+    def test_unicode_casefold_matches_strasse_vs_esszett(self):
+        """casefold() (not lower()) is required for correct non-ASCII matching:
+        German "STRASSE".lower() == "strasse", which does NOT contain "straße" —
+        only .casefold() maps ß and its uppercase expansion SS onto each other,
+        so a phrase configured as "straße" matches a message containing
+        "STRASSE" and vice versa.
+        """
+        provider, _ = self._make_provider(["straße"])
+        assert provider._matches_observation_opt_out("Ich wohne in der STRASSE") is True
+        assert provider._matches_observation_opt_out("Ich wohne in der straße") is True
+
+        provider2, _ = self._make_provider(["STRASSE"])
+        assert provider2._matches_observation_opt_out("mein straße ist ruhig") is True
+
+    def test_unicode_casefold_preserves_korean_matching(self):
+        """Korean has no case distinction; casefold() must behave like a
+        straightforward identity/substring match and keep working exactly
+        as lower() did before.
+        """
+        provider, _ = self._make_provider(["비밀"])
+        assert provider._matches_observation_opt_out("이건 비밀 이야기야") is True
+        assert provider._matches_observation_opt_out("평범한 문장입니다") is False
+
+    def test_opt_out_matches_sanitized_text_not_injected_context(self):
+        """The opt-out decision must read the same string that gets stored.
+
+        sanitize_context strips injected context blocks; a phrase appearing
+        only inside such a block was never written by the user, so it must
+        not trip the opt-out. Matching raw input would flag a turn the user
+        never asked to hide, and would disagree with the stored payload.
+        """
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn(
+            "<memory-context>note: off the record</memory-context>real question",
+            "an answer",
+        )
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_count == 2
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is False
+        stored = [call.args[1] for call in session.add_message.call_args_list]
+        assert not any("off the record" in chunk for chunk in stored)
+
+    def test_opt_out_still_matches_when_user_really_wrote_the_phrase(self):
+        """Guard against over-suppression: sanitizing must not swallow a real
+        opt-out request that the user typed outside any injected block."""
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn(
+            "<memory-context>unrelated</memory-context>this is off the record",
+            "understood",
+        )
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_count == 2
+        for call in session.add_message.call_args_list:
+            assert call.kwargs.get("no_observe") is True
+
+    def test_opt_out_turn_routes_through_save_so_write_frequency_is_honored(self):
+        """Opt-out turns must use the same batching path as normal turns.
+
+        An earlier revision called _flush_session() directly, which bypassed
+        writeFrequency batching and flushed every turn regardless of config.
+        """
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn("off the record please", "ok")
+        provider._sync_thread.join(timeout=1.0)
+
+        provider._manager.save.assert_called_once_with(session)
+        provider._manager._flush_session.assert_not_called()
+
+    def test_empty_assistant_side_writes_only_the_user_message(self):
+        """Interrupted / tool-only turns have an empty assistant side; the
+        opt-out path must keep the upstream empty-chunk guard intact."""
+        provider, session = self._make_provider(["off the record"])
+        provider.sync_turn("off the record note", "")
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_count == 1
+        only = session.add_message.call_args_list[0]
+        assert only.args[0] == "user"
+        assert only.kwargs.get("no_observe") is True
+
+
+class TestMessageConfigurationForNoObserve:
+    """Per-message observation opt-out wire translation (session.py).
+
+    ``HonchoSession.add_message(..., no_observe=True)`` marks one message
+    in the local cache; ``_message_configuration_for`` translates that
+    flag into a plain configuration dict on flush, so the opt-out reaches
+    the wire even though ``add_messages()`` batches heterogeneous messages
+    together.
+
+    ``_message_configuration_for`` returns a JSON-shaped ``dict``, not an
+    SDK ``MessageConfiguration`` instance. The installed honcho-ai SDK's
+    ``Peer.message(content, configuration=...)`` does
+    ``MessageConfiguration(**configuration)`` internally, which only works
+    when ``configuration`` is a mapping -- passing an already-built
+    ``MessageConfiguration`` instance raises ``TypeError`` because you
+    can't ``**``-spread a pydantic model instance onto its own
+    constructor. The tests below exercise the *real* installed
+    ``honcho.Peer.message`` (not a mock) to prove the returned dict is
+    accepted end-to-end and produces the expected
+    ``MessageCreateParams.configuration.reasoning.enabled`` value.
+    """
+
+    @staticmethod
+    def _make_real_peer(peer_id: str = "u1"):
+        """Construct a real (non-mocked) honcho.Peer without any network call.
+
+        ``Peer.__init__`` only touches ``honcho.workspace_id`` unless
+        ``metadata``/``configuration`` kwargs are also passed (which would
+        trigger an immediate get-or-create API call); a bare peer_id + a
+        stub client with a ``workspace_id`` attribute is enough to build a
+        fully real ``Peer`` whose ``.message()`` runs actual SDK validation
+        and construction logic.
+        """
+        from honcho import Peer
+
+        fake_client = SimpleNamespace(workspace_id="test-workspace")
+        return Peer(peer_id=peer_id, honcho=fake_client)
+
+    def test_no_observe_false_returns_none(self):
+        msg = {"role": "user", "content": "hi", "no_observe": False}
+        assert HonchoSessionManager._message_configuration_for(msg) is None
+
+    def test_no_observe_absent_returns_none(self):
+        msg = {"role": "user", "content": "hi"}
+        assert HonchoSessionManager._message_configuration_for(msg) is None
+
+    def test_no_observe_true_returns_plain_dict(self):
+        """The returned value must be a plain dict (JSON-shaped), not an
+        SDK model instance -- that's exactly what makes it acceptable to
+        the real SDK's ``Peer.message(configuration=...)``, which spreads
+        it with ``MessageConfiguration(**configuration)``.
+        """
+        msg = {"role": "user", "content": "hi", "no_observe": True}
+        config = HonchoSessionManager._message_configuration_for(msg)
+        assert config == {"reasoning": {"enabled": False}}
+        assert type(config) is dict
+
+    def test_no_observe_true_accepted_by_real_sdk_peer_message(self):
+        """Regression for the fatal bug: passing the dict this function
+        returns into the REAL installed honcho.Peer.message(...) (not a
+        MagicMock) must succeed and produce
+        MessageCreateParams.configuration.reasoning.enabled == False.
+
+        Before the fix, ``_message_configuration_for`` returned an actual
+        ``MessageConfiguration`` instance. Peer.message does
+        ``MessageConfiguration(**configuration)`` internally, and
+        ``MessageConfiguration(**MessageConfiguration(...))`` raises
+        ``TypeError: argument after ** must be a mapping, not
+        MessageConfiguration`` -- i.e. every single opt-out turn blew up
+        the sync. This test proves the dict shape flows all the way
+        through the real SDK call without that TypeError.
+        """
+        peer = self._make_real_peer()
+        msg = {"role": "user", "content": "sensitive", "no_observe": True}
+        configuration = HonchoSessionManager._message_configuration_for(msg)
+
+        result = peer.message(msg["content"], configuration=configuration)
+
+        assert result.configuration is not None
+        assert result.configuration.reasoning is not None
+        assert result.configuration.reasoning.enabled is False
+        assert result.peer_id == "u1"
+        assert result.content == "sensitive"
+
+    def test_no_observe_false_call_shape_unchanged_on_real_sdk(self):
+        """An ordinary (non-opted-out) message must still produce a
+        MessageCreateParams with no configuration override, on the real
+        SDK path, matching wire behavior from before this feature existed.
+        """
+        peer = self._make_real_peer()
+        msg = {"role": "user", "content": "normal turn", "no_observe": False}
+        configuration = HonchoSessionManager._message_configuration_for(msg)
+        assert configuration is None
+
+        result = peer.message(msg["content"])
+        assert result.configuration is None
+
+    def test_flush_session_passes_per_message_configuration(self):
+        """A no_observe message and a normal message in the same batch each
+        get the configuration matching THEIR OWN flag, not a session-wide
+        setting -- batching must not smear the opt-out across every
+        message. Uses MagicMock peers/session here (this test is about
+        _flush_session's per-message dispatch logic, not SDK acceptance --
+        that's covered by the real-SDK tests above).
+        """
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s",
+        )
+        session.add_message("user", "sensitive one-off", no_observe=True)
+        session.add_message("user", "normal turn", no_observe=False)
+
+        user_peer = MagicMock()
+        assistant_peer = MagicMock()
+        mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: (
+            user_peer if pid == "u" else assistant_peer
+        ))
+        honcho_session = MagicMock()
+        mgr._sessions_cache["s"] = honcho_session
+
+        assert mgr._flush_session(session) is True
+
+        assert user_peer.message.call_count == 2
+        first_call = user_peer.message.call_args_list[0]
+        second_call = user_peer.message.call_args_list[1]
+        assert first_call.kwargs.get("configuration") == {"reasoning": {"enabled": False}}
+        # Unflagged message keeps the pre-existing call shape (no
+        # configuration kwarg at all), so plain test doubles / older SDK
+        # call sites aren't forced to accept a new keyword.
+        assert "configuration" not in second_call.kwargs
+
+    def test_flush_session_matched_batch_syncs_successfully(self):
+        """Ordinary flush path (no opt-outs at all): batch of plain
+        messages syncs successfully and all get marked ``_synced``. Proves
+        the fix didn't change call shape or success path for the
+        overwhelming-majority unflagged case.
+        """
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="k2", user_peer_id="u2", assistant_peer_id="a2", honcho_session_id="s2",
+        )
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi there")
+
+        user_peer = MagicMock()
+        assistant_peer = MagicMock()
+        mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: (
+            user_peer if pid == "u2" else assistant_peer
+        ))
+        honcho_session = MagicMock()
+        mgr._sessions_cache["s2"] = honcho_session
+
+        assert mgr._flush_session(session) is True
+
+        assert user_peer.message.call_count == 1
+        assert assistant_peer.message.call_count == 1
+        assert "configuration" not in user_peer.message.call_args.kwargs
+        assert "configuration" not in assistant_peer.message.call_args.kwargs
+        honcho_session.add_messages.assert_called_once()
+        assert all(m["_synced"] is True for m in session.messages)
+
+
+
 # ---------------------------------------------------------------------------
 # Message chunking
 # ---------------------------------------------------------------------------

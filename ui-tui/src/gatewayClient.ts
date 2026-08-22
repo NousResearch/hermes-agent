@@ -21,6 +21,13 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
+// Windows STATUS_CONTROL_C_EXIT (0xC000013A) — a console Ctrl+C / control
+// event delivered to the gateway child during concurrent subagent tool
+// execution (see issue #55812). Detecting it lets us surface an actionable
+// diagnostic instead of a generic "gateway exited". Note this is NOT the
+// access-violation code 0xC0000005 (3221225477); 3221225786 == 0xC000013A.
+const WINDOWS_CONTROL_C_EXIT = 3221225786
+
 const getWebSocketCtor = (): typeof WebSocket =>
   typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
 
@@ -418,6 +425,26 @@ export class GatewayClient extends EventEmitter {
       this.lifecycle(
         `[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
       )
+
+      // Windows STATUS_CONTROL_C_EXIT: the gateway child was terminated by a
+      // console control event (Ctrl+C / CTRL_CLOSE_EVENT), typically under
+      // concurrent delegate_task subagent load (issue #55812). Surface a
+      // diagnostic so the user knows this is a known Windows exit, not a
+      // config error, before the recovery handler respawns.
+      if (code === WINDOWS_CONTROL_C_EXIT) {
+        this.pushLog(
+          '[lifecycle] Windows STATUS_CONTROL_C_EXIT (0xC000013A) — gateway child terminated by console control event under concurrent subagent load'
+        )
+        this.publish({
+          type: 'gateway.crash',
+          payload: {
+            code,
+            reason: 'windows_control_c_exit',
+            message: 'Gateway exited (Windows STATUS_CONTROL_C_EXIT). This is a known issue under concurrent subagent load. Restarting…',
+          },
+        })
+      }
+
       this.handleTransportExit(code)
     })
   }

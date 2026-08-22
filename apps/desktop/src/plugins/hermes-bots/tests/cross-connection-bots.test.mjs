@@ -51,7 +51,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__x = { botConnectionRoute, requestForBot, groupMemberKey, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt };\n'
+      '\nglobalThis.__x = { botConnectionRoute, requestForBot, groupMemberKey, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt, canCreateGroupChat, loadMultiSourceRoster };\n'
     )
   vm.runInNewContext(code, context, { filename: 'plugin.js' })
   return context
@@ -73,6 +73,19 @@ test('botConnectionRoute: remote rows get a route descriptor, local rows do not'
     profile: 'dixie',
     targetProfile: 'dixie'
   })
+
+  const thisDevice = botConnectionRoute({
+    name: 'lokay',
+    connectionId: 'local',
+    connectionKind: 'local',
+    remoteSource: true
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(thisDevice)), {
+    connectionId: 'local',
+    mode: 'local',
+    profile: 'lokay',
+    targetProfile: 'lokay'
+  })
 })
 
 test('requestForBot: remote members go through requestProfile, local through host.request', async () => {
@@ -83,7 +96,7 @@ test('requestForBot: remote members go through requestProfile, local through hos
     return {}
   }
   ctx.host.requestProfile = async (route, method, params) => {
-    calls.push(['routed', route.connectionId, method, params])
+    calls.push(['routed', route.connectionId, route.mode, method, params])
     return {}
   }
 
@@ -91,12 +104,40 @@ test('requestForBot: remote members go through requestProfile, local through hos
 
   await requestForBot({ name: 'local-bot' }, 'session.create', { title: 'x' })
   await requestForBot({ name: 'dixie', connectionId: 'mac-mini', remoteSource: true }, 'prompt.submit', { text: 'hi' })
+  await requestForBot(
+    { name: 'lokay', connectionId: 'local', connectionKind: 'local', remoteSource: true },
+    'prompt.submit',
+    { text: 'hello from the active remote gateway' }
+  )
 
   assert.equal(calls[0][0], 'active')
   assert.equal(calls[0][1], 'session.create')
   assert.equal(calls[1][0], 'routed')
   assert.equal(calls[1][1], 'mac-mini')
-  assert.equal(calls[1][2], 'prompt.submit')
+  assert.equal(calls[1][2], 'remote')
+  assert.equal(calls[1][3], 'prompt.submit')
+  assert.equal(calls[2][0], 'routed')
+  assert.equal(calls[2][1], 'local')
+  assert.equal(calls[2][2], 'local')
+  assert.equal(calls[2][3], 'prompt.submit')
+})
+
+test('group creation is enabled for one active bot plus one bot on another connection', () => {
+  const ctx = runtime()
+
+  assert.equal(
+    ctx.__x.canCreateGroupChat([
+      { name: 'marvin', connectionId: 'house-of-marvin' },
+      { name: 'default', connectionId: 'local', remoteSource: true }
+    ]),
+    true
+  )
+})
+
+test('group creation stays disabled when the union roster has only one bot', () => {
+  const ctx = runtime()
+
+  assert.equal(ctx.__x.canCreateGroupChat([{ name: 'marvin', connectionId: 'house-of-marvin' }]), false)
 })
 
 test('groupMemberKey: local members keep bare names (persisted-room compat), remote members are source-qualified', () => {
@@ -161,6 +202,34 @@ test('source contract: group chat turns route through requestForBot on the membe
   assert.match(pluginSource, /await requestForBot\(member, 'session\.create'/)
   // Room records persist remote member descriptors.
   assert.match(pluginSource, /members: Array\.isArray\(room\.members\) \? room\.members : \[\]/)
+})
+
+
+test('cold Sessions roster merges This device while a remote gateway is active', async () => {
+  const ctx = runtime()
+  ctx.host.request = async (method, params) => {
+    assert.equal(method, 'profiles.list')
+    assert.deepEqual(JSON.parse(JSON.stringify(params)), { include_sessions: false })
+    return { profiles: [{ name: 'default' }] }
+  }
+  ctx.host.agents = async () => ({
+    primaryConnectionId: 'house',
+    agents: [
+      { profile: 'default', connectionId: 'house', connectionKind: 'remote', connectionLabel: 'HouseOfMarvin' },
+      { profile: 'lokay', connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', handle: 'lokay-this-device' }
+    ]
+  })
+
+  const loaded = await ctx.__x.loadMultiSourceRoster('house', { include_sessions: false })
+  const profiles = JSON.parse(JSON.stringify(loaded.profiles))
+
+  assert.equal(profiles.length, 2)
+  assert.equal(profiles[0].name, 'default')
+  assert.equal(profiles[0].connectionId, 'house')
+  assert.equal(profiles[1].name, 'lokay')
+  assert.equal(profiles[1].connectionId, 'local')
+  assert.equal(profiles[1].remoteSource, true)
+  assert.equal(profiles[1].handle, 'lokay-this-device')
 })
 
 test('regression: host.connections() result is normalized for BOTH SDK shapes before the picker gate', () => {

@@ -434,6 +434,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       ...(typeof room?.roomId === 'string' && room.roomId ? { roomId: String(room.roomId).slice(0, 128) } : {}),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
+      ...groupChatMembersSchemaField(room),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle ? { handle: String(member.handle).slice(0, 128) } : {}),
@@ -570,25 +571,39 @@ function mergeGroupChatSyncSnapshots(
     }
 
     // Identity fields (display name, membership, picture) follow the higher
-    // revision; a tie unions members and prefers the local writer's fields.
+    // revision. Legacy ties union members; once either side explicitly marks
+    // its source-qualified member list complete, that complete roster wins
+    // instead of resurrecting stale legacy descriptors during rollout.
     let identity
     let members
+    let membersComplete
     let image
     if (localRevision > remoteRevision) {
       identity = localRoom
       members = [...(localRoom?.members || [])]
+      membersComplete = groupChatHasCompleteMembers(localRoom)
       image = localRoom?.image
     } else if (remoteRevision > localRevision) {
       identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
+      membersComplete = groupChatHasCompleteMembers(remoteRoom)
       image = remoteRoom?.image
     } else {
       identity = localRoom || remoteRoom
-      const byId = new Map()
-      for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
-        byId.set(groupChatSyncMemberKey(member), member)
+      const localMembersComplete = groupChatHasCompleteMembers(localRoom)
+      const remoteMembersComplete = groupChatHasCompleteMembers(remoteRoom)
+      membersComplete = localMembersComplete || remoteMembersComplete
+      if (localMembersComplete) {
+        members = [...(localRoom?.members || [])]
+      } else if (remoteMembersComplete) {
+        members = [...(remoteRoom?.members || [])]
+      } else {
+        const byId = new Map()
+        for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
+          byId.set(groupChatSyncMemberKey(member), member)
+        }
+        members = [...byId.values()]
       }
-      members = [...byId.values()]
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
     }
     rooms[key] = {
@@ -601,6 +616,7 @@ function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       members,
+      ...(membersComplete ? { membersSchema: GROUP_CHAT_MEMBERS_SCHEMA } : {}),
       revision: Math.max(remoteRevision, localRevision),
       ...(typeof image === 'string' && image ? { image } : {})
     }
@@ -705,6 +721,8 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
     const existing = (localName ? rooms[localName] : rooms[displayName]) || {}
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
+    const existingMembersComplete = groupChatHasCompleteMembers(existing)
+    const projectedMembersComplete = groupChatHasCompleteMembers(projected)
     const entries = new Map(
       (Array.isArray(existing.log) ? existing.log : []).map(entry => [groupChatSyncEntryKey(entry), entry])
     )
@@ -723,12 +741,25 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
       }
     }
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
+    let mergedMembersComplete = existingMembersComplete
     if (!isPreserved) {
       if (remoteRevision > localRevision) {
         members.clear()
+        mergedMembersComplete = projectedMembersComplete
+      } else if (remoteRevision === localRevision && projectedMembersComplete && !existingMembersComplete) {
+        // Equal revisions can meet during a mixed-version rollout. Prefer the
+        // side that explicitly declares a complete source-qualified roster.
+        members.clear()
+        mergedMembersComplete = true
       }
-      for (const member of Array.isArray(projected.members) ? projected.members : []) {
-        members.set(groupChatSyncMemberKey(member), { ...member, remoteSource: true })
+
+      // A complete newer/equal roster is authoritative. Conversely, once the
+      // local side has a complete newer roster, an older legacy projection
+      // must not union stale descriptors back into it.
+      if (remoteRevision >= localRevision || !existingMembersComplete) {
+        for (const member of Array.isArray(projected.members) ? projected.members : []) {
+          members.set(groupChatSyncMemberKey(member), { ...member, remoteSource: true })
+        }
       }
     }
 
@@ -755,6 +786,7 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
+      ...(mergedMembersComplete ? { membersSchema: GROUP_CHAT_MEMBERS_SCHEMA } : { membersSchema: undefined }),
       ...(projectedRoomId || existing.roomId ? { roomId: existing.roomId || projectedRoomId } : {}),
       image: isPreserved
         ? existing.image || null
@@ -813,6 +845,7 @@ function durableGroupChatRooms(all = $groupChats.get()) {
       sessions: room.sessions || {},
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
+      ...groupChatMembersSchemaField(room),
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
       // roomId on the next cold hydrate and falls back to legacy
@@ -3552,43 +3585,40 @@ function PetTab({ image, onImage }) {
  *  Gates every SOUL.md protocol append below. */
 let serverInjectsProtocol = false
 
+/** Load the active gateway's rich profiles and merge the registered
+ *  connection roster over them. Kept outside the React hook so composer
+ *  middleware can resolve a source-qualified @mention even on a cold start,
+ *  before the Bots pane has populated React Query's per-connection cache.
+ *
+ *  The pane uses the backend's name-keyed canonical Bot Chat registry. The
+ *  mention cold-path passes `{ include_sessions: false }` because it only
+ *  needs identity and routing, not session-rich rows. */
+async function loadMultiSourceRoster(activeConnectionId, params = {}) {
+  const issuedAt = Date.now()
+  const local = await host.request('profiles.list', params)
+  // Newer backends inject the teammate-messaging protocol into every
+  // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
+  // carry a second copy. Older gateways lack the flag: keep appending.
+  serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+
+  if (typeof host.agents === 'function') {
+    try {
+      const union = await host.agents()
+      return { ...mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get()), fetchedAt: issuedAt }
+    } catch {
+      /* older build or roster failure — single-source list stands */
+    }
+  }
+
+  return { ...(local && typeof local === 'object' ? local : {}), fetchedAt: issuedAt }
+}
+
 function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
-    queryFn: async () => {
-      // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
-      // against each bot's last local meta write, and a fetch issued before
-      // a write can only carry pre-write ui_meta. (Issue time is the
-      // conservative bound — the server answered no earlier than this.)
-      const issuedAt = Date.now()
-      // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
-      // come from the ACTIVE gateway's profiles.list — the canonical Bot
-      // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
-      // so the roster never sends session pointers.
-      const local = await host.request('profiles.list', {})
-      // Newer backends inject the teammate-messaging protocol into every
-      // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
-      // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
-
-      // Multi-source desktops (hermes-agent #86875) also expose the union
-      // agent roster across every registered connection. Merge agents from
-      // OTHER sources in as additional rows. Feature-detected + best-effort:
-      // an older Desktop build (no host.agents) or a roster hiccup leaves
-      // the local list exactly as it was.
-      if (typeof host.agents === 'function') {
-        try {
-          const union = await host.agents()
-          return { ...mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get()), fetchedAt: issuedAt }
-        } catch {
-          /* older build or roster failure — single-source list stands */
-        }
-      }
-
-      return { ...(local && typeof local === 'object' ? local : {}), fetchedAt: issuedAt }
-    },
+    queryFn: () => loadMultiSourceRoster(activeConnectionId),
     refetchInterval: 5000,
     staleTime: 5000,
     // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
@@ -3974,18 +4004,19 @@ function botRosterKey(bot) {
 // active-gateway door. Feature-detected: older desktops without
 // requestProfile simply have no remote routes (callers fall back / disable).
 
-/** Route descriptor for a bot on another connection, or null for the local /
- *  active source (or when the desktop can't route). */
+/** Route descriptor for a bot on another connection, including This device
+ *  while a remote gateway is active; null only for the active source (or when
+ *  the desktop can't route). */
 function botConnectionRoute(bot) {
   const id = String(bot?.connectionId || '').trim()
 
-  if (!bot?.remoteSource || !id || id === 'local' || typeof host.requestProfile !== 'function') {
+  if (!bot?.remoteSource || !id || typeof host.requestProfile !== 'function') {
     return null
   }
 
   const profile = String(bot?.name || '').trim() || 'default'
 
-  return { connectionId: id, mode: 'remote', profile, targetProfile: profile }
+  return { connectionId: id, mode: id === 'local' ? 'local' : 'remote', profile, targetProfile: profile }
 }
 
 /** Gateway RPC on the bot's OWN source: requestProfile for remote rows,
@@ -4403,29 +4434,104 @@ function groupLastActivity(room) {
   return log.length ? log[log.length - 1].at || 0 : 0
 }
 
-/** Seat a group's member roster: local bots whose meta names the group, plus
- *  the room record's stored descriptors (remote members can't ride bot-meta).
- *  Prefers the LIVE roster row for a stored descriptor when present. */
-function groupChatMemberBots(group, roster, metaByName) {
-  const local = (roster || []).filter(
-    bot => !bot.remoteSource && botGroups(botRosterMeta(bot, metaByName)).includes(group)
-  )
-  const stored = ($groupChats.get()[group] || {}).members || []
-  const seated = new Set(local.map(botRosterKey))
-  const remote = []
+/** Seat a group's member roster.
+ *
+ *  membersSchema >= 2 means the stored source-qualified list is complete:
+ *  trust it across gateway switches and ignore leftover name-keyed metadata.
+ *
+ *  Unmarked rooms (created before that marker) may have stored only the
+ *  members that were remote at create time. Keep those descriptors, then
+ *  add current-gateway local-meta members whose (connection, profile) is
+ *  not already seated AND whose profile name is not already claimed by a
+ *  stored member. The name guard is what stops a leaked `default` tag from
+ *  seating Hermo next to Marvin after a gateway switch.
+ *
+ *  Rooms with no stored members still fall back to local bot-meta. */
+const GROUP_CHAT_MEMBERS_SCHEMA = 2
 
-  for (const descriptor of stored) {
+function groupChatHasCompleteMembers(room) {
+  return Number(room?.membersSchema) >= GROUP_CHAT_MEMBERS_SCHEMA
+}
+
+function groupChatMembersSchemaField(room) {
+  return groupChatHasCompleteMembers(room) ? { membersSchema: GROUP_CHAT_MEMBERS_SCHEMA } : {}
+}
+
+function hydrateStoredGroupChatRoom(room) {
+  return {
+    // Pre-thread entries get synthetic thread ids on hydrate so every
+    // UI/engine path can assume entry.thread exists.
+    log: assignLegacyThreads(room.log),
+    watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
+    sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
+    stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
+    members: Array.isArray(room.members) ? room.members : [],
+    ...groupChatMembersSchemaField(room),
+    roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+    image: typeof room.image === 'string' && room.image ? room.image : null,
+    syncRevision: Math.max(0, Number(room.syncRevision || 0)),
+    epoch: 0,
+    running: false
+  }
+}
+
+function seatStoredGroupMembers(stored, roster) {
+  const seated = new Set()
+  const members = []
+
+  for (const descriptor of stored || []) {
     const key = botRosterKey(descriptor)
 
-    if (seated.has(key)) {
+    if (!descriptor?.name || seated.has(key)) {
       continue
     }
 
     seated.add(key)
-    remote.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
+    members.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
   }
 
-  return [...local, ...remote]
+  return { members, seated }
+}
+
+function localGroupMetaMembers(group, roster, metaByName) {
+  return (roster || []).filter(
+    bot => !bot.remoteSource && botGroups(botRosterMeta(bot, metaByName)).includes(group)
+  )
+}
+
+function groupChatMemberBots(group, roster, metaByName) {
+  const room = ($groupChats.get()[group] || {})
+  const stored = Array.isArray(room.members) ? room.members : []
+
+  if (groupChatHasCompleteMembers(room)) {
+    return seatStoredGroupMembers(stored, roster).members
+  }
+
+  if (stored.length) {
+    const { members: storedMembers, seated } = seatStoredGroupMembers(stored, roster)
+    const storedNames = new Set(
+      stored.map(member => String(member?.name || '').trim()).filter(Boolean)
+    )
+    const extras = []
+
+    for (const bot of localGroupMetaMembers(group, roster, metaByName)) {
+      const key = botRosterKey(bot)
+      const name = String(bot?.name || '').trim()
+
+      if (seated.has(key) || (name && storedNames.has(name))) {
+        continue
+      }
+
+      seated.add(key)
+      extras.push(bot)
+    }
+
+    // Historical local-then-stored order: do not rotate the first speaker
+    // of a legacy room after upgrade.
+    return [...extras, ...storedMembers]
+  }
+
+  return localGroupMetaMembers(group, roster, metaByName)
 }
 
 /** Persist source-qualified identities for every selected member. The active
@@ -4450,6 +4556,12 @@ function durableGroupChatMembers(bots) {
       sourceScoped: true
     }
   })
+}
+
+function writeCompleteGroupMembers(room, bots) {
+  room.members = durableGroupChatMembers(bots)
+  room.membersSchema = GROUP_CHAT_MEMBERS_SCHEMA
+  return room
 }
 
 /** Existing group names, alphabetical — feeds the Manage-groups dialog. */
@@ -4715,6 +4827,7 @@ function updateGroupChat(group, mutate, { sync = true } = {}) {
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        ...groupChatMembersSchemaField(room),
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
@@ -4783,6 +4896,7 @@ async function disbandGroupChat(group, members) {
           watermarks: room.watermarks,
           sessions: room.sessions || {},
           members: Array.isArray(room.members) ? room.members : [],
+          ...groupChatMembersSchemaField(room),
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -5623,10 +5737,7 @@ function sendToGroupChat(group, members, text, thread, images) {
   // Refresh the durable room roster on every send. This backfills rooms made
   // by older Desktop builds and keeps the gateway mirror complete even when
   // members overlap across multiple groups.
-  updateGroupChat(group, room => {
-    room.members = durableGroupChatMembers(members)
-    return room
-  })
+  updateGroupChat(group, room => writeCompleteGroupMembers(room, members))
   appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
@@ -9324,6 +9435,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
 
     updateGroupChat(groupName, room => {
       room.members = roomMembers
+      room.membersSchema = GROUP_CHAT_MEMBERS_SCHEMA
       room.roomId = roomId
 
       if (image) {
@@ -10863,6 +10975,12 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   })
 }
 
+/** Group rooms may span registered connections, so the creation affordance is
+ *  available as soon as the full union roster contains two bots. */
+function canCreateGroupChat(roster) {
+  return Array.isArray(roster) && roster.length >= 2
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
@@ -11054,7 +11172,7 @@ function BotsPane() {
                         children: [jsx(Codicon, { name: 'hubot', className: 'mr-1.5' }), 'New Agent']
                       }),
                       jsxs(DropdownMenuItem, {
-                        disabled: activeSourceRoster.length < 2,
+                        disabled: !canCreateGroupChat(roster),
                         onSelect: () => setGroupCreateOpen(true),
                         children: [jsx(Codicon, { name: 'organization', className: 'mr-1.5' }), 'New Group Chat']
                       })
@@ -11434,20 +11552,7 @@ export default {
 
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
-                rooms[name] = {
-                  // Pre-thread entries get synthetic thread ids on hydrate so
-                  // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(room.log),
-                  watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
-                  sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
-                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
-                  members: Array.isArray(room.members) ? room.members : [],
-                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-                  image: typeof room.image === 'string' && room.image ? room.image : null,
-                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
-                  epoch: 0,
-                  running: false
-                }
+                rooms[name] = hydrateStoredGroupChatRoom(room)
               }
             }
 
@@ -11658,7 +11763,21 @@ export default {
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
           const cached = cachedUnionRoster()
-          const roster = Array.isArray(cached?.profiles) ? cached.profiles : null
+          let roster = Array.isArray(cached?.profiles) ? cached.profiles : null
+
+          // The Bots pane owns the normal five-second query. Sessions mode
+          // can submit a mention before that pane has ever mounted (or just
+          // after a gateway switch), so populate the same union on demand.
+          // include_sessions: false is intentional — this path only needs
+          // identity/routing, not the pane's preferred_session_ids pins.
+          if (!roster) {
+            try {
+              const loaded = await loadMultiSourceRoster(live.connectionId, { include_sessions: false })
+              roster = Array.isArray(loaded?.profiles) ? loaded.profiles : null
+            } catch {
+              /* active-source fallback below preserves legacy behavior */
+            }
+          }
           let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
 
           if (!roster) {

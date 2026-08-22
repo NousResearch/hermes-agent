@@ -15,9 +15,11 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 function load({
   activeProfile = 'research',
   focusedProfile = activeProfile,
+  connectionId = 'local',
   profiles = ['research', 'ops'],
   title = null,
   unionProfiles = null,
+  agents = null,
   requestProfileSpy = null
 } = {}) {
   const values = new Map()
@@ -42,11 +44,12 @@ function load({
         }
         return {}
       },
+      ...(agents ? { agents: async () => agents } : {}),
       ...(requestProfileSpy ? { requestProfile: requestProfileSpy } : {}),
       state: {
         profile: { get: () => activeProfile, listen: () => undefined },
         focusedSessionProfile: { get: () => focusedProfile, listen: () => undefined },
-        connectionId: { get: () => 'local', listen: () => undefined },
+        connectionId: { get: () => connectionId, listen: () => undefined },
         gateway: { listen: () => undefined }
       }
     },
@@ -135,6 +138,38 @@ test('remote mentions: identified with their device, never delivered by the rend
   // The renderer must NOT deliver: no requestProfile traffic at all.
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.equal(delivered.length, 0, 'middleware must never deliver over Connections')
+})
+
+test('cold remote-gateway mention loads the union and identifies This device', async () => {
+  const { handler } = load({
+    activeProfile: 'default',
+    focusedProfile: 'default',
+    connectionId: 'house',
+    profiles: [{ name: 'default' }],
+    agents: {
+      primaryConnectionId: 'house',
+      agents: [
+        {
+          profile: 'default',
+          connectionId: 'house',
+          connectionKind: 'remote',
+          connectionLabel: 'HouseOfMarvin'
+        },
+        {
+          profile: 'lokay',
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'lokay-this-device'
+        }
+      ]
+    }
+  })
+
+  const result = await handler({ text: '@lokay-this-device can you inspect the Mac?' })
+
+  assert.match(result.text, /@lokay-this-device = agent profile "lokay"/)
+  assert.match(result.text, /on This device/)
 })
 
 test('unknown @ and emails pass through untouched', async () => {

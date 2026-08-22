@@ -50,7 +50,6 @@ import {
   $sessionStates,
   $sessionTiles,
   closeSessionTile,
-  discardSessionTile,
   patchSessionTile,
   type SessionTile,
   sessionTileDelegate
@@ -238,6 +237,10 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const gatewayOpen = useStore($gatewayState) === 'open'
   const resumingRef = useRef(false)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
+  const storedSessionStillExists = useCallback(
+    () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId)),
+    [storedSessionId]
+  )
 
   // A tab-strip "+"/⌘T tab is created UNLISTED — its session stays out of
   // $sessions (no sidebar clutter) until it's actually used, so the tab shows
@@ -250,7 +253,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const hasMessages = useStore(view.$messagesEmpty) === false
 
   useEffect(() => {
-    const alreadyListed = () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId))
+    const alreadyListed = storedSessionStillExists
 
     if (!runtimeId || !hasMessages || alreadyListed()) {
       return
@@ -284,7 +287,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         window.clearTimeout(timer)
       }
     }
-  }, [hasMessages, runtimeId, storedSessionId])
+  }, [hasMessages, runtimeId, storedSessionId, storedSessionStillExists])
 
   // Same gating as the primary's route resume (use-route-resume): never fire
   // session.resume before the gateway is OPEN. Persisted tiles mount at boot
@@ -307,22 +310,29 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     delegate
       .resumeTile(storedSessionId)
       .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }))
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
 
-        // A gone session (404 / "Session not found") is terminal — a stale or
-        // cross-profile persisted tile. Discard it instead of latching an error
-        // that re-retries on every reconnect (the "Session not found" spam).
-        if (/session not found|\b404\b/i.test(message)) {
-          discardSessionTile(storedSessionId)
-        } else {
+        if (!/session not found|\b404\b/i.test(message)) {
+          patchSessionTile(storedSessionId, { error: message })
+          return
+        }
+
+        // A recents page is not authoritative, and resolveStoredSession()
+        // intentionally treats transient probe failures like a miss. Await it
+        // before releasing this resume attempt, then fail safe: a tile may be
+        // retried by the user, but must never be deleted on an inconclusive
+        // reconnect-time lookup.
+        await resolveStoredSession(storedSessionId).catch(() => undefined)
+        const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+        if (current && !current.runtimeId) {
           patchSessionTile(storedSessionId, { error: message })
         }
       })
       .finally(() => {
         resumingRef.current = false
       })
-  }, [gatewayOpen, runtimeId, storedSessionId, tile?.error])
+  }, [gatewayOpen, runtimeId, storedSessionId, storedSessionStillExists, tile?.error])
 
   // The gateway (re)opening invalidates any latched error — it likely came
   // from a not-yet-open gateway or the previous connection. Clearing it

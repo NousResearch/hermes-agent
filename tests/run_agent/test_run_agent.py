@@ -2012,6 +2012,27 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
+    def test_concurrent_forwards_clarify_callback_to_registry_dispatch(self, agent):
+        """Concurrent registry dispatch must preserve the platform callback."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        captured = {}
+
+        def platform_callback(question, choices):
+            return "USER_RESPONSE"
+
+        def fake_handle(name, args, task_id, **kwargs):
+            captured[kwargs["tool_call_id"]] = kwargs.get("clarify_callback")
+            return "ok"
+
+        agent.clarify_callback = platform_callback
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert captured == {"c1": platform_callback, "c2": platform_callback}
+
     def test_concurrent_none_args_rejected_without_crash(self, agent):
         """Concurrent executor must not crash on arguments=None. Current
         contract (_parse_tool_arguments): non-object args are rejected with
@@ -2112,8 +2133,23 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                clarify_callback=agent.clarify_callback,
             )
             assert result == "result"
+
+    @pytest.mark.parametrize("quiet_mode", [False, True])
+    def test_sequential_forwards_clarify_callback(self, agent, quiet_mode):
+        def sentinel(*a, **k):
+            return None
+
+        agent.quiet_mode = quiet_mode
+        agent.clarify_callback = sentinel
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        with patch("run_agent.handle_function_call", return_value="search result") as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+        assert mock_hfc.call_args.kwargs["clarify_callback"] is sentinel
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

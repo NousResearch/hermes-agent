@@ -66,6 +66,29 @@ def test_snapshot_uniquifies_when_same_second(backup_env, monkeypatch):
     assert s2.name == f"{frozen}-01"
 
 
+def test_snapshot_excludes_git_dir(backup_env):
+    """.git must never be rolled into a snapshot: it is repo infrastructure,
+    not skill content. Snapshots that include it grow with the full history,
+    and once backups are committed back the history itself contains prior
+    backups — each snapshot bigger than the last (observed ~38MB of skills
+    inflating to 24GB within weeks, #91449)."""
+    import tarfile
+
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    git_dir = skills / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+    with tarfile.open(snap / "skills.tar.gz") as tf:
+        names = tf.getnames()
+    assert any(n.startswith("alpha") for n in names)
+    assert not any(n.startswith(".git") for n in names)
+
+
 def test_snapshot_prunes_to_keep_count(backup_env, monkeypatch):
     cb = backup_env["cb"]
     _write_skill(backup_env["skills"], "alpha")

@@ -60,7 +60,11 @@ DEFAULT_KEEP = 5
 # Entries under skills/ that should NEVER be rolled up into a snapshot.
 # .hub/ is managed by the skills hub; rolling it back would break lockfile
 # invariants. .curator_backups is the backup dir itself — recursion bomb.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
+# .git is repo infrastructure, not skill content: snapshots that include it
+# grow with the full history, and once backups are committed back the
+# history contains prior backups — each snapshot bigger than the last
+# (observed: 38MB of skills inflating to 24GB in weeks, #91449).
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
 
 # Snapshot id regex: UTC ISO with colons replaced by dashes so the filename
 # is portable (Windows-safe). An optional ``-NN`` suffix handles two

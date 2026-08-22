@@ -97,6 +97,17 @@ Each session is tagged with its source platform:
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
 
+## Desktop Session Sidebar
+
+Hermes Desktop's **Sessions** header has a **Filters** menu for shaping large session lists without deleting or changing the sessions themselves. The choices are remembered on that Desktop installation.
+
+- **Grouping** — Updated (the normal date buckets), Project, or Status.
+- **Ordering** — Updated, Created, Status, Tokens, or Cost. Drag session rows to establish a manual order; **Manual** then appears as the active ordering until you choose another sort.
+- **Show** — optionally pin Updated, Tokens, Cost, PR, and Profile metadata onto each row. Cost is shown when recorded session spend is at least $0.01; PR metadata is shown when Hermes has resolved the session's branch to a pull request.
+- **Filters** — narrow by session status (Needs input, Working, Unread, Draft, Idle), project, pull-request state (Open, Draft, Merged, Closed, No PR), or archived sessions. **Reset to defaults** clears the customized view.
+
+Pull-request lookups follow the Git checkout that owns the session. In remote mode, Desktop asks the backend's checkout through the remote-aware git facade. If a lookup fails, Hermes keeps any PR data it already has rather than replacing it with a fabricated state.
+
 ## CLI Session Resume
 
 Resume previous conversations from the CLI using `--continue` or `--resume`:

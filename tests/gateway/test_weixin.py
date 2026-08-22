@@ -511,6 +511,42 @@ class TestIsStaleSessionRet:
         assert weixin._is_stale_session_ret(-14, None, "session expired") is False
 
 
+class TestWeixinLongPollTimeout:
+    def test_international_endpoint_uses_edge_safe_timeout(self):
+        assert (
+            weixin._long_poll_timeout_ms("https://ilinkai.wechat.com")
+            == weixin.WECHAT_LONG_POLL_TIMEOUT_MS
+        )
+
+    def test_default_endpoint_keeps_standard_timeout(self):
+        assert (
+            weixin._long_poll_timeout_ms("https://ilinkai.weixin.qq.com")
+            == weixin.LONG_POLL_TIMEOUT_MS
+        )
+
+    @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
+    def test_server_suggestion_cannot_exceed_endpoint_ceiling(self, get_updates_mock):
+        adapter = _make_adapter()
+        adapter._base_url = "https://ilinkai.wechat.com"
+        adapter._poll_session = object()
+        adapter._running = True
+        get_updates_mock.side_effect = [
+            {"ret": 0, "longpolling_timeout_ms": weixin.LONG_POLL_TIMEOUT_MS},
+            asyncio.CancelledError(),
+        ]
+
+        asyncio.run(adapter._poll_loop())
+
+        assert get_updates_mock.await_count == 2
+        assert [
+            call.kwargs["timeout_ms"]
+            for call in get_updates_mock.await_args_list
+        ] == [
+            weixin.WECHAT_LONG_POLL_TIMEOUT_MS,
+            weixin.WECHAT_LONG_POLL_TIMEOUT_MS,
+        ]
+
+
 class TestWeixinContentDedup:
     """Regression tests for Issue #16182 — upstream API sends duplicate content
     with different message_ids, bypassing message_id deduplication.
@@ -827,4 +863,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

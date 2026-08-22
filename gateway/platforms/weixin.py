@@ -103,6 +103,10 @@ EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
 LONG_POLL_TIMEOUT_MS = 35_000
+# The international iLink endpoint is fronted by an edge proxy that closes
+# requests before the normal 35-second poll completes. Keep enough margin for
+# the endpoint to return a normal empty poll instead of surfacing HTTP 524.
+WECHAT_LONG_POLL_TIMEOUT_MS = 10_000
 API_TIMEOUT_MS = 15_000
 CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
@@ -113,6 +117,14 @@ BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+
+
+def _long_poll_timeout_ms(base_url: str) -> int:
+    """Return the safe long-poll ceiling for an iLink endpoint."""
+    hostname = (urlparse(base_url).hostname or "").lower()
+    if hostname == "ilinkai.wechat.com":
+        return WECHAT_LONG_POLL_TIMEOUT_MS
+    return LONG_POLL_TIMEOUT_MS
 
 
 def _is_stale_session_ret(
@@ -1371,7 +1383,8 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
-        timeout_ms = LONG_POLL_TIMEOUT_MS
+        max_timeout_ms = _long_poll_timeout_ms(self._base_url)
+        timeout_ms = max_timeout_ms
         consecutive_failures = 0
 
         while self._running:
@@ -1385,7 +1398,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 )
                 suggested_timeout = response.get("longpolling_timeout_ms")
                 if isinstance(suggested_timeout, int) and suggested_timeout > 0:
-                    timeout_ms = suggested_timeout
+                    timeout_ms = min(suggested_timeout, max_timeout_ms)
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)

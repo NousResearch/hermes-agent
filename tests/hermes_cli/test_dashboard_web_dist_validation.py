@@ -28,6 +28,7 @@ def _args(**over):
         "no_open": True,
         "open_profile": None,
         "skip_build": False,
+        "isolated": False,
         "headless_backend": False,
         "tui": False,
     }
@@ -129,8 +130,35 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
     assert len(builds) == 1  # exactly ONE recovery build
     assert builds[0][0] == project_root / "web"
     assert len(started) == 1
+    assert started[0]["isolated_profile"] == ""
     out = capsys.readouterr().out
     assert "recovery build" in out.lower()
+
+
+def test_isolated_named_profile_is_forwarded_to_server(
+    main_mod, monkeypatch, tmp_path
+):
+    """The launch flag must become an API authorization scope, not just skip re-exec."""
+    _wire_common(main_mod, monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "alice"
+    )
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
+
+    started = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.web_server",
+        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
+    )
+
+    main_mod.cmd_dashboard(_args(isolated=True))
+
+    assert len(started) == 1
+    assert started[0]["isolated_profile"] == "alice"
 
 
 

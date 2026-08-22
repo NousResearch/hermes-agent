@@ -32,9 +32,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "soul-test-token")
     from hermes_cli import web_server
 
+    web_server.app.state.isolated_profile = ""
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
         c.headers["Authorization"] = "Bearer soul-test-token"
         yield c
+    web_server.app.state.isolated_profile = ""
 
 
 @pytest.fixture()
@@ -49,6 +51,38 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
 
 
 class TestSoulWriteDurability:
+    def test_isolated_dashboard_rejects_cross_profile_access(
+        self, client, profile_dir: Path
+    ):
+        """An isolated profile server must not accept another profile in the URL."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli import web_server
+
+        other_dir = profiles_mod.get_profile_dir("other")
+        other_dir.mkdir(parents=True)
+        other_soul = other_dir / "SOUL.md"
+        other_soul.write_text("# Other\n", encoding="utf-8")
+        (profile_dir / "SOUL.md").write_text(SOUL, encoding="utf-8")
+        web_server.app.state.isolated_profile = "demo"
+
+        read = client.get("/api/profiles/other/soul")
+        write = client.put(
+            "/api/profiles/other/soul", json={"content": "# Clobbered\n"}
+        )
+
+        assert read.status_code == 403, read.text
+        assert write.status_code == 403, write.text
+        assert other_soul.read_text(encoding="utf-8") == "# Other\n"
+
+        own_read = client.get("/api/profiles/demo/soul")
+        own_write = client.put(
+            "/api/profiles/demo/soul", json={"content": "# Updated\n"}
+        )
+        assert own_read.status_code == 200, own_read.text
+        assert own_read.json()["content"] == SOUL
+        assert own_write.status_code == 200, own_write.text
+        assert (profile_dir / "SOUL.md").read_text(encoding="utf-8") == "# Updated\n"
+
     def test_put_replaces_soul(self, client, profile_dir: Path):
         """Happy path: the editor's Save still works."""
         (profile_dir / "SOUL.md").write_text(SOUL, encoding="utf-8")

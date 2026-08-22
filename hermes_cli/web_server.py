@@ -14663,11 +14663,23 @@ def _resolve_profile_dir(name: str) -> Path:
     from hermes_cli import profiles as profiles_mod
     try:
         profiles_mod.validate_profile_name(name)
+        canonical = profiles_mod.normalize_profile_name(name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
+
+    isolated_profile = getattr(app.state, "isolated_profile", "")
+    if isolated_profile and canonical != isolated_profile:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"This server is isolated to profile '{isolated_profile}'; "
+                f"profile '{canonical}' is not accessible."
+            ),
+        )
+
+    if not profiles_mod.profile_exists(canonical):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    return profiles_mod.get_profile_dir(canonical)
 
 
 def _profile_setup_command(name: str) -> str:
@@ -18908,6 +18920,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    isolated_profile: str = "",
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
@@ -18919,6 +18932,10 @@ def start_server(
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
 
+    ``isolated_profile`` confines explicit profile-targeted API requests to the
+    named profile selected by ``--isolated``. The normal machine dashboard
+    passes an empty value and retains cross-profile management.
+
     ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
     build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
     the banner announces the bind rather than a browser URL.
@@ -18928,6 +18945,7 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    app.state.isolated_profile = isolated_profile
 
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
     # the `serve` path in main.py (which applies the same floor). Canonical

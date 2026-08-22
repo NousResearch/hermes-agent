@@ -33,6 +33,15 @@ export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>
   return (profile.display_name ?? '').trim() || profile.name
 }
 
+// The default profile wears the generic home glyph only while it is anonymous:
+// "default" is a slot, not a name, so an initial there would read as just
+// another named profile. `hermes profile rename default <Name>` sets a
+// display_name, and from that point it is a named agent like the rest and needs
+// a face of its own (#92033).
+export function profileWearsHomeGlyph(profile: Pick<ProfileInfo, 'display_name' | 'is_default'>): boolean {
+  return profile.is_default && (profile.display_name ?? '').trim() === ''
+}
+
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the
 // display source of truth for the statusbar pill; the desktop's *stored*

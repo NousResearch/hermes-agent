@@ -59,6 +59,8 @@ vi.mock('@/store/profile', () => ({
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
+  profileWearsHomeGlyph: (profile: { display_name?: string; is_default: boolean }) =>
+    profile.is_default && (profile.display_name ?? '').trim() === '',
   refreshProfiles: vi.fn(async () => [] as ProfileInfo[]),
   selectProfile: vi.fn(),
   setActiveProfile: vi.fn()
@@ -151,6 +153,32 @@ describe('ProfilesView', () => {
     )
     await waitFor(() => expect(selectProfile).toHaveBeenCalledWith('default'))
     expect(setActiveProfile).toHaveBeenCalledWith('default')
+  })
+
+  // This overlay is the only in-app door to renaming the default profile, so it
+  // is the surface the user is looking at when the rename lands — and it used to
+  // paint the new title right beside the generic home icon (#92033).
+  it('gives a display-renamed default profile its own mark in the list', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([{ ...makeProfile('default', true), display_name: 'Hermes' }])
+
+    await renderProfilesView()
+
+    // The row's select target is named by the title; its lead cell is the mark.
+    const row = (await screen.findAllByRole('button', { name: 'Hermes' }))[0]
+
+    expect(row.querySelector('.codicon-home')).toBeNull()
+    expect(row.firstElementChild?.textContent).toBe('H')
+  })
+
+  it('keeps the home glyph on a default profile that was never renamed', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true)])
+
+    await renderProfilesView()
+
+    const row = (await screen.findAllByRole('button', { name: 'default' }))[0]
+
+    expect(row.querySelector('.codicon-home')).not.toBeNull()
+    expect(row.firstElementChild?.textContent).toBe('')
   })
 
   it('leaves the active profile alone when a different profile is deleted', async () => {

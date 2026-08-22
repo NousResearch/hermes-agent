@@ -26,6 +26,7 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
+  profileWearsHomeGlyph,
   refreshProfiles
 } = await import('./profile')
 
@@ -237,5 +238,26 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+describe('profileWearsHomeGlyph — who gets a face (#92033)', () => {
+  it('keeps the home glyph while the default profile is anonymous', () => {
+    expect(profileWearsHomeGlyph(profile('default', true))).toBe(true)
+  })
+
+  it('drops the home glyph once the default profile is display-renamed', () => {
+    // `hermes profile rename default <Name>` sets display_name and leaves the
+    // canonical id alone — that rename is the whole trigger.
+    expect(profileWearsHomeGlyph({ ...profile('default', true), display_name: 'Hermes' })).toBe(false)
+  })
+
+  it('treats a blank display name as no name at all', () => {
+    expect(profileWearsHomeGlyph({ ...profile('default', true), display_name: '   ' })).toBe(true)
+  })
+
+  it('never claims the home glyph for a named profile', () => {
+    expect(profileWearsHomeGlyph(profile('work'))).toBe(false)
+    expect(profileWearsHomeGlyph({ ...profile('work'), display_name: 'Work' })).toBe(false)
   })
 })

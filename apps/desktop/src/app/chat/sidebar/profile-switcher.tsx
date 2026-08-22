@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -63,6 +63,7 @@ import {
   ALL_PROFILES,
   normalizeProfileKey,
   profileLabel,
+  profileWearsHomeGlyph,
   refreshActiveProfile,
   selectProfile,
   setProfileColor,
@@ -175,6 +176,19 @@ export function ProfileRail() {
 
   const multiProfile = profiles.length > 1
 
+  // The default profile's face: the generic home glyph while it is anonymous,
+  // its own mark once `hermes profile rename default <Name>` names it (#92033).
+  const defaultMark =
+    defaultProfile && !profileWearsHomeGlyph(defaultProfile) ? (
+      <ProfileGlyph
+        aria-hidden="true"
+        color={resolveProfileColor(defaultProfile.name, colors)}
+        isDefault={false}
+        label={profileLabel(defaultProfile)}
+        name={defaultProfile.name}
+      />
+    ) : null
+
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -251,6 +265,8 @@ export function ProfileRail() {
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
+            // ALL is a view, not a profile — the layers face keeps that slot.
+            mark={isAll ? null : defaultMark}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
@@ -263,6 +279,7 @@ export function ProfileRail() {
           active
           glyph="home"
           label={profileLabel(defaultProfile)}
+          mark={defaultMark}
           onSelect={() => selectProfile(defaultProfile.name)}
         />
       )}
@@ -583,13 +600,16 @@ function ProfileDropdownItem({ color, label, name }: { color: null | string; lab
 
 interface ProfilePillProps {
   active: boolean
-  // home / All / Manage are glyph action buttons (navigation, not identity).
+  // All / Manage / Gateways are glyph action buttons (navigation, not identity).
   glyph: string
   label: string
+  // The default profile's pill is the one identity slot on this row: it carries
+  // a mark instead of its glyph once the profile has a name of its own (#92033).
+  mark?: ReactNode
   onSelect: () => void
 }
 
-function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
+function ProfilePill({ active, glyph, label, mark, onSelect }: ProfilePillProps) {
   return (
     <Tip label={label}>
       <Button
@@ -604,7 +624,7 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
         type="button"
         variant="ghost"
       >
-        <Codicon name={glyph} size="0.875rem" />
+        {mark ?? <Codicon name={glyph} size="0.875rem" />}
       </Button>
     </Tip>
   )

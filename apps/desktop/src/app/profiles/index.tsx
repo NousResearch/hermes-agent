@@ -13,7 +13,7 @@ import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
+import { $profileColors, profileLabel, profileWearsHomeGlyph, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -210,7 +210,8 @@ function ProfileRow({
         <ProfileGlyph
           aria-hidden="true"
           color={resolveProfileColor(profile.name, colors)}
-          isDefault={profile.is_default}
+          isDefault={profileWearsHomeGlyph(profile)}
+          label={profileLabel(profile)}
           name={profile.name}
         />
       }

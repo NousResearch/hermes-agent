@@ -49,6 +49,8 @@ vi.mock('@/store/profile', () => ({
   normalizeProfileKey: (name: string) => name,
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
+  profileWearsHomeGlyph: (profile: { display_name?: string; is_default: boolean }) =>
+    profile.is_default && (profile.display_name ?? '').trim() === '',
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
   selectProfile: vi.fn(),
   setProfileColor: vi.fn(),

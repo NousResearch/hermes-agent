@@ -274,6 +274,153 @@ class TestSecondaryProfileFatalRecovery:
         assert runner._profile_failed_platforms == {}
 
 
+class TestSecondaryStartupFailureRecovery:
+    """Cold-start connect failures must reach the same reconnect slot as
+    mid-run fatals — one unlucky connect window must not kill the platform
+    for the life of the process."""
+
+    @pytest.mark.asyncio
+    async def test_retryable_initial_failure_schedules_reconnect(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        replacement = _SecondaryRecoveryAdapter()
+        scoped_homes: list[Path] = []
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, replacement, scoped_homes
+        )
+
+        # Startup creates `failed`; the reconnect runner creates `replacement`.
+        created = [failed, replacement]
+        monkeypatch.setattr(
+            runner, "_create_adapter", lambda platform, config: created.pop(0)
+        )
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        async def reconnect_ok(adapter, platform, *, is_reconnect=False):
+            assert is_reconnect is True
+            assert adapter is replacement
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", reconnect_ok)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert failed.disconnected is True
+        assert Platform.DISCORD not in runner._profile_adapters.get(
+            "reviewer", {}
+        )
+        bridge = list(runner._background_tasks)
+        assert len(bridge) == 1
+        # Drive the bridge to completion; it hands off (immediately when the
+        # gateway is already running) to the regular reconnect task, which
+        # publishes the replacement and clears its own slot.
+        await asyncio.wait_for(bridge[0], timeout=0.5)
+        for _ in range(20):
+            if (
+                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+                is replacement
+            ):
+                break
+            await asyncio.sleep(0)
+        assert (
+            runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        )
+        assert Platform.DISCORD not in runner._profile_failed_platforms.get(
+            "reviewer", {}
+        )
+        # Reconnect must have re-entered the profile's own runtime scope.
+        assert Path("/profiles/reviewer") in scoped_homes
+        assert all(
+            path in (Path("/tmp/reviewer"), Path("/profiles/reviewer"))
+            for path in scoped_homes
+        )
+
+    @pytest.mark.asyncio
+    async def test_raising_initial_connect_schedules_reconnect(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        replacement = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+
+        created = [failed, replacement]
+        monkeypatch.setattr(
+            runner, "_create_adapter", lambda platform, config: created.pop(0)
+        )
+
+        async def explode(adapter, platform):
+            raise TimeoutError("initial connect budget exhausted")
+
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", explode)
+
+        async def reconnect_ok(adapter, platform, *, is_reconnect=False):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", reconnect_ok)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert failed.disconnected is True
+        bridge = list(runner._background_tasks)
+        assert len(bridge) == 1
+        await asyncio.wait_for(bridge[0], timeout=0.5)
+        for _ in range(20):
+            if (
+                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+                is replacement
+            ):
+                break
+            await asyncio.sleep(0)
+        assert (
+            runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        )
+        assert Platform.DISCORD not in runner._profile_failed_platforms.get(
+            "reviewer", {}
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_initial_failure_does_not_schedule(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter(retryable=False)
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert failed.disconnected is True
+        assert runner._background_tasks == set()
+        assert runner._profile_failed_platforms == {}
+
+
 class TestSecondaryProfileConfigHandling:
     """Secondary config errors degrade only when the profile is safe to skip."""
 

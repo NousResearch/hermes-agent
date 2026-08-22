@@ -1246,6 +1246,7 @@ def _wait_for_systemd_service_restart(
     system: bool = False,
     previous_pid: int | None = None,
     timeout: float | None = None,
+    replacement_observed: list[bool] | None = None,
 ) -> bool:
     """Wait for the gateway service to become active after a restart handoff."""
     import time
@@ -1270,6 +1271,14 @@ def _wait_for_systemd_service_restart(
             new_pid = None
         if not new_pid:
             new_pid = _systemd_main_pid_from_props(props)
+        if (
+            new_pid
+            and previous_pid is not None
+            and new_pid != previous_pid
+            and replacement_observed is not None
+            and not replacement_observed
+        ):
+            replacement_observed.append(True)
 
         if active_state == "active":
             if new_pid and (previous_pid is None or new_pid != previous_pid):
@@ -4146,7 +4155,14 @@ def systemd_restart(system: bool = False):
             # Exit 75 transfers restart ownership to systemd.  Observe that
             # single replacement instead of issuing another restart that can
             # stop the process systemd has already brought up.
-            if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+            replacement_observed: list[bool] = []
+            if _wait_for_systemd_service_restart(
+                system=system,
+                previous_pid=pid,
+                replacement_observed=replacement_observed,
+            ):
+                return
+            if replacement_observed:
                 return
             if _systemd_service_is_start_limited(system=system):
                 return

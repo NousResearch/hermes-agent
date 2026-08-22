@@ -233,8 +233,9 @@ def _resolve_edit_model(caller_model: Optional[str] = None) -> str:
     model, which xAI documents as the edit-capable baseline.
     """
     catalog = _catalog()
+    cfg = _load_xai_config()
     explicit = caller_model or os.environ.get("XAI_IMAGE_MODEL") or (
-        _load_xai_config().get("model") if isinstance(_load_xai_config().get("model"), str) else None
+        cfg.get("model") if isinstance(cfg.get("model"), str) else None
     )
     if explicit and explicit in catalog:
         modalities = catalog[explicit].get("input_modalities") or []

@@ -14,7 +14,9 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -81,6 +83,15 @@ class TestIsSafePath:
         p.parent.mkdir()
         p.write_text("x")
         assert dg.is_safe_path(p) is True
+
+    @pytest.mark.macos_only
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
 
     def test_rejects_outside_hermes_home(self, _isolate_env):
         dg = _load_lib()

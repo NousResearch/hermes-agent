@@ -155,20 +155,33 @@ def _run_device_login(args: argparse.Namespace) -> int:
 
 def _cmd_setup(args: argparse.Namespace) -> int:
     # 1. Login (skip if we already have a valid token).
-    token = photon_auth.load_photon_token()
-    if token:
-        # Validate the existing token — the dashboard token has a short TTL
-        # and can go stale between runs (observed: ~3-4 days).  Reusing a
-        # stale token causes every management call to fail with 401 and
-        # leaves the operator confused about why setup "succeeds" but nothing
-        # works.  Check upfront so we fail fast and fall back to fresh login.
-        print("[1/5] Checking existing Photon token...")
-        if photon_auth.check_photon_token_valid(token):
-            print("  ✓ token is valid")
-        else:
-            print("  ✗ token is stale (dashboard rejected it) — re-authenticating")
-            photon_auth.clear_photon_token()
-            token = None
+    try:
+        token = photon_auth.load_photon_token()
+        if token:
+            # Validate the existing token — the dashboard token has a short TTL
+            # and can go stale between runs (observed: ~3-4 days).  Reusing a
+            # stale token causes every management call to fail with 401 and
+            # leaves the operator confused about why setup "succeeds" but nothing
+            # works.  Check upfront so we fail fast and fall back to fresh login.
+            print("[1/5] Checking existing Photon token...")
+            if photon_auth.check_photon_token_valid(token):
+                print("  ✓ token is valid")
+            else:
+                print("  ✗ token is stale (dashboard rejected it) — re-authenticating")
+                photon_auth.clear_photon_token()
+                token = None
+    except OSError as e:
+        # _load_auth() re-raises on an unreadable store rather than degrading to
+        # an empty one. Stop with an actionable message instead of a traceback:
+        # this path is also reached from `hermes gateway setup`, whose platform
+        # loop does not guard setup_fn(), so an escaping exception would drop the
+        # operator out of configuring every other channel too.
+        print(
+            f"could not read auth.json ({e}) — your stored credentials were "
+            "left untouched; fix the file permissions and re-run",
+            file=sys.stderr,
+        )
+        return 1
     if not token:
         print("[1/5] No valid Photon token found — running device login...")
         rc = _run_device_login(args)
@@ -380,17 +393,27 @@ def _autoconfigure_access(phone: str) -> None:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    _refresh_status_numbers()
-    # Defer the credential rows to auth.print_credential_summary — its emit
-    # callback is the only sink that sees credential-derived strings, so
-    # cli.py keeps zero taint flow according to CodeQL.
-    photon_auth.print_credential_summary(print)
+    rc = 0
+    try:
+        _refresh_status_numbers()
+        # Defer the credential rows to auth.print_credential_summary — its emit
+        # callback is the only sink that sees credential-derived strings, so
+        # cli.py keeps zero taint flow according to CodeQL.
+        photon_auth.print_credential_summary(print)
+    except OSError as e:
+        # _load_auth() re-raises on a present-but-unreadable auth.json instead of
+        # degrading to an empty store (that degrade was one save away from wiping
+        # the shared file). `status` is read-only and is precisely the command an
+        # operator runs to diagnose this, so report it rather than traceback.
+        print(f"  credentials         : ✗ could not read auth.json ({e})")
+        print("                        credentials were NOT modified — fix the file and re-run")
+        rc = 1
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
     sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
-    return 0
+    return rc
 
 
 def _refresh_status_numbers() -> None:

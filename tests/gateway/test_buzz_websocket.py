@@ -119,3 +119,12 @@ async def test_websocket_auth_raises_on_rejection():
         await adapter._authenticate_websocket(RejectingWs())
 
 
+@pytest.mark.asyncio
+async def test_websocket_auth_uses_credentials_owner_tag():
+    adapter = _make_adapter()
+    adapter._auth_tag = json.dumps(["auth", "b" * 64, "", "c" * 128])
+    websocket = _FakeWebSocket()
+    await adapter._authenticate_websocket(websocket)
+    assert ["auth", "b" * 64, "", "c" * 128] in websocket.sent[0][1]["tags"]
+
+

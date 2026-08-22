@@ -19,6 +19,7 @@ npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
 _resolve_private_key = _buzz_mod._resolve_private_key
+_resolve_auth_tag = _buzz_mod._resolve_auth_tag
 check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
@@ -45,6 +46,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_AUTH_TAG",
 )
 
 
@@ -481,6 +483,65 @@ class TestCredentialResolution:
         monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
         assert _resolve_private_key() == "nsec1fromfile"
 
+    def test_owner_auth_tag_from_credentials_file(self, monkeypatch, tmp_path):
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}), encoding="utf-8")
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        assert json.loads(_resolve_auth_tag()) == tag
+
+    def test_invalid_owner_auth_tag_fails_closed(self, monkeypatch, tmp_path):
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": ["bad"]}), encoding="utf-8")
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        with pytest.raises(ValueError, match="auth tag"):
+            _resolve_auth_tag()
+
+    def test_scoped_credentials_and_tag_do_not_borrow_ambient_profile(self, monkeypatch, tmp_path):
+        from agent import secret_scope as ss
+
+        ambient_tag = ["auth", "a" * 64, "", "d" * 128]
+        scoped_tag = ["auth", "b" * 64, "", "c" * 128]
+        ambient = tmp_path / "ambient.json"
+        scoped = tmp_path / "scoped.json"
+        ambient.write_text(json.dumps({"nsec": "nsec1ambient", "auth_tag": ambient_tag}))
+        scoped.write_text(json.dumps({"nsec": "nsec1scoped", "auth_tag": scoped_tag}))
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(ambient))
+        monkeypatch.setenv("BUZZ_AUTH_TAG", json.dumps(ambient_tag))
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"BUZZ_CREDENTIALS_FILE": str(scoped)})
+        try:
+            assert _resolve_private_key() == "nsec1scoped"
+            assert json.loads(_resolve_auth_tag()) == scoped_tag
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_owner_auth_tag_uses_credentials_autodiscovery(self, monkeypatch, tmp_path):
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}), encoding="utf-8")
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+        assert _resolve_private_key() == "nsec1fromfile"
+        assert json.loads(_resolve_auth_tag()) == tag
+
+    def test_empty_multiplex_scope_never_autodiscovers_ambient_credentials(self, monkeypatch, tmp_path):
+        from agent import secret_scope as ss
+
+        tag = ["auth", "a" * 64, "", "d" * 128]
+        (tmp_path / "general_credentials.json").write_text(
+            json.dumps({"nsec": "nsec1ambient", "auth_tag": tag}), encoding="utf-8"
+        )
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            assert _resolve_private_key() == ""
+            assert _resolve_auth_tag() == ""
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
 
 # ── Env enablement / registration / standalone send ──────────────────────
 
@@ -524,8 +585,8 @@ class TestStandaloneSend:
 
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
-            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, input_text=input_text)
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0):
+            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, auth_tag=auth_tag, input_text=input_text)
             return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
@@ -536,5 +597,96 @@ class TestStandaloneSend:
         assert captured["input_text"] == "cron says hi"
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_injects_owner_auth_tag_from_credentials_file(
+        self, monkeypatch, tmp_path
+    ):
+        """Cron/standalone path must load NIP-OA auth_tag from credentials JSON.
+
+        Main-line regression: when only BUZZ_PRIVATE_KEY is ambient and the
+        credentials file holds auth_tag, omitting injection causes relay 403
+        membership failures on owner-gated relays.
+        """
+        from gateway.config import PlatformConfig
+
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(
+            json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}),
+            encoding="utf-8",
+        )
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("BUZZ_AUTH_TAG", raising=False)
+
+        captured = {}
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0
+        ):
+            captured.update(
+                private_key=private_key,
+                auth_tag=auth_tag,
+                args=args,
+                input_text=input_text,
+            )
+            return 0, json.dumps({"accepted": True, "event_id": "evt-auth", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "cron needs owner auth"
+        )
+        assert result == {"success": True, "message_id": "evt-auth"}
+        assert captured["private_key"] == "nsec1fromfile"
+        assert json.loads(captured["auth_tag"]) == tag
+        # Secrets stay out of argv (auth_tag is env-injected by _exec_buzz).
+        joined_args = " ".join(str(a) for a in captured["args"])
+        assert "nsec1fromfile" not in joined_args
+        assert tag[1] not in joined_args
+        assert tag[3] not in joined_args
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_key_only_does_not_invent_auth_tag(
+        self, monkeypatch, tmp_path
+    ):
+        """Direct private key without credentials_file must not invent an auth tag."""
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.delenv("BUZZ_AUTH_TAG", raising=False)
+        monkeypatch.delenv("BUZZ_CREDENTIALS_FILE", raising=False)
+        # Ambient credentials dir must not be borrowed when a direct key is set.
+        ambient = tmp_path / "ambient_credentials.json"
+        ambient.write_text(
+            json.dumps({"nsec": "nsec1ambient", "auth_tag": ["auth", "a" * 64, "", "d" * 128]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+
+        captured = {}
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0
+        ):
+            captured.update(private_key=private_key, auth_tag=auth_tag)
+            return 0, json.dumps({"accepted": True, "event_id": "evt-key", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "key only"
+        )
+        assert result == {"success": True, "message_id": "evt-key"}
+        assert captured["private_key"] == "nsec1x"
+        assert captured["auth_tag"] == ""
 
 

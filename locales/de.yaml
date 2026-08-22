@@ -323,6 +323,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Letzte Aktivität:** {timestamp}"
     model:                 "**Modell:** `{model}`"
     model_provider:        "**Modell:** `{model}` ({provider})"
+    effort:                "**Stärke:** `{effort}`"
     context:               "**Kontext:** {used} / {total} ({pct}%)"
     context_used:          "**Kontext:** ~{used} Tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"

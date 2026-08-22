@@ -60,6 +60,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     # the populated path override this.
     runner._session_db._db.get_session.return_value = None
     runner._reasoning_config = None
+    runner._resolve_session_reasoning_config = MagicMock(return_value=None)
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._agent_cache = {}
@@ -139,6 +140,50 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reasoning_config", "expected"),
+    [
+        (None, "medium (default)"),
+        ({"enabled": False}, "none (disabled)"),
+        ({"enabled": True}, "medium"),
+        ({"enabled": True, "effort": "high"}, "high"),
+    ],
+)
+async def test_status_command_includes_effective_reasoning_effort(
+    reasoning_config,
+    expected,
+):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+    )
+    runner._session_db = SimpleNamespace(
+        get_session_title=AsyncMock(return_value=None),
+        get_session=AsyncMock(return_value={"model": "openai/gpt-test"}),
+        get_dominant_session_model_route=AsyncMock(return_value={}),
+    )
+    runner._resolve_session_reasoning_config.return_value = reasoning_config
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert f"**Effort:** `{expected}`" in result
+    runner._resolve_session_reasoning_config.assert_called_once_with(
+        source=_make_source(),
+        session_key=session_entry.session_key,
+        model="openai/gpt-test",
+    )
 
 
 @pytest.mark.asyncio

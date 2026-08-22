@@ -325,6 +325,7 @@ gateway:
     last_activity:         "**آخر نشاط:** {timestamp}"
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
+    effort:                "**الجهد:** `{effort}`"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"

@@ -707,6 +707,24 @@ class GatewaySlashCommandsMixin:
             if isinstance(configured_context, int) and configured_context > 0:
                 context_total = configured_context
 
+        # Match the reasoning configuration that the next turn will use,
+        # including session-scoped and per-model overrides.
+        effort_level = ""
+        try:
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+                model=model_name,
+            )
+            if reasoning_config is None:
+                effort_level = t("gateway.reasoning.level_default")
+            elif reasoning_config.get("enabled") is False:
+                effort_level = t("gateway.reasoning.level_disabled")
+            else:
+                effort_level = _clean_str(reasoning_config.get("effort")) or "medium"
+        except Exception:
+            logger.debug("Failed to resolve reasoning effort for /status", exc_info=True)
+
         model_line = ""
         if model_name:
             if provider_name:
@@ -739,6 +757,8 @@ class GatewaySlashCommandsMixin:
         ])
         if model_line:
             lines.append(model_line)
+        if effort_level:
+            lines.append(t("gateway.status.effort", effort=effort_level))
         if context_line:
             lines.append(context_line)
         lines.extend([

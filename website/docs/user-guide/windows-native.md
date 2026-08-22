@@ -297,7 +297,18 @@ You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolv
 Your download of `install.ps1` picked up a UTF-8 BOM. The `irm | iex` form strips BOMs automatically; `[scriptblock]::Create((irm ...))` does not. Re-run with the simple `irm | iex` form, or download the script manually and save it without a BOM via `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.
 
 **Gateway won't stay running after restart.**
-Check `hermes gateway status` — it merges the schtasks entry, the Startup-folder shortcut (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN HermesGateway /V /FO LIST` to see the task's failure reason, or fall back to the Startup-folder path by uninstalling and reinstalling with `HERMES_GATEWAY_FORCE_STARTUP=1`.
+Check `hermes gateway status` — it merges the schtasks entry, the Startup-folder login item (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN HermesGateway /V /FO LIST` to see the task's failure reason. There is **no** `HERMES_GATEWAY_FORCE_STARTUP` env var; older docs referenced it, but the install flow has no such option. The Startup-folder fallback is automatic instead.
+
+Whenever `schtasks /Create` is denied or times out (common on locked-down corporate machines), `hermes gateway install` writes a login item at `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Hermes_Gateway.vbs` and prints `Installed Windows login item`. To pre-answer the install prompts non-interactively, set the two env vars Hermes actually reads, then reinstall. If Windows asks for UAC, decline it, and the Startup-folder fallback is used:
+
+```powershell
+$env:HERMES_GATEWAY_INSTALL_START_ON_LOGIN = "1"   # install a login auto-start
+$env:HERMES_GATEWAY_INSTALL_START_NOW = "1"        # start the gateway right away
+hermes gateway uninstall
+hermes gateway install
+```
+
+Then verify with `hermes gateway status` - the Startup-folder login item is reported even when no Scheduled Task was created.
 
 **`/edit` still does nothing after setting `$env:EDITOR`.**
 You set it in the current process only; close and reopen the shell, or set it at User scope in System Properties → Environment Variables. Verify with `echo $env:EDITOR` in a new PowerShell window.

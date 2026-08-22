@@ -4958,6 +4958,36 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._ws_future.add_done_callback(self._on_ws_thread_exit)
+
+    def _on_ws_thread_exit(self, future):
+        """Done callback: detect unexpected WS thread death vs clean disconnect."""
+        if not self._running or self._ws_client is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._handle_ws_unexpected_exit())
+            )
+        except Exception:
+            pass
+
+    async def _handle_ws_unexpected_exit(self):
+        """Notify gateway reconnect watcher; no custom retry loop."""
+        if not self._running or self._ws_client is None:
+            return
+        logger.warning(
+            "[Feishu] WebSocket thread exited unexpectedly — notifying gateway "
+            "reconnect watcher instead of escalating to full gateway restart."
+        )
+        self._ws_future = None
+        self._ws_thread_loop = None
+        self._ws_client = None
+        self._set_fatal_error(
+            "feishu_ws_unexpected_exit",
+            "Feishu WebSocket receive loop exited unexpectedly (lark-oapi thread death)",
+            retryable=True,
+        )
+        await self._notify_fatal_error()
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

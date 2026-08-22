@@ -8194,7 +8194,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # remain reachable via the normal Enter path).
             self._interrupt_queue.put(text) if self.busy_input_mode == "interrupt" else self._pending_input.put(text)
             preview = text[:80] + ("..." if len(text) > 80 else "")
-            _cprint(f"  Queued for the next turn: {preview}")
+            from agent.i18n import t as _t
+            _cprint(_t("gateway.busy_ack.queue_command_preview", preview=preview))
         else:
             self._pending_input.put(text)
 
@@ -12240,7 +12241,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 self._pending_input.put(payload)
                 if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    from agent.i18n import t as _t
+                    _cprint(_t("gateway.busy_ack.queue_command_preview", preview=payload[:80] + ("..." if len(payload) > 80 else "")))
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "steer":
@@ -17912,7 +17914,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        from agent.i18n import t as _t
+                        _cprint(_t("gateway.busy_ack.queue_command_preview", preview=preview[:80] + ("..." if len(preview) > 80 else "")))
                     elif _effective_mode == "interrupt":
                         if not images and text:
                             try:

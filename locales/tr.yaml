@@ -27,6 +27,45 @@ gateway:
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
   config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
 
+  busy_ack:
+    steer: "⏩ Geçerli çalışmaya eklendi{status_detail}. Mesajın bir sonraki araç çağrısından sonra gelir."
+    redirect: "↪ Geçerli çalışma yönlendirildi{status_detail}. Düzeltmene göre ayarlayacağım."
+    queue_subagent: "⏳ Alt ajan çalışıyor{status_detail} — mesajın bitince kuyruğa alındı (hepsini iptal için /stop)."
+    queue_compression: "⏳ Bağlam sıkıştırılıyor{status_detail} — mesajın bitince kuyruğa alındı (hepsini iptal için /stop)."
+    queue: "⏳ Sonraki tur için kuyruğa alındı{status_detail}. Geçerli iş bitince yanıtlarım."
+    interrupt: "⚡ Geçerli iş kesiliyor{status_detail}. Kısa süre içinde yanıtlarım."
+    status_elapsed: "{minutes} dk geçti"
+    status_iteration: "yineleme {iteration}/{max_iter}"
+    status_running: "çalışıyor: {tool}"
+    working: "⏳ Çalışıyor — {minutes} dk{status_detail}"
+    queue_command: "Sonraki tur için kuyruğa alındı."
+    queue_command_depth: "Sonraki tur için kuyruğa alındı. ({depth} kuyrukta)"
+    queue_command_preview: "  Sonraki tur için kuyruk: {preview}"
+
+  onboarding:
+    busy_queue: "💡 İlk ipucu — Mesajını kesmek yerine kuyruğa aldım. Hemen durdurmak için `/busy interrupt`, kontrol için `/busy status`. Bu uyarı bir daha çıkmaz."
+    busy_steer: "💡 İlk ipucu — Mesajını geçerli çalışmaya ekledim; kesmeden, bir sonraki araç çağrısından sonra gelir. Değiştirmek için `/busy interrupt` veya `/busy queue`, kontrol için `/busy status`. Bu uyarı bir daha çıkmaz."
+    busy_redirect: "💡 İlk ipucu — Mesajınla geçerli çalışmayı yönlendirdim. Biten iş bağlamda kalır, `/stop` hâlâ iptal eder. Sonraki turu beklemek için `/busy queue`, kontrol için `/busy status`. Bu uyarı bir daha çıkmaz."
+    busy_interrupt: "💡 İlk ipucu — Sana yanıt vermek için geçerli işi kestim. Kuyruğa almak için `/busy queue`, kesmeden eklemek için `/busy steer`, kontrol için `/busy status`. Bu uyarı bir daha çıkmaz."
+    busy_queue_cli: "(tip) Mesajın sonraki tur için kuyruğa alındı. Enter'ın çalışmayı durdurması için /busy interrupt, eklemek için /busy steer. Bu ipucu bir kez çıkar."
+    busy_steer_cli: "(tip) Mesajın geçerli çalışmaya eklendi; bir sonraki araç çağrısından sonra gelir. /busy interrupt veya /busy queue ile değiştir. Bu ipucu bir kez çıkar."
+    busy_redirect_cli: "(tip) Düzeltmen biten işi atmadan geçerli çalışmayı yönlendirdi. İptal için /stop, beklemek için /busy queue. Bu ipucu bir kez çıkar."
+    busy_interrupt_cli: "(tip) Mesajın geçerli çalışmayı kesti. Sonraki tur için /busy queue, eklemek için /busy steer. Bu ipucu bir kez çıkar."
+    tool_progress: "💡 İlk ipucu — O araç uzun sürdü ve her adımı gönderiyorum. İlerleme gürültülüyse `/verbose` ile mod değiştir (all → new → off). Bu uyarı bir daha çıkmaz."
+    tool_progress_cli: "(tip) O araç bir süre çalıştı. İlerleme gösterimini /verbose ile değiştir (all -> new -> off -> verbose). Bu ipucu bir kez çıkar."
+
+  session:
+    storage_disk: "⚠️ Oturum deposu geçici olarak kullanılamadı, geçmişi korumak için bu tur durduruldu. Disk alanını kontrol edip mesajı yeniden gönder."
+    storage_retry: "⚠️ Oturum deposu geçici olarak kullanılamadı, geçmişi korumak için bu tur durduruldu. Mesajın zaten kaydedilmiş olmalı — birazdan yeniden gönder."
+    too_large: "⚠️ Oturum, modelin bağlam penceresi için çok büyük.
+Sıkıştırmak için /compact, baştan başlamak için /reset kullan."
+    request_failed: "İstek başarısız: {error}
+Yeniden dene veya /reset ile yeni oturum aç."
+    interrupted_before_start: "⚠️ Mesajın işlenmeden kesildi (muhtemelen yakın bir /stop). Yeniden gönder."
+    processing_stopped: "⚠️ İşlem durdu: {error}. Yeniden dene."
+    no_response: "⚠️ İşlem bitti ama yanıt üretilmedi. Geçici bir hata olabilir — mesajı yeniden gönder."
+    not_processed: "⚠️ Mesajın işlenmedi (önceki tur hâlâ temizleniyordu). Yeniden gönder."
+
   model:
     error_prefix:           "Hata: {error}"
     switched:               "Model `{model}` olarak değiştirildi"

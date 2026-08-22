@@ -27,6 +27,43 @@ gateway:
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
   config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
 
+  busy_ack:
+    steer: "⏩ 지금 실행 중인 작업에 넣었습니다{status_detail}. 다음 도구 호출 뒤에 반영됩니다."
+    redirect: "↪ 지금 실행 중인 작업을 고칩니다{status_detail}. 방금 말로 방향을 바꿉니다."
+    queue_subagent: "⏳ 하위 에이전트가 작업 중입니다{status_detail} — 끝나면 대기 중인 메시지를 처리합니다 (/stop으로 전부 취소)."
+    queue_compression: "⏳ 맥락을 압축하는 중입니다{status_detail} — 끝나면 대기 중인 메시지를 처리합니다 (/stop으로 전부 취소)."
+    queue: "⏳ 다음 턴에 대기시켰습니다{status_detail}. 현재 작업이 끝나면 답합니다."
+    interrupt: "⚡ 현재 작업을 중단합니다{status_detail}. 곧 답합니다."
+    status_elapsed: "{minutes}분 경과"
+    status_iteration: "반복 {iteration}/{max_iter}"
+    status_running: "실행 중: {tool}"
+    working: "⏳ 작업 중 — {minutes}분{status_detail}"
+    queue_command: "다음 턴에 대기시켰습니다."
+    queue_command_depth: "다음 턴에 대기시켰습니다. ({depth}개 대기)"
+    queue_command_preview: "  다음 턴에 대기: {preview}"
+
+  onboarding:
+    busy_queue: "💡 처음 안내 — 끊지 않고 메시지를 대기시켰습니다. 바로 멈추려면 `/busy interrupt`, 확인은 `/busy status`. 이 안내는 다시 나오지 않습니다."
+    busy_steer: "💡 처음 안내 — 지금 실행 중인 작업에 넣었습니다. 다음 도구 호출 뒤에 반영되며 끊지 않습니다. 바꾸려면 `/busy interrupt` 또는 `/busy queue`, 확인은 `/busy status`. 이 안내는 다시 나오지 않습니다."
+    busy_redirect: "💡 처음 안내 — 방금 말로 지금 실행 중인 작업을 고칩니다. 끝난 일은 맥락에 남고 `/stop`으로 취소할 수 있습니다. 다음 턴까지 기다리려면 `/busy queue`, 확인은 `/busy status`. 이 안내는 다시 나오지 않습니다."
+    busy_interrupt: "💡 처음 안내 — 지금 일을 멈추고 이 말에 답합니다. 대기시키려면 `/busy queue`, 끊지 않고 넣으려면 `/busy steer`, 확인은 `/busy status`. 이 안내는 다시 나오지 않습니다."
+    busy_queue_cli: "(안내) 메시지를 다음 턴에 대기시켰습니다. Enter로 지금 일을 멈추려면 /busy interrupt, 끊지 않고 넣으려면 /busy steer. 이 안내는 한 번만 나옵니다."
+    busy_steer_cli: "(안내) 메시지를 지금 실행 중인 작업에 넣었습니다. 다음 도구 호출 뒤에 반영됩니다. 바꾸려면 /busy interrupt 또는 /busy queue. 이 안내는 한 번만 나옵니다."
+    busy_redirect_cli: "(안내) 방금 말로 지금 실행 중인 작업을 고칩니다. 끝난 일은 남습니다. 취소는 /stop, 다음 턴까지 기다리려면 /busy queue. 이 안내는 한 번만 나옵니다."
+    busy_interrupt_cli: "(안내) 지금 일을 멈추고 이 말에 답합니다. 대기시키려면 /busy queue, 끊지 않고 넣으려면 /busy steer. 이 안내는 한 번만 나옵니다."
+    tool_progress: "💡 처음 안내 — 도구가 오래 걸려 단계를 모두 보냅니다. 시끄러우면 `/verbose`로 모드를 바꾸세요 (all → new → off). 이 안내는 다시 나오지 않습니다."
+    tool_progress_cli: "(안내) 그 도구가 오래 걸렸습니다. /verbose로 도구 진행 표시를 바꾸세요 (all -> new -> off -> verbose). 이 안내는 한 번만 나옵니다."
+
+  session:
+    storage_disk: "⚠️ 세션 저장소를 잠시 쓸 수 없어 이 턴을 멈췄습니다. 대화 기록을 지키려는 것입니다. 디스크 공간을 확인한 뒤 메시지를 다시 보내 주세요."
+    storage_retry: "⚠️ 세션 저장소를 잠시 쓸 수 없어 이 턴을 멈췄습니다. 대화 기록을 지키려는 것입니다. 메시지는 이미 저장되어 있을 수 있습니다. 잠시 뒤 다시 보내 주세요."
+    too_large: "⚠️ 세션이 모델 컨텍스트 창보다 큽니다.\n/compact로 대화를 줄이거나 /reset으로 새로 시작하세요."
+    request_failed: "요청이 실패했습니다: {error}\n다시 시도하거나 /reset으로 새 세션을 시작하세요."
+    interrupted_before_start: "⚠️ 처리가 시작되기 전에 메시지가 중단되었습니다 (최근 /stop 때문일 수 있습니다). 다시 보내 주세요."
+    processing_stopped: "⚠️ 처리가 멈췄습니다: {error}. 다시 시도하세요."
+    no_response: "⚠️ 처리는 끝났지만 답이 만들어지지 않았습니다. 일시적 오류일 수 있습니다. 메시지를 다시 보내 보세요."
+    not_processed: "⚠️ 메시지를 처리하지 못했습니다 (이전 턴을 아직 정리 중이었습니다). 다시 보내 주세요."
+
   model:
     error_prefix:           "오류: {error}"
     switched:               "모델이 `{model}`(으)로 전환되었습니다"

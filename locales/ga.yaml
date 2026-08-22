@@ -31,6 +31,45 @@ gateway:
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
   config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
 
+  busy_ack:
+    steer: "⏩ Curtha isteach sa rith reatha{status_detail}. Tagann do theachtaireacht i ndiaidh an chéad ghlao uirlise eile."
+    redirect: "↪ Rith reatha atreoraithe{status_detail}. Déanfaidh mé coigeartú de réir do cheartúcháin."
+    queue_subagent: "⏳ Fo-ghníomhaire ag obair{status_detail} — tá do theachtaireacht i scuaine go dtí go gcríochnaíonn sé (úsáid /stop chun gach rud a chealú)."
+    queue_compression: "⏳ Comhthéacs á chomhbhrú{status_detail} — tá do theachtaireacht i scuaine go dtí go gcríochnaíonn sé (úsáid /stop chun gach rud a chealú)."
+    queue: "⏳ Curtha i scuaine don chéad bhabhta eile{status_detail}. Freagróidh mé nuair a chríochnaíonn an tasc reatha."
+    interrupt: "⚡ Ag cur isteach ar an tasc reatha{status_detail}. Freagróidh mé go luath."
+    status_elapsed: "{minutes} nóim imithe"
+    status_iteration: "aiteráil {iteration}/{max_iter}"
+    status_running: "ar siúl: {tool}"
+    working: "⏳ Ag obair — {minutes} nóim{status_detail}"
+    queue_command: "Curtha i scuaine don chéad bhabhta eile."
+    queue_command_depth: "Curtha i scuaine don chéad bhabhta eile. ({depth} sa scuaine)"
+    queue_command_preview: "  I scuaine don chéad bhabhta eile: {preview}"
+
+  onboarding:
+    busy_queue: "💡 An chéad leid — Chuir mé do theachtaireacht sa scuaine in ionad cur isteach. Seol `/busy interrupt` chun stop a chur láithreach, nó `/busy status` le seiceáil. Ní thaispeánfar an fógra seo arís."
+    busy_steer: "💡 An chéad leid — Chuir mé do theachtaireacht isteach sa rith reatha; tiocfaidh sí i ndiaidh an chéad ghlao uirlise eile, gan cur isteach. Seol `/busy interrupt` nó `/busy queue` le hathrú, nó `/busy status` le seiceáil. Ní thaispeánfar an fógra seo arís."
+    busy_redirect: "💡 An chéad leid — D'atreoraigh mé an rith reatha le do theachtaireacht. Fanann an obair déanta sa chomhthéacs, agus cuireann `/stop` ar ceal fós. Seol `/busy queue` le fanacht leis an gcéad bhabhta eile, nó `/busy status` le seiceáil. Ní thaispeánfar an fógra seo arís."
+    busy_interrupt: "💡 An chéad leid — Chuir mé isteach ar an tasc reatha chun freagra a thabhairt. Seol `/busy queue` don scuaine, `/busy steer` le cur isteach gan bhriseadh, nó `/busy status` le seiceáil. Ní thaispeánfar an fógra seo arís."
+    busy_queue_cli: "(tip) Tá do theachtaireacht i scuaine don chéad bhabhta eile. /busy interrupt — stopann Enter an rith, /busy steer — cuir isteach. Ní thaispeántar an leid seo ach uair amháin."
+    busy_steer_cli: "(tip) Cuireadh do theachtaireacht isteach sa rith reatha; tagann sí i ndiaidh an chéad ghlao uirlise eile. Athraigh le /busy interrupt nó /busy queue. Ní thaispeántar an leid seo ach uair amháin."
+    busy_redirect_cli: "(tip) D'atreoraigh do cheartú an rith reatha gan an obair déanta a chaitheamh uait. /stop le cealú nó /busy queue le fanacht. Ní thaispeántar an leid seo ach uair amháin."
+    busy_interrupt_cli: "(tip) Chuir do theachtaireacht isteach ar an rith reatha. /busy queue don chéad bhabhta eile nó /busy steer le cur isteach. Ní thaispeántar an leid seo ach uair amháin."
+    tool_progress: "💡 An chéad leid — Thóg an uirlis sin tamall agus táim ag seoladh gach céim. Má tá an dul chun cinn torannach, seol `/verbose` chun módanna a athrú (all → new → off). Ní thaispeánfar an fógra seo arís."
+    tool_progress_cli: "(tip) Rith an uirlis sin ar feadh tamaill. /verbose ag athrú taispeáint an dul chun cinn (all -> new -> off -> verbose). Ní thaispeántar an leid seo ach uair amháin."
+
+  session:
+    storage_disk: "⚠️ Ní raibh stóras an tseisiúin ar fáil go sealadach, mar sin stopadh an babhta seo chun an stair a chosaint. Seiceáil spás diosca agus seol an teachtaireacht arís."
+    storage_retry: "⚠️ Ní raibh stóras an tseisiúin ar fáil go sealadach, mar sin stopadh an babhta seo chun an stair a chosaint. Ba cheart do theachtaireacht a bheith sábháilte cheana — seol arís i gceann nóiméid."
+    too_large: "⚠️ Tá an seisiún rómhór do fhuinneog comhthéacs an tsamhail.
+Úsáid /compact chun an comhrá a chomhbhrú, nó /reset le tosú as an nua."
+    request_failed: "Theip ar an iarratas: {error}
+Bain triail eile as nó úsáid /reset le haghaidh seisiún nua."
+    interrupted_before_start: "⚠️ Cuireadh isteach ar do theachtaireacht sular próiseáladh í (is dócha /stop le déanaí). Seol arís."
+    processing_stopped: "⚠️ Stopadh an phróiseáil: {error}. Bain triail eile as."
+    no_response: "⚠️ Chríochnaigh an phróiseáil ach níor cruthaíodh freagra. D'fhéadfadh earráid shealadach a bheith ann — seol an teachtaireacht arís."
+    not_processed: "⚠️ Níor próiseáladh do theachtaireacht (bhí an babhta roimhe fós á ghlanadh). Seol arís."
+
   model:
     error_prefix:           "Earráid: {error}"
     switched:               "Athraíodh an tsamhail go `{model}`"

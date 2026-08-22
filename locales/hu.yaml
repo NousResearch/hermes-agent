@@ -27,6 +27,45 @@ gateway:
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
   config_save_failed: "⚠️ Nem sikerült menteni a konfigurációt: {error}"
 
+  busy_ack:
+    steer: "⏩ Beillesztve a jelenlegi futásba{status_detail}. Az üzeneted a következő eszközhívás után érkezik."
+    redirect: "↪ Jelenlegi futás átirányítva{status_detail}. A javításod alapján igazítom."
+    queue_subagent: "⏳ Az alügynök dolgozik{status_detail} — az üzeneted a végéig várakozik (mindent töröl: /stop)."
+    queue_compression: "⏳ Kontextus tömörítése{status_detail} — az üzeneted a végéig várakozik (mindent töröl: /stop)."
+    queue: "⏳ Sorban a következő körre{status_detail}. Akkor válaszolok, ha a jelenlegi feladat kész."
+    interrupt: "⚡ Megszakítom a jelenlegi feladatot{status_detail}. Hamarosan válaszolok."
+    status_elapsed: "{minutes} perc telt el"
+    status_iteration: "iteráció {iteration}/{max_iter}"
+    status_running: "fut: {tool}"
+    working: "⏳ Dolgozom — {minutes} perc{status_detail}"
+    queue_command: "Sorban a következő körre."
+    queue_command_depth: "Sorban a következő körre. ({depth} a sorban)"
+    queue_command_preview: "  Sorban a következő körre: {preview}"
+
+  onboarding:
+    busy_queue: "💡 Első tipp — Sorba tettem az üzeneted, nem szakítottam meg a feladatot. Küldj `/busy interrupt` üzenetet az azonnali megállításhoz, vagy `/busy status` a ellenőrzéshez. Ez az értesítés nem jelenik meg újra."
+    busy_steer: "💡 Első tipp — Beillesztettem az üzeneted a jelenlegi futásba; a következő eszközhívás után érkezik, megszakítás nélkül. Változtatáshoz `/busy interrupt` vagy `/busy queue`, ellenőrzéshez `/busy status`. Ez az értesítés nem jelenik meg újra."
+    busy_redirect: "💡 Első tipp — Az üzeneteddel átirányítottam a jelenlegi futást. Az elvégzett munka a kontextusban marad, a `/stop` továbbra is töröl. Várakozáshoz `/busy queue`, ellenőrzéshez `/busy status`. Ez az értesítés nem jelenik meg újra."
+    busy_interrupt: "💡 Első tipp — Megszakítottam a jelenlegi feladatot, hogy válaszoljak. Sorba: `/busy queue`, megszakítás nélküli beszúrás: `/busy steer`, ellenőrzés: `/busy status`. Ez az értesítés nem jelenik meg újra."
+    busy_queue_cli: "(tip) Az üzeneted a következő körre sorba került. /busy interrupt — az Enter megállítja a futást, /busy steer — beszúrás. Ez a tipp csak egyszer jelenik meg."
+    busy_steer_cli: "(tip) Az üzeneted bekerült a jelenlegi futásba; a következő eszközhívás után érkezik. Változtasd /busy interrupt vagy /busy queue paranccsal. Ez a tipp csak egyszer jelenik meg."
+    busy_redirect_cli: "(tip) A javításod átirányította a jelenlegi futást anélkül, hogy eldobná az elvégzett munkát. Törlés: /stop, várakozás: /busy queue. Ez a tipp csak egyszer jelenik meg."
+    busy_interrupt_cli: "(tip) Az üzeneted megszakította a jelenlegi futást. Következő kör: /busy queue, beszúrás: /busy steer. Ez a tipp csak egyszer jelenik meg."
+    tool_progress: "💡 Első tipp — Az az eszköz sokáig tartott, és minden lépést küldök. Ha a folyamat zavar, küldj `/verbose` üzenetet a módváltáshoz (all → new → off). Ez az értesítés nem jelenik meg újra."
+    tool_progress_cli: "(tip) Az az eszköz egy ideig futott. /verbose váltja a folyamatkijelzést (all -> new -> off -> verbose). Ez a tipp csak egyszer jelenik meg."
+
+  session:
+    storage_disk: "⚠️ A munkamenet-tároló ideiglenesen nem volt elérhető, ezért ez a kör leállt a előzmények védelme érdekében. Ellenőrizd a lemezterületet, majd küldd újra az üzenetet."
+    storage_retry: "⚠️ A munkamenet-tároló ideiglenesen nem volt elérhető, ezért ez a kör leállt a előzmények védelme érdekében. Az üzenetednek már mentve kell lennie — küldd újra egy pillanat múlva."
+    too_large: "⚠️ A munkamenet túl nagy a modell kontextusablakához.
+Tömörítéshez /compact, újrakezdéshez /reset."
+    request_failed: "A kérés sikertelen: {error}
+Próbáld újra, vagy /reset egy új munkamenethez."
+    interrupted_before_start: "⚠️ Az üzeneted a feldolgozás előtt megszakadt (valószínűleg egy közeli /stop). Küldd újra."
+    processing_stopped: "⚠️ A feldolgozás leállt: {error}. Próbáld újra."
+    no_response: "⚠️ A feldolgozás kész, de nem jött létre válasz. Átmeneti hiba lehet — küldd újra az üzenetet."
+    not_processed: "⚠️ Az üzeneted nem lett feldolgozva (az előző kört még takarítottuk). Küldd újra."
+
   model:
     error_prefix:           "Hiba: {error}"
     switched:               "Modell átváltva: `{model}`"

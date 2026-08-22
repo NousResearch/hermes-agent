@@ -27,6 +27,45 @@ gateway:
   config_read_failed: "⚠️ No se pudo leer config.yaml: {error}"
   config_save_failed: "⚠️ No se pudo guardar la configuración: {error}"
 
+  busy_ack:
+    steer: "⏩ Insertado en la ejecución actual{status_detail}. Tu mensaje llega después de la siguiente llamada a herramienta."
+    redirect: "↪ Ejecución actual redirigida{status_detail}. Ajustaré con tu corrección."
+    queue_subagent: "⏳ Subagente trabajando{status_detail} — tu mensaje queda en cola hasta que termine (usa /stop para cancelarlo todo)."
+    queue_compression: "⏳ Comprimiendo contexto{status_detail} — tu mensaje queda en cola hasta que termine (usa /stop para cancelarlo todo)."
+    queue: "⏳ En cola para el siguiente turno{status_detail}. Responderé cuando termine la tarea actual."
+    interrupt: "⚡ Interrumpiendo la tarea actual{status_detail}. Responderé enseguida."
+    status_elapsed: "{minutes} min transcurridos"
+    status_iteration: "iteración {iteration}/{max_iter}"
+    status_running: "ejecutando: {tool}"
+    working: "⏳ Trabajando — {minutes} min{status_detail}"
+    queue_command: "En cola para el siguiente turno."
+    queue_command_depth: "En cola para el siguiente turno. ({depth} en cola)"
+    queue_command_preview: "  En cola para el siguiente turno: {preview}"
+
+  onboarding:
+    busy_queue: "💡 Consejo inicial — He puesto tu mensaje en cola en lugar de interrumpir. Envía `/busy interrupt` para detener la tarea al momento, o `/busy status` para comprobar. Este aviso no volverá a aparecer."
+    busy_steer: "💡 Consejo inicial — He insertado tu mensaje en la ejecución actual; llegará después de la siguiente llamada a herramienta, sin interrumpir. Envía `/busy interrupt` o `/busy queue` para cambiarlo, o `/busy status` para comprobar. Este aviso no volverá a aparecer."
+    busy_redirect: "💡 Consejo inicial — He redirigido la ejecución actual con tu mensaje. El trabajo hecho sigue en el contexto y `/stop` sigue cancelando. Envía `/busy queue` para esperar al siguiente turno, o `/busy status` para comprobar. Este aviso no volverá a aparecer."
+    busy_interrupt: "💡 Consejo inicial — Acabo de interrumpir la tarea actual para responderte. Envía `/busy queue` para encolar, `/busy steer` para insertar sin interrumpir, o `/busy status` para comprobar. Este aviso no volverá a aparecer."
+    busy_queue_cli: "(tip) Tu mensaje quedó en cola para el siguiente turno. Usa /busy interrupt para que Enter detenga la ejecución, o /busy steer para insertar. Este consejo solo aparece una vez."
+    busy_steer_cli: "(tip) Tu mensaje se insertó en la ejecución actual; llega después de la siguiente llamada a herramienta. Cambia con /busy interrupt o /busy queue. Este consejo solo aparece una vez."
+    busy_redirect_cli: "(tip) Tu corrección redirigió la ejecución actual sin descartar lo hecho. Usa /stop para cancelar o /busy queue para esperar. Este consejo solo aparece una vez."
+    busy_interrupt_cli: "(tip) Tu mensaje interrumpió la ejecución actual. Usa /busy queue para el siguiente turno o /busy steer para insertar. Este consejo solo aparece una vez."
+    tool_progress: "💡 Consejo inicial — Esa herramienta tardó y estoy enviando cada paso. Si el progreso molesta, envía `/verbose` para cambiar modos (all → new → off). Este aviso no volverá a aparecer."
+    tool_progress_cli: "(tip) Esa herramienta tardó un rato. Usa /verbose para cambiar el progreso (all -> new -> off -> verbose). Este consejo solo aparece una vez."
+
+  session:
+    storage_disk: "⚠️ El almacenamiento de la sesión no estuvo disponible, así que se detuvo este turno para proteger el historial. Comprueba el espacio en disco y vuelve a enviar el mensaje."
+    storage_retry: "⚠️ El almacenamiento de la sesión no estuvo disponible, así que se detuvo este turno para proteger el historial. Tu mensaje ya debería estar guardado — envíalo de nuevo en un momento."
+    too_large: "⚠️ La sesión es demasiado grande para la ventana de contexto del modelo.
+Usa /compact para comprimir la conversación, o /reset para empezar de nuevo."
+    request_failed: "La solicitud falló: {error}
+Inténtalo de nuevo o usa /reset para una sesión nueva."
+    interrupted_before_start: "⚠️ Tu mensaje se interrumpió antes de procesarse (probablemente por un /stop reciente). Envíalo otra vez."
+    processing_stopped: "⚠️ El procesamiento se detuvo: {error}. Inténtalo de nuevo."
+    no_response: "⚠️ El procesamiento terminó pero no se generó respuesta. Puede ser un error transitorio — vuelve a enviar el mensaje."
+    not_processed: "⚠️ Tu mensaje no se procesó (el turno anterior aún se estaba limpiando). Envíalo otra vez."
+
   model:
     error_prefix:           "Error: {error}"
     switched:               "Modelo cambiado a `{model}`"

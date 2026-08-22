@@ -27,6 +27,43 @@ gateway:
   config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
   config_save_failed: "⚠️ 无法保存配置：{error}"
 
+  busy_ack:
+    steer: "⏩ 已插入当前运行{status_detail}。下一次工具调用后生效。"
+    redirect: "↪ 已根据你的更正调整当前运行{status_detail}。"
+    queue_subagent: "⏳ 子代理工作中{status_detail} — 结束后处理你的消息（用 /stop 取消全部）。"
+    queue_compression: "⏳ 正在压缩上下文{status_detail} — 结束后处理你的消息（用 /stop 取消全部）。"
+    queue: "⏳ 已排队到下一轮{status_detail}。当前任务结束后回复。"
+    interrupt: "⚡ 正在中断当前任务{status_detail}。稍后回复。"
+    status_elapsed: "已过 {minutes} 分钟"
+    status_iteration: "迭代 {iteration}/{max_iter}"
+    status_running: "正在运行: {tool}"
+    working: "⏳ 工作中 — {minutes} 分钟{status_detail}"
+    queue_command: "已排队到下一轮。"
+    queue_command_depth: "已排队到下一轮。（已排队 {depth} 条）"
+    queue_command_preview: "  已排队到下一轮: {preview}"
+
+  onboarding:
+    busy_queue: "💡 首次提示 — 我把你的消息排到下一轮，没有中断当前任务。发送 `/busy interrupt` 可立即停下，或发送 `/busy status` 查看。这条提示不会再出现。"
+    busy_steer: "💡 首次提示 — 我把你的消息插入了当前运行；它会在下一次工具调用后生效，而不是中断。发送 `/busy interrupt` 或 `/busy queue` 可更改，或发送 `/busy status` 查看。这条提示不会再出现。"
+    busy_redirect: "💡 首次提示 — 我用你的消息调整了当前运行。已完成的工作仍在上下文中，`/stop` 仍可取消。发送 `/busy queue` 等到下一轮，或发送 `/busy status` 查看。这条提示不会再出现。"
+    busy_interrupt: "💡 首次提示 — 我刚中断当前任务来回答你。发送 `/busy queue` 把后续消息排队，发送 `/busy steer` 在运行中插入，或发送 `/busy status` 查看。这条提示不会再出现。"
+    busy_queue_cli: "(提示) 你的消息已排到下一轮。用 /busy interrupt 让 Enter 停下当前运行，或用 /busy steer 在运行中插入。这条提示只出现一次。"
+    busy_steer_cli: "(提示) 你的消息已插入当前运行；下一次工具调用后生效。用 /busy interrupt 或 /busy queue 更改。这条提示只出现一次。"
+    busy_redirect_cli: "(提示) 你的更正调整了当前运行，已完成的工作不会丢。用 /stop 取消，或用 /busy queue 等到下一轮。这条提示只出现一次。"
+    busy_interrupt_cli: "(提示) 你的消息中断了当前运行。用 /busy queue 排到下一轮，或用 /busy steer 在运行中插入。这条提示只出现一次。"
+    tool_progress: "💡 首次提示 — 那个工具花了较长时间，我正在推送每一步。如果进度消息太吵，发送 `/verbose` 循环模式（all → new → off）。这条提示不会再出现。"
+    tool_progress_cli: "(提示) 那个工具运行了一段时间。用 /verbose 循环工具进度显示（all -> new -> off -> verbose）。这条提示只出现一次。"
+
+  session:
+    storage_disk: "⚠️ 会话存储暂时不可用，已停止此轮以保护对话记录。请检查可用磁盘空间，然后再次发送消息。"
+    storage_retry: "⚠️ 会话存储暂时不可用，已停止此轮以保护对话记录。你的消息应该已经保存 — 请稍后再发送一次。"
+    too_large: "⚠️ 会话超出模型上下文窗口。\n使用 /compact 压缩对话，或使用 /reset 重新开始。"
+    request_failed: "请求失败：{error}\n请重试，或使用 /reset 开始新会话。"
+    interrupted_before_start: "⚠️ 消息在开始处理前被中断（可能是最近的 /stop）。请再发送一次。"
+    processing_stopped: "⚠️ 处理已停止：{error}。请重试。"
+    no_response: "⚠️ 处理已完成但没有生成回复。这可能是暂时错误 — 请再发送一次消息。"
+    not_processed: "⚠️ 消息未被处理（上一轮仍在清理）。请再发送一次。"
+
   model:
     error_prefix:           "错误：{error}"
     switched:               "已切换模型为 `{model}`"

@@ -27,6 +27,45 @@ gateway:
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
   config_save_failed: "⚠️ Kon nie konfigurasie stoor nie: {error}"
 
+  busy_ack:
+    steer: "⏩ In die huidige lopie ingevoeg{status_detail}. Jou boodskap kom ná die volgende nutoproep."
+    redirect: "↪ Huidige lopie herlei{status_detail}. Ek pas aan volgens jou korreksie."
+    queue_subagent: "⏳ Subagent werk{status_detail} — jou boodskap wag tot dit klaar is (gebruik /stop om alles te kanselleer)."
+    queue_compression: "⏳ Konteks word saamgepers{status_detail} — jou boodskap wag tot dit klaar is (gebruik /stop om alles te kanselleer)."
+    queue: "⏳ In die ry vir die volgende beurt{status_detail}. Ek antwoord wanneer die huidige taak klaar is."
+    interrupt: "⚡ Onderbreek die huidige taak{status_detail}. Ek antwoord binnekort."
+    status_elapsed: "{minutes} min verloop"
+    status_iteration: "iterasie {iteration}/{max_iter}"
+    status_running: "besig: {tool}"
+    working: "⏳ Besig — {minutes} min{status_detail}"
+    queue_command: "In die ry vir die volgende beurt."
+    queue_command_depth: "In die ry vir die volgende beurt. ({depth} in die ry)"
+    queue_command_preview: "  In die ry vir die volgende beurt: {preview}"
+
+  onboarding:
+    busy_queue: "💡 Eerste wenk — Ek het jou boodskap in die ry gesit in plaas van onderbreek. Stuur `/busy interrupt` om dadelik te stop, of `/busy status` om te kyk. Hierdie kennisgewing verskyn nie weer nie."
+    busy_steer: "💡 Eerste wenk — Ek het jou boodskap in die huidige lopie ingevoeg; dit kom ná die volgende nutoproep, sonder om te onderbreek. Stuur `/busy interrupt` of `/busy queue` om te verander, of `/busy status` om te kyk. Hierdie kennisgewing verskyn nie weer nie."
+    busy_redirect: "💡 Eerste wenk — Ek het die huidige lopie met jou boodskap herlei. Voltooide werk bly in konteks, en `/stop` kanselleer nog. Stuur `/busy queue` om vir die volgende beurt te wag, of `/busy status` om te kyk. Hierdie kennisgewing verskyn nie weer nie."
+    busy_interrupt: "💡 Eerste wenk — Ek het die huidige taak onderbreek om jou te antwoord. Stuur `/busy queue` vir die ry, `/busy steer` om in te voeg sonder onderbreking, of `/busy status` om te kyk. Hierdie kennisgewing verskyn nie weer nie."
+    busy_queue_cli: "(tip) Jou boodskap is in die ry vir die volgende beurt. /busy interrupt laat Enter die lopie stop, /busy steer voeg in. Hierdie wenk wys net een keer."
+    busy_steer_cli: "(tip) Jou boodskap is in die huidige lopie ingevoeg; dit kom ná die volgende nutoproep. Verander met /busy interrupt of /busy queue. Hierdie wenk wys net een keer."
+    busy_redirect_cli: "(tip) Jou korreksie het die huidige lopie herlei sonder om voltooide werk weg te gooi. /stop kanselleer, /busy queue wag. Hierdie wenk wys net een keer."
+    busy_interrupt_cli: "(tip) Jou boodskap het die huidige lopie onderbreek. /busy queue vir die volgende beurt of /busy steer om in te voeg. Hierdie wenk wys net een keer."
+    tool_progress: "💡 Eerste wenk — Daardie nut het lank geneem en ek stuur elke stap. As die vordering lawaaierig is, stuur `/verbose` om modi te wissel (all → new → off). Hierdie kennisgewing verskyn nie weer nie."
+    tool_progress_cli: "(tip) Daardie nut het 'n ruk geloop. /verbose wissel die vorderingwysiging (all -> new -> off -> verbose). Hierdie wenk wys net een keer."
+
+  session:
+    storage_disk: "⚠️ Sessieberging was tydelik onbeskikbaar, so hierdie beurt is gestop om die geskiedenis te beskerm. Kontroleer skyfspasie en stuur die boodskap weer."
+    storage_retry: "⚠️ Sessieberging was tydelik onbeskikbaar, so hierdie beurt is gestop om die geskiedenis te beskerm. Jou boodskap behoort al gestoor te wees — stuur dit oor 'n oomblik weer."
+    too_large: "⚠️ Sessie te groot vir die model se konteksvenster.
+Gebruik /compact om saam te pers, of /reset om oor te begin."
+    request_failed: "Die versoek het misluk: {error}
+Probeer weer of gebruik /reset vir 'n nuwe sessie."
+    interrupted_before_start: "⚠️ Jou boodskap is onderbreek voor verwerking (waarskynlik 'n onlangse /stop). Stuur dit weer."
+    processing_stopped: "⚠️ Verwerking gestop: {error}. Probeer weer."
+    no_response: "⚠️ Verwerking is klaar maar geen antwoord is gemaak nie. Dit kan 'n tydelike fout wees — stuur die boodskap weer."
+    not_processed: "⚠️ Jou boodskap is nie verwerk nie (die vorige beurt is nog skoongemaak). Stuur dit weer."
+
   model:
     error_prefix:           "Fout: {error}"
     switched:               "Model verander na `{model}`"

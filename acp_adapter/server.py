@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from agent.i18n import t
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -1918,7 +1919,7 @@ class HermesACPAgent(acp.Agent):
         if queued_depth is not None:
             if self._conn:
                 update = acp.update_agent_message_text(
-                    f"Queued for the next turn. ({queued_depth} queued)"
+                    t("gateway.busy_ack.queue_command_depth", depth=queued_depth)
                 )
                 await self._conn.session_update(session_id, update)
             return PromptResponse(stop_reason="end_turn")
@@ -2560,7 +2561,7 @@ class HermesACPAgent(acp.Agent):
         with state.runtime_lock:
             state.queued_prompts.append(queued_text)
             depth = len(state.queued_prompts)
-        return f"Queued for the next turn. ({depth} queued)"
+        return t("gateway.busy_ack.queue_command_depth", depth=depth)
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"

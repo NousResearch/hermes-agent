@@ -27,6 +27,43 @@ gateway:
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
 
+  busy_ack:
+    steer: "⏩ In den laufenden Durchlauf eingefügt{status_detail}. Deine Nachricht kommt nach dem nächsten Tool-Aufruf."
+    redirect: "↪ Laufenden Durchlauf umgeleitet{status_detail}. Ich passe anhand deiner Korrektur an."
+    queue_subagent: "⏳ Unteragent arbeitet{status_detail} — deine Nachricht wartet bis zum Ende (mit /stop alles abbrechen)."
+    queue_compression: "⏳ Kontext wird komprimiert{status_detail} — deine Nachricht wartet bis zum Ende (mit /stop alles abbrechen)."
+    queue: "⏳ Für den nächsten Zug vorgemerkt{status_detail}. Ich antworte, wenn die aktuelle Aufgabe fertig ist."
+    interrupt: "⚡ Unterbreche die aktuelle Aufgabe{status_detail}. Ich antworte gleich."
+    status_elapsed: "{minutes} Min. vergangen"
+    status_iteration: "Iteration {iteration}/{max_iter}"
+    status_running: "läuft: {tool}"
+    working: "⏳ Arbeitet — {minutes} Min{status_detail}"
+    queue_command: "Für den nächsten Zug vorgemerkt."
+    queue_command_depth: "Für den nächsten Zug vorgemerkt. ({depth} in der Warteschlange)"
+    queue_command_preview: "  Für den nächsten Zug vorgemerkt: {preview}"
+
+  onboarding:
+    busy_queue: "💡 Ersthinweis — Ich habe deine Nachricht vorgemerkt statt zu unterbrechen. Sende `/busy interrupt`, um die aktuelle Aufgabe sofort zu stoppen, oder `/busy status` zum Prüfen. Dieser Hinweis erscheint nicht wieder."
+    busy_steer: "💡 Ersthinweis — Ich habe deine Nachricht in den laufenden Durchlauf eingefügt; sie kommt nach dem nächsten Tool-Aufruf statt zu unterbrechen. Sende `/busy interrupt` oder `/busy queue` zum Ändern, oder `/busy status` zum Prüfen. Dieser Hinweis erscheint nicht wieder."
+    busy_redirect: "💡 Ersthinweis — Ich habe den laufenden Durchlauf mit deiner Nachricht umgeleitet. Erledigte Arbeit bleibt im Kontext, `/stop` bricht weiter ab. Sende `/busy queue`, um auf einen eigenen Zug zu warten, oder `/busy status` zum Prüfen. Dieser Hinweis erscheint nicht wieder."
+    busy_interrupt: "💡 Ersthinweis — Ich habe die aktuelle Aufgabe unterbrochen, um dir zu antworten. Sende `/busy queue`, um Folgenachrichten vorzumerken, `/busy steer`, um sie ohne Unterbruch einzufügen, oder `/busy status` zum Prüfen. Dieser Hinweis erscheint nicht wieder."
+    busy_queue_cli: "(tip) Deine Nachricht wurde für den nächsten Zug vorgemerkt. Mit /busy interrupt stoppt Enter den laufenden Durchlauf, mit /busy steer fügst du mitten im Lauf ein. Dieser Tipp erscheint nur einmal."
+    busy_steer_cli: "(tip) Deine Nachricht wurde in den laufenden Durchlauf eingefügt; sie kommt nach dem nächsten Tool-Aufruf. Ändern mit /busy interrupt oder /busy queue. Dieser Tipp erscheint nur einmal."
+    busy_redirect_cli: "(tip) Deine Korrektur hat den laufenden Durchlauf umgeleitet, ohne erledigte Arbeit zu verwerfen. Mit /stop abbrechen oder mit /busy queue auf einen eigenen Zug warten. Dieser Tipp erscheint nur einmal."
+    busy_interrupt_cli: "(tip) Deine Nachricht hat den laufenden Durchlauf unterbrochen. Mit /busy queue für den nächsten Zug vormerken oder mit /busy steer mitten im Lauf einfügen. Dieser Tipp erscheint nur einmal."
+    tool_progress: "💡 Ersthinweis — Das Tool hat gedauert und ich sende jeden Schritt. Wenn die Fortschrittsmeldungen stören, sende `/verbose`, um die Modi zu wechseln (all → new → off). Dieser Hinweis erscheint nicht wieder."
+    tool_progress_cli: "(tip) Das Tool lief eine Weile. Mit /verbose die Fortschrittsanzeige wechseln (all -> new -> off -> verbose). Dieser Tipp erscheint nur einmal."
+
+  session:
+    storage_disk: "⚠️ Der Sitzungsspeicher war kurz nicht erreichbar, daher wurde dieser Zug gestoppt, um den Verlauf zu schützen. Bitte prüfe den freien Speicherplatz und sende die Nachricht erneut."
+    storage_retry: "⚠️ Der Sitzungsspeicher war kurz nicht erreichbar, daher wurde dieser Zug gestoppt, um den Verlauf zu schützen. Deine Nachricht sollte bereits gespeichert sein — bitte sende sie gleich noch einmal."
+    too_large: "⚠️ Sitzung zu groß für das Kontextfenster des Modells.\nNutze /compact, um das Gespräch zu verdichten, oder /reset für einen Neustart."
+    request_failed: "Die Anfrage ist fehlgeschlagen: {error}\nVersuche es erneut oder starte mit /reset eine neue Sitzung."
+    interrupted_before_start: "⚠️ Deine Nachricht wurde unterbrochen, bevor die Verarbeitung begann (vermutlich durch ein kürzliches /stop). Bitte sende sie erneut."
+    processing_stopped: "⚠️ Verarbeitung gestoppt: {error}. Bitte erneut versuchen."
+    no_response: "⚠️ Verarbeitung abgeschlossen, aber keine Antwort erzeugt. Das kann ein vorübergehender Fehler sein — sende die Nachricht erneut."
+    not_processed: "⚠️ Deine Nachricht wurde nicht verarbeitet (der vorherige Zug wurde noch aufgeräumt). Bitte sende sie erneut."
+
   model:
     error_prefix:           "Fehler: {error}"
     switched:               "Modell gewechselt zu `{model}`"

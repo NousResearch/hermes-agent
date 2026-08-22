@@ -115,6 +115,42 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "node/lib/node_modules/npm/node_modules/node-gyp/gyp/test_gyp.py",
+            "lsp/node_modules/pyright/dist/typeshed-fallback/stubs/anyio/"
+            "tmp_storages.pyi",
+        ],
+    )
+    def test_skips_hermes_managed_tool_install_trees(
+        self, _isolate_env, relative_path
+    ):
+        dg = _load_lib()
+        p = _isolate_env / relative_path
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
+    @pytest.mark.parametrize(
+        "dependency_dir", ["node_modules", "venv", ".venv", "site-packages"]
+    )
+    def test_skips_dependency_install_trees(
+        self, _isolate_env, dependency_dir
+    ):
+        dg = _load_lib()
+        p = _isolate_env / "workspace" / dependency_dir / "pkg" / "tmp_state.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
+    def test_dependency_named_parent_is_not_overmatched(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "node_modules_backup" / "test_fixture.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        assert dg.guess_category(p) == "test"
+
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
         # Only files under ``cron/output/`` are disposable run artifacts.
@@ -223,6 +259,31 @@ class TestStaleCronEntryMigration:
         summary = dg.quick()
         assert summary["deleted"] == 1, "valid old cron-output should be deleted"
         assert not run_md.exists()
+
+
+class TestStaleTestEntryMigration:
+    def test_quick_skips_stale_tool_install_entry(self, _isolate_env):
+        dg = _load_lib()
+        p = (
+            _isolate_env
+            / "node/lib/node_modules/npm/node_modules/node-gyp/gyp/test_gyp.py"
+        )
+        p.parent.mkdir(parents=True)
+        p.write_text("upstream fixture")
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(p),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": p.stat().st_size,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert p.read_text() == "upstream fixture"
+        assert json.loads(tracked_file.read_text()) == []
 
 
 class TestTrackForgetQuick:

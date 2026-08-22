@@ -3638,6 +3638,37 @@ def terminal_tool(
             if sudo_cache_cleared:
                 result_dict["sudo_cache_cleared"] = True
 
+            # DX (#71788): surface scrubbed provider credential *names* only
+            # where we know the child env Hermes actually built.
+            # Local backends: LocalEnvironment._run_bash uses
+            # ``_make_run_env(self.env)`` — derive the note from that.
+            # Non-local backends (ssh/docker/…): the remote shell's env is
+            # not fully modeled here (ssh does not clear host env); omit the
+            # note rather than claim a remote credential was scrubbed.
+            if env_type == "local":
+                try:
+                    from tools.env_passthrough import (
+                        format_scrubbed_provider_env_note,
+                        list_scrubbed_provider_credentials,
+                    )
+                    from tools.environments.local import _make_run_env
+
+                    local_env = getattr(env, "env", None) or {}
+                    child_env = _make_run_env(local_env)
+                    scrubbed_names = list_scrubbed_provider_credentials(
+                        os.environ, child_env
+                    )
+                    note = format_scrubbed_provider_env_note(scrubbed_names)
+                    if note:
+                        result_dict["credential_scrub_note"] = note
+                        out = result_dict.get("output") or ""
+                        if note not in out:
+                            result_dict["output"] = (
+                                out + ("\n\n" if out else "") + note
+                            )
+                except Exception:
+                    logger.debug("credential scrub note failed", exc_info=True)
+
             return json.dumps(result_dict, ensure_ascii=False)
 
     except EnvironmentConnectionError as e:

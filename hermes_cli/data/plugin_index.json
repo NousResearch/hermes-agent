@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-discord-rpc",
+      "description": "Native Discord Rich Presence (RPC) integration for Hermes Agent — live session, model, token, and tool tracking.",
+      "author": "DarRahman",
+      "tags": ["discord", "rpc", "rich-presence", "presence", "desktop"],
+      "repo": "DarRahman/hermes-discord-presence",
+      "ref": "84900bfe7ab53506d7ed21b252773cffe4da7c22",
+      "homepage": "https://github.com/DarRahman/hermes-discord-presence",
+      "capabilities": ["hooks"],
+      "api_version": 1,
+      "added_at": "2026-08-21"
     }
   ]
 }

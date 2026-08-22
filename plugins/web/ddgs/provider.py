@@ -44,6 +44,25 @@ _POLL_INTERVAL_SECS = 0.1
 # After terminate(), wait this long before escalating to kill().
 _TERMINATE_GRACE_SECS = 1.0
 
+# Env var naming an explicit, ordered ddgs text-engine list (comma-separated,
+# e.g. "duckduckgo, brave, google"). Unset → ddgs picks its own default
+# ("auto"), which rotates through every engine it knows.
+_BACKENDS_ENV_VAR = "HERMES_DDGS_BACKENDS"
+
+
+def _resolve_backends() -> Optional[str]:
+    """Return the configured ddgs engine list, or None to use ddgs's default.
+
+    ``backend="auto"`` rotates through every text engine ddgs supports. When
+    one of them is unreachable from a given host — e.g. an engine whose cert
+    chain fails local TLS validation — each rotation onto it burns the full
+    per-request timeout and returns nothing, which degrades unattended
+    searches (cron research jobs) into empty results. Naming an explicit
+    ordered list lets an operator route around a broken engine without
+    patching this file.
+    """
+    return (os.getenv(_BACKENDS_ENV_VAR) or "").strip() or None
+
 
 class _SearchInterrupted(Exception):
     """Raised when tools.interrupt.is_interrupted() trips during a search wait."""
@@ -59,9 +78,16 @@ def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
     """
     from ddgs import DDGS  # type: ignore
 
+    text_kwargs: Dict[str, Any] = {}
+    backends = _resolve_backends()
+    if backends:
+        text_kwargs["backend"] = backends
+
     results: list[dict[str, Any]] = []
     with DDGS(timeout=10) as client:
-        for i, hit in enumerate(client.text(query, max_results=safe_limit)):
+        for i, hit in enumerate(
+            client.text(query, max_results=safe_limit, **text_kwargs)
+        ):
             if i >= safe_limit:
                 break
             url = str(hit.get("href") or hit.get("url") or "")

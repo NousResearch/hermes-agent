@@ -14,6 +14,7 @@ import {
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { notifyError } from '@/store/notifications'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -344,7 +345,27 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // syncConnectionToActiveProfile await left a window where $gateway
     // already targeted the new backend while $connection still described the
     // previous one, and remote-aware paths announced the wrong mode (#46651).
-    const [connection] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
+    const [connection, activated] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
+
+    if (!activated) {
+      // The dial failed (or the entry was evicted mid-flight): the store
+      // deliberately kept the previous socket route (#92265). Moving
+      // $activeGatewayProfile here would scope REST to the target while the
+      // WebSocket still serves the previous backend — the exact split-brain
+      // #89206 eliminated. Keep every pointer on the previous backend;
+      // surfaces re-check what's active.
+      console.warn(`[profile] gateway activation for "${target}" did not land`)
+      // The refused activation must be VISIBLE, not a silent dead click: an
+      // error toast naming the profile and telling the user the previous
+      // profile is still active and a retry will recover once the socket is
+      // open (the issue's "recoverable connection error").
+      notifyError(
+        new Error(`Could not connect to profile "${target}" — the previous profile stays active. Try again.`),
+        `Could not connect to profile "${target}"`
+      )
+
+      return
+    }
 
     // ONE publication frame. batch() defers Nanostores' notifications to the
     // end of the callback, so the profile pointer and the connection
@@ -410,7 +431,9 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
   const connection = (connectionId ?? '').trim() || null
 
   if (!connection) {
-    return ensureGatewayProfile(target)
+    await ensureGatewayProfile(target)
+
+    return
   }
 
   // Serialize against any in-flight profile/agent switch (shared mutex).

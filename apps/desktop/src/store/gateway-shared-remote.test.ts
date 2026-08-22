@@ -11,12 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // `sharedPrimary` descriptor activates the primary socket; a pooled descriptor
 // that also carries `profile` must still dial its own socket.
 
-const gatewayMocks = vi.hoisted(() => ({
-  connect: vi.fn(async (_wsUrl: string): Promise<void> => {
-    throw new Error('dialed a socket for a shared-primary profile')
-  }),
-  setConnection: vi.fn()
-}))
+const gatewayMocks = vi.hoisted(() => {
+  const instances: Array<{ close: ReturnType<typeof vi.fn>; connectionState: string }> = []
+
+  return {
+    connect: vi.fn(async (_wsUrl: string): Promise<void> => {
+      throw new Error('dialed a socket for a shared-primary profile')
+    }),
+    instances,
+    setConnection: vi.fn()
+  }
+})
 
 vi.mock('@/hermes', () => ({
   setApiRequestConnection: vi.fn(),
@@ -29,6 +34,10 @@ vi.mock('@/hermes', () => ({
     close = vi.fn()
     onEvent = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
+
+    constructor() {
+      gatewayMocks.instances.push(this as never)
+    }
   }
 }))
 vi.mock('@/store/session', () => ({
@@ -39,6 +48,7 @@ vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() })
 
 const {
   $gateway,
+  activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureActiveGatewayOpen,
@@ -57,6 +67,15 @@ function makePrimary(): { connectionState: string } {
   return { connectionState: 'open' }
 }
 
+const workerConnection = {
+  authMode: 'token',
+  baseUrl: 'https://worker.invalid',
+  mode: 'remote',
+  profile: 'worker',
+  token: 'fake-test-token',
+  wsUrl: 'wss://worker.invalid/api/ws?token=fake-test-token'
+}
+
 beforeEach(() => {
   configureGatewayRegistry({
     onEvent: vi.fn(),
@@ -66,6 +85,7 @@ beforeEach(() => {
 
 afterEach(() => {
   closeSecondaryGateways()
+  gatewayMocks.instances.length = 0
   vi.clearAllMocks()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -113,31 +133,63 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect($gateway.get()).not.toBe(primary)
   })
 
-  it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {
-    const connection = {
-      authMode: 'token',
-      baseUrl: 'https://worker.invalid',
-      mode: 'remote',
-      profile: 'worker',
-      token: 'fake-test-token',
-      wsUrl: 'wss://worker.invalid/api/ws?token=fake-test-token'
-    }
+  it('a transient first dial does not publish a closed gateway; the retry that opens it does (#92265)', async () => {
+    const getConnection = vi.fn(async () => workerConnection)
+    const primary = makePrimary()
 
-    const getConnection = vi.fn(async () => connection)
-
-    setPrimaryGateway(makePrimary() as never, 'default')
+    setPrimaryGateway(primary as never, 'default')
     installDesktop({ getConnection })
 
-    gatewayMocks.connect.mockRejectedValueOnce(new Error('temporarily offline')).mockResolvedValueOnce(undefined)
+    // One cold-start dial transient-fails. (Once-queues only: clearAllMocks
+    // keeps persistent implementations, so a bare mockRejectedValue would
+    // leak into the next test.)
+    gatewayMocks.connect
+      .mockRejectedValueOnce(new Error('temporarily offline'))
+      .mockResolvedValueOnce(undefined)
 
     await ensureGatewayForProfile('worker')
 
+    // The previous (primary) route must stay published — a closed pooled
+    // socket must not move the foreground or publish its connection.
+    expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
+    expect(activeGateway()).toBe(primary)
+
+    // The follow-up activation — the user's next click, after the backoff
+    // loop healed the socket in the background — dials again, lands, and
+    // publishes the connection exactly once.
+    await ensureGatewayForProfile('worker')
+
     expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
-    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
+    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(workerConnection)
+    expect(activeGateway()).not.toBe(primary)
+    expect(activeGateway()?.connectionState).toBe('open')
+  })
 
-    await ensureActiveGatewayOpen()
+  it('re-publishes the active connection when the next RPC heals an already-active pooled socket', async () => {
+    const getConnection = vi.fn(async () => workerConnection)
+    const primary = makePrimary()
 
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({ getConnection })
+    gatewayMocks.connect.mockResolvedValue(undefined)
+
+    await ensureGatewayForProfile('worker')
+    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
+
+    // The socket drops AFTER a successful activation.
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // The next RPC drive (ensureActiveGatewayOpen) re-dials the ALREADY-ACTIVE
+    // entry and re-publishes its descriptor — the recovery path the
+    // optimistic entry.connection assignment exists for (reconnectSecondary
+    // never applies the route; only an active entry's openSecondary publish
+    // refreshes the connection).
+    const healed = await ensureActiveGatewayOpen()
+
+    expect(healed).not.toBeNull()
+    expect((healed as unknown as { connectionState: string }).connectionState).toBe('open')
     expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(2)
-    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
+    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(workerConnection)
   })
 })

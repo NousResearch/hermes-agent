@@ -2,11 +2,12 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForProfile = vi.fn(async () => true)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
@@ -59,7 +60,14 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  clearNotifications()
+  vi.stubGlobal('window', {
+    hermesDesktop: { getConnection },
+    // The real notifications module (asserted via $notifications) schedules
+    // its dismiss timer through window.
+    setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args),
+    clearTimeout: (...args: Parameters<typeof clearTimeout>) => clearTimeout(...args)
+  })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
@@ -114,6 +122,28 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('keeps every pointer on the previous backend when the dial does not land (#92265)', async () => {
+    getConnection.mockResolvedValue(remoteConn())
+    ensureGatewayForProfile.mockResolvedValueOnce(false)
+
+    await ensureGatewayProfile('vps-remote')
+
+    // The store kept the previous socket route on purpose (closed gateway):
+    // the profile pointer and $connection must not move with it, or REST
+    // scopes to the target while the WebSocket still serves the previous
+    // backend (the #89206 split-brain).
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+
+    // The refused activation must be VISIBLE, not a silent dead click: an
+    // error notification naming the profile and the recoverable retry.
+    expect($notifications.get()).toHaveLength(1)
+    expect($notifications.get()[0]).toMatchObject({ kind: 'error' })
+    expect($notifications.get()[0].title).toContain('vps-remote')
+    expect($notifications.get()[0].message).toMatch(/previous profile stays active.*try again/i)
   })
 })
 

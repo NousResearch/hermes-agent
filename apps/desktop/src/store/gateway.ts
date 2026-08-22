@@ -316,6 +316,14 @@ async function openSecondary(entry: Secondary): Promise<void> {
         ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
         : await desktop.getConnection(entry.profile)
 
+    // OPTIMISTIC on purpose: record the descriptor BEFORE the dial succeeds.
+    // A background reconnect (reconnectSecondary) never calls applyActive and
+    // only re-publishes through the `g.activeKey === entry.scope` gate below,
+    // so a socket healed after a drop can refresh its descriptor only if the
+    // entry was already active and recorded it on the way in. The activation
+    // doors guard against publishing a CLOSED socket via isOpen(entry.gateway)
+    // (#92265) — the assignment order is load-bearing for recovery and must
+    // not move.
     entry.connection = conn
 
     const wsDeps =
@@ -709,9 +717,7 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    await ensureGatewayForProfile(profile)
-
-    return true
+    return ensureGatewayForProfile(profile)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -749,10 +755,14 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   entry.activationLeaseUntil = 0
 
   // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish.
+  // flight. Only the still-registered, still-owned activation may publish,
+  // and only once its socket is actually OPEN: a closed entry whose dial
+  // failed after the descriptor lookup used to pass on `entry.connection`
+  // alone and become the foreground gateway (#92265).
   const activated =
     entry.wantOpen &&
     g.secondaries.get(scope) === entry &&
+    isOpen(entry.gateway) &&
     Boolean(entry.connection) &&
     applyActive(scope, activationEpoch)
 
@@ -765,14 +775,17 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+// Resolves true only when the route actually landed on an OPEN socket — a
+// failed activation leaves the previous route published (#92265) and callers
+// (profile.ts's pointer publication) must not follow a route that didn't move.
+export async function ensureGatewayForProfile(profile: string): Promise<boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
     applyActive(key, activationEpoch)
 
-    return
+    return true
   }
 
   // Global-remote share (routing case 3): one remote host serves every
@@ -783,7 +796,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   if (await sharedPrimaryRoute(key)) {
     applyActive(g.primaryProfile, activationEpoch)
 
-    return
+    return true
   }
 
   let entry = g.secondaries.get(key)
@@ -812,9 +825,22 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // The activation is settling either way — release the prune lease.
   entry.activationLeaseUntil = 0
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
+  // Apply the route only once the socket is OPEN and the descriptor is
+  // recorded — `entry.connection` sits AHEAD of applyActive here (the agent
+  // door's order) so a null-descriptor entry never moves the active route as
+  // a side effect of the guard chain (#92265).
+  const applied =
+    entry.wantOpen &&
+    g.secondaries.get(key) === entry &&
+    isOpen(entry.gateway) &&
+    Boolean(entry.connection) &&
+    applyActive(key, activationEpoch)
+
+  if (applied && entry.connection) {
     publishActiveConnection(entry.connection)
   }
+
+  return applied
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

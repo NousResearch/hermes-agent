@@ -17,7 +17,7 @@ import { deferred } from '../test/deferred'
 //     EARLIER setActive() landed last.
 
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
-const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const ensureGatewayForProfile = vi.fn(async (_profile: string) => true)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
@@ -133,6 +133,8 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     ensureGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
       await profileGate.promise
+
+      return true
     })
     ensureGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
       order.push(`agent:${profile}`)
@@ -174,6 +176,8 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     })
     ensureGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
+
+      return true
     })
     getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
     getConnectionFor.mockResolvedValue(agentConn())

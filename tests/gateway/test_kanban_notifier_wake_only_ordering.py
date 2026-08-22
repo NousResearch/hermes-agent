@@ -27,6 +27,14 @@ class RecordingAdapter:
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
 
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        from gateway.platforms.base import SendResult
+        try:
+            await self.send(chat_id, content, metadata=metadata)
+            return SendResult(success=True)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
     async def handle_message(self, event):
         self.handled.append(event)
 

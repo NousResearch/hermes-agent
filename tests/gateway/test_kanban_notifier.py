@@ -20,6 +20,15 @@ class RecordingAdapter:
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
 
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        # Minimal base-class stand-in: single send, SendResult contract.
+        from gateway.platforms.base import SendResult
+        try:
+            await self.send(chat_id, content, metadata=metadata)
+            return SendResult(success=True)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
     async def handle_message(self, event):
         self.handled.append(event)
 
@@ -277,6 +286,11 @@ class FailingAdapter:
         self.attempts += 1
         raise RuntimeError("simulated send failure")
 
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        # Mirror the base class: an exception inside send() propagates —
+        # the notifier's except path is what this adapter exercises.
+        return await self.send(chat_id, content, metadata=metadata)
+
 
 class ReportedFailureAdapter:
     """Adapter that REPORTS failure via SendResult(success=False) instead of
@@ -290,6 +304,11 @@ class ReportedFailureAdapter:
         self.attempts += 1
         from gateway.platforms.base import SendResult
         return SendResult(success=False, error="Not connected")
+
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        # Single attempt, reported failure — the notifier must count it as
+        # a failed delivery (no retries: max_retries=0 stand-in).
+        return await self.send(chat_id, content, metadata=metadata)
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
@@ -622,3 +641,88 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Delivery reliability: retrying send + delivery ledger + wake reply anchor
+# ---------------------------------------------------------------------------
+
+
+def test_notifier_text_ping_uses_retrying_send_and_records_ledger(tmp_path, monkeypatch):
+    """The text ping must ride _send_with_retry (transient-error retries) and
+    the delivery ledger (crash between send and cursor advance can redeliver),
+    like the main agent response path — not a single bare adapter.send()."""
+    db_path = tmp_path / "notif-ledger.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="ledger ping", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            delivery_mode="notify",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    send_calls = []
+
+    class RetryObservingAdapter(RecordingAdapter):
+        async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kw):
+            send_calls.append(("retry", chat_id, content))
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True)
+
+        async def send(self, chat_id, text, metadata=None):
+            send_calls.append(("bare", chat_id, text))
+
+    adapter = RetryObservingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Delivery went through the retrying path, never a bare send.
+    assert send_calls and all(c[0] == "retry" for c in send_calls)
+
+    # The obligation is in the ledger and marked delivered.
+    import gateway.delivery_ledger as dl
+
+    ledger_conn = sqlite3.connect(dl._db_path())
+    try:
+        rows = ledger_conn.execute(
+            "SELECT obligation_id, state FROM delivery_obligations"
+        ).fetchall()
+    finally:
+        ledger_conn.close()
+    assert rows, "no delivery obligation recorded for the text ping"
+    assert all(state == "delivered" for _oid, state in rows), rows
+
+
+def test_notifier_wake_source_carries_reply_anchor_message_id(tmp_path, monkeypatch):
+    """The wake SessionSource must carry the subscription's
+    telegram_reply_to_message_id so the wake response anchors inside the
+    visible DM topic lane instead of falling back to the generic
+    direct_messages_topic_id."""
+    db_path = tmp_path / "wake-anchor.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wake anchor", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            thread_id="20197", delivery_mode="notify+wake",
+            delivery_metadata={"telegram_reply_to_message_id": "462"},
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.handled) == 1
+    assert adapter.handled[0].source.message_id == "462"

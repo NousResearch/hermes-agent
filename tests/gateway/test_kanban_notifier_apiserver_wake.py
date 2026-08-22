@@ -27,6 +27,11 @@ class SoftFailAdapter:
         self.attempts += 1
         return SendResult(success=False, error="soft failure")
 
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        # Single-attempt stand-in: report the same soft failure upward so the
+        # notifier still counts it as a failed delivery.
+        return await self.send(chat_id, content, metadata=metadata)
+
 
 class ApiServerLikeAdapter:
     supports_async_delivery = False

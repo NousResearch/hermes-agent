@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dexi
+description: Search, read, and save your Dexi notes — clipped pages, emailed articles, feeds, typed notes (OAuth).
+source: https://dexi.net/mcp/hermes
+
+# Dexi ships a hosted remote MCP server (Streamable HTTP) with native MCP
+# OAuth 2.1 + Dynamic Client Registration (loopback redirects accepted, so
+# Hermes's paste-back flow works on headless hosts). Twelve tools:
+# search_notes, semantic_search, list_notes, get_note, find_similar,
+# list_tags, list_folders, create_note, update_note, delete_note,
+# get_due_reviews, grade_review — all annotated (readOnlyHint /
+# destructiveHint). Small enough to enable in full.
+transport:
+  type: http
+  url: https://mcp.dexi.net/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1). Hermes registers itself; the user approves on
+  # Dexi's consent page, where the connection can be restricted to one
+  # folder or tag.
+
+post_install: |
+  On first connection, Hermes prints an authorize URL (and opens a browser
+  when it can). Sign in to Dexi and approve — you can restrict the
+  connection to a single folder or tag on that page. On a headless server,
+  open the URL elsewhere, approve, and paste the redirect URL back.
+  After auth, restart your Hermes session so the dexi tools are loaded.
+
+  Try: "Search my Dexi notes for everything about vector databases."
+  Dexi also ships a memory-provider plugin (auto-recall before each turn):
+  https://github.com/dexi/hermes-plugin

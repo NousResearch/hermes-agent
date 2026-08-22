@@ -1031,6 +1031,56 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def check_stale_minimax_base_urls() -> list[str]:
+    """Detect auth.json credential_pool entries still on the catalog /v1 surface.
+
+    When MiniMax / MiniMax-CN credential_pool entries carry a ``/v1`` URL,
+    runtime routes the request to the OpenAI-style surface while MiniMax's
+    transport is ``anthropic_messages`` — every auxiliary call (title
+    generation, compression, vision, ...) 404s with ``HTTP 404: 404 page
+    not found`` (#84838). The runtime silently remaps these to ``/anthropic``
+    for the current process, but the on-disk config still 404s the next
+    time ``auth.json`` is read fresh, so a doctor warning is needed to push
+    the user toward running ``hermes model`` again.
+
+    Returns remediation instructions to feed into the doctor summary list.
+    """
+    instructions: list[str] = []
+    try:
+        from hermes_cli.runtime_provider import _STALE_MINIMAX_V1_TO_ANTHROPIC
+    except Exception:  # noqa: BLE001 — diagnostics must never crash
+        return instructions
+
+    pool: dict = {}
+    try:
+        from hermes_cli.auth import read_credential_pool
+        pool = read_credential_pool() or {}
+    except Exception:
+        return instructions
+
+    for provider_id in ("minimax", "minimax-cn"):
+        entries = pool.get(provider_id)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            base_url = (entry.get("base_url") or "").strip().rstrip("/")
+            correct = _STALE_MINIMAX_V1_TO_ANTHROPIC.get(base_url)
+            if not correct:
+                continue
+            label = entry.get("label") or provider_id
+            check_warn(
+                f"{label} base_url uses deprecated /v1 surface ({base_url})",
+                f"(runtime auto-remaps to {correct}; persist by re-running `hermes model` — #84838)",
+            )
+            instructions.append(
+                f"Re-run `hermes model` for `{provider_id}` to persist "
+                f"the correct /anthropic base_url and silence this warning."
+            )
+    return instructions
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1752,6 +1802,12 @@ def run_doctor(args):
                 check_info(xai_oauth_status["error"])
     except Exception:
         pass
+
+    _section("Provider base_url health")
+    try:
+        manual_issues.extend(check_stale_minimax_base_urls())
+    except Exception as e:
+        check_warn(f"Provider base_url check failed: {e}")
 
     _section("Directory Structure")
     hermes_home = HERMES_HOME

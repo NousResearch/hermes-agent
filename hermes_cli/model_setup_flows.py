@@ -2928,6 +2928,20 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if chosen_base and chosen_base != effective_base and base_url_env:
             save_env_value(base_url_env, chosen_base)
         effective_base = chosen_base
+    elif provider_id in {"minimax", "minimax-cn"}:
+        # MiniMax uses the AnthropicMessages protocol under /anthropic. The
+        # registry default in PROVIDER_REGISTRY is already /anthropic; the
+        # OpenAI-style /v1 surface 404s for MiniMax (#84838). Don't prompt —
+        # earlier flows let users type /v1 and silently broke auxiliary
+        # tasks (title generation, compression, vision). If no env var is
+        # already set, persist the canonical URL so future reads don't
+        # have to consult the registry.
+        if effective_base and base_url_env and not get_env_value(base_url_env):
+            save_env_value(base_url_env, effective_base)
+        print(
+            f"  Base URL: {effective_base} "
+            f"(AnthropicMessages — fixed for MiniMax; see #84838)"
+        )
     else:
         try:
             override = line_input(f"Base URL [{effective_base}]: ").strip()

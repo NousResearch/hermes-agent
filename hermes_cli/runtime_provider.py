@@ -257,7 +257,49 @@ def _host_derived_api_key(base_url: str) -> str:
     if sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
         return ""
     env_name = f"{sanitized}_API_KEY"
-    return (_getenv(env_name, "") or "").strip()
+    return (_getenv(env_name, "").strip() or "").strip()
+
+
+_STALE_MINIMAX_V1_TO_ANTHROPIC = {
+    "https://api.minimax.io/v1": "https://api.minimax.io/anthropic",
+    "https://api.minimaxi.com/v1": "https://api.minimaxi.com/anthropic",
+}
+
+# Module-level one-shot gate: every Hermes process emits at most one
+# "your auth.json still has a stale /v1 URL for MiniMax" warning. Auxiliary
+# tasks (title generation, compression, vision, ...) all flow through the
+# same remap, so without this gate we'd spam once per call.
+_minimax_v1_remap_warned: bool = False
+
+
+def _minimax_anthropic_url_for_stale_v1(base_url: str) -> str:
+    """Return the Anthropic twin of a persisted MiniMax /v1 catalog default."""
+    return _STALE_MINIMAX_V1_TO_ANTHROPIC.get((base_url or "").strip().rstrip("/"), "")
+
+
+def _maybe_warn_stale_minimax_v1(provider: str, original_url: str) -> str:
+    """One-shot warning for stale MiniMax /v1 base_url. Returns the remapped URL.
+
+    Triggered when ``provider`` is MiniMax/MiniMax-CN and ``original_url`` is
+    one of the catalog-era /v1 URLs that 404 against the AnthropicMessages
+    surface. Emits a single ``logger.warning`` per process; subsequent calls
+    are silent. Re-running ``hermes model`` persists the correct /anthropic
+    URL so the warning stops firing on future runs.
+    """
+    global _minimax_v1_remap_warned
+    remapped = _minimax_anthropic_url_for_stale_v1(original_url)
+    if provider not in {"minimax", "minimax-cn"} or not remapped:
+        return remapped
+    if not _minimax_v1_remap_warned:
+        _minimax_v1_remap_warned = True
+        logger.warning(
+            "⚠ %s 配置的是旧版 OpenAI 风格 base_url (%s)；"
+            "本次运行已自动切换到 %s 以恢复功能。"
+            "建议运行 `hermes model` 重新走一遍配置流程，"
+            "写入正确的持久化配置（参考 #84838）。",
+            provider, original_url, remapped,
+        )
+    return remapped
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
@@ -565,6 +607,10 @@ def _resolve_runtime_from_pool_entry(
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
+                if provider in {"minimax", "minimax-cn"}:
+                    cfg_base_url = _maybe_warn_stale_minimax_v1(
+                        provider, cfg_base_url
+                    ) or cfg_base_url
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         from hermes_cli.models import opencode_provider_family
@@ -2370,6 +2416,14 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        # hermes setup / models.dev persist the OpenAI-style /v1 default.
+        # MiniMax's transport is anthropic_messages, so that path 404s
+        # (#84838). Remap only the known stale catalog URLs; a user-set
+        # China or custom host is left alone.
+        if provider in {"minimax", "minimax-cn"}:
+            cfg_base_url = _maybe_warn_stale_minimax_v1(
+                provider, cfg_base_url
+            ) or cfg_base_url
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)

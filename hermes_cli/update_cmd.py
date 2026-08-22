@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1618,6 +1619,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     update_managed_uv()
 
     uv_bin = ensure_uv()
+
+    # Interrupted installs can leave dist-info without RECORD; purge before
+    # uv tries to uninstall/replace those packages (#77432).
+    _heal_stale_distinfo_without_record(_m().PROJECT_ROOT)
 
     pip_cmd = [_m().sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -3850,6 +3855,76 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     if missing:
         return False, "; ".join(missing[:4])
     return True, ""
+
+def _purge_site_packages_missing_record(site_packages: Path) -> list[str]:
+    """Remove distributions whose dist-info lacks a RECORD file.
+
+    An interrupted ``uv pip install`` can leave package files + dist-info with
+    no RECORD. uv then refuses to uninstall/replace the package and the next
+    install collides with stale files (Windows: Access Denied on ``.pyd``) —
+    stranding the venv (#77432). Deleting those trees is safe: the upcoming
+    dependency sync reinstalls them from a clean state.
+    """
+    purged: list[str] = []
+    if not site_packages.is_dir():
+        return purged
+
+    for dist_info in sorted(site_packages.glob("*.dist-info")):
+        if not dist_info.is_dir():
+            continue
+        if (dist_info / "RECORD").is_file():
+            continue
+
+        stem = dist_info.name[: -len(".dist-info")]
+        # ``cryptography-49.0.0`` → name ``cryptography``; keep the rest of the
+        # stem as version (PEP 427 / wheel naming).
+        match = re.match(r"^(.+)-(\d.*)$", stem)
+        dist_name = match.group(1) if match else stem
+        candidates = {
+            dist_name,
+            dist_name.replace("-", "_"),
+            dist_name.replace("_", "-"),
+        }
+        for cand in candidates:
+            pkg_dir = site_packages / cand
+            if pkg_dir.exists():
+                shutil.rmtree(pkg_dir, ignore_errors=True)
+        data_dir = site_packages / f"{stem}.data"
+        if data_dir.exists():
+            shutil.rmtree(data_dir, ignore_errors=True)
+        shutil.rmtree(dist_info, ignore_errors=True)
+        purged.append(dist_name)
+
+    return purged
+
+
+def _heal_stale_distinfo_without_record(project_root: Path | None = None) -> list[str]:
+    """Scan the install venv for missing-RECORD dist-info and purge them."""
+    root = Path(project_root) if project_root is not None else Path(_m().PROJECT_ROOT)
+    venv = root / "venv"
+    site_dirs: list[Path] = []
+    win_sp = venv / "Lib" / "site-packages"
+    if win_sp.is_dir():
+        site_dirs.append(win_sp)
+    site_dirs.extend(sorted(venv.glob("lib/python*/site-packages")))
+
+    purged: list[str] = []
+    seen: set[str] = set()
+    for site in site_dirs:
+        for name in _purge_site_packages_missing_record(site):
+            if name not in seen:
+                seen.add(name)
+                purged.append(name)
+
+    if purged:
+        shown = ", ".join(purged[:8])
+        extra = f" (+{len(purged) - 8} more)" if len(purged) > 8 else ""
+        print(
+            f"  → Removed {len(purged)} package(s) with missing RECORD "
+            f"(heal interrupted install): {shown}{extra}"
+        )
+    return purged
+
 
 def _detect_venv_python_processes(
     *, exclude_pids: set[int] | None = None
@@ -6137,6 +6212,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         cwd=_m().PROJECT_ROOT,
                         check=False,
                     )
+                # Heal dist-info without RECORD before uv tries to uninstall
+                # (interrupted prior install strands Windows venvs — #77432).
+                _heal_stale_distinfo_without_record(_m().PROJECT_ROOT)
                 if repair_uv:
                     repair_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
                     _m()._install_python_dependencies_with_optional_fallback(
@@ -6469,6 +6547,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         update_managed_uv()
 
         uv_bin = ensure_uv()
+
+        # Interrupted installs can leave dist-info without RECORD; purge before
+        # uv tries to uninstall/replace those packages (#77432).
+        _heal_stale_distinfo_without_record(_m().PROJECT_ROOT)
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:

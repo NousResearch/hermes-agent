@@ -101,6 +101,10 @@ def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
     # auto-attribute would read as a truthy "stamped profile" and trip the
     # fail-closed path in _adapter_for_source (see AGENTS.md pitfall #17).
     src.profile = None
+    # Real SessionSource.chat_type defaults to "dm"; a MagicMock auto-attribute
+    # would read as an unknown chat type and trip the fail-closed group-scope
+    # suppression in _deliver_platform_notice.
+    src.chat_type = "dm"
     return src
 
 

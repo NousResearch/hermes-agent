@@ -88,7 +88,11 @@ class SlashAccessPolicy:
         return canonical_cmd in self.user_allowed_commands
 
 
-_DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
+# EXPLICIT DM chat types only. An unset/unknown chat type is deliberately not
+# a member: callers that fail closed on the group side (slash gating, the
+# operator-notice group gate in gateway/run.py) must not have an empty string
+# resolve to "dm" and hand a multi-user chat the DM policy.
+_DM_CHAT_TYPES = frozenset({"dm", "direct", "private"})
 
 
 def _coerce_id_list(raw: Any) -> FrozenSet[str]:
@@ -137,7 +141,14 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
     return frozenset(out)
 
 
-def _scope_for_chat_type(chat_type: Optional[str]) -> str:
+def scope_for_chat_type(chat_type: Optional[str]) -> str:
+    """Map a platform chat type onto the ``dm`` / ``group`` policy scope.
+
+    Public because more than one gate depends on both classifying a chat the
+    same way — slash access here, operator-notice delivery in
+    ``gateway/run.py``. Anything that is not an explicit DM value (including
+    ``None`` and ``""``) resolves to ``group``, the fail-closed side.
+    """
     if chat_type and chat_type.lower() in _DM_CHAT_TYPES:
         return "dm"
     return "group"
@@ -218,7 +229,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
         except Exception:
             platform_config = None
     extra = _platform_extra(platform_config)
-    scope = _scope_for_chat_type(getattr(source, "chat_type", None))
+    scope = scope_for_chat_type(getattr(source, "chat_type", None))
     return policy_from_extra(extra, scope)
 
 
@@ -226,4 +237,5 @@ __all__ = [
     "SlashAccessPolicy",
     "policy_from_extra",
     "policy_for_source",
+    "scope_for_chat_type",
 ]

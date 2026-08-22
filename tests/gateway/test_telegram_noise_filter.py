@@ -140,6 +140,73 @@ def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
     assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
 
 
+# ── Operator-directed config notices in group scope ─────────────────────────
+# Statuses that embed a `hermes config set …` opt-out are addressed to the
+# deployment operator, not chat participants. In a group-bot deployment the
+# first activation is usually a public group, so the one-time Codex
+# auto-compaction raise notice leaked provider/model/config details to every
+# member. Group scope suppresses them; DM delivery is unchanged.
+
+
+def _codex_autoraise_notice() -> str:
+    # Built from the SAME helper the emit site uses (agent/agent_init.py →
+    # agent._compression_warning → status_callback("lifecycle", …)), so a
+    # rewording that drops the CLI opt-out anchor fails here instead of
+    # silently reopening the group leak.
+    from agent.agent_init import _build_codex_gpt5_autoraise_notice
+
+    return _build_codex_gpt5_autoraise_notice(
+        {"model": "gpt-5.6-sol", "from": 0.5, "to": 0.85}, context_length=272_000
+    )
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS + ["whatsapp"])
+def test_operator_config_notice_suppressed_in_group_scope(platform):
+    notice = _codex_autoraise_notice()
+    assert "hermes config set" in notice  # the anchor the gate keys on
+    assert (
+        _prepare_gateway_status_message(
+            platform, "lifecycle", notice, group_scope=True
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS + ["whatsapp"])
+def test_operator_config_notice_still_delivered_in_dm_scope(platform):
+    """DMs reach exactly one person — the operator discovery path stays."""
+    notice = _codex_autoraise_notice()
+    assert (
+        _prepare_gateway_status_message(
+            platform, "lifecycle", notice, group_scope=False
+        )
+        == notice
+    )
+
+
+@pytest.mark.parametrize("message", ["still on it", "⏳ Working — 3 min"])
+def test_group_scope_keeps_ordinary_status_messages(message):
+    """The group gate only targets operator config notices, not heartbeats."""
+    assert (
+        _prepare_gateway_status_message(
+            Platform.TELEGRAM, "lifecycle", message, group_scope=True
+        )
+        == message
+    )
+
+
+def test_programmatic_surfaces_keep_operator_notice_regardless_of_scope():
+    """Raw surfaces (local/api/webhook) never lose the diagnostic stream."""
+    notice = _codex_autoraise_notice()
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert (
+            _prepare_gateway_status_message(
+                platform, "lifecycle", notice, group_scope=True
+            )
+            == notice
+        )
+
+
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 @pytest.mark.parametrize("message", NOISY_STATUS_MESSAGES)
 def test_all_chat_gateways_suppress_noise(platform, message):

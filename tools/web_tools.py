@@ -1121,8 +1121,6 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
-
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
@@ -1137,6 +1135,7 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
+            backend = _get_extract_backend()
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support

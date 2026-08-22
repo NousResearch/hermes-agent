@@ -975,6 +975,45 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     assert d["subscribed"] is False, d
 
 
+def test_a2a_session_create_auto_subscribes(worker_env):
+    """An A2A-session kanban_create must write a kanban_notify_subs row
+    (platform='a2a', chat_id=<context_id>, notifier_profile=<gateway
+    profile>) so the kanban notifier can push the completion back to the
+    A2A peer on the same contextId. Regression for the A2A completion
+    push-back gap: the A2A adapter never bound the session
+    vars, so _maybe_auto_subscribe returned False and no sub row existed."""
+    from gateway.session_context import reset_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="a2a",
+        chat_id="peer-a2a-session-ctx-1",
+        thread_id="task-abc",
+        chat_type="dm",
+        user_id="ip:127.0.0.1",
+        profile="worker-a",
+    )
+    try:
+        from tools import kanban_tools as kt
+
+        out = kt._handle_create({"title": "a2a auto-sub", "assignee": "peer"})
+    finally:
+        # Restore the pristine per-task context so the os.environ fallback
+        # keeps working for sibling tests in this process.
+        reset_session_vars()
+
+    d = json.loads(out)
+    assert d["ok"] is True, d
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert any(
+        s["platform"] == "a2a"
+        and s["chat_id"] == "peer-a2a-session-ctx-1"
+        and s["notifier_profile"] == "worker-a"
+        for s in subs
+    ), subs
+
+
 # ---------------------------------------------------------------------------
 # Attachments — kanban_attach / kanban_attach_url / kanban_attachments
 # ---------------------------------------------------------------------------

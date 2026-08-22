@@ -21,6 +21,8 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
+from gateway.platforms.base import _mark_notify_metadata
+
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
@@ -690,8 +692,49 @@ class GatewayKanbanWatchersMixin:
                             # outcome there, not by skipping the send here.
                             continue
                         try:
+                            # Mark the notification as a final, user-visible
+                            # reply. Adapters that distinguish progressive
+                            # sends from final replies (A2A's out-of-band
+                            # push path, see A2AAdapter.send()) gate the
+                            # user-visible delivery on metadata["notify"];
+                            # without this marker the event reports success
+                            # but is silently dropped.
+                            notify_metadata = _mark_notify_metadata(metadata)
+                            # A2A: seed the context→peer registration from the
+                            # subscription row itself. The sub row carries the
+                            # caller's identity (user_id, e.g. "ip:127.0.0.1")
+                            # and the context id (chat_id) — the exact mapping
+                            # _push_out_of_band needs. Registrations are
+                            # otherwise in-memory only and are wiped by a
+                            # gateway restart, so without this the completion
+                            # push for a pre-restart context finds no peer and
+                            # drops. Best-effort: seeding must
+                            # never fail the delivery.
+                            if platform_str == "a2a":
+                                # Mark this send as an out-of-band push
+                                # delivery. In localhost-only mode the sub's
+                                # user_id is the loopback identity (ip:<addr>,
+                                # no port), so the adapter's only resolvable
+                                # target is this gateway's own endpoint — the
+                                # completion must re-enter the owning session.
+                                # Unmarked sends to a loopback peer are
+                                # session replies and are dropped by the
+                                # adapter (self-ping-pong guard in
+                                # A2AAdapter.send), so this marker is what
+                                # lets the notifier delivery fire.
+                                notify_metadata["a2a_push"] = True
+                            if platform_str == "a2a" and sub.get("user_id"):
+                                try:
+                                    adapter._register_context_peer(
+                                        sub["chat_id"], str(sub["user_id"]),
+                                    )
+                                except Exception as _seed_exc:
+                                    logger.debug(
+                                        "kanban notifier: could not seed a2a context peer for %s: %s",
+                                        sub["task_id"], _seed_exc,
+                                    )
                             _send_res = await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                                sub["chat_id"], msg, metadata=notify_metadata,
                             )
                             # A SendResult(success=False) without an exception
                             # (returned by push-capable adapters on a genuine
@@ -723,7 +766,14 @@ class GatewayKanbanWatchersMixin:
                                     await self._deliver_kanban_artifacts(
                                         adapter=adapter,
                                         chat_id=sub["chat_id"],
-                                        metadata=metadata,
+                                        # Same notify-marked metadata as the
+                                        # text ping: media fallback notices
+                                        # (send_image_file / send_document
+                                        # base fallbacks) route through
+                                        # adapter.send() and must also carry
+                                        # the final-reply marker or A2A
+                                        # silently drops them.
+                                        metadata=notify_metadata,
                                         event_payload=getattr(ev, "payload", None),
                                         task=task,
                                     )

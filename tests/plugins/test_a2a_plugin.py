@@ -199,12 +199,21 @@ class TestAudit:
     def test_audit_writes_jsonl(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         security.audit("inbound", "peer-y", "task-1", "hello world")
+        # Outbound rows must carry the context id so a pushed reply can be
+        # correlated with its originating exchange (rows without it read
+        # ctx=None while the response body carries the context).
+        security.audit("outbound", "peer-y", "task-2", "reply", context_id="ctx-9")
         audit_file = tmp_path / "a2a_audit.jsonl"
         assert audit_file.exists()
-        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
-        assert rec["direction"] == "inbound"
+        lines = audit_file.read_text().strip().splitlines()
+        rec = json.loads(lines[-1])
+        assert rec["direction"] == "outbound"
         assert rec["peer"] == "peer-y"
-        assert rec["task_id"] == "task-1"
+        assert rec["task_id"] == "task-2"
+        assert rec["context_id"] == "ctx-9"
+        # An audit call without a context id simply omits the key.
+        rec0 = json.loads(lines[0])
+        assert "context_id" not in rec0
 
 
 # --------------------------------------------------------------------------
@@ -471,12 +480,12 @@ class TestClientTools:
 
     def test_discover_summarizes_v1_card(self, monkeypatch):
         card = protocol.build_agent_card(
-            name="researcher", url="http://localhost:9999/",
+            name="researcher", url="http://localhost:8805/",
             description="finds things",
             skills=[{"id": "s", "name": "search", "description": "web search"}],
         )
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: card)
-        out = tools.a2a_discover({"url": "http://localhost:9999"})
+        out = tools.a2a_discover({"url": "http://localhost:8805"})
         assert "researcher" in out
         assert "search" in out
         assert "JSONRPC v1.0" in out
@@ -484,7 +493,7 @@ class TestClientTools:
     def test_call_sends_v1_message(self, monkeypatch):
         """Outbound params: contextId inside the message, v1.0 role, no kind."""
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
 
         captured = {}
@@ -514,7 +523,7 @@ class TestClientTools:
 
     def test_call_reports_input_required(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
 
         def fake_post(url, body, headers, timeout):
@@ -579,7 +588,7 @@ class TestRegistryDispatchConvention:
         """Models reach for 'agent_name' (observed live). Accept it as an
         alias for 'agent' so the call doesn't fail the required-arg guard."""
         monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
+                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:8805"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
         captured = {}
 
@@ -687,6 +696,853 @@ class TestReplyCapture:
             assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "real reply")
         finally:
             adapter._pop_pending("task-ok")
+
+
+class TestOutOfBandReply:
+    """Out-of-band sends (no pending waiter) must be pushed back to the peer
+    that owns the context, reusing the same contextId so the message lands in
+    the caller's session — not silently dropped."""
+
+    def _adapter_with_peer(self, peer="alice"):
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-1", "ctx-x", peer)
+        adapter._context_peers["ctx-x"] = peer
+        return adapter
+
+    def test_out_of_band_send_pushes_new_task_to_peer(self, monkeypatch):
+        """A notify send with no pending waiter POSTs a new message/send to
+        the peer with the SAME contextId (session continuity)."""
+        adapter = self._adapter_with_peer()
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
+        )
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["url"] = url
+            captured["body"] = body
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t2", "ctx-x", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        async def run():
+            res = await adapter.send("ctx-x", "here is the thing you wanted", metadata={"notify": True})
+            return res
+
+        res = asyncio.run(run())
+        assert res.success is True
+        assert captured["url"] == "http://localhost:8805"
+        msg = captured["body"]["params"]["message"]
+        assert msg["contextId"] == "ctx-x"  # same context → same caller session
+        assert msg["role"] == "ROLE_USER"
+        assert msg["parts"][0]["text"] == "here is the thing you wanted"
+
+    def test_out_of_band_send_unknown_peer_is_noop(self, monkeypatch):
+        """A context with no recorded peer must not crash or wedge the notifier."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-1", "ctx-ghost", "ghost")
+        called = []
+
+        def fake_post(url, body, headers, timeout):
+            called.append(url)
+            return {}
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        async def run():
+            return await adapter.send("ctx-ghost", "late", metadata={"notify": True})
+
+        res = asyncio.run(run())
+        assert res.success is True
+        assert called == []  # no peer URL resolvable → nothing to push
+
+    def test_out_of_band_send_push_failure_reports_failure(self, monkeypatch):
+        """A failed push must surface as a failed send so the notifier can
+        rewind/retry instead of believing the event was delivered."""
+        adapter = self._adapter_with_peer()
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
+        )
+
+        def fake_post(url, body, headers, timeout):
+            raise urllib.error.URLError("peer down")
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        async def run():
+            return await adapter.send("ctx-x", "late", metadata={"notify": True})
+
+        res = asyncio.run(run())
+        assert res.success is False
+        assert res.error
+
+    def test_loopback_identity_pushes_in_process(self, monkeypatch):
+        """An ip: loopback peer (localhost-only mode) must be delivered
+        in-process — no HTTP self-call, no client timeout — and must still
+        write the push bookkeeping (conversation row, audit row)."""
+        adapter = _bare_adapter()
+        adapter.host = "127.0.0.1"
+        adapter.port = 9901
+        adapter._context_peers["ctx-loop"] = "ip:127.0.0.1"
+        prepared = {}
+
+        def fake_prepare(params, peer, agent=None):
+            prepared["params"] = params
+            prepared["peer"] = peer
+            return None, {"task_id": "push-task-1", "context_id": "ctx-loop", "peer": peer}
+
+        monkeypatch.setattr(adapter, "_prepare_task", fake_prepare)
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {}})
+        posted = []
+        monkeypatch.setattr(tools, "_http_post_json", lambda *a, **k: posted.append(a) or {})
+        persisted = []
+        monkeypatch.setattr(
+            protocol, "persist_message",
+            lambda cid, role, text, task_id="": persisted.append((cid, role, text)),
+        )
+        audited = []
+        monkeypatch.setattr(
+            security, "audit",
+            lambda direction, peer, task_id, summary, context_id=None: audited.append(
+                (direction, peer, task_id, summary, context_id)
+            ),
+        )
+
+        async def run():
+            # Marked like the task notifier's delivery: an unmarked send to
+            # a loopback peer is a session reply and is dropped by the
+            # self-push guard before reaching the push path.
+            return await adapter.send(
+                "ctx-loop", "push me back",
+                metadata={"notify": True, "a2a_push": True},
+            )
+
+        res = asyncio.run(run())
+        assert res.success is True
+        assert posted == []  # in-process: no HTTP self-call
+        assert prepared["params"]["message"]["contextId"] == "ctx-loop"
+        assert prepared["peer"] == "ip:127.0.0.1"
+        assert audited and audited[0][0] == "push"
+        assert audited[0][4] == "ctx-loop"  # push rows carry the context id
+        assert ("ctx-loop", "agent", "push me back") in persisted
+        assert audited and audited[0][0] == "push"
+
+    def test_out_of_band_push_timeout_still_writes_bookkeeping(self, monkeypatch):
+        """A push whose HTTP client times out must still emit the
+        conversation row, push audit row, and reply log — the message may
+        have been delivered even though the client gave up — while still
+        surfacing the failure to the notifier."""
+        adapter = self._adapter_with_peer()
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
+        )
+
+        def fake_post(url, body, headers, timeout):
+            raise urllib.error.URLError("timed out")
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        persisted = []
+        monkeypatch.setattr(
+            protocol, "persist_message",
+            lambda cid, role, text, task_id="": persisted.append((cid, role, text)),
+        )
+        audited = []
+        monkeypatch.setattr(
+            security, "audit",
+            lambda direction, peer, task_id, summary, context_id=None: audited.append(
+                (direction, peer, task_id, summary, context_id)
+            ),
+        )
+
+        async def run():
+            return await adapter.send("ctx-x", "late", metadata={"notify": True})
+
+        res = asyncio.run(run())
+        assert res.success is False  # timeout still surfaces to the notifier
+        assert audited and audited[0][0] == "push"
+        assert audited[0][4] == "ctx-x"  # push rows carry the context id
+        assert ("ctx-x", "agent", "late") in persisted
+        assert audited and audited[0][0] == "push"
+
+
+class TestContextOriginWake:
+    """An inbound push on a context born in a LOCAL gateway session must
+    WAKE that originating session (kanban-watcher-style self-post) so the
+    agent that made the call gets a fresh turn to act on the completion —
+    agency, not visibility."""
+
+    def _patch_persistence(self, monkeypatch):
+        # Keep best-effort write-through maps out of the real HERMES_HOME.
+        from plugins.platforms.a2a import adapter as adapter_mod
+        monkeypatch.setattr(adapter_mod, "_persist_context_peers", lambda peers: None)
+        monkeypatch.setattr(adapter_mod, "_persist_context_sessions", lambda sessions: None)
+
+    def test_a2a_call_records_origin_session(self, monkeypatch):
+        """a2a_call from a (fake) discord session records context→origin so a
+        later push on that context can wake the discord session."""
+        from gateway.session_context import reset_session_vars, set_session_vars
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        self._patch_persistence(monkeypatch)
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"r": {"url": "http://localhost:8805"}}},
+        )
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        def fake_post(url, body, headers, timeout):
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "ctx-origin-1", protocol.STATE_COMPLETED, "done"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        registered = {}
+        monkeypatch.setattr(
+            A2AAdapter, "_register_context_session",
+            lambda cid, origin: registered.update({cid: origin}),
+        )
+
+        tokens = set_session_vars(
+            platform="discord", chat_id="chan-9", chat_type="group",
+            user_id="user-9", profile="worker-a", session_id="sid-9",
+        )
+        try:
+            out = tools.a2a_call({
+                "agent": "r", "message": "spawn a task", "context_id": "ctx-origin-1",
+            })
+        finally:
+            reset_session_vars()
+        assert "done" in out
+        assert "ctx-origin-1" in registered
+        origin = registered["ctx-origin-1"]
+        assert origin["platform"] == "discord"
+        assert origin["chat_id"] == "chan-9"
+        assert origin["chat_type"] == "group"
+        assert origin["user_id"] == "user-9"
+        assert origin["profile"] == "worker-a"
+        assert origin["session_id"] == "sid-9"
+
+    def test_no_origin_recorded_without_session_context(self, monkeypatch):
+        """A call with no bound session (CLI one-shot) records nothing — no
+        live session exists to wake later."""
+        from gateway.session_context import reset_session_vars
+
+        reset_session_vars()
+        assert tools._current_origin_session() == {}
+
+    def test_inbound_push_wakes_origin_session(self, monkeypatch):
+        """A push on a discord-born context wakes that discord session via
+        deliver_wake with the reconstructed SessionSource + raw session id."""
+        from gateway.config import Platform
+
+        adapter = _bare_adapter()
+        self._patch_persistence(monkeypatch)
+        adapter._context_sessions["ctx-wake"] = {
+            "platform": "discord", "chat_id": "chan-1", "chat_type": "group",
+            "thread_id": "", "user_id": "user-1", "profile": "worker-a",
+            "session_id": "sid-1",
+        }
+        fake_discord = SimpleNamespace(platform=Platform.DISCORD)
+        adapter.gateway_runner = SimpleNamespace(
+            adapters={Platform.DISCORD: fake_discord}
+        )
+
+        woke = {}
+
+        async def fake_deliver_wake(adapter_, *, text, session_id, source):
+            woke["adapter"] = adapter_
+            woke["text"] = text
+            woke["session_id"] = session_id
+            woke["source"] = source
+
+        monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+
+        async def run():
+            await adapter._wake_origin_session("ctx-wake", "push text")
+
+        asyncio.run(run())
+        assert woke["adapter"] is fake_discord
+        assert woke["text"] == "push text"
+        assert woke["session_id"] == "sid-1"
+        src = woke["source"]
+        assert src.platform == Platform.DISCORD
+        assert src.chat_id == "chan-1"
+        assert src.chat_type == "group"
+        assert src.user_id == "user-1"
+        assert src.profile == "worker-a"
+        assert src.thread_id is None
+
+    def test_no_wake_when_context_unknown(self, monkeypatch):
+        """A context with no recorded origin must not wake anything."""
+        adapter = _bare_adapter()
+        called = []
+        monkeypatch.setattr(
+            "gateway.wake.deliver_wake",
+            lambda *a, **k: called.append(a),
+        )
+
+        async def run():
+            await adapter._wake_origin_session("ctx-ghost", "hi")
+
+        asyncio.run(run())
+        assert called == []
+
+    def test_no_wake_for_a2a_origin(self, monkeypatch):
+        """An a2a-originated context's session IS the session the inbound
+        dispatch already processes — waking again would double-inject."""
+        adapter = _bare_adapter()
+        adapter._context_sessions["ctx-a2a"] = {
+            "platform": "a2a", "chat_id": "ctx-a2a", "session_id": "sid-a2a",
+        }
+        called = []
+        monkeypatch.setattr(
+            "gateway.wake.deliver_wake",
+            lambda *a, **k: called.append(a),
+        )
+
+        async def run():
+            await adapter._wake_origin_session("ctx-a2a", "hi")
+
+        asyncio.run(run())
+        assert called == []
+
+    def test_no_wake_when_origin_adapter_missing(self, monkeypatch):
+        """No gateway runner / no adapter for the origin platform (CLI,
+        unconnected platform): skip quietly, never raise."""
+        adapter = _bare_adapter()
+        adapter._context_sessions["ctx-cli"] = {
+            "platform": "cli", "chat_id": "c", "session_id": "s",
+        }
+        called = []
+        monkeypatch.setattr(
+            "gateway.wake.deliver_wake",
+            lambda *a, **k: called.append(a),
+        )
+
+        async def run():
+            await adapter._wake_origin_session("ctx-cli", "hi")
+
+        asyncio.run(run())
+        assert called == []
+
+    def test_wake_failure_is_best_effort(self, monkeypatch):
+        """A failing wake must be logged, not raised — the a2a session
+        already processed the message."""
+        adapter = _bare_adapter()
+        adapter._context_sessions["ctx-wfail"] = {
+            "platform": "discord", "chat_id": "c", "session_id": "s",
+        }
+        fake_discord = SimpleNamespace(platform="discord")
+        adapter.gateway_runner = SimpleNamespace(
+            adapters={"discord": fake_discord}
+        )
+
+        async def boom(*a, **k):
+            raise RuntimeError("api server key missing")
+
+        monkeypatch.setattr("gateway.wake.deliver_wake", boom)
+
+        async def run():
+            await adapter._wake_origin_session("ctx-wfail", "hi")  # must not raise
+
+        asyncio.run(run())
+
+    def test_prepare_task_schedules_wake_on_known_context(self, monkeypatch):
+        """_prepare_task must schedule the origin wake (fire-and-forget)
+        for an inbound message on a context born in a local session — and
+        running that scheduled wake must deliver_wake the ORIGIN adapter
+        with the reconstructed source (the full push→wake chain)."""
+        from gateway.config import Platform
+
+        adapter = _bare_adapter()
+        self._patch_persistence(monkeypatch)
+        adapter._context_sessions["ctx-sched"] = {
+            "platform": "discord", "chat_id": "chan-1", "session_id": "sid-1",
+        }
+        fake_discord = SimpleNamespace(platform=Platform.DISCORD)
+        adapter.gateway_runner = SimpleNamespace(
+            adapters={Platform.DISCORD: fake_discord}
+        )
+        woke = {}
+
+        async def fake_deliver_wake(adapter_, *, text, session_id, source):
+            woke["adapter"] = adapter_
+            woke["text"] = text
+            woke["session_id"] = session_id
+            woke["source"] = source
+
+        monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+
+        loop = asyncio.new_event_loop()
+        adapter._loop = loop
+        adapter._message_handler = object()
+
+        async def fake_handle(event):
+            pass
+
+        adapter.handle_message = fake_handle  # type: ignore
+        scheduled = []
+
+        def fake_schedule(coro, target_loop):
+            scheduled.append(coro)
+            return None
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_schedule)
+
+        params = {
+            "message": protocol.text_message(
+                protocol.ROLE_USER, "hello", context_id="ctx-sched"
+            ),
+        }
+        terminal, pending = adapter._prepare_task(params, "ip:127.0.0.1")
+        assert terminal is None
+        assert pending is not None
+        assert len(scheduled) == 2  # handle_message dispatch + origin wake
+        # Run both to completion so no coroutine is left un-awaited.
+        for coro in scheduled:
+            loop.run_until_complete(coro)
+        loop.close()
+
+        # The scheduled wake delivered to the ORIGIN (discord) adapter with
+        # the recorded session id + reconstructed source.
+        assert woke["adapter"] is fake_discord
+        assert woke["text"].startswith("[A2A inbound")  # framed, never raw
+        assert woke["session_id"] == "sid-1"
+        assert woke["source"].chat_id == "chan-1"
+        assert woke["source"].platform == Platform.DISCORD
+
+    def test_prepare_task_no_wake_for_unknown_context(self, monkeypatch):
+        """No origin recorded → no wake scheduled (only the dispatch)."""
+        adapter = _bare_adapter()
+        self._patch_persistence(monkeypatch)
+        loop = asyncio.new_event_loop()
+        adapter._loop = loop
+        adapter._message_handler = object()
+
+        async def fake_handle(event):
+            pass
+
+        adapter.handle_message = fake_handle  # type: ignore
+        scheduled = []
+
+        def fake_schedule(coro, target_loop):
+            scheduled.append(coro)
+            return None
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_schedule)
+
+        params = {
+            "message": protocol.text_message(
+                protocol.ROLE_USER, "hello", context_id="ctx-unknown-1"
+            ),
+        }
+        terminal, pending = adapter._prepare_task(params, "ip:127.0.0.1")
+        assert pending is not None
+        assert len(scheduled) == 1  # only the dispatch
+        loop.run_until_complete(scheduled[0])
+        loop.close()
+
+    def test_context_sessions_persist_round_trip(self, monkeypatch, tmp_path):
+        """Registrations survive a gateway restart: written through to disk
+        (0600), reloadable by the next adapter start, and a wake still fires
+        for the restored origin."""
+        import stat
+
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        A2AAdapter._register_context_session(
+            "ctx-persist",
+            {"platform": "discord", "chat_id": "c", "session_id": "s"},
+        )
+        disk = adapter_mod._load_context_sessions()
+        assert disk["ctx-persist"]["platform"] == "discord"
+        assert disk["ctx-persist"]["session_id"] == "s"
+        # Merge path (what connect() uses) keeps the entry.
+        merged = adapter_mod._merge_context_sessions({}, disk)
+        assert merged["ctx-persist"]["chat_id"] == "c"
+        # The file carries durable session ids — must not be world-readable.
+        mode = stat.S_IMODE(os.stat(adapter_mod._context_sessions_path()).st_mode)
+        assert mode == 0o600
+
+        # A fresh adapter (new gateway start) restores the map from disk,
+        # and the wake still fires with the restored origin.
+        fresh = _bare_adapter()
+        assert fresh._restore_persisted_context_sessions() == 1
+        with fresh._context_sessions_lock:
+            assert fresh._context_sessions["ctx-persist"]["chat_id"] == "c"
+
+        fake_discord = SimpleNamespace(platform="discord")
+        fresh.gateway_runner = SimpleNamespace(adapters={"discord": fake_discord})
+        woke = []
+
+        async def fake_deliver_wake(adapter_, **kwargs):
+            woke.append((adapter_, kwargs.get("session_id")))
+
+        monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+
+        async def run():
+            await fresh._wake_origin_session("ctx-persist", "after restart")
+
+        asyncio.run(run())
+        assert woke and woke[0][0] is fake_discord
+        assert woke[0][1] == "s"
+
+    def test_resolved_pending_entries_are_popped(self):
+        """Resolving the oldest task for a context removes it from the
+        pending map, so out-of-band pushes (which create a pending entry
+        and never call _finalize_task) cannot leak entries."""
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-1", "ctx-pop")
+
+        async def run():
+            await adapter.send("ctx-pop", "reply", metadata={"notify": True})
+
+        asyncio.run(run())
+        assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "reply")
+        with adapter._pending_lock:
+            assert "task-1" not in adapter._pending
+            assert "ctx-pop" not in adapter._pending_order
+
+    def test_normal_reply_does_not_push(self, monkeypatch):
+        """When a pending waiter exists, the reply resolves it and no
+        out-of-band push happens."""
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-1", "ctx-y", "alice")
+        adapter._context_peers["ctx-y"] = "alice"
+        fut = adapter._add_pending("task-1", "ctx-y")
+        called = []
+
+        def fake_post(url, body, headers, timeout):
+            called.append(url)
+            return {}
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        async def run():
+            await adapter.send("ctx-y", "normal reply", metadata={"notify": True})
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "normal reply")
+            assert called == []
+        finally:
+            adapter._pop_pending("task-1")
+
+
+class TestDeadClientReplyPush:
+    """A blocking message/send whose client (the peer's a2a_call) times out
+    and disconnects before the agent replies must NOT swallow the reply into
+    the dead waiter: the liveness probe drops the stale pending task so the
+    reply takes the out-of-band push path (which wakes the caller's session
+    on the peer's gateway). A write-failure safety net catches the probe race
+    window. Regression: a peer report was once consumed by a dead waiter and
+    written into a closed socket — the reply vanished and the calling
+    gateway never woke.
+    """
+
+    def _adapter_with_peer(self):
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-1", "ctx-dead", "alice")
+        adapter._context_peers["ctx-dead"] = "alice"
+        return adapter
+
+    def _patch_persistence(self, monkeypatch):
+        # Keep best-effort write-through maps out of the real HERMES_HOME.
+        from plugins.platforms.a2a import adapter as adapter_mod
+        monkeypatch.setattr(adapter_mod, "_persist_context_peers", lambda peers: None)
+        monkeypatch.setattr(adapter_mod, "_persist_context_sessions", lambda sessions: None)
+
+    def test_dead_waiter_dropped_then_reply_pushes_out_of_band(self, monkeypatch):
+        """The full regression: client times out → probe drops the stale
+        waiter → the late reply has no waiter → pushed to the peer with the
+        SAME contextId (round 1 delivered this way; round 2 must too)."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+
+        adapter = self._adapter_with_peer()
+        self._patch_persistence(monkeypatch)
+        monkeypatch.setattr(adapter_mod, "_SSE_KEEPALIVE", 0.05)
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"alice": {"url": "http://localhost:8805"}}},
+        )
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["url"] = url
+            captured["body"] = body
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t2", "ctx-dead", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        loop = asyncio.new_event_loop()
+        adapter._loop = loop
+        adapter._message_handler = object()
+        scheduled = []
+
+        async def fake_handle(event):
+            pass
+
+        adapter.handle_message = fake_handle  # type: ignore
+        monkeypatch.setattr(
+            asyncio, "run_coroutine_threadsafe",
+            lambda coro, target: scheduled.append(coro) or None,
+        )
+
+        params = {
+            "message": protocol.text_message(
+                protocol.ROLE_USER, "round two", context_id="ctx-dead"
+            ),
+        }
+        # The blocking RPC: probe reports the client dead → returns fast with
+        # [client disconnected] and pops the stale waiter.
+        result = adapter._rpc_message_send(
+            "req-2", params, "alice", client_alive=lambda: False,
+        )
+        task = protocol.unwrap_send_message_response(result["result"])
+        assert task["status"]["state"] == protocol.STATE_FAILED
+        assert "[client disconnected]" in protocol.extract_text(
+            task.get("status", {}).get("message", {}) or {}
+        )
+        with adapter._pending_lock:
+            assert adapter._pending == {}
+            assert adapter._pending_order == {}
+
+        # The agent finishes LATER; its reply must reach the peer via push.
+        async def run():
+            return await adapter.send(
+                "ctx-dead", "ROUND_TWO_REPORT", metadata={"notify": True}
+            )
+
+        res = asyncio.run(run())
+        assert res.success is True
+        assert captured["body"]["params"]["message"]["contextId"] == "ctx-dead"
+        assert captured["body"]["params"]["message"]["parts"][0]["text"] == "ROUND_TWO_REPORT"
+
+        for coro in scheduled:
+            loop.run_until_complete(coro)
+        loop.close()
+
+    def test_dead_client_reply_push_wakes_origin_session(self, monkeypatch):
+        """End-to-end wake chain: dead a2a_call client → liveness probe
+        drops the stale waiter → the late reply takes the out-of-band push
+        → the push re-enters the gateway (in-process loopback delivery,
+        the same-host loopback path) → the ORIGIN session is actually woken
+        via deliver_wake. The round-2 drop broke exactly this chain: the
+        reply vanished into a dead socket and the caller's session never
+        woke. The other tests here prove the push fires; this one proves
+        the wake at the end of it."""
+        from gateway.config import Platform
+        from plugins.platforms.a2a import adapter as adapter_mod
+
+        adapter = self._adapter_with_peer()
+        self._patch_persistence(monkeypatch)
+        monkeypatch.setattr(adapter_mod, "_SSE_KEEPALIVE", 0.05)
+
+        # The context was born in a REAL discord session (the caller side of
+        # the original a2a_call) — the session that must wake when the push
+        # lands on this gateway.
+        adapter._context_sessions["ctx-dead"] = {
+            "platform": "discord", "chat_id": "chan-1", "chat_type": "group",
+            "thread_id": "", "user_id": "user-1", "profile": "worker-a",
+            "session_id": "sid-1",
+        }
+        fake_discord = SimpleNamespace(platform=Platform.DISCORD)
+        adapter.gateway_runner = SimpleNamespace(
+            adapters={Platform.DISCORD: fake_discord}
+        )
+        woke = {}
+
+        async def fake_deliver_wake(adapter_, *, text, session_id, source):
+            woke["adapter"] = adapter_
+            woke["text"] = text
+            woke["session_id"] = session_id
+            woke["source"] = source
+
+        monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+
+        loop = asyncio.new_event_loop()
+        adapter._loop = loop
+        adapter._message_handler = object()
+        scheduled = []
+
+        async def fake_handle(event):
+            pass
+
+        adapter.handle_message = fake_handle  # type: ignore
+        monkeypatch.setattr(
+            asyncio, "run_coroutine_threadsafe",
+            lambda coro, target: scheduled.append(coro) or None,
+        )
+
+        # 1) The peer's a2a_call client times out and closes the connection
+        #    while the agent is still working; the keepalive probe pops the
+        #    stale waiter so the late reply can't vanish into the dead socket.
+        params = {
+            "message": protocol.text_message(
+                protocol.ROLE_USER, "round two", context_id="ctx-dead"
+            ),
+        }
+        result = adapter._rpc_message_send(
+            "req-2", params, "alice", client_alive=lambda: False,
+        )
+        task = protocol.unwrap_send_message_response(result["result"])
+        assert task["status"]["state"] == protocol.STATE_FAILED
+        assert "[client disconnected]" in protocol.extract_text(
+            task.get("status", {}).get("message", {}) or {}
+        )
+        with adapter._pending_lock:
+            assert adapter._pending == {}
+            assert adapter._pending_order == {}
+        # The round-two inbound also scheduled its own dispatch + wake; run
+        # them (real no-op dispatch, real wake) and reset the capture so the
+        # push phase below is asserted on its own.
+        for coro in scheduled:
+            loop.run_until_complete(coro)
+        scheduled.clear()
+        woke.clear()
+
+        # 2) The agent finishes LATER; with no waiter the reply is pushed
+        #    out-of-band. Deliver it the way the loopback fallback does —
+        #    in-process re-entry on this same gateway (shared host) —
+        #    so the push takes the real inbound path (_prepare_task).
+        monkeypatch.setattr(
+            adapter, "_push_out_of_band",
+            lambda cid, text, want_reply=False: adapter._push_loopback_in_process(cid, "alice", text),
+        )
+
+        async def run():
+            return await adapter.send(
+                "ctx-dead", "LATE_REPORT", metadata={"notify": True}
+            )
+
+        res = asyncio.run(run())
+        assert res.success is True
+
+        # 3) The push scheduled the session dispatch AND the origin wake on
+        #    the gateway loop; run them so the wake actually fires.
+        assert len(scheduled) == 2  # push dispatch + origin wake
+        for coro in scheduled:
+            loop.run_until_complete(coro)
+        loop.close()
+
+        # The caller's discord session was woken with the framed push text
+        # and the recorded origin identity — the agency the round-2 drop
+        # silently took away.
+        assert woke["adapter"] is fake_discord
+        assert woke["text"] == security.wrap_inbound("alice", "LATE_REPORT")
+        assert woke["session_id"] == "sid-1"
+        src = woke["source"]
+        assert src.chat_id == "chan-1"
+        assert src.chat_type == "group"
+        assert src.profile == "worker-a"
+        assert src.thread_id is None
+        assert src.platform == Platform.DISCORD
+
+    def test_write_failure_pushes_completed_reply_v1(self, monkeypatch):
+        """v1.0 envelope: a completed reply whose response write fails
+        (client died in the probe race window) is pushed out-of-band."""
+        adapter = self._adapter_with_peer()
+        pushed = []
+        monkeypatch.setattr(
+            adapter, "_push_out_of_band", lambda cid, text, want_reply=False: pushed.append((cid, text)),
+        )
+        task = protocol.build_task("t-1", "ctx-dead", protocol.STATE_COMPLETED, "round two report")
+        adapter._push_reply_after_client_gone(
+            "req-1",
+            protocol.jsonrpc_result("req-1", protocol.send_message_response(task)),
+        )
+        assert pushed == [("ctx-dead", "round two report")]
+
+    def test_write_failure_pushes_completed_reply_legacy(self, monkeypatch):
+        """Legacy envelope (bare task): same safety net fires."""
+        adapter = self._adapter_with_peer()
+        pushed = []
+        monkeypatch.setattr(
+            adapter, "_push_out_of_band", lambda cid, text, want_reply=False: pushed.append((cid, text)),
+        )
+        task = protocol.build_task("t-1", "ctx-dead", protocol.STATE_COMPLETED, "legacy reply")
+        adapter._push_reply_after_client_gone(
+            "req-1", protocol.jsonrpc_result("req-1", task),
+        )
+        assert pushed == [("ctx-dead", "legacy reply")]
+
+    def test_write_failure_does_not_push_failed_reply(self, monkeypatch):
+        """A FAILED task (e.g. server-side reply timeout filler) carries
+        nothing worth delivering — no push after write failure."""
+        adapter = self._adapter_with_peer()
+        pushed = []
+        monkeypatch.setattr(
+            adapter, "_push_out_of_band", lambda cid, text, want_reply=False: pushed.append((cid, text)),
+        )
+        task = protocol.build_task("t-1", "ctx-dead", protocol.STATE_FAILED, "[agent did not reply in time]")
+        adapter._push_reply_after_client_gone(
+            "req-1", protocol.jsonrpc_result("req-1", task),
+        )
+        assert pushed == []
+
+    def test_client_alive_probe_detects_closed_socket(self):
+        """The probe reports False only on a genuinely closed connection
+        (EOF); live connections and unknown states report True."""
+        from plugins.platforms.a2a.adapter import A2ARequestHandler
+
+        a, b = socket.socketpair()
+        try:
+            handler = SimpleNamespace(connection=a)
+            assert A2ARequestHandler._a2a_client_alive(handler) is True
+            b.close()
+            # The peer's close surfaces as EOF on a — the probe must see it.
+            assert A2ARequestHandler._a2a_client_alive(handler) is False
+        finally:
+            a.close()
+            try:
+                b.close()
+            except OSError:
+                pass
+        assert A2ARequestHandler._a2a_client_alive(SimpleNamespace(connection=None)) is True
+
+    def test_handle_send_wires_probe_and_write_failure_net(self, monkeypatch):
+        """The send route passes the liveness probe into the RPC and catches
+        write failures so the completed reply still reaches the peer."""
+        from plugins.platforms.a2a.adapter import A2ARequestHandler
+
+        adapter = self._adapter_with_peer()
+        rpc_seen = {}
+        pushed = []
+
+        def fake_rpc(req_id, params, peer, agent=None, v1_response=False, client_alive=None):
+            rpc_seen["client_alive"] = client_alive
+            task = protocol.build_task("t-1", "ctx-dead", protocol.STATE_COMPLETED, "late reply")
+            return protocol.jsonrpc_result(req_id, task)
+
+        monkeypatch.setattr(adapter, "_rpc_message_send", fake_rpc)
+        monkeypatch.setattr(
+            adapter, "_push_reply_after_client_gone",
+            lambda req_id, result: pushed.append((req_id, result)),
+        )
+        handler = SimpleNamespace(adapter=adapter)
+        handler._a2a_client_alive = lambda: True  # type: ignore
+
+        def boom(code, payload):
+            raise ConnectionResetError("client gone")
+
+        handler._json = boom  # type: ignore
+        A2ARequestHandler._handle_send(
+            handler, "req-9", {"message": {}}, "alice", agent=None, is_v1=True,
+        )
+        assert rpc_seen["client_alive"] is not None
+        assert pushed and pushed[0][0] == "req-9"
 
 
 # --------------------------------------------------------------------------
@@ -1312,6 +2168,17 @@ class TestMultiAgentRouting:
     def test_path_routed_agent_card_uses_prefix_and_canonical_path(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+        from tools.registry import registry
+
+        # Pin the shared tool registry so the dynamic card skills are
+        # deterministic: the card advertises registered ∩ configured
+        # toolsets, and must not depend on ambient registrations left by
+        # other tests importing tools.* modules (e.g. tools.web_tools
+        # registers the 'web' toolset at import time).
+        monkeypatch.setattr(registry, "get_registered_toolset_names",
+                            lambda: ["web", "research"])
+        monkeypatch.setattr(registry, "get_tool_names_for_toolset",
+                            lambda ts: {"web": ["web_search"], "research": ["research_synthesize"]}[ts])
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1365,10 +2232,11 @@ class TestMultiAgentRouting:
         }))
         agent = adapter._agents["dev"]
 
-        def fake_forward(agent_arg, peer, context_id, framed_text):
+        def fake_forward(agent_arg, peer, context_id, framed_text, task_id=None):
             assert agent_arg["slug"] == "dev"
             assert peer == "peer-x"
             assert "hello" in framed_text
+            assert task_id  # session thread identity rides the forward
             return "dev reply", protocol.STATE_COMPLETED
 
         adapter._forward_to_profile = fake_forward  # type: ignore
@@ -1607,9 +2475,9 @@ print('fake reply')
             "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
         }))
         agent = adapter._agents["dev"]
-        reply, state = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "hello")
+        reply, state = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "hello", "task-1")
         assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
-        reply2, state2 = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "again")
+        reply2, state2 = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "again", "task-2")
         assert (reply2, state2) == ("fake reply", protocol.STATE_COMPLETED)
         argv_lines = [json.loads(line) for line in calls.read_text().splitlines()]
         assert "--resume" not in argv_lines[0]

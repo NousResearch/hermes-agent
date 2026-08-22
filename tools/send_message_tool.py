@@ -441,24 +441,45 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
+        # A2A origin rule: a confirmation emitted
+        # from an A2A session for a context that was born in a real gateway
+        # session (e.g. a Discord thread) must return to that origin's
+        # chat/thread — the session that initiated the A2A exchange. The
+        # home channel is only the fallback when no origin exists; without
+        # this, A2A confirmations post to the platform-wide default channel
+        # instead of the originating thread.
+        try:
+            from plugins.platforms.a2a.tools import _current_a2a_origin_target
+            origin_target = _current_a2a_origin_target(platform_name)
+        except Exception:
+            origin_target = {}
+        if origin_target:
+            chat_id = origin_target["chat_id"]
+            thread_id = origin_target.get("thread_id") or thread_id
+            logger.info(
+                "send_message: A2A session confirmation routed to origin %s chat %s (thread %s) "
+                "instead of the home channel",
+                platform_name, chat_id, thread_id,
+            )
         else:
-            home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
-                platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
-            )
-            return tool_error(
-                f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {home_env} <channel_id>"
-            )
+            home = config.get_home_channel(platform)
+            if not home and platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+            else:
+                home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
+                    platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
+                )
+                return tool_error(
+                    f"No home channel set for {platform_name} to determine where to send the message. "
+                    f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                    f"or set a home channel via: hermes config set {home_env} <channel_id>"
+                )
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:

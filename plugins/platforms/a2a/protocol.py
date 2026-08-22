@@ -258,13 +258,22 @@ def data_part(data: Any, media_type: str = "application/json") -> dict:
     return {"data": data, "mediaType": media_type}
 
 
-def text_message(role: str, text: str, context_id: str = "") -> dict:
-    """Build an A2A v1.0 Message with a single text Part."""
+def text_message(role: str, text: str, context_id: str = "", sender: Optional[dict] = None) -> dict:
+    """Build an A2A v1.0 Message with a single text Part.
+
+    ``sender`` is the v1.0 AgentName identity of the sending agent
+    (``agentId`` / ``name`` / optional ``url``). Peers use it to learn this
+    gateway's real endpoint so out-of-band completion pushes can be routed
+    back with the port included — the gap that left port-less ``ip:``
+    identities unresolvable as push targets.
+    """
     msg: dict[str, Any] = {
         "role": role,  # ROLE_USER | ROLE_AGENT
         "parts": [text_part(text)],
         "messageId": uuid.uuid4().hex,
     }
+    if isinstance(sender, dict) and sender:
+        msg["sender"] = {k: v for k, v in sender.items() if v is not None}
     if context_id:
         msg["contextId"] = context_id
     return msg

@@ -146,6 +146,71 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
+def _current_origin_session() -> dict:
+    """Capture the local session that is making this A2A call, if any.
+
+    The agent's tools run inside the gateway process, where the originating
+    session's identity is bound via session ContextVars (``set_session_vars``
+    + ``set_current_session_id``). Recording it per-context lets the inbound
+    adapter WAKE that exact session when a later out-of-band push arrives on
+    the context — the delegate_task mental model (fire-and-forget, get a turn
+    when the peer is done), not just a conversation-store write nobody polls.
+
+    Returns {} when no session is bound (pure CLI one-shot, or a process with
+    no session context): there is no live session to wake later.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+    platform = str(get_session_env("HERMES_SESSION_PLATFORM") or "").strip()
+    if not platform:
+        # CLI/TUI/desktop bind HERMES_SESSION_SOURCE and leave the platform
+        # empty (see session_context.NON_MESSAGING_SESSION_SURFACES).
+        platform = str(get_session_env("HERMES_SESSION_SOURCE") or "").strip()
+    chat_id = str(get_session_env("HERMES_SESSION_CHAT_ID") or "").strip()
+    session_id = str(get_session_env("HERMES_SESSION_ID") or "").strip()
+    if not platform or (not chat_id and not session_id):
+        return {}
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "chat_type": str(get_session_env("HERMES_SESSION_CHAT_TYPE") or "").strip(),
+        "thread_id": str(get_session_env("HERMES_SESSION_THREAD_ID") or "").strip(),
+        "user_id": str(get_session_env("HERMES_SESSION_USER_ID") or "").strip(),
+        "profile": str(get_session_env("HERMES_SESSION_PROFILE") or "").strip(),
+        "session_id": session_id,
+    }
+
+
+def _current_a2a_origin_target(platform_name: str) -> dict:
+    """Delivery target for a confirmation emitted from an A2A session.
+
+    When the CURRENT session is an A2A session (its chat_id is an A2A
+    context) and that context has a recorded origin session on
+    ``platform_name`` (e.g. the Discord thread where the exchange started),
+    a confirmation must return to the origin's chat/thread — the session
+    that initiated the call — not the platform home channel (the home
+    fallback otherwise posts A2A confirmations to the platform-wide default
+    channel instead of the originating thread). Returns
+    ``{"chat_id", "thread_id", "chat_type"}`` or {} when not applicable.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+    if str(get_session_env("HERMES_SESSION_PLATFORM") or "").strip().lower() != "a2a":
+        return {}
+    context_id = str(get_session_env("HERMES_SESSION_CHAT_ID") or "").strip()
+    if not context_id:
+        return {}
+    try:
+        from .adapter import A2AAdapter
+        return A2AAdapter._origin_delivery_target(context_id, platform_name)
+    except Exception:
+        return {}
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
@@ -165,13 +230,50 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
 
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
+    # Register this context→peer mapping on every live local A2A adapter so
+    # an out-of-band completion push for this context can find its way back
+    # to the peer. The context may have been born on ANY platform (discord,
+    # telegram, CLI/ACP, api_server) — the local gateway only learns peers
+    # from inbound A2A tasks, so without this an outbound-originated context
+    # has no peer entry and _push_out_of_band drops the completion. Best-effort:
+    # registration must
+    # never fail the call.
+    try:
+        from .adapter import A2AAdapter
+        A2AAdapter._register_context_peer(ctx, agent_label)
+    except Exception:
+        logger.debug("A2A: could not register context peer for %s", ctx, exc_info=True)
+    # Record which LOCAL session created this context so an inbound push on
+    # the same contextId can WAKE that session (self-post turn) instead of
+    # only landing in the a2a conversation store. Same best-effort rule:
+    # registration must never fail the call.
+    try:
+        origin = _current_origin_session()
+        if origin:
+            from .adapter import A2AAdapter
+            A2AAdapter._register_context_session(ctx, origin)
+    except Exception:
+        logger.debug("A2A: could not register context origin session for %s", ctx, exc_info=True)
     # v1.0: contextId lives inside the Message, not at the params top level.
+    sender: dict = {}
+    try:
+        from .adapter import A2AAdapter
+        sender = A2AAdapter._own_sender()
+    except Exception:
+        logger.debug("A2A: could not derive own sender identity", exc_info=True)
+    sender = dict(sender or {})
+    # Advertise this client's read patience on the wire: the
+    # receiving gateway computes patience = sender.timeout → its configured
+    # a2a_agents[peer].timeout → 120, and pushes the reply out-of-band when
+    # elapsed > patience + margin instead of writing into a dead socket.
+    # Same trust domain as sender.url, which is already accepted.
+    sender["timeout"] = timeout
     rpc_body = {
         "jsonrpc": "2.0",
         "id": protocol.new_task_id(),
         "method": "SendMessage",
         "params": {
-            "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx),
+            "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx, sender=sender),
         },
     }
 
@@ -585,12 +687,11 @@ _HANDLERS = {
 def register_tools(ctx) -> None:
     """Register the client tools in the ``a2a`` toolset."""
     for name, schema in _SCHEMAS.items():
-        function_schema = schema["function"]
         ctx.register_tool(
             name=name,
             toolset="a2a",
-            schema=function_schema,
+            schema=schema,
             handler=_HANDLERS[name],
-            description=function_schema["description"],
+            description=schema["function"]["description"],
             emoji="\U0001f9e9",  # puzzle piece
         )

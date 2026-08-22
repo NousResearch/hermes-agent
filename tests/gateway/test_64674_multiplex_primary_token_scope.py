@@ -213,6 +213,149 @@ class TestPrimaryMessageRuntimeScope:
         with pytest.raises(secret_scope.UnscopedSecretError):
             secret_scope.get_secret("DISCORD_BOT_TOKEN")
 
+    @pytest.mark.asyncio
+    async def test_routed_message_is_scoped_to_the_routed_profile_home(
+        self, tmp_path, monkeypatch
+    ):
+        """A primary adapter routing to a profile must scope to THAT profile.
+
+        ``_make_default_profile_message_handler`` is what every primary adapter
+        gets under multiplex, including the shared bot that ``profile_routes``
+        multiplexes across profiles. The sibling above only covers
+        ``profile=None`` (the default profile serving itself), where binding the
+        handler to ``get_hermes_home()`` is trivially right. It is the routed
+        case that this pins: the home is resolved per message, from the source,
+        the same way ``_make_default_profile_platform_event_handler`` already
+        resolves it.
+
+        Everything ``_handle_message`` does before the agent-turn scope reads
+        this home -- slash commands, write-approval queues, prompt rendering --
+        so a handler bound to the default home serves those from the wrong
+        profile for the whole turn.
+        """
+        from gateway import run as run_mod
+        from gateway.run import GatewayRunner
+        from hermes_constants import get_hermes_home
+
+        default_home = tmp_path / "home"
+        default_home.mkdir()
+        routed_home = tmp_path / "profiles" / "operator"
+        routed_home.mkdir(parents=True)
+
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: default_home)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = (  # type: ignore[method-assign]
+            lambda source: routed_home
+            if getattr(source, "profile", None) == "operator"
+            else default_home
+        )
+
+        seen: dict[str, str] = {}
+
+        async def _handle_message(_event):
+            # Resolved at call time, which is the whole point: the override
+            # _profile_runtime_scope installs is a contextvar, so this reports
+            # whichever home the handler actually scoped the message to.
+            seen["home"] = str(get_hermes_home())
+            return None
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        await handler(SimpleNamespace(source=SimpleNamespace(profile="operator")))
+
+        assert seen["home"] == str(routed_home)
+
+    @pytest.mark.asyncio
+    async def test_unstamped_source_keeps_the_captured_default_home(
+        self, tmp_path, monkeypatch
+    ):
+        """An unstamped source must NOT be re-resolved.
+
+        This pins the deliberate narrowness of the fix rather than agreeing
+        with it. ``_resolve_profile_home_for_source`` answers a source with no
+        ``profile`` using ``get_profile_dir(active_profile)``, which is not
+        necessarily the ``get_hermes_home()`` this path has always scoped to,
+        so the resolver is wired here to a DIFFERENT home and the assertion is
+        that the handler ignores it. Re-resolving unconditionally would move
+        the default-profile case too, which is a change the bug does not
+        justify -- and which the #64674 sibling above fails on.
+        """
+        from gateway import run as run_mod
+        from gateway.run import GatewayRunner
+        from hermes_constants import get_hermes_home
+
+        default_home = tmp_path / "home"
+        default_home.mkdir()
+        resolver_home = tmp_path / "profiles" / "active"
+        resolver_home.mkdir(parents=True)
+
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: default_home)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = (  # type: ignore[method-assign]
+            lambda source: resolver_home
+        )
+
+        seen: dict[str, str] = {}
+
+        async def _handle_message(_event):
+            seen["home"] = str(get_hermes_home())
+            return None
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        await handler(SimpleNamespace(source=SimpleNamespace(profile=None)))
+
+        assert seen["home"] == str(default_home)
+
+    @pytest.mark.asyncio
+    async def test_rejected_route_scopes_to_the_captured_home(
+        self, tmp_path, monkeypatch
+    ):
+        """A rejected route must not turn ingress into a raise.
+
+        Routing rejection is decided downstream. Resolving the home earlier
+        must not also move where that rejection surfaces, so the scope falls
+        back and ``_handle_message`` still runs and still owns the outcome.
+        """
+        from gateway import run as run_mod
+        from gateway.run import GatewayRunner
+        from gateway.profile_routing import ProfileRouteRejected
+        from hermes_constants import get_hermes_home
+
+        default_home = tmp_path / "home"
+        default_home.mkdir()
+
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: default_home)
+
+        def _reject(_source):
+            raise ProfileRouteRejected("no route")
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = _reject  # type: ignore[method-assign]
+
+        seen: dict[str, str] = {}
+
+        async def _handle_message(_event):
+            seen["home"] = str(get_hermes_home())
+            return "handled downstream"
+
+        runner._handle_message = _handle_message  # type: ignore[method-assign]
+        handler = runner._primary_message_handler()
+
+        result = await handler(
+            SimpleNamespace(source=SimpleNamespace(profile="operator"))
+        )
+
+        assert result == "handled downstream"
+        assert seen["home"] == str(default_home)
+
 
 class TestReconnectDropsEmptyToken:
     @pytest.mark.asyncio

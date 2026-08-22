@@ -15847,10 +15847,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope a multiplexed primary-adapter message from ingress onward.
+
+        A primary adapter under multiplex is not only the default profile
+        serving itself: ``gateway.profile_routes`` multiplexes ONE shared bot
+        across profiles, and ``build_source`` stamps ``source.profile`` before
+        this handler runs. Capturing a single home when the adapter is wired
+        therefore scoped every ROUTED message to the multiplexer's own home, so
+        everything ``_handle_message`` does ahead of the narrower agent-turn
+        scope — slash commands, write-approval queues, prompt rendering —
+        read and wrote the default profile while the turn itself ran in the
+        routed one. ``_make_default_profile_platform_event_handler`` already
+        resolves per event; this is the same resolution on the message path.
+
+        Deliberately narrow: the captured home stays the answer unless the
+        source carries an explicit ``profile``. ``_resolve_profile_home_for_source``
+        answers an unstamped source with ``get_profile_dir(active_profile)``,
+        which is not necessarily the ``get_hermes_home()`` this path has always
+        used, so re-resolving unconditionally would change the default-profile
+        case as well — a bigger claim than the bug supports. A source that
+        routes without being stamped keeps the old behaviour.
+
+        A rejected route falls back to the captured home for the SCOPE only.
+        Whether to reject the message is decided downstream, on the path that
+        already owns that decision.
+        """
+        default_home = Path(get_hermes_home())
 
         async def _handler(event):
+            from gateway.profile_routing import ProfileRouteRejected
+
+            profile_home = default_home
+            source = getattr(event, "source", None)
+            if source is not None and (getattr(source, "profile", None) or "").strip():
+                try:
+                    profile_home = self._resolve_profile_home_for_source(source)
+                except ProfileRouteRejected:
+                    profile_home = default_home
+
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 

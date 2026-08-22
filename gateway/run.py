@@ -6786,6 +6786,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_vc_last = legacy_dict_property("_session_vc_last")
     _pending_approvals = legacy_dict_property("_pending_approvals")
     _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
+    # ---- /topic-model feature ----
+    _channel_runtime_overrides: Dict[str, Dict[str, str]] = {}
 
     # -- SessionState accessors -----------------------------------------
     def _sessions_map(self) -> Dict[str, "SessionState"]:
@@ -7076,9 +7078,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
+        # ---- /topic-model feature ----
+        # Per-channel runtime overrides (keyed by platform:chat_id[:thread_id]).
+        # Override the class-level default so each runner gets its own dict.
+        self._channel_runtime_overrides: Dict[str, Dict[str, str]] = {}
+        # Path for persisted /topic-model overrides (profile-aware, NOT module-level).
+        self._topic_overrides_path: Path = self.config.sessions_dir.parent / "topic_overrides.json"
+
         # Strong refs to detached fatal-error handler tasks (see
         # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
+
+        # ---- /topic-model feature ----
+        # Load persisted topic-model overrides (must be after _channel_runtime_overrides init).
+        self._load_topic_overrides()
 
         # Pending /update prompt flags live on
         # SessionState.persistent.update_prompt_pending.
@@ -8022,6 +8035,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return source
         return dataclasses.replace(source, thread_id=recovered)
 
+    @staticmethod
+    def _topic_key_for_source(source: SessionSource) -> str:
+        """Derive a topic key for runtime topic-model overrides.
+
+        Format: ``<platform>:<chat_id>[:<thread_id>]``
+        (e.g. ``telegram:-1003989339250:1917``).
+
+        The thread_id part is omitted for non-threaded sources (lobby DMs,
+        Discord channels without threads, etc.) and the override then
+        applies to the entire chat.
+        """
+        platform = source.platform.value
+        chat_id = str(source.chat_id) if source.chat_id else ""
+        thread_id = getattr(source, "thread_id", None)
+        tid_part = f":{thread_id}" if thread_id else ""
+        return f"{platform}:{chat_id}{tid_part}"
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -8131,6 +8161,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # did not specify an explicit model.
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
+
+            # ---- /topic-model feature ----
+            # Runtime /topic-model override (between config channel_overrides and session /model)
+            topic_key = self._topic_key_for_source(source)
+            topic_ov = self._channel_runtime_overrides.get(topic_key)
+            if topic_ov:
+                topic_model = topic_ov.get("model")
+                if topic_model:
+                    logger.info(
+                        "Runtime topic-model override: topic=%s model=%s (was %s)",
+                        topic_key, topic_model, model,
+                    )
+                    model = topic_model
+                topic_provider = topic_ov.get("provider")
+                if topic_provider:
+                    logger.info(
+                        "Runtime topic-model override: topic=%s provider=%s",
+                        topic_key, topic_provider,
+                    )
+                    try:
+                        runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                            topic_provider,
+                            channel_override_current_provider=(
+                                ch.provider if ch else None
+                            ),
+                            channel_override_current_model=(
+                                ch.model if ch else None
+                            ),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not resolve runtime_kwargs for topic-model provider %s",
+                            topic_provider,
+                        )
 
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
@@ -17495,6 +17559,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "model":
             return await self._handle_model_command(event)
+
+        if canonical in ("topic-model", "topicmodel"):
+            return await self._handle_topic_model_command(event)
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
@@ -27012,6 +27079,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_evicted_agent_soft(agent)
             except Exception:
                 pass
+
+    def _evict_all_agent_caches(self) -> None:
+        """Evict the cached agent for every active session.
+
+        Called by the /topic-model and similar commands that change the
+        effective model for an entire channel so the next turn picks up a
+        fresh agent with the new model.
+        """
+        for session_key in list(self._sessions.keys()):
+            self._evict_cached_agent(session_key)
+
+    def _load_topic_overrides(self) -> None:
+        """Load persisted topic-model overrides from JSON (survives restart)."""
+        try:
+            _path = self._topic_overrides_path
+            if _path.exists():
+                data = json.loads(_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._channel_runtime_overrides.update(data)
+                    logger.info(
+                        "Loaded %d persisted topic-model overrides from %s",
+                        len(data), _path,
+                    )
+        except Exception as exc:
+            logger.warning("Failed to load topic-model overrides: %s", exc)
+
+    def _save_topic_overrides_sync(self, overrides: dict) -> None:
+        """Synchronously save topic overrides to JSON (called from handler).
+
+        Uses atomic_json_write so a crash during write cannot corrupt the file.
+        """
+        try:
+            _path = self._topic_overrides_path
+            _path.parent.mkdir(parents=True, exist_ok=True)
+            from utils import atomic_json_write
+            atomic_json_write(_path, overrides)
+        except Exception as exc:
+            logger.warning("Failed to save topic-model overrides: %s", exc)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

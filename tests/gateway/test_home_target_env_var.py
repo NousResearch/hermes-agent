@@ -8,11 +8,25 @@ to env vars nothing read on startup — the home channel appeared to set
 successfully but was lost on every new gateway session.
 """
 
-from gateway.run import _home_target_env_var, _home_thread_env_var
+from gateway.run import (
+    _home_target_env_var,
+    _home_thread_env_var,
+    _platform_supports_home_channel,
+)
 
 
 def test_matrix_home_target_env_var_uses_home_room():
     assert _home_target_env_var("matrix") == "MATRIX_HOME_ROOM"
+
+
+def test_builtin_home_channel_platform_is_supported():
+    assert _platform_supports_home_channel("telegram") is True
+
+
+def test_plugin_without_cron_delivery_skips_home_channel_onboarding(monkeypatch):
+    monkeypatch.setattr("cron.scheduler._resolve_home_env_var", lambda _name: "")
+
+    assert _platform_supports_home_channel("vintru_whatsapp") is False
 
 
 def test_email_home_target_env_var_uses_home_address():

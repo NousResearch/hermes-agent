@@ -2037,6 +2037,13 @@ def _home_target_env_var(platform_name: str) -> str:
     return f"{platform_name.upper()}_HOME_CHANNEL"
 
 
+def _platform_supports_home_channel(platform_name: str) -> bool:
+    """Return whether a platform declares cron/home-channel delivery support."""
+    from cron.scheduler import _resolve_home_env_var
+
+    return bool(_resolve_home_env_var(platform_name))
+
+
 def _home_thread_env_var(platform_name: str) -> str:
     """Return the optional thread/topic env var for a platform home target."""
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
@@ -20182,7 +20189,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if (
+            not history
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+            and _platform_supports_home_channel(source.platform.value)
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret

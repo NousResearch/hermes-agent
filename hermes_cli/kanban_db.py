@@ -7972,6 +7972,8 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
+WORKER_DIAGNOSTIC_TAIL_BYTES = 16 * 1024
+_WORKER_RUN_MARKER_PREFIX = "=== HERMES KANBAN WORKER RUN "
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
@@ -8849,7 +8851,11 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -8892,7 +8898,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     exited_hook_payloads: list[dict] = []
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, current_run_id "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -8976,6 +8982,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                event_payload["worker_log_tail"] = _read_worker_run_log_tail(
+                    row["id"], row["current_run_id"], board=board,
+                )
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
@@ -9267,6 +9276,7 @@ def _record_task_failure(
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
                         "retry_status": retry_status,
+                        **(event_payload_extra or {}),
                     },
                 )
             payload = {
@@ -9310,6 +9320,7 @@ def _record_task_failure(
                     metadata={
                         "failures": failures,
                         "retry_status": retry_status,
+                        **(event_payload_extra or {}),
                     },
                 )
                 _append_event(
@@ -9318,6 +9329,7 @@ def _record_task_failure(
                         "error": error[:500],
                         "failures": failures,
                         "retry_status": retry_status,
+                        **(event_payload_extra or {}),
                     },
                     run_id=run_id,
                 )
@@ -9333,13 +9345,23 @@ def _record_spawn_failure(
     error: str,
     *,
     failure_limit: int = None,
+    board: Optional[str] = None,
 ) -> bool:
+    row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    run_id = row["current_run_id"] if row is not None else None
     return _record_task_failure(
         conn, task_id, error,
         outcome="spawn_failed",
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        event_payload_extra={
+            "worker_log_tail": _read_worker_run_log_tail(
+                task_id, run_id, board=board,
+            ),
+        },
     )
 
 
@@ -9951,7 +9973,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -10240,6 +10262,7 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
+                board=board,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -10292,6 +10315,7 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
+                board=board,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -10367,6 +10391,7 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
+                board=board,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -10412,6 +10437,7 @@ def _dispatch_once_locked(
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
+                board=board,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -10498,6 +10524,73 @@ def _rotate_worker_log(
         log_path.rename(_rotated_log_path(log_path, 1))
     except OSError:
         pass
+
+
+def _worker_run_marker(run_id: int) -> bytes:
+    return f"\n{_WORKER_RUN_MARKER_PREFIX}{int(run_id)} ===\n".encode("ascii")
+
+
+def _append_worker_run_marker(log_path: Path, run_id: Optional[int]) -> None:
+    """Persist a boundary that ties subsequent log bytes to one run."""
+    if run_id is None:
+        return
+    with log_path.open("ab") as stream:
+        stream.write(_worker_run_marker(run_id))
+
+
+def _read_worker_run_log_tail(
+    task_id: str,
+    run_id: Optional[int],
+    *,
+    board: Optional[str] = None,
+    max_bytes: int = WORKER_DIAGNOSTIC_TAIL_BYTES,
+) -> Optional[str]:
+    """Return a redacted, bounded tail produced after this run's marker."""
+    if run_id is None or max_bytes <= 0:
+        return None
+    path = worker_logs_dir(board=board) / f"{task_id}.log"
+    marker = _worker_run_marker(run_id)
+    try:
+        with path.open("rb") as stream:
+            end = stream.seek(0, os.SEEK_END)
+            position = end
+            suffix = b""
+            marker_end = None
+            while position > 0:
+                start = max(0, position - 64 * 1024)
+                stream.seek(start)
+                chunk = stream.read(position - start)
+                combined = chunk + suffix
+                index = combined.rfind(marker)
+                if index >= 0:
+                    marker_end = start + index + len(marker)
+                    break
+                suffix = chunk[: max(0, len(marker) - 1)]
+                position = start
+            if marker_end is None or marker_end >= end:
+                return None
+            stream.seek(max(marker_end, end - max_bytes))
+            raw = stream.read(max_bytes)
+    except OSError:
+        return None
+
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    from agent.redact import redact_sensitive_text
+
+    redacted = redact_sensitive_text(
+        text,
+        force=True,
+        redact_url_credentials=True,
+    )
+    encoded = redacted.encode("utf-8")
+    if len(encoded) > max_bytes:
+        start = len(encoded) - max_bytes
+        while start < len(encoded) and encoded[start] & 0xC0 == 0x80:
+            start += 1
+        redacted = encoded[start:].decode("utf-8")
+    return redacted.strip() or None
 
 
 def _module_hermes_argv() -> list[str]:
@@ -10893,6 +10986,7 @@ def _default_spawn(
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    _append_worker_run_marker(log_path, task.current_run_id)
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")

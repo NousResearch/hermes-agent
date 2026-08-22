@@ -1268,6 +1268,124 @@ class SessionSearchMixin:
 
         return sanitized.strip()
 
+    # Explicit FTS5 syntax the user typed deliberately: quoted phrases, prefix
+    # wildcards, or (uppercase — FTS5 is case-sensitive about them) boolean
+    # operators. A query using any of these is never rewritten by the recall
+    # fallback below — the caller has opted into exact semantics.
+    _EXPLICIT_FTS_SYNTAX = re.compile(r'["*]|\b(?:AND|OR|NOT|NEAR)\b')
+
+    # Term shape for the recall fallback: words, keeping dotted / hyphenated /
+    # slashed identifiers (paths, versions, file names) as single terms — the
+    # sanitizer phrase-quotes those so FTS5 doesn't split them.
+    _BROADEN_TERM = re.compile(r"[\w./-]+")
+
+    _BROADEN_MAX_TERMS = 12
+
+    # Question/function words dropped from broadened queries before the term
+    # cap. Natural queries lead with these ("what error did the …"), and under
+    # a capped OR-join every stopword kept is a distinctive term crowded out.
+    # Lowercase only — uppercase AND/OR/NOT never reach here (explicit-syntax
+    # queries are not broadened).
+    _BROADEN_STOPWORDS = frozenset(
+        "a an and are as at be but by did do does for from had has have how in "
+        "into is it its no not of on or our say said that the their then there "
+        "these this to was we were what when where which who why will with you "
+        "your".split()
+    )
+
+    @classmethod
+    def _broaden_terms(cls, query: str) -> List[str]:
+        """Content terms of a query for the recall fallback: ≥2 chars, not a
+        stopword, deduped in order, capped. The single source of terms for
+        both the broadened query and the relevance filter — if these two
+        drifted apart, a row could be fetched on one term set and judged on
+        another."""
+        terms = [t for t in cls._BROADEN_TERM.findall(query) if len(t) >= 2]
+        terms = [t for t in terms if t.lower() not in cls._BROADEN_STOPWORDS]
+        return list(dict.fromkeys(terms))[: cls._BROADEN_MAX_TERMS]
+
+    @classmethod
+    def _broaden_fts5_query(cls, query: str) -> Optional[str]:
+        """OR-join a plain multi-word query for the zero-result recall fallback.
+
+        MATCH defaults to AND-ing every term, so a naturally-phrased query
+        ("what error did go vet report for lexer.go?") returns nothing unless
+        every word happens to co-occur in one message. Models and users
+        overwhelmingly write queries in that shape; requiring them to know the
+        OR syntax turns a healthy index into a zero-recall one.
+
+        Returns the broadened query, or None when broadening does not apply:
+        queries already using explicit FTS5 syntax (quotes, ``*``, uppercase
+        booleans), and queries with fewer than two content terms — that covers
+        single-term queries (nothing to broaden) and stopword-only queries
+        ("what was that about"), where an OR over stopwords could only ever
+        dredge up noise.
+        """
+        if not query or cls._EXPLICIT_FTS_SYNTAX.search(query):
+            return None
+        terms = cls._broaden_terms(query)
+        if len(terms) < 2:
+            return None
+        # Phrase-quote identifier-shaped terms. The sanitizer quotes dotted and
+        # hyphenated barewords itself but not slashed ones (paths), and an
+        # unquoted ``/`` is an FTS5 syntax error — swallowed into zero rows at
+        # the execute site, which would defeat the fallback exactly on the
+        # path-heavy queries it exists for.
+        return " OR ".join(
+            f'"{t}"' if any(c in t for c in "./-") else t for t in terms
+        )
+
+    def _filter_broadened_rows(
+        self, rows: List[Dict[str, Any]], query: str
+    ) -> List[Dict[str, Any]]:
+        """Drop weak matches from a broadened (OR-joined) retry.
+
+        Under OR, a row matching a single common word ("content") ranks as a
+        hit even when it has nothing to do with the query — and can surface
+        rows precisely where the strict pass proved the real target absent or
+        excluded (e.g. searching for rewound-away text must not dredge up
+        unrelated messages sharing one word). Keep a row only when its full
+        content matches an identifier-shaped term (paths, dotted names — one
+        of those alone is a real signal) or at least two distinct plain terms;
+        for queries with fewer than three plain terms a single match stands,
+        since two-of-N would just re-create the AND pass that already failed.
+        """
+        if not rows:
+            return rows
+        terms = self._broaden_terms(query)
+        # Token-boundary match, not bare substring: ``lexer.go`` must not hit
+        # inside ``mylexer.gone``, nor ``plan`` inside ``planet``.
+        patterns = {
+            t.lower(): re.compile(r"(?<!\w)" + re.escape(t.lower()) + r"(?!\w)")
+            for t in terms
+        }
+        ident_terms = {t.lower() for t in terms if any(c in t for c in "./-")}
+        word_terms = set(patterns) - ident_terms
+        need = 2 if len(word_terms) >= 3 else 1
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" for _ in ids)
+        with self._read_ctx() as conn:
+            content_by_id = {
+                row[0]: (row[1] or "").lower()
+                for row in conn.execute(
+                    f"SELECT id, content FROM messages WHERE id IN ({placeholders})",
+                    ids,
+                )
+            }
+        # Note on pagination: limit/offset were applied by the SQL of the
+        # broadened retry; filtering happens after. A relevant row beyond the
+        # SQL limit is therefore not pulled forward to backfill the page —
+        # pages stay stable across identical calls, at the cost of possibly
+        # under-filled pages. Same trade the strict pass makes implicitly.
+        kept = []
+        for r in rows:
+            text = content_by_id.get(r["id"], "")
+            if any(patterns[t].search(text) for t in ident_terms):
+                kept.append(r)
+            elif sum(bool(patterns[t].search(text)) for t in word_terms) >= need:
+                kept.append(r)
+        return kept
+
     @staticmethod
     def _is_cjk_codepoint(cp: int) -> bool:
         return (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
@@ -1445,6 +1563,27 @@ class SessionSearchMixin:
                 include_inactive=include_inactive,
                 fields=fields,
             )
+            if not rows and not self._contains_cjk(query or ""):
+                # Zero-result recall fallback: MATCH ANDs every term, so plain
+                # multi-word queries ("what error did go vet report for
+                # lexer.go") miss unless all terms share one message. Retry
+                # OR-joined — precision-first semantics are preserved because
+                # this only ever runs when the AND pass found nothing, and
+                # never for queries using explicit FTS5 syntax.
+                broadened = self._broaden_fts5_query(query or "")
+                if broadened:
+                    rows = self._search_messages_impl(
+                        broadened,
+                        source_filter=source_filter,
+                        exclude_sources=exclude_sources,
+                        role_filter=role_filter,
+                        limit=limit,
+                        offset=offset,
+                        sort=sort,
+                        include_inactive=include_inactive,
+                        fields=fields,
+                    )
+                    rows = self._filter_broadened_rows(rows, query or "")
             return rows
         finally:
             try:

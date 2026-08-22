@@ -1941,10 +1941,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             enabled_toolsets=["skills", "terminal"],
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
-            # API calls against hundreds of candidate skills. The
-            # single-session review path caps itself at a much smaller
-            # number because it's not doing a curation sweep.
-            max_iterations=9999,
+            # API calls against hundreds of candidate skills — but 9999
+            # let a stuck pass burn the full iteration wall (~17M input /
+            # ~135M cache-read tokens per occurrence) before anyone
+            # noticed. Cap at 150: measured pass headroom over the
+            # 50-100 typical, still bounded (#91841; plan S4 in
+            # docs/plans/2026-08-21-cost-integrity-systemics.md).
+            max_iterations=150,
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

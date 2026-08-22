@@ -830,6 +830,7 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
     class _StubAgent:
         def __init__(self, *args, **kwargs):
             captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
+            captured["max_iterations"] = kwargs.get("max_iterations", "UNSET")
             self._memory_write_origin = "assistant_tool"
             self._memory_nudge_interval = 0
             self._skill_nudge_interval = 0
@@ -852,6 +853,12 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
         "'terminal'] to AIAgent; the full default tool catalog (plus lcm_* "
         "context_engine tools) would be advertised; got "
         f"{captured.get('enabled_toolsets')!r}"
+    )
+    assert captured.get("max_iterations") == 150, (
+        "curator review fork must cap max_iterations at 150 — the old 9999 "
+        "let a stuck pass burn the full iteration wall (~17M input / ~135M "
+        "cache-read tokens per occurrence) before anyone noticed (#91841); "
+        f"got {captured.get('max_iterations')!r}"
     )
 
 

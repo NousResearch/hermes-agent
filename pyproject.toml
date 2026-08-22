@@ -469,6 +469,7 @@ markers = [
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
     "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
+    "real_windows_gateway_respawn: opt out of the autouse stub that no-ops the update flow's Windows gateway pause/resume",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

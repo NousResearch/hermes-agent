@@ -54,3 +54,41 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
         lambda *_a, **_k: [],
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def _suppress_windows_gateway_respawn(request, monkeypatch):
+    """Default the update flow's Windows gateway pause/resume to no-ops.
+
+    ``cmd_update`` pauses running Windows gateways and afterwards respawns
+    them DETACHED (``pythonw -m hermes_cli.main gateway run``) via
+    ``_resume_windows_gateways_after_update`` (or the cold-start path when
+    none were found but the service is installed). The pause scan inspects
+    the REAL machine, so on a Windows dev box every ``cmd_update`` test that
+    reached the resume step launched a real, windowless gateway that detaches
+    into its own process group and outlives pytest — dozens of orphaned
+    servers accumulate per full-suite run, invisibly eating RAM.
+
+    Tests that exercise the pause/resume helpers themselves opt out with
+    ``@pytest.mark.real_windows_gateway_respawn`` (they mock the inner
+    ``launch_detached_*`` primitives instead).
+    """
+    if request.node.get_closest_marker("real_windows_gateway_respawn"):
+        return
+    try:
+        from hermes_cli import main as _cli_main
+    except Exception:
+        return
+    # raising=False for the same transient-import race documented above.
+    monkeypatch.setattr(
+        _cli_main,
+        "_pause_windows_gateways_for_update",
+        lambda *_a, **_k: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _cli_main,
+        "_resume_windows_gateways_after_update",
+        lambda *_a, **_k: None,
+        raising=False,
+    )

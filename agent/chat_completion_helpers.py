@@ -2640,6 +2640,30 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             ):
                 fb_api_mode = "bedrock_converse"
 
+        # An explicit per-entry transport is authoritative.  Legacy entries
+        # that omit both spellings retain the provider/URL/model inference
+        # above.  This matters for mixed fallback chains where the default
+        # chat-completions mode would otherwise mask a configured Responses
+        # or Anthropic transport.
+        _explicit_fb_api_mode = fb.get("api_mode") or fb.get("transport")
+        if _explicit_fb_api_mode:
+            _explicit_fb_api_mode = str(_explicit_fb_api_mode).strip()
+            if _explicit_fb_api_mode in {
+                "chat_completions",
+                "codex_responses",
+                "anthropic_messages",
+                "bedrock_converse",
+                "codex_app_server",
+            }:
+                fb_api_mode = _explicit_fb_api_mode
+            else:
+                logger.warning(
+                    "Ignoring unsupported fallback api_mode %r for %s/%s",
+                    _explicit_fb_api_mode,
+                    fb_provider,
+                    fb_model,
+                )
+
         old_model = agent.model
         old_provider = agent.provider
 

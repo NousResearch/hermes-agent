@@ -116,6 +116,18 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     return reasoning_config
 
 
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Merge nested provider request bodies without erasing sibling keys."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -804,6 +816,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
+                request_overrides=params.get("request_overrides"),
             )
         )
         api_kwargs.update(top_level_from_profile)
@@ -821,23 +834,23 @@ class ChatCompletionsTransport(ProviderTransport):
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         if profile_body:
-            extra_body.update(profile_body)
+            extra_body = _deep_merge_dict(extra_body, profile_body)
 
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:
-            extra_body.update(extra_body_from_profile)
+            extra_body = _deep_merge_dict(extra_body, extra_body_from_profile)
 
         # Merge any pre-built extra_body additions from the caller
         additions = params.get("extra_body_additions")
         if additions:
-            extra_body.update(additions)
+            extra_body = _deep_merge_dict(extra_body, additions)
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
+                    extra_body = _deep_merge_dict(extra_body, v)
                 else:
                     api_kwargs[k] = v
 

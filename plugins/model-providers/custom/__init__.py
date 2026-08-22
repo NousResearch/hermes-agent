@@ -37,6 +37,20 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
+        # A configured provider-specific chat-template envelope is authoritative.
+        # Do not mix it with generic OpenAI/Ollama reasoning controls: strict
+        # gateways such as api.iamhc.cn reject or reinterpret that hybrid shape.
+        request_overrides = ctx.get("request_overrides")
+        override_body = (
+            request_overrides.get("extra_body", {})
+            if isinstance(request_overrides, dict)
+            else {}
+        )
+        if isinstance(override_body, dict) and isinstance(
+            override_body.get("chat_template_kwargs"), dict
+        ):
+            return extra_body, top_level
+
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
         #
@@ -64,18 +78,7 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
-                # Clamp the internal ladder onto the widest OpenAI-compatible
-                # wire vocabulary (shared policy in agent.reasoning_effort) —
-                # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding
-                # "ultra" verbatim is a guaranteed 400 (#89503).
-                from agent.reasoning_effort import (
-                    OPENAI_COMPAT_WIRE_EFFORTS,
-                    clamp_effort,
-                )
-
-                top_level["reasoning_effort"] = clamp_effort(
-                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
-                )
+                top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level
 

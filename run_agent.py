@@ -7822,15 +7822,35 @@ class AIAgent:
         ``urlparse``) calls under it. Caching drops the per-turn cost from
         ~5us × 16 = ~80us to <1us.
         """
-        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = {}
+        provider = getattr(self, "provider", None)
+        model = getattr(self, "model", None)
+        base_url = getattr(self, "base_url", None)
+        key = (
+            provider,
+            model,
+            getattr(self, "_base_url_lower", base_url),
+            reasoning_config.get("enabled", True),
+            str(reasoning_config.get("effort") or "").strip().lower(),
+        )
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
+        is_nim_endpoint = (
+            (provider or "").lower() == "nvidia"
+            or base_url_host_matches(base_url or "", "integrate.api.nvidia.com")
+        )
         result = (
-            self._needs_deepseek_tool_reasoning()
-            or self._needs_kimi_tool_reasoning()
-            or self._needs_mimo_tool_reasoning()
-            or self._reasoning_echo_opt_in()
+            self._needs_nim_tool_reasoning()
+            if is_nim_endpoint
+            else (
+                self._needs_deepseek_tool_reasoning()
+                or self._needs_kimi_tool_reasoning()
+                or self._needs_mimo_tool_reasoning()
+                or self._reasoning_echo_opt_in()
+            )
         )
         self._thinking_pad_cache = (key, result)
         return result
@@ -7870,6 +7890,26 @@ class AIAgent:
             )
         except Exception:
             return False
+
+    def _needs_nim_tool_reasoning(self) -> bool:
+        """Return True for enabled thinking families on NVIDIA NIM."""
+        from agent.nim_reasoning import is_nim_thinking_model
+
+        provider = getattr(self, "provider", None)
+        base_url = getattr(self, "base_url", None)
+        if not (
+            (provider or "").lower() == "nvidia"
+            or base_url_host_matches(base_url or "", "integrate.api.nvidia.com")
+        ):
+            return False
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            return False
+        if reasoning_config.get("enabled", True) is False:
+            return False
+        if str(reasoning_config.get("effort") or "").strip().lower() == "none":
+            return False
+        return is_nim_thinking_model(getattr(self, "model", None))
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.

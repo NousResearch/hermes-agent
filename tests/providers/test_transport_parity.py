@@ -42,6 +42,147 @@ class TestNvidiaParity:
         )
         assert kw["max_completion_tokens"] == 4096  # user overrides default
 
+    @pytest.mark.parametrize(
+        ("model", "effort", "expected"),
+        [
+            (
+                "z-ai/glm5.1",
+                "ultra",
+                {
+                    "chat_template_kwargs": {
+                        "enable_thinking": True,
+                        "clear_thinking": False,
+                        "reasoning_effort": "high",
+                    },
+                },
+            ),
+            (
+                "deepseek-ai/deepseek-v4",
+                "xhigh",
+                {
+                    "chat_template_kwargs": {
+                        "thinking": True,
+                        "reasoning_effort": "high",
+                    },
+                },
+            ),
+            (
+                "moonshotai/kimi-k2.5",
+                "medium",
+                {
+                    "chat_template_kwargs": {
+                        "thinking": True,
+                        "reasoning_effort": "medium",
+                    },
+                },
+            ),
+            (
+                "qwen/qwen3.5-397b-a17b",
+                "minimal",
+                {
+                    "chat_template_kwargs": {
+                        "thinking": True,
+                        "reasoning_effort": "low",
+                    },
+                },
+            ),
+            (
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "high",
+                {
+                    "chat_template_kwargs": {"enable_thinking": True},
+                },
+            ),
+            (
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "medium",
+                {
+                    "chat_template_kwargs": {
+                        "enable_thinking": True,
+                        "medium_effort": True,
+                    },
+                },
+            ),
+            (
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "low",
+                {
+                    "chat_template_kwargs": {
+                        "enable_thinking": True,
+                        "medium_effort": True,
+                    },
+                },
+            ),
+        ],
+    )
+    def test_reasoning_uses_family_specific_nim_envelope(
+        self, transport, model, effort, expected
+    ):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nvidia"),
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["extra_body"] == expected
+        assert "reasoning_effort" not in kw
+
+    def test_nemotron_3_ultra_reasoning_disabled_uses_family_specific_toggle(
+        self, transport
+    ):
+        kw = transport.build_kwargs(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nvidia"),
+            reasoning_config={"enabled": False, "effort": "none"},
+        )
+
+        assert kw["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+        assert "reasoning_budget" not in kw["extra_body"]
+
+    def test_nemotron_3_ultra_does_not_enable_reasoning_without_policy(
+        self, transport
+    ):
+        kw = transport.build_kwargs(
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nvidia"),
+            reasoning_config=None,
+        )
+
+        assert "extra_body" not in kw
+
+    def test_nim_chat_template_overrides_merge_without_erasing_profile_fields(
+        self, transport
+    ):
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nvidia"),
+            reasoning_config={"enabled": True, "effort": "high"},
+            request_overrides={
+                "extra_body": {
+                    "chat_template_kwargs": {
+                        "custom_flag": "keep",
+                        "reasoning_effort": "low",
+                    }
+                }
+            },
+        )
+
+        assert kw["extra_body"]["chat_template_kwargs"] == {
+            "thinking": True,
+            "reasoning_effort": "low",
+            "custom_flag": "keep",
+        }
+
 
 class TestKimiParity:
     """Kimi: OMIT temperature, max_tokens=32000, thinking + reasoning_effort."""
@@ -105,7 +246,7 @@ class TestOpenRouterParity:
 
 
 class TestNousParity:
-    """Nous: product tags, reasoning passthrough (disable included)."""
+    """Nous: product tags, reasoning, omit when disabled."""
 
     def test_tags(self, transport):
         from agent.portal_tags import nous_portal_tags

@@ -6,7 +6,9 @@ import type { ModelOptionProvider } from '@/types/hermes'
  * catalog (its provider still ships models, but no longer this one) — so a new
  * chat would keep 404'ing the dead model. Deliberately conservative to never
  * clobber a still-valid pick: an unknown/absent provider, an empty model list
- * (re-auth / unconfigured), or a not-yet-loaded catalog all return false.
+ * (re-auth / unconfigured), or a not-yet-loaded catalog all return false. The
+ * virtual `moa` provider is the exception: explicit-only catalogs omit it when
+ * no MoA preset is enabled, so its absence is authoritative.
  */
 export function manualPickRemoved(
   providers: ModelOptionProvider[] | undefined,
@@ -20,7 +22,7 @@ export function manualPickRemoved(
   const row = providers.find(p => p.slug === provider || p.name === provider)
 
   if (!row) {
-    return false
+    return provider.toLowerCase() === 'moa'
   }
 
   const models = row.models ?? []

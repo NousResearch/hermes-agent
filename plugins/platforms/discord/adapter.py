@@ -9196,7 +9196,17 @@ def _define_discord_view_classes() -> None:
             )
 
         def _build_provider_select(self):
-            """Build the provider dropdown menu."""
+            """Build the provider dropdown menu(s).
+
+            Discord caps each ``discord.ui.Select`` at 25 options and a View
+            at 5 action rows. Unlike the model-select page, the provider page
+            has no Back button (it's the top level), so only 1 row is needed
+            for Cancel — partition the provider list across up to 4 select
+            menus (100 slots) instead of truncating at 25, mirroring
+            ``_build_model_select``'s fix for the same Discord limit. A user
+            with many authenticated/custom providers configured previously
+            had everything past the 25th silently dropped from the picker.
+            """
             self.clear_items()
             options = []
             for p in self.providers:
@@ -9216,13 +9226,26 @@ def _define_discord_view_classes() -> None:
             if not options:
                 return
 
-            select = discord.ui.Select(
-                placeholder="Choose a provider...",
-                options=options[:_DISCORD_SELECT_MAX_OPTIONS],
-                custom_id="model_provider_select",
-            )
-            select.callback = self._on_provider_selected
-            self.add_item(select)
+            # Slice the provider list into <= 25-option chunks across (up to)
+            # 4 select rows: 4 selects + Cancel = 5 rows, Discord's View cap.
+            chunks = [
+                options[i : i + _DISCORD_SELECT_MAX_OPTIONS]
+                for i in range(0, len(options), _DISCORD_SELECT_MAX_OPTIONS)
+            ][
+                : _DISCORD_SELECT_MAX_ROWS - 1
+            ]  # keep 1 row for Cancel
+
+            for idx, chunk in enumerate(chunks):
+                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                select = discord.ui.Select(
+                    placeholder=f"Choose a provider...{suffix}",
+                    options=chunk,
+                    custom_id=f"model_provider_select_{idx}",
+                )
+                # All provider selects resolve through the same handler — the
+                # selected value is the provider slug, identical across rows.
+                select.callback = self._on_provider_selected
+                self.add_item(select)
 
             cancel_btn = discord.ui.Button(
                 label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel"

@@ -7,6 +7,10 @@ picker keeps 2 rows for Back/Cancel, so it must partition the model list
 across up to 3 select menus. This is what makes free-tier ``:free`` Portal
 picks (appended after the curated list) appear on Discord — they previously
 fell off the 25-option cliff.
+
+The provider-select page (the picker's top level, one step before the model
+list) has the same 25-option Discord cap but needs only 1 row for Cancel (no
+Back button), so it must partition across up to 4 select menus instead.
 """
 
 from types import SimpleNamespace
@@ -155,3 +159,122 @@ def test_small_provider_single_select_unchanged():
     ]
     assert len(select_rows) == 1
     assert len(select_rows[0].options) == 10
+
+
+def _provider_select_rows(view: "ModelPickerView"):
+    return [
+        c for c in view.children
+        if isinstance(getattr(c, "custom_id", ""), str)
+        and c.custom_id.startswith("model_provider_select")
+    ]
+
+
+def test_many_providers_render_across_partitioned_provider_selects():
+    """A user with >25 configured providers must see ALL of them, not just
+    the first 25 — the provider-select page previously hard-truncated with
+    ``options[:25]`` while its sibling ``_build_model_select`` was fixed to
+    partition across multiple selects for the exact same Discord limit.
+    """
+    providers = [
+        {
+            "slug": f"provider-{i}",
+            "name": f"Provider {i}",
+            "models": [f"provider-{i}/model-a"],
+            "total_models": 1,
+            "is_current": i == 0,
+        }
+        for i in range(40)
+    ]
+
+    view = ModelPickerView(
+        providers=providers,
+        current_model="provider-0/model-a",
+        current_provider="provider-0",
+        session_key="session-1",
+        on_model_selected=lambda *a, **k: None,
+        allowed_user_ids={"123"},
+    )
+
+    select_rows = _provider_select_rows(view)
+    rendered_values = [
+        opt.value for sel in select_rows for opt in getattr(sel, "options", [])
+    ]
+
+    # No truncation, no dupes — every provider slug must appear exactly once.
+    assert sorted(rendered_values) == sorted(p["slug"] for p in providers)
+    assert len(rendered_values) == 40
+
+    # 40 providers => 2 select rows of 25 + 15, plus Cancel = 3 action rows.
+    assert len(select_rows) == 2
+    assert len(select_rows[0].options) == 25
+    assert len(select_rows[1].options) == 15
+
+    # No single select exceeds Discord's 25-option hard cap.
+    for sel in select_rows:
+        assert len(sel.options) <= 25
+
+    # Cancel button still present.
+    cancel_btns = [
+        c for c in view.children
+        if getattr(c, "custom_id", "") == "model_cancel"
+    ]
+    assert len(cancel_btns) == 1
+
+
+def test_small_provider_list_single_select_unchanged():
+    """A <25-provider list still renders as a single select menu."""
+    providers = [
+        {
+            "slug": f"provider-{i}",
+            "name": f"Provider {i}",
+            "models": [f"provider-{i}/model-a"],
+            "total_models": 1,
+            "is_current": i == 0,
+        }
+        for i in range(10)
+    ]
+
+    view = ModelPickerView(
+        providers=providers,
+        current_model="provider-0/model-a",
+        current_provider="provider-0",
+        session_key="session-1",
+        on_model_selected=lambda *a, **k: None,
+        allowed_user_ids={"123"},
+    )
+
+    select_rows = _provider_select_rows(view)
+    assert len(select_rows) == 1
+    assert len(select_rows[0].options) == 10
+
+
+def test_all_provider_select_rows_share_the_same_callback():
+    """Every partitioned provider select must route through
+    ``_on_provider_selected`` — the model-select handler reads
+    ``interaction.data["values"][0]`` without caring which row fired, and the
+    provider selects must follow the same contract.
+    """
+    providers = [
+        {
+            "slug": f"provider-{i}",
+            "name": f"Provider {i}",
+            "models": [f"provider-{i}/model-a"],
+            "total_models": 1,
+            "is_current": False,
+        }
+        for i in range(30)
+    ]
+
+    view = ModelPickerView(
+        providers=providers,
+        current_model="",
+        current_provider="",
+        session_key="session-1",
+        on_model_selected=lambda *a, **k: None,
+        allowed_user_ids={"123"},
+    )
+
+    select_rows = _provider_select_rows(view)
+    assert len(select_rows) == 2
+    for sel in select_rows:
+        assert sel.callback == view._on_provider_selected

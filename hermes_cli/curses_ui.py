@@ -573,11 +573,23 @@ def _run_curses_menu(
                     key = stdscr.getch()
 
                     if search.active:
-                        # Active search consumes query-editing keys; nav keys
-                        # fall through to be decoded below.
-                        handled, confirm, changed = _handle_active_search_key(
-                            curses, key, search
+                        # A raw 27 is ambiguous: it is either a lone ESC or the
+                        # introducer of a CSI/SS3 cursor sequence, which is how
+                        # many terminals still deliver arrow keys (see
+                        # _decode_menu_key). Run the continuation probe FIRST so
+                        # an arrow press moves the cursor instead of being read
+                        # as "stop searching and wipe the query".
+                        esc_action = (
+                            _decode_menu_key(stdscr, key) if key == 27 else None
                         )
+                        if esc_action is not None and esc_action != NAV_CANCEL:
+                            handled = confirm = changed = False
+                        else:
+                            # Active search consumes query-editing keys; nav keys
+                            # fall through to be decoded below.
+                            handled, confirm, changed = _handle_active_search_key(
+                                curses, key, search
+                            )
                         if changed:
                             scroll_offset = 0
                             cursor, cursor_pos = _reconcile_cursor(
@@ -592,7 +604,13 @@ def _run_curses_menu(
                             continue
                         if handled:
                             continue
-                        action = _decode_menu_key(stdscr, key)
+                        # An already-decoded ESC sequence must not be decoded a
+                        # second time — its bytes are gone from the queue.
+                        action = (
+                            esc_action
+                            if esc_action is not None
+                            else _decode_menu_key(stdscr, key)
+                        )
                     elif key == ord("/"):
                         search.active = True
                         continue
@@ -613,8 +631,16 @@ def _run_curses_menu(
                         result_holder[0] = outcome
                         return
 
-        curses.wrapper(_draw)
-        flush_stdin()
+        # Drain on EVERY exit path, not just the normal return. A
+        # KeyboardInterrupt or a curses error leaves exactly the same stray
+        # escape bytes in the OS input buffer, and the numbered fallback below
+        # calls input() as its very next statement. flush_stdin() no-ops on
+        # non-TTY stdin and swallows its own errors, so it cannot mask the
+        # exception that is unwinding.
+        try:
+            curses.wrapper(_draw)
+        finally:
+            flush_stdin()
         return result_holder[0] if result_holder[0] is not _KEEP else cancel_value
 
     except KeyboardInterrupt:

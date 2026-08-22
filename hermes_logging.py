@@ -569,7 +569,7 @@ _queue_atexit_registered = False
 # flush/reset from another thread (gateway init racing a plugin/CLI path).
 # Without this, two threads can interleave listener.stop()/reassign/start()
 # and leave the queue with two live listeners or an orphaned worker thread.
-_queue_state_lock = threading.Lock()
+_queue_state_lock = threading.RLock()
 
 
 class _NonFormattingQueueHandler(QueueHandler):
@@ -700,6 +700,53 @@ def rotating_file_handlers() -> list:
     return list(_queued_file_handlers)
 
 
+def release_file_handlers_under(root: Path) -> int:
+    """Close queued file handlers whose log files live below *root*.
+
+    Long-lived shared backends can initialize agents for several profile homes.
+    Each initialization adds that profile's rotating handlers to the process-wide
+    queue listener, so deleting a profile must explicitly release those handles
+    first (notably the concurrent-log-handler lock file on Windows). Remaining
+    profile and launch-home handlers stay attached and keep receiving records.
+    """
+    global _log_queue, _queue_listener
+    resolved_root = Path(root).resolve()
+
+    with _queue_state_lock:
+        targets = []
+        for handler in _queued_file_handlers:
+            try:
+                Path(handler.baseFilename).resolve().relative_to(resolved_root)
+            except (AttributeError, OSError, ValueError):
+                continue
+            targets.append(handler)
+
+        if not targets:
+            return 0
+
+        _stop_queue_listener_locked()
+        for handler in targets:
+            _queued_file_handlers.remove(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+        if _queued_file_handlers and _log_queue is not None:
+            _queue_listener = QueueListener(
+                _log_queue, *_queued_file_handlers, respect_handler_level=True
+            )
+            _queue_listener.start()
+        else:
+            root_logger = logging.getLogger()
+            for handler in list(root_logger.handlers):
+                if getattr(handler, "_hermes_queue", False):
+                    root_logger.removeHandler(handler)
+            _log_queue = None
+
+        return len(targets)
+
+
 def _reset_queued_handlers() -> None:
     """Tear down the async logging queue + listener (test-isolation helper)."""
     global _log_queue
@@ -738,25 +785,26 @@ def _add_rotating_handler(
         for gateway.log).
     """
     resolved = path.resolve()
-    for existing in _queued_file_handlers:
-        if (
-            isinstance(existing, RotatingFileHandler)
-            and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
-        ):
-            return  # already attached
+    with _queue_state_lock:
+        for existing in _queued_file_handlers:
+            if (
+                isinstance(existing, RotatingFileHandler)
+                and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
+            ):
+                return  # already attached
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handler = _ManagedRotatingFileHandler(
-        str(path), maxBytes=max_bytes, backupCount=backup_count,
-        encoding="utf-8",
-    )
-    handler.setLevel(level)
-    handler.setFormatter(formatter)
-    if log_filter is not None:
-        handler.addFilter(log_filter)
-    # Route through the async queue instead of ``logger.addHandler(handler)`` so
-    # the rotation-lock wait never runs on the caller's (often event-loop) thread.
-    _register_queued_handler(handler)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = _ManagedRotatingFileHandler(
+            str(path), maxBytes=max_bytes, backupCount=backup_count,
+            encoding="utf-8",
+        )
+        handler.setLevel(level)
+        handler.setFormatter(formatter)
+        if log_filter is not None:
+            handler.addFilter(log_filter)
+        # Route through the async queue instead of ``logger.addHandler(handler)`` so
+        # the rotation-lock wait never runs on the caller's (often event-loop) thread.
+        _register_queued_handler(handler)
 
 
 def _read_logging_config():

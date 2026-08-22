@@ -1693,6 +1693,19 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     except Exception:
         pass  # best-effort: never block the delete on the release path
 
+    # 2d. A shared serve process also initializes profile-specific rotating log
+    # handlers when it builds that profile's AIAgent. On Windows, the concurrent
+    # handler keeps ``logs/.__agent.lock`` open after the agent itself closes, so
+    # rmtree cannot remove the profile until this process releases the handler.
+    try:
+        from hermes_logging import release_file_handlers_under
+
+        _released = release_file_handlers_under(profile_dir)
+        if _released:
+            print(f"✓ Released {_released} log handler(s) held by this process")
+    except Exception:
+        pass  # best-effort: rmtree below still reports a concrete failure
+
     # 3. Remove wrapper script
     if has_wrapper:
         if remove_wrapper_script(canon):

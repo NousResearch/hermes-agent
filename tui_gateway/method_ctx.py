@@ -38,6 +38,11 @@ class HandlerRegistry:
         fn._hermes_profile_scoped = True
         return fn
 
+    def profile_lifecycle(self, fn):
+        """Mark a handler to hold a shared profile lifecycle lease at install."""
+        fn._hermes_profile_lifecycle = True
+        return fn
+
     def install(self, server) -> None:
         """Rebind pending handlers onto ``server``'s globals and register them."""
         g = vars(server)
@@ -50,4 +55,6 @@ class HandlerRegistry:
             real.__dict__.update(fn.__dict__)
             if getattr(fn, "_hermes_profile_scoped", False):
                 real = server._profile_scoped(real)
+            if getattr(fn, "_hermes_profile_lifecycle", False):
+                real = server._profile_lifecycle(real)
             server._methods[name] = real

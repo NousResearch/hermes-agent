@@ -9,9 +9,11 @@ from .method_ctx import HandlerRegistry
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
+_profile_lifecycle = _registry.profile_lifecycle
 
 
 @method("session.create")
+@_profile_lifecycle
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
@@ -41,6 +43,8 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    if profile and profile_home is None and not _profile_targets_launch(profile):
+        return _err(rid, 4047, f'Profile "{profile}" does not exist')
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -75,6 +79,8 @@ def _(rid, params: dict) -> dict:
     lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
 
     with _sessions_lock:
+        if profile_home is not None and _profile_deletion_blocks(profile_home):
+            return _err(rid, 5037, f'Profile "{profile}" is being deleted')
         _sessions[sid] = {
             "agent": None,
             "agent_error": None,
@@ -354,6 +360,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("session.resume")
+@_profile_lifecycle
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
     if not target:
@@ -366,6 +373,10 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    if profile and profile_home is None and not _profile_targets_launch(profile):
+        return _err(rid, 4047, f'Profile "{profile}" does not exist')
+    if profile_home is not None and _profile_deletion_blocks(profile_home):
+        return _err(rid, 5037, f'Profile "{profile}" is being deleted')
     defer_history = is_truthy_value(params.get("defer_history", False))
     # Desktop hydrates persisted transcripts through the authenticated REST
     # route in parallel. Suppress the duplicate WebSocket transcript only when
@@ -839,6 +850,7 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        profile_home=str(profile_home) if profile_home is not None else None,
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -3086,6 +3098,8 @@ def _(rid, params: dict) -> dict:
     # unbound, whatever raises inside.
     branch_db = None
     branch_owns_db = False
+    branch_operation = None
+    branch_operation_entered = False
     try:
         # Bind the branched AGENT to the parent's profile, mirroring
         # session.create/resume: home override so config/skills/memory resolve
@@ -3096,6 +3110,9 @@ def _(rid, params: dict) -> dict:
         # recreate the cross-profile split one turn later.
         parent_home = session.get("profile_home")
         if parent_home:
+            branch_operation = _profile_operation_scope(parent_home)
+            branch_operation.__enter__()
+            branch_operation_entered = True
             from hermes_state import SessionDB
 
             # DEDICATED handle, same ownership rule as session.resume: ours
@@ -3161,6 +3178,8 @@ def _(rid, params: dict) -> dict:
         if branch_owns_db and branch_db is not None:
             with contextlib.suppress(Exception):
                 branch_db.close()
+        if branch_operation_entered:
+            branch_operation.__exit__(None, None, None)
     branched_session = _sessions.get(new_sid)
     return _ok(
         rid,

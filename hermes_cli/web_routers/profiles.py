@@ -1037,8 +1037,12 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+    from tui_gateway import server as gateway_server
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        profile_dir = profiles_mod.get_profile_dir(name)
+        with gateway_server.profile_deletion_scope(profile_dir):
+            path = profiles_mod.delete_profile(name, yes=True)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

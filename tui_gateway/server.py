@@ -159,6 +159,9 @@ _cfg_lock = threading.Lock()
 # dedicated lock rather than the unrelated process-config cache lock.
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
+_profile_deletions: dict[str, int] = {}
+_profile_operations: dict[str, int] = {}
+_profile_lifecycle_changed = threading.Condition(_sessions_lock)
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -892,7 +895,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 # against an id the backend has already forgotten, which reads as the session
 # silently vanishing rather than being reclaimed. ``tui_close`` and friends are
 # deliberately absent: the client initiated those and already knows.
-_RECLAIM_END_REASONS = frozenset({"idle_timeout", "lru_evict", "ws_orphan_reap"})
+_RECLAIM_END_REASONS = frozenset(
+    {"idle_timeout", "lru_evict", "profile_delete", "ws_orphan_reap"}
+)
 
 
 def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
@@ -1040,6 +1045,97 @@ def _close_session_by_id(
                 return False
             session = _pop_session_by_id(sid)
     return _teardown_popped_session(session, end_reason=end_reason)
+
+
+def _profile_home_key(profile_home: str | os.PathLike | None) -> str:
+    if not profile_home:
+        return ""
+    try:
+        return os.path.normcase(str(Path(profile_home).resolve()))
+    except Exception:
+        return os.path.normcase(os.path.abspath(os.fspath(profile_home)))
+
+
+def _profile_deletion_blocks(profile_home: str | os.PathLike | None) -> bool:
+    key = _profile_home_key(profile_home)
+    with _sessions_lock:
+        return bool(key and _profile_deletions.get(key, 0) > 0)
+
+
+class _ProfileDeletingError(RuntimeError):
+    pass
+
+
+class _ProfileMissingError(RuntimeError):
+    pass
+
+
+def _assert_profile_registration_allowed(profile_home: str | os.PathLike | None) -> None:
+    if _profile_deletion_blocks(profile_home):
+        raise _ProfileDeletingError("profile is being deleted")
+
+
+@contextlib.contextmanager
+def _profile_operation_scope(profile_home: str | os.PathLike | None):
+    """Hold a shared profile lifecycle lease against concurrent deletion."""
+    key = _profile_home_key(profile_home)
+    if not key:
+        yield
+        return
+    with _profile_lifecycle_changed:
+        if _profile_deletions.get(key, 0) > 0:
+            raise _ProfileDeletingError("profile is being deleted")
+        if not Path(profile_home).exists():
+            raise _ProfileMissingError("profile does not exist")
+        _profile_operations[key] = _profile_operations.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _profile_lifecycle_changed:
+            remaining = _profile_operations.get(key, 1) - 1
+            if remaining > 0:
+                _profile_operations[key] = remaining
+            else:
+                _profile_operations.pop(key, None)
+            _profile_lifecycle_changed.notify_all()
+
+
+@contextlib.contextmanager
+def profile_deletion_scope(profile_home: str | os.PathLike):
+    """Drain and block live sessions while a shared backend deletes a profile."""
+    key = _profile_home_key(profile_home)
+    if not key:
+        raise ValueError("profile home is required")
+
+    with _profile_lifecycle_changed:
+        _profile_deletions[key] = _profile_deletions.get(key, 0) + 1
+        while _profile_operations.get(key, 0) > 0:
+            _profile_lifecycle_changed.wait()
+        victims = [
+            sid
+            for sid, session in _sessions.items()
+            if _profile_home_key(session.get("profile_home")) == key
+        ]
+        popped = [_pop_session_by_id(sid) for sid in victims]
+
+    try:
+        from agent.interrupt_compat import request_hard_interrupt
+
+        for session in popped:
+            if session is not None and session.get("agent") is not None:
+                with contextlib.suppress(Exception):
+                    request_hard_interrupt(session["agent"])
+        for session in popped:
+            _teardown_popped_session(session, end_reason="profile_delete")
+        yield sum(session is not None for session in popped)
+    finally:
+        with _profile_lifecycle_changed:
+            remaining = _profile_deletions.get(key, 1) - 1
+            if remaining > 0:
+                _profile_deletions[key] = remaining
+            else:
+                _profile_deletions.pop(key, None)
+            _profile_lifecycle_changed.notify_all()
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
@@ -1435,6 +1531,8 @@ def _db_for_profile(profile: str | None = None):
     """
     profile_home = _profile_home(profile)
     if profile_home is None:
+        if profile and not _profile_targets_launch(profile):
+            return None, False
         return _get_db(), False
     try:
         from hermes_state import SessionDB
@@ -1499,6 +1597,16 @@ def _profile_db(params: dict | None = None):
     profile = None
     if isinstance(params, dict):
         profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile and profile_home is None and not _profile_targets_launch(profile):
+        yield None
+        return
+    operation = _profile_operation_scope(profile_home)
+    try:
+        operation.__enter__()
+    except (_ProfileDeletingError, _ProfileMissingError):
+        yield None
+        return
     db, owns = _db_for_profile(profile)
     try:
         yield db
@@ -1506,6 +1614,7 @@ def _profile_db(params: dict | None = None):
         if owns and db is not None:
             with contextlib.suppress(Exception):
                 db.close()
+        operation.__exit__(None, None, None)
 
 
 def _response_profile_name(profile: str | None = None) -> str:
@@ -1548,6 +1657,38 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
+
+
+def _profile_targets_launch(profile: str | None) -> bool:
+    """Whether an explicit profile name resolves to this process's launch home."""
+    name = (profile or "").strip()
+    if not name:
+        return True
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        return Path(profiles_mod.get_profile_dir(name)).resolve() == Path(_hermes_home).resolve()
+    except Exception:
+        return False
+
+
+def _profile_lifecycle(handler):
+    """Keep an explicit profile alive for the full duration of a session RPC."""
+
+    def wrapper(rid, params):
+        profile = (params.get("profile") or "").strip() or None
+        profile_home = _profile_home(profile)
+        if profile and profile_home is None and not _profile_targets_launch(profile):
+            return _err(rid, 4047, f'Profile "{profile}" does not exist')
+        try:
+            with _profile_operation_scope(profile_home):
+                return handler(rid, params)
+        except _ProfileDeletingError:
+            return _err(rid, 5037, f'Profile "{profile}" is being deleted')
+        except _ProfileMissingError:
+            return _err(rid, 4047, f'Profile "{profile}" does not exist')
+
+    return wrapper
 
 
 def _profile_scoped(handler):
@@ -2334,6 +2475,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
         session_db = None
         owns_db = False
         profile_home = current.get("profile_home")
+        profile_operation = None
+        profile_operation_entered = False
         try:
             history_ready = current.get("resume_history_ready")
             if history_ready is not None:
@@ -2350,6 +2493,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # agent that profile's db so turns persist to the right state.db.
             session_db = None
             if profile_home:
+                profile_operation = _profile_operation_scope(profile_home)
+                profile_operation.__enter__()
+                profile_operation_entered = True
                 home_token = set_hermes_home_override(profile_home)
                 try:
                     from agent.secret_scope import build_profile_secret_scope, set_secret_scope
@@ -2521,6 +2667,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 if not _transfer_db_to_agent(built, session_db):
                     with contextlib.suppress(Exception):
                         session_db.close()
+            if profile_operation_entered:
+                profile_operation.__exit__(None, None, None)
             ready.set()
 
     build_thread = threading.Thread(target=_build, daemon=True)
@@ -2952,20 +3100,6 @@ def _ensure_session_db_row(session: dict) -> None:
     # launch profile's — otherwise the row lands in the wrong state.db, the
     # unified list mis-tags it, and resume 404s ("session not found").
     profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
-    if db is None:
-        return
     # The session's own model/effort/fast pick — the composer override shipped on
     # session.create, or a restored /model switch — must own the row's model +
     # model_config. The agent isn't built yet at first prompt.submit, so derive
@@ -3025,6 +3159,27 @@ def _ensure_session_db_row(session: dict) -> None:
     parent_session_id = session.get("parent_session_id") or None
     if parent_session_id:
         model_config["_branched_from"] = parent_session_id
+    profile_operation = None
+    if profile_home:
+        profile_operation = _profile_operation_scope(profile_home)
+        try:
+            profile_operation.__enter__()
+        except (_ProfileDeletingError, _ProfileMissingError):
+            return
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+        except Exception:
+            logger.debug("failed to open profile db for session row", exc_info=True)
+            profile_operation.__exit__(None, None, None)
+            return
+        close_db = True
+    else:
+        db = _get_db()
+        close_db = False
+    if db is None:
+        return
     try:
         db.create_session(
             key,
@@ -3061,6 +3216,8 @@ def _ensure_session_db_row(session: dict) -> None:
                 db.close()
             except Exception:
                 pass
+        if profile_operation is not None:
+            profile_operation.__exit__(None, None, None)
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -3138,12 +3295,30 @@ def _session_db(session: dict):
     db, close_db = None, False
     profile_home = session.get("profile_home")
     if profile_home:
+        home = Path(profile_home)
+        if not home.exists():
+            yield None
+            return
+        operation = _profile_operation_scope(home)
+        try:
+            operation.__enter__()
+        except (_ProfileDeletingError, _ProfileMissingError):
+            yield None
+            return
         from hermes_state import SessionDB
 
         try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
+            db, close_db = SessionDB(db_path=home / "state.db"), True
         except Exception:
             logger.debug("failed to open profile db for session", exc_info=True)
+        try:
+            yield db
+        finally:
+            if close_db and db is not None:
+                with contextlib.suppress(Exception):
+                    db.close()
+            operation.__exit__(None, None, None)
+        return
     else:
         db = _get_db()
     try:
@@ -7248,6 +7423,7 @@ def _init_session(
 ):
     now = time.time()
     with _sessions_lock:
+        _assert_profile_registration_allowed(profile_home)
         _sessions[sid] = {
             "agent": agent,
             "session_key": key,
@@ -8696,6 +8872,7 @@ def _claim_or_reuse_live(
                 lease.release()
             return live
         with _sessions_lock:
+            _assert_profile_registration_allowed(record.get("profile_home"))
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
     return None

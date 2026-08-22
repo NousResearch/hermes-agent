@@ -13694,6 +13694,239 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     assert str(seen.get("db_path")).endswith("state.db")
 
 
+def test_profile_deletion_scope_drains_target_sessions_and_blocks_new_ones(
+    monkeypatch, tmp_path
+):
+    """A shared serve process must release profile-owned agents before rmtree."""
+    target_home = tmp_path / "profiles" / "worker"
+    other_home = tmp_path / "profiles" / "other"
+    target_home.mkdir(parents=True)
+    other_home.mkdir(parents=True)
+    closed = []
+    interrupted = []
+    reclaimed = []
+
+    class Agent:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            closed.append(self.name)
+
+        def interrupt(self):
+            interrupted.append(self.name)
+
+    def session(name, home):
+        return {
+            "agent": Agent(name),
+            "history": [],
+            "profile_home": str(home),
+            "session_key": f"{name}-stored",
+            "source": "desktop",
+        }
+
+    server._sessions["target"] = session("target", target_home)
+    server._sessions["other"] = session("other", other_home)
+    monkeypatch.setattr(server, "_finalize_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_broadcast_global_event",
+        lambda method, payload: reclaimed.append((method, payload)),
+    )
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda profile: target_home if profile == "worker" else None,
+    )
+    before = set(server._sessions)
+    try:
+        with server.profile_deletion_scope(target_home) as drained:
+            assert drained == 1
+            assert "target" not in server._sessions
+            assert "other" in server._sessions
+            assert interrupted == ["target"]
+            assert closed == ["target"]
+            assert reclaimed == [
+                (
+                    "session.reclaimed",
+                    {
+                        "reason": "profile_delete",
+                        "session_id": "target",
+                        "stored_session_id": "target-stored",
+                    },
+                )
+            ]
+
+            response = server.handle_request(
+                {
+                    "id": "delete-race",
+                    "method": "session.create",
+                    "params": {"profile": "worker"},
+                }
+            )
+            assert response["error"]["code"] == 5037
+            assert "being deleted" in response["error"]["message"]
+            assert set(server._sessions) == {"other"}
+    finally:
+        for sid in set(server._sessions) - before:
+            server._sessions.pop(sid, None)
+        server._sessions.pop("target", None)
+        server._sessions.pop("other", None)
+
+
+def test_explicit_missing_profile_session_create_never_falls_back_to_launch(
+    monkeypatch,
+):
+    """A deleted named profile must fail closed instead of using default state."""
+    monkeypatch.setattr(server, "_profile_home", lambda _profile: None)
+    monkeypatch.setattr(server, "_profile_targets_launch", lambda _profile: False)
+    before = set(server._sessions)
+
+    response = server.handle_request(
+        {
+            "id": "missing-profile",
+            "method": "session.create",
+            "params": {"profile": "deleted-worker"},
+        }
+    )
+
+    assert response["error"]["code"] == 4047
+    assert "does not exist" in response["error"]["message"]
+    assert set(server._sessions) == before
+
+
+def test_explicit_missing_profile_db_lookup_never_uses_launch(monkeypatch):
+    """All session RPCs must fail closed when an explicit profile disappeared."""
+    launch_reads = []
+    monkeypatch.setattr(server, "_profile_home", lambda _profile: None)
+    monkeypatch.setattr(server, "_profile_targets_launch", lambda _profile: False)
+    monkeypatch.setattr(server, "_get_db", lambda: launch_reads.append(True))
+
+    db, owns = server._db_for_profile("deleted-worker")
+
+    assert db is None
+    assert owns is False
+    assert launch_reads == []
+
+
+def test_profile_deletion_scope_blocks_deferred_resume_registration(tmp_path):
+    """A resume that raced the delete cannot register after sessions were drained."""
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    record = {
+        "history": [],
+        "profile_home": str(profile_home),
+        "session_key": "stored-worker",
+    }
+    before = set(server._sessions)
+
+    with server.profile_deletion_scope(profile_home):
+        with pytest.raises(RuntimeError, match="being deleted"):
+            server._claim_or_reuse_live("late-resume", "stored-worker", record, None)
+
+    assert set(server._sessions) == before
+
+
+def test_profile_deletion_waits_for_inflight_profile_operations(tmp_path):
+    """Deletion owns an exclusive lifecycle gate before touching the profile tree."""
+    import threading
+    import time
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    operation_entered = threading.Event()
+    release_operation = threading.Event()
+    deletion_entered = threading.Event()
+
+    def run_operation():
+        with server._profile_operation_scope(profile_home):
+            operation_entered.set()
+            assert release_operation.wait(timeout=2)
+
+    def run_deletion():
+        with server.profile_deletion_scope(profile_home):
+            deletion_entered.set()
+
+    operation_thread = threading.Thread(target=run_operation)
+    deletion_thread = threading.Thread(target=run_deletion)
+    try:
+        operation_thread.start()
+        assert operation_entered.wait(timeout=2)
+        deletion_thread.start()
+        deadline = time.monotonic() + 2
+        while not server._profile_deletion_blocks(profile_home) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server._profile_deletion_blocks(profile_home)
+        assert deletion_entered.is_set() is False
+
+        with pytest.raises(RuntimeError, match="being deleted"):
+            with server._profile_operation_scope(profile_home):
+                pass
+    finally:
+        release_operation.set()
+        operation_thread.join(timeout=2)
+        deletion_thread.join(timeout=2)
+    assert operation_thread.is_alive() is False
+    assert deletion_thread.is_alive() is False
+    assert deletion_entered.is_set() is True
+
+
+def test_session_db_does_not_recreate_a_deleted_profile(monkeypatch, tmp_path):
+    """Late background persistence must not resurrect a removed profile stub."""
+    profile_home = tmp_path / "profiles" / "deleted-worker"
+    opened = []
+
+    class UnexpectedDB:
+        def __init__(self, *, db_path):
+            opened.append(db_path)
+
+    monkeypatch.setattr("hermes_state.SessionDB", UnexpectedDB)
+
+    with server._session_db({"profile_home": str(profile_home)}) as db:
+        assert db is None
+
+    assert opened == []
+    assert profile_home.exists() is False
+
+
+def test_profile_delete_endpoint_holds_shared_session_deletion_scope(
+    monkeypatch, tmp_path
+):
+    """The REST delete must drain shared-backend sessions before filesystem removal."""
+    import asyncio
+    import contextlib
+
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.web_routers.profiles import delete_profile_endpoint
+
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    events = []
+
+    @contextlib.contextmanager
+    def deletion_scope(home):
+        events.append(("enter", home))
+        yield 1
+        events.append(("exit", home))
+
+    def delete_profile(name, *, yes):
+        events.append(("delete", name, yes))
+        return profile_home
+
+    monkeypatch.setattr(server, "profile_deletion_scope", deletion_scope)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(profiles_mod, "delete_profile", delete_profile)
+
+    result = asyncio.run(delete_profile_endpoint("worker"))
+
+    assert result == {"ok": True, "path": str(profile_home)}
+    assert events == [
+        ("enter", profile_home),
+        ("delete", "worker", True),
+        ("exit", profile_home),
+    ]
+
+
 def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"

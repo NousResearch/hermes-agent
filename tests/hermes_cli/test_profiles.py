@@ -273,6 +273,18 @@ class TestDeleteProfile:
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
 
+    def test_releases_profile_log_handlers_before_rmtree(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+
+        with patch(
+            "hermes_logging.release_file_handlers_under", return_value=2
+        ) as release_handlers:
+            deleted = delete_profile("coder", yes=True)
+
+        assert deleted == profile_dir
+        release_handlers.assert_called_once_with(profile_dir)
+        assert profile_dir.exists() is False
+
 
 
     def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):

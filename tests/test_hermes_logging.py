@@ -98,6 +98,29 @@ class TestSetupLogging:
         ]
         assert len(agent_handlers) == 1
 
+    def test_release_file_handlers_under_is_selective_and_reconfigurable(
+        self, tmp_path
+    ):
+        launch_home = tmp_path / "launch"
+        profile_home = tmp_path / "profiles" / "worker"
+        hermes_logging.setup_logging(hermes_home=launch_home)
+        hermes_logging.setup_logging(hermes_home=profile_home)
+
+        assert len(hermes_logging.rotating_file_handlers()) == 4
+        assert hermes_logging.release_file_handlers_under(profile_home) == 2
+        remaining = hermes_logging.rotating_file_handlers()
+        assert len(remaining) == 2
+        assert all(
+            Path(handler.baseFilename).is_relative_to(launch_home)
+            for handler in remaining
+        )
+
+        # A failed delete can leave the profile in place. A later agent build
+        # must be able to attach fresh handlers for it instead of inheriting a
+        # permanently disabled logging target.
+        hermes_logging.setup_logging(hermes_home=profile_home)
+        assert len(hermes_logging.rotating_file_handlers()) == 4
+
 
 
 

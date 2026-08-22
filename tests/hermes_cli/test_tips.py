@@ -14,6 +14,12 @@ class TestTipsCorpus:
         for i, tip in enumerate(TIPS):
             assert isinstance(tip, str), f"Tip {i} is not a string: {type(tip)}"
 
+    def test_execute_code_helpers_require_explicit_imports(self):
+        helper_tips = [tip for tip in TIPS if "json_parse" in tip]
+
+        assert helper_tips, "Expected an execute_code helper tip in the corpus"
+        assert all("from hermes_tools import" in tip for tip in helper_tips)
+
 
 class TestGetRandomTip:
     """Validate the get_random_tip() function."""

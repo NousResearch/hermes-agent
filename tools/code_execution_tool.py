@@ -378,10 +378,10 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
 
     Production mining (state.db): the top execute_code failure classes are
     hermes_tools import misuse (importing tools that aren't in the sandbox,
-    23x in one window), calling the built-in helpers via import, treating
-    tool results as strings instead of dicts, and importing third-party
-    packages that don't exist in the sandbox interpreter. Bounded scan,
-    first match wins, never raises.
+    23x in one window), calling convenience helpers without importing them,
+    treating tool results as strings instead of dicts, and importing
+    third-party packages that don't exist in the sandbox interpreter.
+    Bounded scan, first match wins, never raises.
     """
     if not stderr_text:
         return None
@@ -393,11 +393,14 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
         if m:
             missing = m.group(1)
             available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
-            builtin = {"json_parse", "shell_quote", "retry"}
-            if missing in builtin:
+            helpers = {"json_parse", "shell_quote", "retry"}
+            if missing in helpers:
                 return (
-                    f"{missing} is a BUILT-IN helper in the sandbox — no import "
-                    f"needed. Remove it from the import line and call {missing}(...) directly."
+                    f"{missing} should be imported from the generated hermes_tools.py, "
+                    "but this module did not export it. Verify the import uses "
+                    f"`from hermes_tools import {missing}`; if it does, the generated "
+                    "module may be stale or a different hermes_tools may be first on "
+                    "sys.path. Retry in a fresh session and report it if the mismatch persists."
                 )
             return (
                 f"'{missing}' is not available inside the execute_code sandbox. "
@@ -406,9 +409,10 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
             )
         m = re.search(r"NameError: name '(json_parse|shell_quote|retry)' is not defined", window)
         if m:
+            helper = m.group(1)
             return (
-                f"{m.group(1)} is built into the generated sandbox module — "
-                "call it directly at module scope without importing it."
+                f"Import {helper} from hermes_tools before calling it: "
+                f"from hermes_tools import {helper}"
             )
         m = re.search(r"ModuleNotFoundError: No module named '([\w.]+)'", window)
         if m:
@@ -2134,9 +2138,12 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         f"{cwd_note}\n\n"
         "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
         "is available for processing.\n\n"
-        "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
-        "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
-        "retry(fn, max_attempts=3, delay=2) — exponential backoff for transient failures."
+        "Convenience helpers are not preloaded globals. Import them explicitly: "
+        "`from hermes_tools import json_parse, shell_quote, retry`. "
+        "json_parse(text) — tolerant json.loads for terminal() output; "
+        "shell_quote(s) — shlex.quote "
+        "for dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential "
+        "backoff for transient failures."
     )
 
     return {

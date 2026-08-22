@@ -16,11 +16,20 @@ class TestSandboxFailureHint:
         assert "read_file" in h and "terminal" in h
         assert "normal tool call" in h
 
-    def test_builtin_helper_import_redirects(self):
+    def test_helper_import_failure_reports_actionable_module_skew(self):
         err = "ImportError: cannot import name 'json_parse' from 'hermes_tools'"
         h = _sandbox_failure_hint(err)
-        assert "BUILT-IN" in h
-        assert "no import" in h.lower()
+        assert h is not None
+        assert "from hermes_tools import json_parse" in h
+        assert "stale" in h
+        assert "sys.path" in h
+
+    @pytest.mark.parametrize("helper", ["json_parse", "shell_quote", "retry"])
+    def test_helper_name_error_recommends_explicit_import(self, helper):
+        h = _sandbox_failure_hint(f"NameError: name '{helper}' is not defined")
+        assert h is not None
+        assert f"from hermes_tools import {helper}" in h
+        assert "without importing" not in h
 
     def test_missing_third_party_module(self):
         err = "ModuleNotFoundError: No module named 'matplotlib'"

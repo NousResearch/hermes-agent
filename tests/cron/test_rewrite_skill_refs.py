@@ -199,7 +199,9 @@ class TestRewriteSkillRefsMultipleJobs:
 
         j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"])
         j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"])
-        j3 = create_job(prompt="", schedule="every 1h", skills=[])
+        # Needs a prompt: a skill-less job with a blank prompt has no runnable
+        # payload and is rejected at create time (a5e29e688dc0).
+        j3 = create_job(prompt="no skills here", schedule="every 1h", skills=[])
 
         report = rewrite_skill_refs(
             consolidated={"legacy": "umbrella"},

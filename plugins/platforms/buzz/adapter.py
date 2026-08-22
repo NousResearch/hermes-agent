@@ -37,6 +37,7 @@ environment and is never logged.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -80,8 +81,10 @@ from gateway.platforms.base import (
     SendResult,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
 )
 from gateway.config import Platform
+from gateway.session import build_session_key
 
 
 # Buzz chat messages are Nostr kind 9 events.  ``buzz messages get`` also
@@ -90,6 +93,9 @@ from gateway.config import Platform
 _CHAT_KIND = 9
 # How many events to request per poll / seed call.
 _FETCH_LIMIT = 50
+# Timestamp-only pagination cannot safely split a same-second boundary. Expand
+# the requested window instead, up to this fail-closed ceiling.
+_MAX_FETCH_LIMIT = 800
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
@@ -99,6 +105,18 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+
+_DEFAULT_OBSERVER_PROMPT = (
+    "You are continuously observing this Buzz channel. Most messages require no response. "
+    "Return exactly NO_REPLY unless one concise intervention would materially improve the outcome, "
+    "such as preventing unsafe or irreversible work, correcting an authority breach, contradiction, "
+    "duplicate effort, wrong-problem drift, architectural drift, a missed blocker, or a decision the "
+    "team needs. For an unmentioned ambient message, do not call tools or perform external actions; "
+    "either return NO_REPLY or send the concise text intervention. Do not acknowledge routine updates, "
+    "repeat an intervention without new evidence, or "
+    "start agent-to-agent ping-pong. A message prefixed [BUZZ_CATCHUP] predates this gateway reconnect: "
+    "retain it as context and respond only when the issue is still active."
+)
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
@@ -344,6 +362,17 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _parse_json_list_strict(stdout: str) -> List[dict]:
+    """Parse a complete JSON object list or reject the response."""
+    try:
+        data = json.loads(stdout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("buzz CLI returned malformed JSON") from exc
+    if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+        raise ValueError("buzz CLI response must be an array of objects")
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -392,6 +421,20 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Observer mode dispatches every authorised channel message so the
+        # agent can retain context and decide whether intervention is useful.
+        # It is deliberately separate from require_mention: normal Buzz
+        # identities remain mention-gated by default, while observer identities
+        # can listen without implying that every message deserves a reply.
+        self.observer_mode = str(extra.get("observer_mode", False)).strip().lower() in (
+            "true", "1", "yes", "on"
+        )
+        self.observer_prompt = str(extra.get("observer_prompt") or _DEFAULT_OBSERVER_PROMPT).strip()
+        _authority_raw = extra.get("response_authority", not self.observer_mode)
+        self.response_authority = str(_authority_raw).strip().lower() in (
+            "true", "1", "yes", "on"
+        )
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -400,6 +443,12 @@ class BuzzAdapter(BasePlatformAdapter):
             os.getenv("BUZZ_TRANSPORT") or str(extra.get("transport", "auto") or "auto")
         ).strip().lower()
         self.transport = _transport if _transport in ("auto", "websocket", "poll") else "auto"
+        if self.observer_mode and self.transport != "poll":
+            logger.warning(
+                "Buzz: observer mode is restricted to poll transport until "
+                "ordered WebSocket catch-up is independently verified"
+            )
+            self.transport = "poll"
 
         # Auth: entries may be hex pubkeys or npubs; normalized to hex
         raw_allowed = os.getenv("BUZZ_ALLOWED_USERS") or extra.get("allowed_users", [])
@@ -410,6 +459,11 @@ class BuzzAdapter(BasePlatformAdapter):
             for entry in raw_allowed
             if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
         }
+        if self._allowed_pubkeys:
+            # Central gateway authorization consumes the environment-backed
+            # allowlist. Keep it canonical so npub configuration works at both
+            # the adapter gate and the central authorization gate.
+            os.environ["BUZZ_ALLOWED_USERS"] = ",".join(sorted(self._allowed_pubkeys))
 
         # Secret — resolved lazily (never at import/registration time and
         # never logged).  connect() re-resolves it to fail fast with a clear
@@ -436,6 +490,9 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
+        self._cursor_path: Optional[Path] = None
+        self._persisted_channels: Dict[str, dict] = {}
+        self._cursor_error: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -488,6 +545,11 @@ class BuzzAdapter(BasePlatformAdapter):
         self._self_pubkey = str(profiles[0]["pubkey"]).lower()
         self._display_name = str(profiles[0].get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
+        self._initialize_cursor_state()
+        if self._cursor_error:
+            logger.error("Buzz: refusing to start with an invalid observer cursor")
+            self._set_fatal_error("cursor_invalid", self._cursor_error, retryable=False)
+            return False
 
         # Prevent two profiles from driving the same Buzz identity on the
         # same relay (duplicate replies, split de-dupe state). Mirrors the
@@ -496,11 +558,16 @@ class BuzzAdapter(BasePlatformAdapter):
             from gateway.status import acquire_scoped_lock
 
             lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
+            acquired, existing = acquire_scoped_lock(
+                "buzz", lock_key, metadata={"platform": self.platform.value}
+            )
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 logger.error(
-                    "Buzz: identity %s… on %s already in use by another profile",
+                    "Buzz: identity %s… on %s already in use by another profile%s",
                     self._self_pubkey[:8],
                     self.relay_url,
+                    f" (PID {owner_pid})" if owner_pid else "",
                 )
                 self._set_fatal_error(
                     "lock_conflict", "Buzz identity in use by another profile", retryable=False
@@ -516,6 +583,7 @@ class BuzzAdapter(BasePlatformAdapter):
             message = _cli_error_message(err, code)
             logger.error("Buzz: failed to list channels — %s", message)
             self._set_fatal_error("connect_failed", message, retryable=code == 2)
+            await self.disconnect()
             return False
         listed = _parse_json_list(out)
         self._channel_names = {
@@ -530,13 +598,33 @@ class BuzzAdapter(BasePlatformAdapter):
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
             self._set_fatal_error("config_missing", "no Buzz channels to watch", retryable=False)
+            await self.disconnect()
             return False
 
-        # Seed high-water marks from the newest events so a (re)start never
-        # replays channel history into the agent.
-        for channel_id in watch:
-            await self._seed_channel(channel_id, chat_type="group")
-        await self._discover_dms(seed=True)
+        # Seed a baseline before any live transport starts. A channel that
+        # cannot be read must block connection; guessing "now" would skip an
+        # unknown interval permanently.
+        try:
+            for channel_id in watch:
+                if not await self._seed_channel(channel_id, chat_type="group"):
+                    self._set_fatal_error(
+                        "connect_failed",
+                        f"could not establish a safe baseline for Buzz channel {channel_id}",
+                        retryable=True,
+                    )
+                    await self.disconnect()
+                    return False
+        except BaseException:
+            await self.disconnect()
+            raise
+        if not await self._discover_dms(seed=True):
+            self._set_fatal_error(
+                "connect_failed",
+                "could not establish safe baselines for Buzz direct messages",
+                retryable=True,
+            )
+            await self.disconnect()
+            return False
 
         # Inbound transport: prefer the NIP-42-authenticated WebSocket
         # subscription (push, near-zero latency); fall back to CLI polling
@@ -883,6 +971,7 @@ class BuzzAdapter(BasePlatformAdapter):
                                 if channel_id and state is not None:
                                     await self._handle_event(channel_id, state, event)
                                     self._trim_seen(state)
+                                    self._persist_cursor_state()
                             elif message[0] == "CLOSED":
                                 detail = message[-1] if len(message) > 2 else "subscription closed"
                                 raise ConnectionError(str(detail))
@@ -918,9 +1007,36 @@ class BuzzAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
 
-    async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
+    async def _seed_channel(self, channel_id: str, chat_type: str) -> bool:
         """Initialize a channel's high-water mark from its newest events."""
-        state = {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict()}
+        persisted = self._persisted_channels.get(channel_id)
+        if persisted is not None:
+            seen = OrderedDict(
+                (str(event_id), None)
+                for event_id in persisted.get("seen", [])
+                if event_id
+            )
+            state = {
+                "chat_type": str(persisted.get("chat_type") or chat_type),
+                "last_ts": max(0, int(persisted.get("last_ts") or 0)),
+                "seen": seen,
+                "retry": set(
+                    str(event_id) for event_id in persisted.get("retry", []) if event_id
+                ),
+                "recovering": True,
+                "catchup_before": int(time.time()),
+            }
+            self._trim_seen(state)
+            self._channel_state[channel_id] = state
+            return True
+
+        state = {
+            "chat_type": chat_type,
+            "last_ts": 0,
+            "seen": OrderedDict(),
+            "retry": set(),
+            "recovering": False,
+        }
         self._channel_state[channel_id] = state
         code, out, err = await self._run_cli(
             ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
@@ -929,11 +1045,22 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.warning(
                 "Buzz: could not seed channel %s — %s", channel_id, _cli_error_message(err, code)
             )
-            # Fall back to "now" so a transiently unreadable channel does not
-            # replay its whole history once it becomes readable.
-            state["last_ts"] = int(time.time())
-            return
-        for event in _parse_json_list(out):
+            # Fail closed. Advancing to "now" after an unreadable seed would
+            # permanently skip every message in the unknown interval.
+            return False
+        try:
+            events = _parse_json_list_strict(out)
+        except ValueError as exc:
+            logger.warning("Buzz: invalid seed response for channel %s — %s", channel_id, exc)
+            return False
+        if len(events) >= _FETCH_LIMIT:
+            logger.error(
+                "Buzz: refusing a full startup page for %s because timestamp-only "
+                "pagination cannot prove the baseline is complete",
+                channel_id,
+            )
+            return False
+        for event in events:
             event_id = event.get("id")
             created_at = int(event.get("created_at") or 0)
             if event_id:
@@ -944,8 +1071,141 @@ class BuzzAdapter(BasePlatformAdapter):
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
+        self._persist_cursor_state()
+        return True
 
-    async def _discover_dms(self, *, seed: bool) -> None:
+    def _load_cursor_state(self) -> None:
+        """Load public per-channel delivery cursors from disk.
+
+        The cursor file contains relay event IDs and timestamps only. Existing
+        invalid data fails closed: treating it as a new install could seed from
+        the newest event and permanently skip an unknown backlog.
+        """
+        self._persisted_channels = {}
+        self._cursor_error = None
+        path = self._cursor_path
+        if path is None or not os.path.lexists(path):
+            return
+        if path.is_symlink() or not path.is_file():
+            self._cursor_error = "Buzz cursor path is not a regular file"
+            logger.error("Buzz: invalid cursor path %s", path)
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                raise ValueError("unsupported Buzz cursor version")
+            channels = payload.get("channels")
+            if not isinstance(channels, dict):
+                raise ValueError("Buzz cursor channels must be an object")
+            validated: Dict[str, dict] = {}
+            for channel_id, value in channels.items():
+                if not channel_id or not isinstance(value, dict):
+                    raise ValueError("invalid Buzz cursor channel entry")
+                chat_type = value.get("chat_type")
+                seen = value.get("seen")
+                retry = value.get("retry", [])
+                raw_last_ts = value.get("last_ts")
+                if (
+                    chat_type not in ("group", "dm")
+                    or not isinstance(seen, list)
+                    or not isinstance(retry, list)
+                    or isinstance(raw_last_ts, bool)
+                    or not isinstance(raw_last_ts, (int, str))
+                    or any(not isinstance(event_id, str) for event_id in seen)
+                    or any(not isinstance(event_id, str) for event_id in retry)
+                ):
+                    raise ValueError(f"invalid Buzz cursor channel {channel_id}")
+                try:
+                    last_ts = int(raw_last_ts)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"invalid Buzz cursor timestamp for {channel_id}") from exc
+                if last_ts < 0:
+                    raise ValueError(f"negative Buzz cursor timestamp for {channel_id}")
+                validated[str(channel_id)] = {
+                    "chat_type": chat_type,
+                    "last_ts": last_ts,
+                    "seen": seen[-_SEEN_CAP:],
+                    "retry": retry[-_SEEN_CAP:],
+                }
+            self._persisted_channels = validated
+        except (OSError, ValueError, TypeError) as exc:
+            self._cursor_error = str(exc) or "unreadable Buzz cursor"
+            logger.error("Buzz: invalid cursor file %s — %s", path, self._cursor_error)
+
+    def _initialize_cursor_state(self) -> None:
+        """Resolve and load this observer identity's durable cursor file."""
+        self._cursor_path = None
+        self._persisted_channels = {}
+        self._cursor_error = None
+        if not self.observer_mode or not self._self_pubkey:
+            return
+        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+        identity_scope = hashlib.sha256(
+            f"{self.relay_url.lower()}\0{self._self_pubkey}".encode("utf-8")
+        ).hexdigest()[:24]
+        self._cursor_path = hermes_home / "state" / "buzz" / f"{identity_scope}.json"
+        self._load_cursor_state()
+
+    def _persist_cursor_state(self) -> None:
+        """Atomically persist public channel cursors with owner-only access."""
+        path = self._cursor_path
+        if path is None:
+            return
+        channels = {
+            channel_id: {
+                "chat_type": str(state.get("chat_type") or "group"),
+                "last_ts": max(0, int(state.get("last_ts") or 0)),
+                "seen": [str(event_id) for event_id in state.get("seen", [])],
+                "retry": [str(event_id) for event_id in state.get("retry", [])],
+            }
+            for channel_id, state in self._persisted_channels.items()
+            if channel_id not in self._channel_state
+        }
+        channels.update({
+            channel_id: {
+                "chat_type": str(state.get("chat_type") or "group"),
+                "last_ts": max(0, int(state.get("last_ts") or 0)),
+                "seen": [str(event_id) for event_id in state.get("seen", {})],
+                "retry": sorted(str(event_id) for event_id in state.get("retry", set())),
+            }
+            for channel_id, state in self._channel_state.items()
+        })
+        payload = {"version": 1, "channels": channels}
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            try:
+                directory_fd = os.open(
+                    str(path.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                )
+            except OSError:
+                directory_fd = None
+            if directory_fd is not None:
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+
+    async def _discover_dms(self, *, seed: bool) -> bool:
         """Watch DM conversations.  New ones found mid-run dispatch from their
         beginning (a fresh conversation has no history worth suppressing);
         ones present at startup are seeded like channels.
@@ -959,21 +1219,34 @@ class BuzzAdapter(BasePlatformAdapter):
         alone to unlock the mention-free DM path.
         """
         code, out, _err = await self._run_cli(["dms", "list"])
+        if code != 0 and seed:
+            return False
         if code == 0:
-            for dm in _parse_json_list(out):
+            try:
+                dms = _parse_json_list_strict(out) if self.observer_mode else _parse_json_list(out)
+            except ValueError as exc:
+                logger.error("Buzz: invalid DM discovery response — %s", exc)
+                return False
+            for dm in dms:
                 dm_id = str(dm.get("dm_id") or "")
                 if not dm_id or dm_id in self._channel_state:
                     continue
                 if seed:
-                    await self._seed_channel(dm_id, chat_type="dm")
+                    if not await self._seed_channel(dm_id, chat_type="dm"):
+                        return False
                 else:
                     self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
                 self._channel_names.setdefault(dm_id, "DM")
 
         code, out, _err = await self._run_cli(["channels", "list"])
         if code != 0:
-            return
-        for ch in _parse_json_list(out):
+            return not seed
+        try:
+            channels = _parse_json_list_strict(out) if self.observer_mode else _parse_json_list(out)
+        except ValueError as exc:
+            logger.error("Buzz: invalid DM channel fallback response — %s", exc)
+            return False
+        for ch in channels:
             ch_id = str(ch.get("channel_id") or "")
             if not ch_id:
                 continue
@@ -982,81 +1255,188 @@ class BuzzAdapter(BasePlatformAdapter):
             if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
                 continue
             if seed:
-                await self._seed_channel(ch_id, chat_type="group")
+                if not await self._seed_channel(ch_id, chat_type="group"):
+                    return False
             else:
                 self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+        return True
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
-        if state is None:
+        if state is None or state.setdefault("pending", set()):
             return
-        args = ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
-        if state["last_ts"]:
-            # Nostr `since` is inclusive: same-second events are re-fetched
-            # and de-duped by id below.
-            args += ["--since", str(state["last_ts"])]
-        code, out, err = await self._run_cli(args)
-        if code != 0:
-            logger.debug(
-                "Buzz: poll of channel %s failed — %s", channel_id, _cli_error_message(err, code)
-            )
+        events = await self._fetch_channel_events(channel_id, state)
+        if events is None:
             return
-        for event in _parse_json_list(out):
-            await self._handle_event(channel_id, state, event)
+        seen = state.setdefault("seen", OrderedDict())
+        uncommitted = [
+            event
+            for event in events
+            if event.get("id") and str(event["id"]) not in seen
+        ]
+        if not uncommitted and state.get("recovering"):
+            state["recovering"] = False
+            state.pop("catchup_before", None)
+            self._persist_cursor_state()
+            return
+        for event in uncommitted:
+            if await self._handle_event(channel_id, state, event):
+                break
         self._trim_seen(state)
 
-    async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
-        """De-dupe, filter, and dispatch a single ``messages get`` event."""
+    async def _fetch_channel_events(self, channel_id: str, state: dict) -> Optional[List[dict]]:
+        """Fetch every event after the cursor, including multi-page backlogs.
+
+        Buzz returns the newest window in a requested time range. Walk
+        backwards with ``--before`` until the range is exhausted, then restore
+        chronological order before dispatching. If any page fails, discard the
+        batch so the durable cursor cannot jump over missing events.
+        """
+        since = max(0, int(state.get("last_ts") or 0))
+        before: Optional[int] = None
+        by_id: Dict[str, dict] = {}
+        while True:
+            args = ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
+            if since:
+                # Nostr `since` is inclusive: same-second events are re-fetched
+                # and de-duped by id during dispatch.
+                args += ["--since", str(since)]
+            if before is not None:
+                args += ["--before", str(before)]
+            code, out, err = await self._run_cli(args)
+            if code != 0:
+                logger.debug(
+                    "Buzz: poll of channel %s failed — %s",
+                    channel_id,
+                    _cli_error_message(err, code),
+                )
+                return None
+            try:
+                page = (
+                    _parse_json_list_strict(out)
+                    if self.observer_mode
+                    else _parse_json_list(out)
+                )
+            except ValueError as exc:
+                logger.error("Buzz: invalid poll response for %s — %s", channel_id, exc)
+                return None
+            for event in page:
+                event_id = str(event.get("id") or "")
+                if event_id:
+                    by_id[event_id] = event
+            if len(page) < _FETCH_LIMIT:
+                break
+            logger.error(
+                "Buzz: refusing a full page for %s because timestamp-only pagination "
+                "cannot prove the boundary is complete",
+                channel_id,
+            )
+            return None
+        return sorted(
+            by_id.values(),
+            key=lambda event: (int(event.get("created_at") or 0), str(event.get("id") or "")),
+        )
+
+    async def _handle_event(self, channel_id: str, state: dict, event: dict) -> bool:
+        """De-dupe and dispatch one event.
+
+        Returns True only when background processing is now in flight. Filtered
+        events are committed immediately; dispatched chat events are committed
+        by :meth:`on_processing_complete` after Hermes reports success.
+        """
         event_id = str(event.get("id") or "")
         created_at = int(event.get("created_at") or 0)
-        if not event_id or event_id in state["seen"]:
-            return
-        state["seen"][event_id] = None
-        state["last_ts"] = max(state["last_ts"], created_at)
+        pending = state.setdefault("pending", set())
+        if not event_id or event_id in state["seen"] or event_id in pending:
+            return False
 
         if int(event.get("kind") or 0) != _CHAT_KIND:
-            return
+            self._commit_event(channel_id, event_id, created_at)
+            return False
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
         if not pubkey or not isinstance(content, str) or not content.strip():
-            return
+            self._commit_event(channel_id, event_id, created_at)
+            return False
 
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
-            return
+            self._commit_event(channel_id, event_id, created_at)
+            return False
 
         # Reclassify a leaked DM before gating so its first un-mentioned
         # message both latches the conversation and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
+        is_mentioned = self._is_mentioned(content)
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
         # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
+        if (
+            not is_dm
+            and not self.observer_mode
+            and self.require_mention
+            and not is_mentioned
+        ):
+            self._commit_event(channel_id, event_id, created_at)
+            return False
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
-            return
+            self._commit_event(channel_id, event_id, created_at)
+            return False
 
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+        catchup_before = int(state.get("catchup_before") or 0)
+        is_catchup = bool(state.get("recovering") and catchup_before and created_at <= catchup_before)
 
-        await self._dispatch_message(
-            text=dispatch_text,
-            chat_id=channel_id,
-            chat_type="dm" if is_dm else "group",
-            user_id=pubkey,
-            user_name=await self._resolve_user_name(pubkey),
-            message_id=event_id,
-            created_at=created_at,
-        )
+        # Private observation and outage recovery are transport/context probes,
+        # not agent turns. Commit them without invoking the handler at all:
+        # post-handler response filtering cannot contain streaming, tools,
+        # command replies, media, error notices, or other outbound side effects.
+        if self.observer_mode and (not self.response_authority or is_catchup):
+            self._commit_event(channel_id, event_id, created_at)
+            return False
+
+        track_completion = self.observer_mode
+        if track_completion:
+            pending.add(event_id)
+        else:
+            # Preserve the legacy WebSocket/poll contract: ordinary Buzz mode
+            # commits on receipt and never participates in the observer ledger.
+            self._commit_event(channel_id, event_id, created_at)
+        try:
+            user_name = await self._resolve_user_name(pubkey)
+            dispatched = await self._dispatch_message(
+                text=dispatch_text,
+                chat_id=channel_id,
+                chat_type="dm" if is_dm else "group",
+                user_id=pubkey,
+                user_name=user_name,
+                message_id=event_id,
+                created_at=created_at,
+                acknowledge=(
+                    self.response_authority
+                    and (not self.observer_mode or is_dm or is_mentioned)
+                    and not is_catchup
+                ),
+                catchup=is_catchup,
+                track_completion=track_completion,
+            )
+        except Exception:
+            if track_completion:
+                pending.discard(event_id)
+            raise
+        if track_completion and not dispatched:
+            pending.discard(event_id)
+        return dispatched
 
     # ── DM classification (issue #68871) ──────────────────────────────────
     #
@@ -1210,6 +1590,53 @@ class BuzzAdapter(BasePlatformAdapter):
             state["seen"][event_id] = None
             self._trim_seen(state)
 
+    def _commit_event(self, channel_id: str, event_id: str, created_at: int) -> None:
+        """Durably advance one event after it is filtered or processed."""
+        state = self._channel_state.get(channel_id)
+        if state is None:
+            return
+        previous_seen = OrderedDict(state.get("seen", OrderedDict()))
+        previous_last_ts = int(state.get("last_ts") or 0)
+        previous_pending = set(state.get("pending", set()))
+        state["seen"][event_id] = None
+        state["last_ts"] = max(previous_last_ts, created_at)
+        state.setdefault("pending", set()).discard(event_id)
+        self._trim_seen(state)
+        try:
+            self._persist_cursor_state()
+        except Exception:
+            state["seen"] = previous_seen
+            state["last_ts"] = previous_last_ts
+            # The lifecycle wrapper logs and swallows hook failures. Keeping
+            # this event pending would therefore block _poll_channel forever;
+            # release only the failed event so the unchanged durable cursor
+            # causes the next poll to retry it.
+            previous_pending.discard(event_id)
+            state["pending"] = previous_pending
+            raise
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Commit Buzz cursors only after Hermes finishes the event."""
+        await super().on_processing_complete(event, outcome)
+        cursor = event.metadata.get("buzz_cursor") if isinstance(event.metadata, dict) else None
+        if not isinstance(cursor, dict):
+            return
+        channel_id = str(cursor.get("channel_id") or "")
+        event_id = str(cursor.get("event_id") or "")
+        try:
+            created_at = int(cursor.get("created_at") or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        state = self._channel_state.get(channel_id)
+        if state is None or not event_id:
+            return
+        if outcome == ProcessingOutcome.SUCCESS:
+            self._commit_event(channel_id, event_id, created_at)
+        else:
+            state.setdefault("pending", set()).discard(event_id)
+
     async def _dispatch_message(
         self,
         text: str,
@@ -1219,10 +1646,13 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
-    ) -> None:
+        acknowledge: bool = True,
+        catchup: bool = False,
+        track_completion: bool = True,
+    ) -> bool:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
-            return
+            return False
 
         source = self.build_source(
             chat_id=chat_id,
@@ -1231,23 +1661,49 @@ class BuzzAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
         )
+        session_key = None
+        if track_completion:
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+            if session_key in self._active_sessions:
+                return False
 
+        event_text = f"[BUZZ_CATCHUP created_at={created_at}] {text}" if catchup else text
+        metadata: Dict[str, Any] = {
+            "buzz_observer": self.observer_mode,
+            "buzz_catchup": catchup,
+        }
+        if track_completion:
+            metadata["buzz_cursor"] = {
+                "channel_id": chat_id,
+                "event_id": message_id,
+                "created_at": created_at,
+            }
         event = MessageEvent(
-            text=text,
+            text=event_text,
             message_type=MessageType.TEXT,
             source=source,
             message_id=message_id,
+            channel_prompt=self.observer_prompt if self.observer_mode else None,
+            metadata=metadata,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
         )
 
         await self.handle_message(event)
+        if track_completion and session_key not in self._active_sessions:
+            return False
         
         # Add a "seen" reaction after dispatching — signals to the user that
         # their message was received and is being processed.
-        try:
-            await self.send_reaction(chat_id, message_id, "👀")
-        except Exception:
-            logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
+        if acknowledge:
+            try:
+                await self.send_reaction(chat_id, message_id, "👀")
+            except Exception:
+                logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
+        return True
 
 
 # ---------------------------------------------------------------------------

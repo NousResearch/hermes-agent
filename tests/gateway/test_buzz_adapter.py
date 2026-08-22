@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import stat
+from collections import OrderedDict
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -14,6 +16,9 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 _buzz_mod = load_plugin_adapter("buzz")
 
 BuzzAdapter = _buzz_mod.BuzzAdapter
+MessageEvent = _buzz_mod.MessageEvent
+MessageType = _buzz_mod.MessageType
+ProcessingOutcome = _buzz_mod.ProcessingOutcome
 hex_to_npub = _buzz_mod.hex_to_npub
 npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
@@ -45,6 +50,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_RESPONSE_AUTHORITY",
 )
 
 
@@ -142,6 +148,104 @@ class TestBuzzAdapterInit:
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
 
+    def test_response_authority_cannot_be_enabled_by_environment(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_RESPONSE_AUTHORITY", "true")
+
+        adapter = _make_adapter({"observer_mode": True, "response_authority": False})
+
+        assert adapter.response_authority is False
+
+
+class TestBuzzConnectionLifecycle:
+
+    @pytest.mark.asyncio
+    async def test_channel_list_failure_releases_identity_lock(self, monkeypatch):
+        import gateway.status as gateway_status
+
+        adapter = _make_adapter()
+        adapter.cli_path = "buzz"
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+        cli.script("channels", "list", {"error": "offline"}, code=2, stderr="offline")
+        adapter._run_cli = cli
+        released = []
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda _extra: "nsec1test")
+        monkeypatch.setattr(
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda _kind, _key, metadata=None: (True, {}),
+        )
+        monkeypatch.setattr(
+            gateway_status,
+            "release_scoped_lock",
+            lambda kind, key: released.append((kind, key)),
+        )
+
+        connected = await adapter.connect()
+
+        assert connected is False
+        assert released == [("buzz", f"{adapter.relay_url}:{SELF_PUBKEY}")]
+        assert adapter._lock_key is None
+
+    @pytest.mark.asyncio
+    async def test_empty_watch_set_releases_identity_lock(self, monkeypatch):
+        import gateway.status as gateway_status
+
+        adapter = _make_adapter()
+        adapter.cli_path = "buzz"
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+        cli.script("channels", "list", [])
+        adapter._run_cli = cli
+        released = []
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda _extra: "nsec1test")
+        monkeypatch.setattr(
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda _kind, _key, metadata=None: (True, {}),
+        )
+        monkeypatch.setattr(
+            gateway_status,
+            "release_scoped_lock",
+            lambda kind, key: released.append((kind, key)),
+        )
+
+        connected = await adapter.connect()
+
+        assert connected is False
+        assert released == [("buzz", f"{adapter.relay_url}:{SELF_PUBKEY}")]
+        assert adapter._lock_key is None
+
+    @pytest.mark.asyncio
+    async def test_seed_exception_releases_identity_lock(self, monkeypatch):
+        import gateway.status as gateway_status
+
+        adapter = _make_adapter()
+        adapter.cli_path = "buzz"
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+        cli.script("channels", "list", [{"channel_id": CHANNEL, "name": "team"}])
+        adapter._run_cli = cli
+        adapter._seed_channel = AsyncMock(side_effect=RuntimeError("seed exploded"))
+        released = []
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda _extra: "nsec1test")
+        monkeypatch.setattr(
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda _kind, _key, metadata=None: (True, {}),
+        )
+        monkeypatch.setattr(
+            gateway_status,
+            "release_scoped_lock",
+            lambda kind, key: released.append((kind, key)),
+        )
+
+        with pytest.raises(RuntimeError, match="seed exploded"):
+            await adapter.connect()
+
+        assert released == [("buzz", f"{adapter.relay_url}:{SELF_PUBKEY}")]
+        assert adapter._lock_key is None
+
 
 # ── CLI error contract ────────────────────────────────────────────────────
 
@@ -165,10 +269,31 @@ class TestPollingDedupe:
 
         async def capture(**kwargs):
             a._dispatched.append(kwargs)
+            a._commit_event(kwargs["chat_id"], kwargs["message_id"], kwargs["created_at"])
+            return True
 
         a._dispatch_message = capture
         a._message_handler = AsyncMock()
         return a
+
+    @pytest.mark.asyncio
+    async def test_malformed_poll_does_not_end_recovery(self):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 100,
+            "seen": OrderedDict(),
+            "pending": set(),
+            "recovering": True,
+            "catchup_before": 200,
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", "not-json")
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert adapter._channel_state[CHANNEL]["recovering"] is True
 
     @pytest.mark.asyncio
     async def test_seed_sets_high_water_mark_without_dispatch(self, adapter):
@@ -209,6 +334,666 @@ class TestPollingDedupe:
         assert len(adapter._dispatched) == 1
 
 
+class TestDurableCursor:
+
+    @pytest.mark.asyncio
+    async def test_seed_resumes_from_persisted_cursor_without_fetching_newest(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._cursor_path.write_text(
+            json.dumps({
+                "version": 1,
+                "channels": {
+                    CHANNEL: {
+                        "chat_type": "group",
+                        "last_ts": 200,
+                        "seen": ["e1", "e2"],
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        adapter._load_cursor_state()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        state = adapter._channel_state[CHANNEL]
+        assert state["last_ts"] == 200
+        assert list(state["seen"]) == ["e1", "e2"]
+        assert state["recovering"] is True
+        assert cli.calls == []
+
+    @pytest.mark.asyncio
+    async def test_successful_poll_persists_updated_cursor(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+            adapter._commit_event(
+                kwargs["chat_id"], kwargs["message_id"], kwargs["created_at"]
+            )
+            return True
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 100,
+            "seen": OrderedDict({"e1": None}),
+            "recovering": False,
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [_event("e2", content="routine update", created_at=150)])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        saved = json.loads(adapter._cursor_path.read_text(encoding="utf-8"))
+        assert saved["version"] == 1
+        assert saved["channels"][CHANNEL] == {
+            "chat_type": "group",
+            "last_ts": 150,
+            "seen": ["e1", "e2"],
+            "retry": [],
+        }
+        assert adapter._cursor_path.stat().st_mode & 0o777 == 0o600
+
+    def test_cursor_persistence_fsyncs_file_and_directory(self, monkeypatch, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "state" / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 10,
+            "seen": OrderedDict([("e1", None)]),
+        }
+        real_fsync = _buzz_mod.os.fsync
+        synced = []
+
+        def capture_fsync(fd):
+            mode = _buzz_mod.os.fstat(fd).st_mode
+            synced.append("directory" if stat.S_ISDIR(mode) else "file")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(_buzz_mod.os, "fsync", capture_fsync)
+
+        adapter._persist_cursor_state()
+
+        assert synced == ["file", "directory"]
+
+    def test_observer_cursor_path_is_profile_and_public_identity_scoped(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        first = _make_adapter({"observer_mode": True})
+        first._initialize_cursor_state()
+
+        second = _make_adapter({"observer_mode": True})
+        second._self_pubkey = "b" * 64
+        second._initialize_cursor_state()
+
+        assert first._cursor_path.parent == tmp_path / "state" / "buzz"
+        assert first._cursor_path.suffix == ".json"
+        assert first._cursor_path != second._cursor_path
+        assert "nsec1test" not in str(first._cursor_path)
+
+        normal = _make_adapter()
+        normal._initialize_cursor_state()
+        assert normal._cursor_path is None
+
+    @pytest.mark.asyncio
+    async def test_first_seed_persists_baseline_before_live_transport_starts(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [_event("e1", content="existing history", created_at=200)])
+        adapter._run_cli = cli
+
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        saved = json.loads(adapter._cursor_path.read_text(encoding="utf-8"))
+        assert saved["channels"][CHANNEL]["last_ts"] == 200
+        assert saved["channels"][CHANNEL]["seen"] == ["e1"]
+
+    @pytest.mark.asyncio
+    async def test_recovered_message_commits_without_dispatch(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        handler = AsyncMock()
+        adapter._message_handler = handler
+        state = {
+            "chat_type": "group",
+            "last_ts": 200,
+            "seen": OrderedDict(),
+            "recovering": True,
+            "catchup_before": 1000,
+        }
+        adapter._channel_state[CHANNEL] = state
+
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("e2", content="@Chip old request", created_at=250),
+        )
+
+        assert adapter._dispatched == []
+        handler.assert_not_awaited()
+        assert state["last_ts"] == 250
+        assert "e2" in state["seen"]
+
+    @pytest.mark.asyncio
+    async def test_observer_event_carries_silence_policy_and_catchup_marker(self):
+        adapter = _make_adapter({"observer_mode": True})
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture
+
+        await adapter._dispatch_message(
+            text="old deployment request",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Sam",
+            message_id="e2",
+            created_at=250,
+            acknowledge=False,
+            catchup=True,
+        )
+
+        event = captured[0]
+        assert event.text.startswith("[BUZZ_CATCHUP")
+        assert event.metadata["buzz_catchup"] is True
+        assert event.metadata["buzz_observer"] is True
+        assert "NO_REPLY" in event.channel_prompt
+        assert "do not call tools" in event.channel_prompt.lower()
+        assert "still active" in event.channel_prompt
+
+    def test_cursor_file_override_cannot_escape_profile_state(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        adapter = _make_adapter({
+            "observer_mode": True,
+            "cursor_file": str(tmp_path / "outside" / "cursor.json"),
+        })
+        adapter._initialize_cursor_state()
+
+        assert adapter._cursor_path.parent == tmp_path / "profile" / "state" / "buzz"
+
+    def test_malformed_channel_cursor_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._initialize_cursor_state()
+        adapter._cursor_path.parent.mkdir(parents=True)
+        adapter._cursor_path.write_text(json.dumps({
+            "version": 1,
+            "channels": {
+                CHANNEL: {"chat_type": "group", "last_ts": "broken", "seen": "not-a-list"},
+            },
+        }))
+
+        adapter._load_cursor_state()
+
+        assert adapter._persisted_channels == {}
+        assert adapter._cursor_error
+
+    def test_boolean_cursor_timestamp_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._initialize_cursor_state()
+        adapter._cursor_path.parent.mkdir(parents=True)
+        adapter._cursor_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "channels": {
+                        CHANNEL: {"chat_type": "group", "last_ts": True, "seen": []},
+                    },
+                }
+            )
+        )
+
+        adapter._load_cursor_state()
+
+        assert adapter._persisted_channels == {}
+        assert adapter._cursor_error
+
+    def test_existing_non_file_cursor_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._initialize_cursor_state()
+        adapter._cursor_path.mkdir(parents=True)
+
+        adapter._load_cursor_state()
+
+        assert adapter._persisted_channels == {}
+        assert adapter._cursor_error
+
+    @pytest.mark.asyncio
+    async def test_failed_first_seed_does_not_advance_or_persist(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        cli = _ScriptedCli()
+        cli.script("messages", "get", {"error": "offline"}, code=2, stderr="offline")
+        adapter._run_cli = cli
+
+        seeded = await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        assert seeded is False
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 0
+        assert not adapter._cursor_path.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        ["not-json", '{"id":"not-a-list"}', '[{"id":"e1"},"bad-row"]'],
+    )
+    async def test_successful_seed_rejects_malformed_payload(self, tmp_path, payload):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        cli = _ScriptedCli()
+        cli.script("messages", "get", payload)
+        adapter._run_cli = cli
+
+        seeded = await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        assert seeded is False
+        assert adapter._channel_state[CHANNEL]["seen"] == OrderedDict()
+        assert not adapter._cursor_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_full_startup_seed_page_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_buzz_mod, "_FETCH_LIMIT", 2)
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "get",
+            [_event("e1", created_at=10), _event("e2", created_at=20)],
+        )
+        adapter._run_cli = cli
+
+        seeded = await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        assert seeded is False
+        assert adapter._channel_state[CHANNEL]["seen"] == OrderedDict()
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 0
+        assert not adapter._cursor_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_failed_startup_dm_seed_fails_discovery(self):
+        adapter = _make_adapter({"observer_mode": True})
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [{"dm_id": DM_CHANNEL}])
+        cli.script("messages", "get", {"error": "offline"}, code=2, stderr="offline")
+        cli.script("channels", "list", [])
+        adapter._run_cli = cli
+
+        discovered = await adapter._discover_dms(seed=True)
+
+        assert discovered is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_command", ["dms", "channels"])
+    async def test_malformed_dm_discovery_payload_fails_closed(self, bad_command):
+        adapter = _make_adapter({"observer_mode": True})
+        cli = _ScriptedCli()
+        cli.script("dms", "list", "not-json" if bad_command == "dms" else [])
+        cli.script(
+            "channels",
+            "list",
+            "not-json" if bad_command == "channels" else [],
+        )
+        adapter._run_cli = cli
+
+        discovered = await adapter._discover_dms(seed=True)
+
+        assert discovered is False
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_full_timestamp_page_fails_without_dispatch_or_cursor_advance(self, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_FETCH_LIMIT", 2)
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "recovering": True,
+            "catchup_before": 100,
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _event("e1", content="first", created_at=10),
+            _event("e2", content="second", created_at=10),
+        ])
+        cli.script("messages", "get", [])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert adapter._dispatched == []
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 5
+        assert adapter._channel_state[CHANNEL]["seen"] == OrderedDict()
+
+    @pytest.mark.asyncio
+    async def test_cursor_commits_only_after_processing_complete_success(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+        }
+        release = asyncio.Event()
+
+        async def handler(_event):
+            await release.wait()
+            return None
+
+        adapter.set_message_handler(handler)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], _event("e1", created_at=10))
+
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 5
+        assert "e1" not in adapter._channel_state[CHANNEL]["seen"]
+        assert "e1" in adapter._channel_state[CHANNEL]["pending"]
+
+        release.set()
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 10
+        assert "e1" in adapter._channel_state[CHANNEL]["seen"]
+        assert "e1" not in adapter._channel_state[CHANNEL]["pending"]
+        assert adapter._cursor_path.exists()
+
+    def test_persistence_failure_releases_event_for_retry(self):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict([("old", None)]),
+            "pending": {"e1"},
+        }
+        adapter._persist_cursor_state = MagicMock(side_effect=OSError("disk full"))
+
+        with pytest.raises(OSError, match="disk full"):
+            adapter._commit_event(CHANNEL, "e1", 10)
+
+        state = adapter._channel_state[CHANNEL]
+        assert state["last_ts"] == 5
+        assert list(state["seen"]) == ["old"]
+        assert state["pending"] == set()
+
+    @pytest.mark.asyncio
+    async def test_completion_persistence_failure_retries_through_lifecycle(self):
+        adapter = _make_adapter(
+            {"observer_mode": True, "response_authority": True}
+        )
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": {"e1"},
+        }
+        adapter._persist_cursor_state = MagicMock(side_effect=OSError("disk full"))
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(
+                chat_id=CHANNEL,
+                chat_name="team",
+                chat_type="group",
+                user_id=OTHER_PUBKEY,
+                user_name="Other",
+            ),
+            message_id="e1",
+            metadata={
+                "buzz_cursor": {
+                    "channel_id": CHANNEL,
+                    "event_id": "e1",
+                    "created_at": 10,
+                }
+            },
+        )
+
+        # Production invokes the hook through this exception-swallowing
+        # lifecycle wrapper, so the retry contract must survive that boundary.
+        await adapter._run_processing_hook(
+            "on_processing_complete", event, ProcessingOutcome.SUCCESS
+        )
+
+        state = adapter._channel_state[CHANNEL]
+        assert state["last_ts"] == 5
+        assert state["seen"] == OrderedDict()
+        assert state["pending"] == set()
+
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "get",
+            [_event("e1", content="retry me", created_at=10)],
+        )
+        adapter._run_cli = cli
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        adapter._dispatch_message = AsyncMock(return_value=True)
+
+        await adapter._poll_channel(CHANNEL)
+
+        adapter._dispatch_message.assert_awaited_once()
+        assert adapter._dispatch_message.await_args is not None
+        assert adapter._dispatch_message.await_args.kwargs["message_id"] == "e1"
+        assert state["pending"] == {"e1"}
+
+    @pytest.mark.asyncio
+    async def test_username_failure_releases_pending_event(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        state = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+        }
+        adapter._channel_state[CHANNEL] = state
+        adapter._resolve_user_name = AsyncMock(side_effect=RuntimeError("lookup failed"))
+
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            await adapter._handle_event(
+                CHANNEL,
+                state,
+                _event("e1", content="@Chip hi", created_at=10),
+            )
+
+        assert state["pending"] == set()
+        assert state["seen"] == OrderedDict()
+        assert state["last_ts"] == 5
+
+    @pytest.mark.asyncio
+    async def test_dispatch_without_scheduled_processing_returns_false(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock(return_value=None)
+
+        dispatched = await adapter._dispatch_message(
+            text="hello",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="e1",
+            created_at=10,
+            acknowledge=False,
+            track_completion=True,
+        )
+
+        assert dispatched is False
+
+    @pytest.mark.asyncio
+    async def test_legacy_mode_commits_on_receipt_without_completion_cursor(self):
+        adapter = _make_adapter({"observer_mode": False})
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+        }
+        captured = []
+
+        async def capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        adapter._dispatch_message = capture
+        await adapter._handle_event(
+            CHANNEL,
+            adapter._channel_state[CHANNEL],
+            _event("e1", content="@Chip proceed", created_at=10),
+        )
+
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 10
+        assert "e1" in adapter._channel_state[CHANNEL]["seen"]
+        assert adapter._channel_state[CHANNEL].get("pending", set()) == set()
+        assert captured[0]["track_completion"] is False
+
+    @pytest.mark.asyncio
+    async def test_failed_processing_keeps_event_retryable(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._resolve_user_name = AsyncMock(return_value="Other")
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+        }
+
+        async def handler(_event):
+            raise RuntimeError("model failed")
+
+        adapter.set_message_handler(handler)
+        adapter.send = AsyncMock(return_value=_buzz_mod.SendResult(success=False, error="suppressed in test"))
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], _event("e1", created_at=10))
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 5
+        assert "e1" not in adapter._channel_state[CHANNEL]["seen"]
+        assert "e1" not in adapter._channel_state[CHANNEL]["pending"]
+
+    @pytest.mark.asyncio
+    async def test_poll_dispatches_only_one_uncommitted_event_per_channel(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _event("e1", content="first", created_at=10),
+            _event("e2", content="second", created_at=20),
+        ])
+        adapter._run_cli = cli
+        adapter._message_handler = AsyncMock(return_value="NO_REPLY")
+        adapter._dispatch_message = AsyncMock(return_value=True)
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert adapter._dispatch_message.await_count == 1
+        assert adapter._dispatch_message.await_args is not None
+        assert adapter._dispatch_message.await_args.kwargs["message_id"] == "e1"
+        assert adapter._channel_state[CHANNEL]["pending"] == {"e1"}
+
+    @pytest.mark.asyncio
+    async def test_catchup_response_is_deterministically_suppressed(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+            "recovering": True,
+            "catchup_before": 100,
+        }
+        adapter.set_message_handler(AsyncMock(return_value="stale intervention"))
+        adapter.send = AsyncMock(return_value=_buzz_mod.SendResult(success=True, message_id="out1"))
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], _event("e1", created_at=10))
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        adapter.send.assert_not_awaited()
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 10
+        assert "e1" in adapter._channel_state[CHANNEL]["seen"]
+
+    @pytest.mark.asyncio
+    async def test_recovery_ends_after_poll_with_only_seen_boundary(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 10,
+            "seen": OrderedDict([("e1", None)]),
+            "pending": set(),
+            "recovering": True,
+            "catchup_before": 100,
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [_event("e1", created_at=10)])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert adapter._channel_state[CHANNEL]["recovering"] is False
+        assert "catchup_before" not in adapter._channel_state[CHANNEL]
+        saved = json.loads(adapter._cursor_path.read_text())
+        assert saved["channels"][CHANNEL]["last_ts"] == 10
+
+    def test_observer_mode_forces_proven_poll_transport(self):
+        adapter = _make_adapter({"observer_mode": True, "transport": "websocket"})
+
+        assert adapter.transport == "poll"
+
+    @pytest.mark.asyncio
+    async def test_observer_without_response_authority_cannot_send_live_reply(self, tmp_path):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": False})
+        adapter._cursor_path = tmp_path / "cursor.json"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 5,
+            "seen": OrderedDict(),
+            "pending": set(),
+            "recovering": False,
+        }
+        handler = AsyncMock(return_value="unsolicited reply")
+        adapter.set_message_handler(handler)
+        adapter.send = AsyncMock(return_value=_buzz_mod.SendResult(success=True, message_id="out1"))
+        adapter.send_reaction = AsyncMock(return_value=_buzz_mod.SendResult(success=True))
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], _event("e1", created_at=10))
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        handler.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+        adapter.send_reaction.assert_not_awaited()
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 10
+
+
 # ── Mention gating / DMs / authorization ──────────────────────────────────
 
 
@@ -237,6 +1022,40 @@ class TestMentionGating:
     async def test_unaddressed_channel_message_ignored(self, adapter):
         await self._poll_with(adapter, _event("e1", content="just chatting", created_at=10))
         assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_observer_mode_dispatches_unaddressed_channel_message(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+        await self._poll_with(adapter, _event("e1", content="Sam is changing the deployment plan", created_at=10))
+
+        assert adapter.observer_mode is True
+        assert [item["message_id"] for item in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["acknowledge"] is False
+
+    @pytest.mark.asyncio
+    async def test_observer_mode_keeps_acknowledgement_for_direct_mention(self):
+        adapter = _make_adapter({"observer_mode": True, "response_authority": True})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+        await self._poll_with(adapter, _event("e1", content="@Chip please decide", created_at=10))
+
+        assert adapter._dispatched[0]["acknowledge"] is True
 
     @pytest.mark.asyncio
     async def test_name_mention_dispatched(self, adapter):
@@ -451,7 +1270,9 @@ class TestBuzzAdapterLifecycle:
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda platform, key, metadata=None: (False, {"pid": 1234}),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"

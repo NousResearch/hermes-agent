@@ -80,7 +80,7 @@ class TestSendCap:
         adapter = _make_adapter()
         sends = []
 
-        async def fake_send(*, content, reference=None):
+        async def fake_send(*, content, reference=None, suppress_embeds=False):
             sends.append(content)
             return SimpleNamespace(id=9000 + len(sends))
 
@@ -140,7 +140,7 @@ class TestEditOverflowCap:
         async def fake_edit(*, content):
             edits.append(content)
 
-        async def fake_send(*, content, reference=None):
+        async def fake_send(*, content, reference=None, suppress_embeds=False):
             sends.append(content)
             return SimpleNamespace(id=9000 + len(sends))
 

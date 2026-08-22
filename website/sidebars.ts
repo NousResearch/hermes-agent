@@ -247,6 +247,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
+                    'user-guide/skills/bundled/productivity/productivity-live-dashboard',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-meeting-action-items',
                     'user-guide/skills/bundled/productivity/productivity-notion',

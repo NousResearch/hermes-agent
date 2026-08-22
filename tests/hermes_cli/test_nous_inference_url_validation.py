@@ -57,6 +57,58 @@ class TestValidatorRules:
         )
 
 
+    def test_loopback_http_accepted_mirrors_portal_allowlist(self):
+        """A local Nous Portal stack hands out a loopback inference URL;
+        it must survive network-provenance validation instead of being
+        silently healed to the production default (#90895 — local-portal
+        logins degraded to prod and sent local-NAS-signed JWTs at the
+        real inference API). Same trust rationale as the portal
+        allowlist's localhost treatment: a bearer to the operator's own
+        machine has no exfiltration surface."""
+        assert (
+            _validate_nous_inference_url_from_network("http://127.0.0.1:3114/v1")
+            == "http://127.0.0.1:3114/v1"
+        )
+        assert (
+            _validate_nous_inference_url_from_network("http://localhost:3114/v1")
+            == "http://localhost:3114/v1"
+        )
+        # IPv6 loopback: local dev stacks (uvicorn/FastAPI) listen on both
+        # families and hand out literal http://[::1]:port URLs — same
+        # "bearer to your own machine" surface as 127.0.0.1 (review on #90900).
+        assert (
+            _validate_nous_inference_url_from_network("http://[::1]:3114/v1")
+            == "http://[::1]:3114/v1"
+        )
+        assert (
+            _validate_nous_inference_url_from_network("https://[::1]:3114/v1")
+            == "https://[::1]:3114/v1"
+        )
+
+
+    def test_loopback_https_accepted(self):
+        assert (
+            _validate_nous_inference_url_from_network("https://localhost:3114/v1")
+            == "https://localhost:3114/v1"
+        )
+
+
+    def test_prod_host_http_still_rejected(self):
+        """Fail-closed guard on the carve-out itself: the loopback http
+        exemption must not relax the https requirement for production or
+        any other off-loopback host."""
+        assert (
+            _validate_nous_inference_url_from_network(
+                "http://inference-api.nousresearch.com/v1"
+            )
+            is None
+        )
+        assert (
+            _validate_nous_inference_url_from_network("http://attacker.com/v1")
+            is None
+        )
+
+
 
 class TestCallSiteWiring:
     """Verify the validator is actually wired into all auth.py NETWORK call sites.

@@ -58,6 +58,12 @@ jobs:
           TRIGGER_HEAD=$(git rev-parse HEAD)
           export CURRENT_MAIN BRANCH TRIGGER_HEAD
 
+          # All carrier and supplemental verification must resolve Python from
+          # the exact `uv sync --locked` environment above. Child scripts use
+          # both `python` and `python3`; make that interpreter authority global
+          # for the complete materialization step rather than patching callers.
+          export PATH="$PWD/.venv/bin:$PATH"
+
           mkdir -p /tmp/hermes-tools /tmp/hermes-supplements
           cp .github/workflows/materialize-*.py /tmp/hermes-supplements/ 2>/dev/null || true
 

@@ -1128,6 +1128,10 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
                 _stream.flush()
             except Exception:
                 pass
+        # Best-effort memory session-end flush before the hard exit — the
+        # finally/atexit cleanup never ran (that's why we're here). No-op when
+        # _run_cleanup already ran (guard), never raises.
+        _emit_session_end_before_hard_exit()
         os._exit(0)
 
     try:
@@ -1450,6 +1454,47 @@ def _finalize_single_query(cli) -> None:
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
+
+
+def _emit_session_end_before_hard_exit() -> None:
+    """Best-effort memory session-end flush for the kanban hard-exit paths.
+
+    The single-query signal handler (``_signal_handler_q``) and the exit
+    watchdog both terminate the process with ``os._exit(0)``, which bypasses
+    the ``finally:`` / ``atexit`` machinery that would otherwise run
+    ``_finalize_single_query`` → ``_run_cleanup`` → ``shutdown_memory_provider``
+    → memory providers' ``on_session_end``. When the process is a kanban worker,
+    this flushes the memory provider so it can ingest the worker's last turns
+    before the hard exit — the SAME flush ```_run_cleanup`` delivers, not a
+    parallel implementation.
+
+    Exactly-once relies on the existing ``_cleanup_done`` flag: if ``_run_cleanup``
+    already ran (or is wedged mid-run with the flag set), this is a no-op, so a
+    normal ``finally:`` exit can never double-emit. A raising provider is
+    swallowed, so it can never prevent the process exit. Never raises — safe to
+    call from a signal handler or the watchdog thread.
+
+    Non-blocking note: ``shutdown_memory_provider`` may join a provider's writer
+    thread (e.g. memori joins its daemon ``sync_writer``). On the signal-handler
+    path that is bounded by the pre-existing SIGALRM deadman; in the watchdog
+    it is a no-op whenever cleanup was reached (``_cleanup_done`` set — the
+    common arming case), so it cannot block the last-resort backstop in practice.
+    """
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    agent = _active_agent_ref
+    if agent is None or not hasattr(agent, "shutdown_memory_provider"):
+        return
+    _cleanup_done = True
+    try:
+        _session_msgs = getattr(agent, "_session_messages", None)
+        if isinstance(_session_msgs, list):
+            agent.shutdown_memory_provider(_session_msgs)
+        else:
+            agent.shutdown_memory_provider()
+    except Exception:
+        pass
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -21179,6 +21224,11 @@ def main(
                 _flush_one_shot_session_store(cli)
             except Exception:
                 pass
+            # Hand this worker's last turns to the memory provider before the
+            # hard exit — the finally/atexit cleanup never runs on this path.
+            # Flush is bounded by the SIGALRM deadman armed above; a raising
+            # provider is swallowed. Never emits twice (_cleanup_done guard).
+            _emit_session_end_before_hard_exit()
             try:
                 import logging as _lg
                 _lg.shutdown()
@@ -21394,6 +21444,15 @@ def main(
                         # 5-hour quota window can't trip the circuit breaker and
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
+                        #
+                        # The memory session-end flush is NOT emitted here: the
+                        # enclosing ``finally`` (below) already delivers it via
+                        # ``_finalize_single_query`` → ``_run_cleanup`` →
+                        # ``shutdown_memory_provider`` on this normal ``-Q`` exit
+                        # path, exactly once (``_run_cleanup``'s ``_cleanup_done``
+                        # guard). The hard ``os._exit(0)`` paths (signal handler,
+                        # exit watchdog) that genuinely skip that machinery get
+                        # the flush from ``_emit_session_end_before_hard_exit``.
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
@@ -21407,6 +21466,7 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

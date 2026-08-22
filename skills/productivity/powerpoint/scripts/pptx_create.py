@@ -109,8 +109,8 @@ def copy_layout_placeholder(slide, ph_idx):
 
 
 def build_slide(prs, spec, warnings=None):
-    layout_idx = LAYOUTS.get(spec.get("layout", "title_content"), 1)
     layout_name = spec.get("layout", "title_content")
+    layout_idx = LAYOUTS.get(layout_name, 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
     if spec.get("background"):
@@ -147,8 +147,9 @@ def build_slide(prs, spec, warnings=None):
             # is supported by the estimator. Other layouts override level
             # styles in their layout XML (`title` subtitle is 18pt, `section`
             # uses 20/18/16..., `two_content` 28/24/20...), so estimating
-            # them with master sizes produces false positives.
-            if warnings is not None and layout_name == "title_content":
+            # them with master sizes produces false positives. Gate on the
+            # RESOLVED index: unknown layout names fall back to layout 1.
+            if warnings is not None and layout_idx == LAYOUTS["title_content"]:
                 est = estimate_bullets_overflow(
                     spec["bullets"],
                     frame_width_in=(body.width or 0) / 914400 or None,

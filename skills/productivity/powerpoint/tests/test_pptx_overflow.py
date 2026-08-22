@@ -246,3 +246,26 @@ def test_non_title_content_layouts_are_not_estimated(tmp_path):
                  str(tmp_path / "layouts.pptx"))
     assert result["ok"] is True
     assert result["overflow_warnings"] == []
+
+
+def test_unknown_layout_name_resolving_to_title_content_still_warns(tmp_path):
+    # Unknown layout names resolve to the Title and Content layout (index
+    # 1) — the warning gate must follow the RESOLVED layout, not the raw
+    # spec string, or overflowing content escapes silently.
+    spec = {
+        "slide_size": "16:9",
+        "slides": [
+            {"layout": "title_conent",  # typo: resolves to title_content
+             "title": "Dense",
+             "bullets": [f"Bullet {i}: long operational detail sentence "
+                         "that wraps in the placeholder frame and then "
+                         "keeps going onto another rendered line"
+                         for i in range(16)]},
+        ],
+    }
+    result = run("pptx_create.py", write_spec(tmp_path, spec),
+                 str(tmp_path / "typo.pptx"))
+    assert result["ok"] is True
+    assert result["overflow_warnings"], (
+        "content on a slide that RESOLVES to title_content must warn even "
+        "when the spec's layout name is unknown")

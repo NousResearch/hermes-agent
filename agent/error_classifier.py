@@ -70,6 +70,7 @@ class FailoverReason(enum.Enum):
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
+    kimi_reasoning_replay = "kimi_reasoning_replay"  # Kimi K3 replayed encrypted-reasoning signature rejected (intermittent) — retry in-provider
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
@@ -1548,6 +1549,26 @@ def _classify_400(
             retryable=True,
             # The request shape was fine — never route this into compression.
             should_compress=False,
+        )
+
+    # Kimi K3 replayed encrypted-reasoning signature rejected (400).  On
+    # multi-turn replay Kimi intermittently rejects the replayed encrypted
+    # reasoning block's signature with a base64 vs base64url validation
+    # asymmetry on some upstream instances (25/27 same-signature calls
+    # succeed; 8/8 replays of the "offending" signature succeed).  The
+    # error carries ``signature`` + ``reasoning`` but NOT the literal token
+    # ``thinking``, so the thinking_signature branch above misses it and it
+    # would otherwise fall through to a non-retryable format_error that
+    # leaks the turn to fallback.  A plain in-provider retry is the correct
+    # recovery.  ``error_msg`` is lowercased upstream — match accordingly.
+    if (
+        "malformed encrypted reasoning content" in error_msg
+        and "invalid base64url" in error_msg
+    ):
+        return result_fn(
+            FailoverReason.kimi_reasoning_replay,
+            retryable=True,
+            should_fallback=False,
         )
 
     # Request-validation errors (unsupported / unknown parameter) MUST be

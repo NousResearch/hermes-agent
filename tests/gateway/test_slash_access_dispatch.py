@@ -18,6 +18,7 @@ Coverage targets:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -232,6 +233,62 @@ async def test_admin_runs_quick_command_when_gating_enabled():
     )
 
     assert result == "quick-command-admin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender_id", "expected"),
+    [
+        ("160868067209361@lid", "routed-whatsapp-admin"),
+        ("112790773731504@lid", "denied"),
+    ],
+)
+async def test_routed_whatsapp_group_slash_gate_uses_identity_aliases(
+    tmp_path, monkeypatch, sender_id, expected
+):
+    """The live slash gate resolves LIDs without escaping routed scope."""
+    from gateway.run import _profile_runtime_scope
+
+    process_home = tmp_path / "hermes-home"
+    session_dir = process_home / "platforms" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-160868067209361.json").write_text(
+        json.dumps("972547401660@s.whatsapp.net"), encoding="utf-8"
+    )
+    profile_home = process_home / "profiles" / "village"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    runner = _make_runner(
+        platform=Platform.WHATSAPP,
+        platform_extra={
+            "group_allow_admin_from": ["972547401660"],
+            "group_user_allowed_commands": [],
+        },
+    )
+    runner.config.quick_commands = {
+        "limits": {
+            "type": "exec",
+            "command": "python -c \"print('routed-whatsapp-admin')\"",
+        }
+    }
+    source = _make_source(
+        platform=Platform.WHATSAPP,
+        user_id=sender_id,
+        chat_type="group",
+        chat_id="120363428948689789@g.us",
+    )
+    source.profile = "village"
+
+    with _profile_runtime_scope(profile_home):
+        result = await runner._handle_message(_make_event("/limits", source))
+
+    if expected == "denied":
+        assert result is not None
+        assert "⛔" in result
+        assert "routed-whatsapp-admin" not in result
+    else:
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------

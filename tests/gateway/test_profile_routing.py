@@ -1,5 +1,7 @@
 """Tests for gateway/profile_routing.py — profile-based routing."""
 
+import json
+
 import pytest
 from gateway.profile_routing import (
     ProfileRoute,
@@ -43,6 +45,103 @@ class TestProfileRouteMatching:
         assert not r.matches("discord", guild_id="999", chat_id="222")
         # guild matches but chat differs -> NO match
         assert not r.matches("discord", guild_id="111", chat_id="333")
+
+
+class TestWhatsAppAliasMatching:
+    """A WhatsApp route keyed on one id form must match the other.
+
+    The bridge hands the same person over as either ``<msisdn>@s.whatsapp.net``
+    or ``<lid>@lid``. Exact-string routing therefore misses a msisdn-keyed
+    route the moment WhatsApp switches that sender to their LID, and the
+    message lands on the default profile — observed live, with the operator's
+    own DM falling out of its profile. Authorization resolves the two forms
+    through ``gateway.whatsapp_identity``; routing reads the same mapping.
+    """
+
+    PHONE = "351912345678"
+    LID = "77214955630717"
+
+    def _write_lid_mapping(self):
+        """Mirror what the JS bridge writes: phone→lid and lid→phone."""
+        from hermes_constants import get_hermes_home
+
+        session_dir = get_hermes_home() / "whatsapp" / "session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / f"lid-mapping-{self.PHONE}.json").write_text(
+            json.dumps(self.LID), encoding="utf-8"
+        )
+        (session_dir / f"lid-mapping-{self.LID}_reverse.json").write_text(
+            json.dumps(self.PHONE), encoding="utf-8"
+        )
+
+    def _route(self, chat_id, platform="whatsapp"):
+        return ProfileRoute(
+            name="admin-dm", platform=platform, profile="ops", chat_id=chat_id
+        )
+
+    def test_phone_route_matches_lid_chat_id(self):
+        self._write_lid_mapping()
+        route = self._route(f"{self.PHONE}@s.whatsapp.net")
+
+        assert route.matches("whatsapp", chat_id=f"{self.LID}@lid")
+
+    def test_lid_route_matches_phone_chat_id(self):
+        self._write_lid_mapping()
+        route = self._route(f"{self.LID}@lid")
+
+        assert route.matches("whatsapp", chat_id=f"{self.PHONE}@s.whatsapp.net")
+
+    def test_bare_phone_route_matches_lid_chat_id(self):
+        """Operators write routes as plain phone numbers, not JIDs."""
+        self._write_lid_mapping()
+        route = self._route(f"+{self.PHONE}")
+
+        assert route.matches("whatsapp", chat_id=f"{self.LID}@lid")
+
+    def test_unmapped_sender_does_not_match(self):
+        self._write_lid_mapping()
+        route = self._route(f"{self.PHONE}@s.whatsapp.net")
+
+        assert not route.matches("whatsapp", chat_id="99999999999999@lid")
+
+    def test_without_a_mapping_file_matching_stays_exact(self):
+        route = self._route(f"{self.PHONE}@s.whatsapp.net")
+
+        assert not route.matches("whatsapp", chat_id=f"{self.LID}@lid")
+        assert route.matches("whatsapp", chat_id=f"{self.PHONE}@s.whatsapp.net")
+
+    def test_group_route_is_never_alias_matched(self):
+        """Group JIDs are a different id space — a digit collision with a LID
+        must not route a DM into the group's profile."""
+        self._write_lid_mapping()
+        route = self._route(f"{self.LID}@g.us")
+
+        assert not route.matches("whatsapp", chat_id=f"{self.LID}@lid")
+        assert route.matches("whatsapp", chat_id=f"{self.LID}@g.us")
+
+    def test_other_platforms_keep_exact_matching(self):
+        self._write_lid_mapping()
+        route = self._route(f"{self.PHONE}@s.whatsapp.net", platform="telegram")
+
+        assert not route.matches("telegram", chat_id=f"{self.LID}@lid")
+
+    def test_match_profile_route_resolves_the_alias(self):
+        """The alias set is resolved once for the whole route list."""
+        self._write_lid_mapping()
+        routes = [
+            ProfileRoute(
+                name="other", platform="whatsapp", profile="misc",
+                chat_id="120363001234567890@g.us",
+            ),
+            self._route(f"{self.PHONE}@s.whatsapp.net"),
+        ]
+
+        matched = match_profile_route(
+            routes, "whatsapp", chat_id=f"{self.LID}@lid"
+        )
+
+        assert matched is not None
+        assert matched.profile == "ops"
 
 
 class TestParseProfileRoutes:

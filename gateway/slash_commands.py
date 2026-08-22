@@ -413,7 +413,10 @@ class GatewaySlashCommandsMixin:
         (admin / user / unrestricted), and the slash commands they can
         actually run on this scope.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.slash_access import (
+            identity_candidates as _identity_candidates,
+            policy_for_source as _policy_for_source,
+        )
 
         source = event.source
         policy = _policy_for_source(self.config, source)
@@ -430,7 +433,7 @@ class GatewaySlashCommandsMixin:
                 f"Slash commands: all available"
             )
 
-        if policy.is_admin(user_id):
+        if any(policy.is_admin(uid) for uid in _identity_candidates(source)):
             return (
                 f"**You** — {platform} ({scope})\n"
                 f"User ID: `{user_id}`\n"
@@ -1098,10 +1101,14 @@ class GatewaySlashCommandsMixin:
         enumeration IDOR.
         """
         try:
-            from gateway.slash_access import policy_for_source
+            from gateway.slash_access import identity_candidates, policy_for_source
             policy = policy_for_source(self.config, source)
-            uid = getattr(source, "user_id", None)
-            return bool(policy.enabled and uid and policy.is_admin(uid))
+            if not policy.enabled:
+                return False
+            # Same alias collapse as the dispatch gate: on WhatsApp a group
+            # sender arrives as a LID, so the raw id never matches a
+            # phone-keyed admin list.
+            return any(policy.is_admin(uid) for uid in identity_candidates(source))
         except Exception:
             return False
 
@@ -3964,7 +3971,7 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_source
+        from gateway.slash_access import identity_candidates, policy_for_source
         from hermes_cli.approval_mode import run_approval_mode_command
 
         requested = event.get_command_args().strip() or None
@@ -3972,7 +3979,9 @@ class GatewaySlashCommandsMixin:
         # allow selected commands to non-admin users, so enforce admin again at
         # this side-effect boundary. Unconfigured policies remain unrestricted.
         policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        if requested and not any(
+            policy.is_admin(uid) for uid in identity_candidates(event.source)
+        ):
             return "Only gateway admins can change the persistent approval mode."
         result = run_approval_mode_command(requested)
         # Approval checks load config dynamically; do not evict the cached agent

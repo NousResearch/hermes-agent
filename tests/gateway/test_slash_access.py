@@ -5,9 +5,12 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
+import json
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
+    identity_candidates,
     policy_for_source,
     policy_from_extra,
 )
@@ -126,3 +129,96 @@ class TestPolicyForSource:
         assert grp_p.enabled is True
         assert grp_p.can_run("999", "stop") is False  # gated
 
+
+
+# ---------------------------------------------------------------------------
+# identity_candidates — a WhatsApp group sender arrives as a LID, but the
+# operator's admin list holds phone numbers (live regression, 2026-08-14).
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityCandidates:
+    @staticmethod
+    def _paired_home(tmp_path, monkeypatch):
+        """A gateway home carrying the bridge's LID->phone mapping."""
+        home = tmp_path / "hermes-home"
+        session_dir = home / "platforms" / "whatsapp" / "session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "lid-mapping-160868067209361.json").write_text(
+            json.dumps("972547401660@s.whatsapp.net"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_whatsapp_group_lid_expands_to_the_configured_phone_admin(
+        self, tmp_path, monkeypatch
+    ):
+        """The exact failure: a configured admin refused in their own group.
+
+        WhatsApp hands a group message's sender over as ``<lid>@lid``. The
+        operator wrote a phone number into ``group_allow_admin_from``, so the
+        raw comparison missed and /new came back
+        "admin-only here ... ask an admin to add you to allow_admin_from" --
+        addressed to the admin.
+        """
+        self._paired_home(tmp_path, monkeypatch)
+        cfg = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"group_allow_admin_from": ["972547401660"]},
+                )
+            }
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363428948689789@g.us",
+            chat_type="group",
+            user_id="160868067209361@lid",
+        )
+        policy = policy_for_source(cfg, source)
+        assert policy.enabled is True
+        # The raw transport id is NOT in the admin list...
+        assert policy.is_admin(source.user_id) is False
+        # ...but one of the sender's identities is, and that is what gates read.
+        assert any(policy.is_admin(uid) for uid in identity_candidates(source))
+        assert any(
+            policy.can_run(uid, "new") for uid in identity_candidates(source)
+        )
+
+    def test_a_stranger_in_the_same_group_is_still_denied(
+        self, tmp_path, monkeypatch
+    ):
+        """Alias expansion must widen recognition, never authority."""
+        self._paired_home(tmp_path, monkeypatch)
+        cfg = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"group_allow_admin_from": ["972547401660"]},
+                )
+            }
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363428948689789@g.us",
+            chat_type="group",
+            user_id="112790773731504@lid",  # unmapped: some other member
+        )
+        policy = policy_for_source(cfg, source)
+        assert not any(policy.is_admin(uid) for uid in identity_candidates(source))
+        assert not any(
+            policy.can_run(uid, "new") for uid in identity_candidates(source)
+        )
+
+    def test_non_whatsapp_platforms_are_untouched(self):
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="G", chat_type="group", user_id="111"
+        )
+        assert identity_candidates(source) == ("111",)
+
+    def test_a_sourceless_or_anonymous_sender_yields_nothing(self):
+        source = SessionSource(
+            platform=Platform.WHATSAPP, chat_id="G", chat_type="group", user_id=""
+        )
+        assert identity_candidates(source) == ()

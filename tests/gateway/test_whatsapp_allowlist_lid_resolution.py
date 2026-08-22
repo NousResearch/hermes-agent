@@ -14,9 +14,11 @@ authz and session-key paths already use).
 """
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 
 
@@ -113,3 +115,39 @@ def test_should_process_message_dm_phone_allowlist_lid_sender():
         "mentionedIds": [],
     }
     assert adapter._should_process_message(data) is True
+
+
+def test_gateway_allowlist_resolves_lid_inside_routed_profile_scope(
+    tmp_path, monkeypatch
+):
+    """A routed turn still reads the process-owned bridge identity mapping."""
+    from gateway.run import GatewayRunner, _profile_runtime_scope
+
+    process_home = tmp_path / "hermes-home"
+    mapping_dir = process_home / "platforms" / "whatsapp" / "session"
+    mapping_dir.mkdir(parents=True)
+    (mapping_dir / f"lid-mapping-{LID}.json").write_text(
+        json.dumps(f"{PHONE}@s.whatsapp.net"), encoding="utf-8"
+    )
+    profile_home = process_home / "profiles" / "village"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", PHONE)
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner.pairing_store = None
+    runner.pairing_stores = {}
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="120363001234567890@g.us",
+        chat_type="group",
+        user_id=f"{LID}@lid",
+        profile="village",
+    )
+
+    with _profile_runtime_scope(Path(profile_home)):
+        assert runner._is_user_authorized(
+            source, allow_adapter_delegation=False
+        ) is True

@@ -34,8 +34,11 @@ included here — only the slash-command access split.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, FrozenSet, Iterable, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # Slash commands that MUST stay reachable for any allowed user, even when
@@ -193,6 +196,63 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     )
 
 
+_ALIASED_PLATFORMS = frozenset({"whatsapp", "whatsapp_cloud"})
+
+
+def identity_candidates(source: Any) -> Tuple[str, ...]:
+    """Every id a sender may legitimately be listed under, most literal first.
+
+    A slash gate must not compare the raw transport id against the operator's
+    admin list. WhatsApp hands a GROUP message's sender over as their LID
+    (``160868067209361@lid``) while operators write phone numbers into
+    ``group_allow_admin_from`` — so the raw comparison never matches and the
+    configured admin is refused in their own group. The message-authz path
+    already collapses both sides through
+    :func:`gateway.whatsapp_identity.expand_whatsapp_aliases`; this makes the
+    same alias set available to the slash gates, which is what
+    ``gateway.whatsapp_identity`` says it exists to keep from drifting.
+
+    Platform is matched on the enum's ``value`` rather than importing
+    ``gateway.config.Platform``, so this module stays free of gateway imports.
+    """
+    raw = getattr(source, "user_id", None)
+    if not raw:
+        return ()
+    candidates: list[str] = [str(raw)]
+
+    platform = getattr(source, "platform", None)
+    name = str(getattr(platform, "value", platform) or "").lower()
+    if name not in _ALIASED_PLATFORMS:
+        return tuple(candidates)
+
+    try:
+        from gateway.whatsapp_identity import (
+            expand_whatsapp_aliases,
+            normalize_whatsapp_identifier,
+        )
+
+        for alias in sorted(expand_whatsapp_aliases(str(raw))):
+            if alias and alias not in candidates:
+                candidates.append(alias)
+        normalized = normalize_whatsapp_identifier(str(raw))
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    except Exception:  # pragma: no cover - never let identity break the gate
+        # The raw id alone is the fail-safe answer (a LID matches no
+        # phone-keyed admin list), but all the operator sees is their own
+        # admin being refused. Warn rather than debug so the cause is in the
+        # log; an unreadable mapping file is additionally reported once per
+        # file by whatsapp_identity, so what lands here is the unexpected.
+        logger.warning(
+            "slash_access: alias expansion failed for %r — authorization will "
+            "compare the raw transport id only",
+            raw,
+            exc_info=True,
+        )
+
+    return tuple(candidates)
+
+
 def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     """Resolve the access policy for a SessionSource.
 
@@ -224,6 +284,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
 
 __all__ = [
     "SlashAccessPolicy",
+    "identity_candidates",
     "policy_from_extra",
     "policy_for_source",
 ]

@@ -21206,7 +21206,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not canonical_cmd:
             return None
         policy = _policy_for_source(self.config, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+        if not policy.enabled:
+            return None
+        # WhatsApp delivers a GROUP sender as their LID, while operators write
+        # phone numbers into ``group_allow_admin_from`` — so a raw comparison
+        # never matches and the configured admin is refused in their own group.
+        # The message-authz path already collapses both sides through
+        # ``expand_whatsapp_aliases`` (authz_mixin); this gate did not, which
+        # is exactly the drift gateway.whatsapp_identity exists to prevent.
+        from gateway.slash_access import identity_candidates as _identity_candidates
+
+        if any(
+            policy.can_run(candidate, canonical_cmd)
+            for candidate in _identity_candidates(source)
+        ):
             return None
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",

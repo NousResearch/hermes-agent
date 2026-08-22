@@ -42,7 +42,43 @@ logger = logging.getLogger(__name__)
 # full-width digits / Unicode word chars can't sneak through.
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
 
-from hermes_constants import get_hermes_dir
+# Mapping files that have already been reported as unreadable. A corrupt or
+# unreadable file stays that way, and expansion now runs on the inbound path
+# for every routed message, so the warning fires once per file rather than per
+# lookup. Bounded because the key is a filesystem path we constructed.
+_WARNED_MAPPING_PATHS: Set[str] = set()
+
+from hermes_constants import get_hermes_dir, get_process_hermes_home
+
+
+def _session_dir():
+    """Locate the bridge's session store, ignoring per-task profile overrides.
+
+    The WhatsApp connection is a PROCESS-level asset: one bridge, one paired
+    device, one ``whatsapp/session`` directory, written under the home the
+    gateway was launched with. Profile homes never have one.
+
+    ``get_hermes_dir`` defaults to :func:`get_hermes_home`, which follows the
+    context-local override installed by ``_profile_runtime_scope`` for the
+    duration of a routed turn. Resolving the session store through it made
+    every ``lid-mapping-*.json`` lookup miss the moment a message was routed
+    to a profile, so a group sender's LID no longer resolved to their phone
+    number and every phone-keyed gate silently stopped matching them —
+    ``whatsapp.allow_admin_from``, ``group_allow_admin_from``, ``allow_from``
+    and the pairing store alike. Observed live 2026-08-14: with
+    ``HERMES_HOME`` at the gateway home ``160868067209361@lid`` expanded to
+    ``{160868067209361, 972547401660}``, but under the routed profile home it
+    expanded to ``{160868067209361}`` alone, and the configured admin was
+    rejected from their own group with "/new is admin-only here".
+
+    :func:`get_process_hermes_home` is the right seam rather than
+    ``get_default_hermes_root``: a gateway may legitimately be *launched* on a
+    profile home, and then the bridge's session store is under THAT home, not
+    the root above it.
+    """
+    return get_hermes_dir(
+        "platforms/whatsapp/session", "whatsapp/session", home=get_process_hermes_home()
+    )
 
 
 def normalize_whatsapp_identifier(value: str) -> str:
@@ -133,7 +169,7 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     if not normalized:
         return set()
 
-    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    session_dir = _session_dir()
     resolved: Set[str] = set()
     queue = [normalized]
 
@@ -162,7 +198,23 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
                     json.loads(mapping_path.read_text(encoding="utf-8"))
                 )
             except (OSError, json.JSONDecodeError) as exc:
-                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
+                # Degrading to the raw identifier is safe (a LID never matches
+                # a phone-keyed allow-list), but it is invisible: the operator
+                # sees "admin refused in their own group" or a DM landing on
+                # the default profile, with nothing in the log connecting that
+                # to an unreadable mapping file. Warn on the first failure per
+                # file so the cause is one grep away.
+                key = str(mapping_path)
+                if key not in _WARNED_MAPPING_PATHS:
+                    _WARNED_MAPPING_PATHS.add(key)
+                    logger.warning(
+                        "whatsapp_identity: cannot read alias mapping %s (%s) — "
+                        "this sender's phone/LID forms will not resolve to each "
+                        "other, so phone-keyed admin lists and profile routes "
+                        "may not match them",
+                        mapping_path,
+                        exc,
+                    )
                 continue
             if mapped and mapped not in resolved:
                 queue.append(mapped)

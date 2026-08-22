@@ -35,6 +35,16 @@ Configuration (config.yaml):
           chat_id: "YOUR_CHANNEL_ID"
           thread_id: "YOUR_THREAD_ID"
           profile: thread-profile
+
+        - name: admin-dm
+          platform: whatsapp
+          chat_id: "15551234567@s.whatsapp.net"
+          profile: ops
+
+WhatsApp chat ids are matched through the bridge's phone/LID alias mapping,
+so the route above also matches that person when WhatsApp delivers them as
+``<lid>@lid`` — one route per human, not one per id form. Group JIDs
+(``@g.us``) are matched as exact strings.
 """
 
 from __future__ import annotations
@@ -49,6 +59,62 @@ logger = logging.getLogger(__name__)
 
 class ProfileRouteRejected(RuntimeError):
     """An explicit route matched a profile this gateway does not serve."""
+
+
+# Platforms that can surface the same person under more than one chat id.
+# WhatsApp delivers a DM as either the phone JID (``<msisdn>@s.whatsapp.net``)
+# or the LID (``<lid>@lid``) for the same human, so an operator's msisdn-keyed
+# route silently misses the LID form and the message lands on the default
+# profile instead. Authorization already collapses both forms through
+# ``gateway.whatsapp_identity``; routing has to read the same mapping or the
+# two gates disagree about who a sender is.
+_ALIASED_PLATFORMS = frozenset({"whatsapp"})
+
+# Only *user* identities alias. A group JID (``@g.us``) and a broadcast list
+# live in a different id space, and normalizing them to their bare numeric core
+# would let a group id collide with a LID that happens to share digits — so
+# they stay exact-string comparisons.
+_WHATSAPP_USER_DOMAINS = frozenset({"s.whatsapp.net", "lid", "c.us"})
+
+
+def _is_whatsapp_user_id(value: str) -> bool:
+    """True for a WhatsApp id that identifies a person rather than a group."""
+    if not value:
+        return False
+    if "@" not in value:
+        # A bare phone number, which is how operators usually write a route.
+        return True
+    return value.rsplit("@", 1)[1].lower() in _WHATSAPP_USER_DOMAINS
+
+
+def whatsapp_chat_id_aliases(chat_id: Optional[str]) -> frozenset:
+    """Every normalized id the given WhatsApp chat id may also appear as.
+
+    Empty for a non-aliasing id (group/broadcast) or when the mapping cannot
+    be read. Only the *inbound* id needs expanding: the returned set holds
+    normalized identifiers, so a route is matched by normalizing its declared
+    chat id and testing membership — which keeps this to one mapping walk per
+    message instead of one per route.
+    """
+    value = str(chat_id or "")
+    if not _is_whatsapp_user_id(value):
+        return frozenset()
+    try:
+        from gateway.whatsapp_identity import expand_whatsapp_aliases
+
+        return frozenset(expand_whatsapp_aliases(value))
+    except Exception:
+        # Routing must survive a broken mapping, but silently falling back to
+        # exact-string matching is what makes a mis-routed sender so hard to
+        # diagnose. An unreadable mapping *file* is already reported once per
+        # file by whatsapp_identity; what reaches here is the unexpected.
+        logger.warning(
+            "WhatsApp alias expansion failed for chat_id %r; profile routes "
+            "written in the other id form (phone vs LID) will not match",
+            value,
+            exc_info=True,
+        )
+        return frozenset()
 
 
 @dataclass(frozen=True)
@@ -82,6 +148,7 @@ class ProfileRoute:
         chat_id: Optional[str] = None,
         thread_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
+        chat_id_aliases: Optional[frozenset] = None,
     ) -> bool:
         """Return True if this route matches the given source fields.
 
@@ -92,6 +159,11 @@ class ProfileRoute:
         - Thread in channel: parent_chat_id == route.chat_id
         A route declaring both ``guild_id`` and ``chat_id`` requires both to
         match (a chat match alone does not satisfy a guild constraint).
+
+        On WhatsApp an exact-string miss falls back to alias matching, so a
+        route keyed on a phone number still matches the same person arriving
+        under their LID. ``chat_id_aliases`` lets a caller matching many
+        routes resolve that set once; when omitted it is resolved here.
         """
         if not self.enabled:
             return False
@@ -100,10 +172,37 @@ class ProfileRoute:
         if self.thread_id and self.thread_id != thread_id:
             return False
         if self.chat_id and self.chat_id != chat_id and self.chat_id != parent_chat_id:
-            return False
+            if not self._chat_id_matches_alias(platform, chat_id, chat_id_aliases):
+                return False
         if self.guild_id and self.guild_id != guild_id:
             return False
         return True
+
+    def _chat_id_matches_alias(
+        self,
+        platform: str,
+        chat_id: Optional[str],
+        chat_id_aliases: Optional[frozenset],
+    ) -> bool:
+        """True when the inbound chat id is a known alias of this route's.
+
+        ``parent_chat_id`` is not consulted: it carries a Discord thread's
+        parent channel, and WhatsApp — the only aliasing platform — has no
+        parent-chat concept.
+        """
+        if platform not in _ALIASED_PLATFORMS:
+            return False
+        if not _is_whatsapp_user_id(str(self.chat_id or "")):
+            return False
+        if chat_id_aliases is None:
+            chat_id_aliases = whatsapp_chat_id_aliases(chat_id)
+        if not chat_id_aliases:
+            return False
+
+        from gateway.whatsapp_identity import normalize_whatsapp_identifier
+
+        normalized = normalize_whatsapp_identifier(str(self.chat_id))
+        return bool(normalized) and normalized in chat_id_aliases
 
 
 def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
@@ -164,7 +263,22 @@ def match_profile_route(
     parent_chat_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
     """Return the best-matching route, or None for no match."""
+    # Resolved once for the whole route list: the mapping walk touches the
+    # bridge's session directory, and this runs on the inbound path for every
+    # routed message. Non-aliasing platforms never pay for it.
+    chat_id_aliases = (
+        whatsapp_chat_id_aliases(chat_id)
+        if platform in _ALIASED_PLATFORMS
+        else frozenset()
+    )
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if route.matches(
+            platform,
+            guild_id=guild_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            parent_chat_id=parent_chat_id,
+            chat_id_aliases=chat_id_aliases,
+        ):
             return route
     return None

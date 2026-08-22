@@ -1175,10 +1175,19 @@ def _managed_runtime_path_entries() -> list[str]:
     mid-process (``heal_hermes_managed_node``, a first browser install).
     """
     try:
-        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
+        from hermes_constants import (
+            get_hermes_home,
+            iter_hermes_node_dirs,
+            path_entry_usable,
+        )
 
         candidates = [*iter_hermes_node_dirs(), get_hermes_home() / "bin"]
-        return [str(d) for d in candidates if d.is_dir()]
+        # ``is_dir()`` is not a strong enough test: an unreadable directory
+        # still stats as one, and Windows process creation fails outright
+        # (``spawn EPERM``) on an unreadable PATH entry rather than skipping
+        # it — so adding one would break every command the agent runs in the
+        # subshell, not just the ones wanting a managed runtime.
+        return [str(d) for d in candidates if path_entry_usable(d)]
     except Exception:
         return []
 

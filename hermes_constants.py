@@ -879,12 +879,44 @@ def find_node_executable(command: str) -> str | None:
     return find_node_executable_on_path(command)
 
 
+def path_entry_usable(candidate: Path) -> bool:
+    """Return True when *candidate* is a directory we can actually enumerate.
+
+    A PATH entry has to clear a higher bar than "is a directory". An
+    unreadable directory — one whose ACL denies traversal, which an
+    interrupted or elevated install can leave behind at ``$HERMES_HOME/node``
+    — still stats as a directory, so an ``is_dir()`` check happily puts it on
+    PATH. Windows process creation then *fails* on that entry rather than
+    skipping it: ``spawn`` returns ``EPERM`` (errno -4048) as soon as an
+    unreadable directory precedes the real one, so a single bad entry breaks
+    every child process, not just the ones wanting a managed runtime.
+
+    That is not hypothetical. It is how the packaged desktop build died —
+    ``cross-env`` could not spawn ``node`` at all, because the managed tree
+    prepended here was unreadable::
+
+        Error: spawn EPERM
+            at ChildProcess.spawn (node:internal/child_process:441:11)
+            at spawn (node_modules/cross-spawn/index.js:12:24)
+
+    So probe by *listing*, not by stat-ing: a tree we cannot enumerate has to
+    stay off PATH entirely. ``scandir`` raises on the first entry when the
+    directory is unreadable, so this stays O(1) rather than walking the tree.
+    """
+    try:
+        with os.scandir(candidate) as entries:
+            next(entries, None)
+    except OSError:
+        return False
+    return True
+
+
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    """Return *env* with usable Hermes-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
     existing = merged.get("PATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
-    managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
+    managed = [str(path) for path in iter_hermes_node_dirs() if path_entry_usable(path)]
     for entry in reversed(managed):
         if entry not in parts:
             parts.insert(0, entry)

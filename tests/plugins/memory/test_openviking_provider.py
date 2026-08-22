@@ -753,18 +753,18 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
         return SimpleNamespace(
             status_code=200,
             text="",
-            json=lambda: {"status": "ok", "result": {"uri": "viking://user/memories/x.md"}},
+            json=lambda: {"status": "ok", "result": {"uri": "viking://~/memories/x.md"}},
             raise_for_status=lambda: None,
         )
 
     monkeypatch.setattr(client._httpx, "delete", capture_delete)
 
-    assert client.delete("/api/v1/fs", params={"uri": "viking://user/memories/x.md"}) == {
+    assert client.delete("/api/v1/fs", params={"uri": "viking://~/memories/x.md"}) == {
         "status": "ok",
-        "result": {"uri": "viking://user/memories/x.md"},
+        "result": {"uri": "viking://~/memories/x.md"},
     }
     assert captured["url"] == "https://example.com/api/v1/fs"
-    assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
+    assert captured["kwargs"]["params"] == {"uri": "viking://~/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
 
@@ -1369,10 +1369,10 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     calls = _mock_session_start_reads(
         provider,
         {
-            ("/api/v1/content/read", "viking://user/memories/profile.md"): (
+            ("/api/v1/content/read", "viking://~/memories/profile.md"): (
                 "User prefers concise answers."
             ),
-            ("/api/v1/fs/ls", "viking://user/memories/preferences"): _memory_listing(
+            ("/api/v1/fs/ls", "viking://~/memories/preferences"): _memory_listing(
                 {"isDir": True, "rel_path": "owner"},
                 {
                     "isDir": False,
@@ -1386,7 +1386,7 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
                 },
                 {"isDir": False, "rel_path": "owner/ignored.txt", "abstract": "ignore"},
             ),
-            ("/api/v1/fs/ls", "viking://user/memories/entities"): _memory_listing(
+            ("/api/v1/fs/ls", "viking://~/memories/entities"): _memory_listing(
                 {
                     "isDir": False,
                     "rel_path": "people/ada.md",
@@ -1400,13 +1400,13 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     first = provider.prefetch("What should we recall?", session_id="sid-123")
     second = provider.prefetch("What should we recall?", session_id="sid-123")
 
-    assert '<user-profile uri="viking://user/memories/profile.md">' in first
+    assert '<user-profile uri="viking://~/memories/profile.md">' in first
     assert "User prefers concise answers." in first
     assert "<available-memories>" in first
-    assert "viking://user/memories/preferences/" in first
+    assert "viking://~/memories/preferences/" in first
     assert "owner/z-last.md — Keep replies compact." in first
     assert first.index("owner/a-first.md") < first.index("owner/z-last.md")
-    assert "viking://user/memories/entities/" in first
+    assert "viking://~/memories/entities/" in first
     assert "people/ada.md — Ada Lovelace is a collaborator." in first
     assert "owner/ignored.txt" not in first
     assert "<preferences" not in first
@@ -1415,14 +1415,14 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
     assert "<user-profile" not in second
     assert "recalled context" in second
     assert [(path, params) for path, params, _timeout in calls] == [
-        ("/api/v1/content/read", {"uri": "viking://user/memories/profile.md"}),
+        ("/api/v1/content/read", {"uri": "viking://~/memories/profile.md"}),
         (
             "/api/v1/fs/ls",
-            {"uri": "viking://user/memories/preferences", **_SESSION_START_LIST_PARAMS},
+            {"uri": "viking://~/memories/preferences", **_SESSION_START_LIST_PARAMS},
         ),
         (
             "/api/v1/fs/ls",
-            {"uri": "viking://user/memories/entities", **_SESSION_START_LIST_PARAMS},
+            {"uri": "viking://~/memories/entities", **_SESSION_START_LIST_PARAMS},
         ),
     ]
     assert provider._search_prefetch_context.call_count == 2
@@ -1435,7 +1435,7 @@ def test_prefetch_reinjects_after_in_place_compression_same_session():
 
     def fake_get(path, params=None, **kwargs):
         uri = (params or {}).get("uri", "")
-        if uri == "viking://user/memories/profile.md":
+        if uri == "viking://~/memories/profile.md":
             return {"result": next(profiles)}
         return {"result": []}
 

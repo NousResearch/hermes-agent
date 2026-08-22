@@ -657,7 +657,7 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
                     uri = query.get("uri", [""])[0]
-                    if uri == "viking://user/memories/profile.md":
+                    if uri == "viking://~/memories/profile.md":
                         self._send_json({"result": "E2E user profile."})
                         return
                     records["reads"].append(uri)
@@ -667,7 +667,7 @@ class TestOpenVikingAutoRecallPrefetch:
                     query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
                     records["listings"].append(query)
                     uri = query.get("uri")
-                    if uri == "viking://user/memories/preferences":
+                    if uri == "viking://~/memories/preferences":
                         self._send_json({
                             "result": [
                                 {"isDir": True, "rel_path": "owner", "abstract": "ignored"},
@@ -679,7 +679,7 @@ class TestOpenVikingAutoRecallPrefetch:
                             ]
                         })
                         return
-                    if uri == "viking://user/memories/entities":
+                    if uri == "viking://~/memories/entities":
                         self._send_json({
                             "result": [
                                 {
@@ -758,8 +758,8 @@ class TestOpenVikingAutoRecallPrefetch:
         assert "E2E abstract should not be injected." not in block
         assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
         assert [listing["uri"] for listing in records["listings"]] == [
-            "viking://user/memories/preferences",
-            "viking://user/memories/entities",
+            "viking://~/memories/preferences",
+            "viking://~/memories/entities",
         ]
         assert all(listing["output"] == "agent" for listing in records["listings"])
         assert all(listing["recursive"].lower() == "true" for listing in records["listings"])
@@ -818,7 +818,7 @@ class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
     OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
+    viking://~/peers/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -831,7 +831,7 @@ class TestOpenVikingMemoryUriBuilder:
         """URI must contain /peers/{peer_id}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://~/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
 
@@ -921,7 +921,7 @@ class TestEnsureClientReloadsEnv:
         assert instances[1].posts[0][1]["content"] == "stable fact"
         assert instances[1].posts[0][1]["mode"] == "create"
         assert instances[1].posts[0][1]["uri"].startswith(
-            "viking://user/peers/hermes/memories/"
+            "viking://~/peers/hermes/memories/"
         )
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):

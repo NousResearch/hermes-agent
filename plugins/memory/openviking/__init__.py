@@ -93,9 +93,13 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
-_PROFILE_URI = "viking://user/memories/profile.md"
-_PREFERENCES_URI = "viking://user/memories/preferences"
-_ENTITIES_URI = "viking://user/memories/entities"
+# `viking://~` is the current-user home alias (OpenViking #4167, server 0.4.16+).
+# The uid-less `viking://user/<segment>` shorthand was removed upstream (#4196,
+# 2026-08-21): reserved segments like `memories`/`peers` no longer expand to the
+# caller's space and the server rejects them with HTTP 400.
+_PROFILE_URI = "viking://~/memories/profile.md"
+_PREFERENCES_URI = "viking://~/memories/preferences"
+_ENTITIES_URI = "viking://~/memories/entities"
 _SESSION_START_LIST_PARAMS = {
     "output": "agent",
     "recursive": True,
@@ -573,7 +577,7 @@ BROWSE_SCHEMA = {
             },
             "path": {
                 "type": "string",
-                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://user/memories/'.",
+                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://~/memories/'.",
             },
         },
         "required": ["action"],
@@ -4779,7 +4783,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _build_memory_uri(self, subdir: str) -> str:
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        # `~` home alias: `viking://user/peers/...` is uid-less and was removed
+        # upstream (#4196) — the memory-mirroring write path 400s on new servers.
+        return f"viking://~/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,

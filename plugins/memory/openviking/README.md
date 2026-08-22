@@ -94,8 +94,8 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 
 `viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
 and `mode=create`. It creates peer-scoped memory files under
-`viking://user/peers/${OPENVIKING_AGENT}/memories/...`; OpenViking may return a
-canonical user-scoped form such as
+`viking://~/peers/${OPENVIKING_AGENT}/memories/...` (`~` is the current-user
+home alias); OpenViking may return a canonical user-scoped form such as
 `viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
 Explicit remembers do not depend on session commit extraction.
 
@@ -113,7 +113,7 @@ memory URI.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as
-`viking://user/peers/hermes/memories/preferences/mem_abc123.md` or the canonical
+`viking://~/peers/hermes/memories/preferences/mem_abc123.md` or the canonical
 `viking://user/default/peers/hermes/memories/preferences/mem_abc123.md`. Files
 directly under `memories/`, such as `viking://user/default/memories/profile.md`,
 are also allowed because OpenViking supports them. The tool rejects directories,

@@ -79,7 +79,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from hermes_cli.config import (
     get_hermes_home,
@@ -8515,6 +8515,21 @@ def _minimax_pkce_pair() -> tuple:
     return verifier, challenge, state
 
 
+def _minimax_normalize_verification_uri(verification_uri: str) -> str:
+    """Return a browser-usable MiniMax OAuth authorization URL.
+
+    MiniMax's device-code response has returned the deleted
+    ``www.minimax.io/oauth-authorize`` page even though the live authorize page
+    moved to ``platform.minimax.io``. Keep the workaround intentionally narrow:
+    only the stale host/path pair is rewritten, preserving query strings and
+    unrelated MiniMax URLs.
+    """
+    parsed = urlparse(verification_uri)
+    if parsed.scheme == "https" and parsed.netloc == "www.minimax.io" and parsed.path == "/oauth-authorize":
+        return urlunparse(parsed._replace(netloc="platform.minimax.io"))
+    return verification_uri
+
+
 def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
@@ -8554,6 +8569,9 @@ def _minimax_request_user_code(
             "MiniMax OAuth state mismatch (possible CSRF).",
             provider="minimax-oauth", code="state_mismatch",
         )
+    payload["verification_uri"] = _minimax_normalize_verification_uri(
+        str(payload["verification_uri"])
+    )
     return payload
 
 

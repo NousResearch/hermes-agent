@@ -1417,6 +1417,9 @@ def run_doctor(args):
                 # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
                 # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
                 "deepinfra",
+                # OmniRoute is a local aggregator proxy (routes to OpenRouter
+                # free tier); it legitimately accepts vendor/model slugs.
+                "omniroute",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

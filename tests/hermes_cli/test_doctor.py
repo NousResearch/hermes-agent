@@ -560,6 +560,9 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("kimi-coding", "kimi-k2"),
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
         ("moa", "anthropic/claude-sonnet-4.6"),
+        # OmniRoute: local aggregator proxy; auto/best-free is an auto-select
+        # routing mode, not a true vendor-slug — must NOT warn.
+        ("omniroute", "auto/best-free"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -570,7 +573,15 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     (home / "config.yaml").write_text(
         "model:\n"
         f"  provider: {provider}\n"
-        f"  default: {default_model}\n",
+        f"  default: {default_model}\n"
+        + (
+            "providers:\n"
+            "  omniroute:\n"
+            "    base_url: http://localhost:20128/v1\n"
+            "    api_key: test-key\n"
+            if provider == "omniroute"
+            else ""
+        ),
         encoding="utf-8",
     )
 
@@ -603,6 +614,13 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
+            not in out
+        )
+    # OmniRoute must be treated like the other aggregator providers in the
+    # whitelist: `auto/best-free` is an auto-select mode, not a vendor slug.
+    if provider == "omniroute":
+        assert (
+            f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider}'"
             not in out
         )
 

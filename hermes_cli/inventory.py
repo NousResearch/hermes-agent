@@ -661,6 +661,33 @@ def _append_unconfigured_rows(
     return extras
 
 
+def _anthropic_oauth_credentials_present() -> bool:
+    """True when the user explicitly authenticated Anthropic via OAuth.
+
+    Two deliberate flows leave no trace in active_provider /
+    model.provider / API-key env vars: Hermes' own Anthropic device flow
+    (token in auth.json) and a Claude Code login (~/.claude/.credentials.json).
+    ``list_authenticated_providers`` already accepts both readers as real
+    credentials when discovering rows; this mirrors that acceptance so the
+    desktop explicit-only filter does not silently drop a provider the user
+    deliberately signed into. Unlike ambient CLI tokens (gh -> copilot),
+    an OAuth access token only exists after an interactive login.
+    """
+    try:
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
+
+        hermes_creds = read_hermes_oauth_credentials() or {}
+        if hermes_creds.get("accessToken"):
+            return True
+        cc_creds = read_claude_code_credentials() or {}
+        return bool(cc_creds.get("accessToken"))
+    except Exception:
+        return False
+
+
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration.
 
@@ -695,6 +722,14 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # Keyless providers (opencode-free) require no configuration at
             # all — there is nothing to "explicitly configure", and hiding
             # them would defeat their purpose (zero-setup discoverability).
+            kept.append(row)
+            continue
+        if slug == "anthropic" and _anthropic_oauth_credentials_present():
+            # Anthropic OAuth logins (Hermes device flow / Claude Code) are
+            # deliberate sign-ins that leave no trace in active_provider,
+            # model.provider, or API-key env vars. The strict gate below
+            # would drop the row even though list_authenticated_providers
+            # just accepted those same credentials when building it.
             kept.append(row)
             continue
         if is_provider_explicitly_configured(slug):

@@ -6,6 +6,7 @@ import {
   attachmentDisplayText,
   attachmentId,
   coerceThinkingText,
+  contextPath,
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -151,6 +152,48 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('contextPath', () => {
+  it('relativizes a Windows backslash path under a backslash cwd', () => {
+    // On Windows the OS hands us backslash paths; the ref must still collapse to
+    // the project-relative form the agent expects (`@file:src/a.ts`), not the
+    // full absolute path.
+    expect(contextPath('C:\\Users\\me\\proj\\src\\a.ts', 'C:\\Users\\me\\proj')).toBe('src/a.ts')
+  })
+
+  it('handles a Windows cwd that already carries a trailing separator', () => {
+    expect(contextPath('C:\\proj\\a.ts', 'C:\\proj\\')).toBe('a.ts')
+  })
+
+  it('folds case on Windows so a differently cased cwd still relativizes', () => {
+    // Windows path identity is case-insensitive: the picker may hand back
+    // `C:\Users\Me\...` while the session cwd is stored as `c:/users/me/...`.
+    expect(contextPath('C:\\Users\\Me\\Proj\\src\\a.ts', 'c:/users/me/proj')).toBe('src/a.ts')
+  })
+
+  it('preserves the original spelling of the relativized tail on Windows', () => {
+    // Only the comparison key is lowercased; the emitted ref keeps the caller's
+    // casing so the path still resolves for case-preserving tooling.
+    expect(contextPath('C:\\proj\\Src\\MyFile.TS', 'c:\\PROJ')).toBe('Src/MyFile.TS')
+  })
+
+  it('still relativizes POSIX paths', () => {
+    expect(contextPath('/home/me/proj/src/a.ts', '/home/me/proj')).toBe('src/a.ts')
+  })
+
+  it('keeps POSIX comparison case-sensitive', () => {
+    // No case folding off Windows: `/home/me/Proj` is a different directory.
+    expect(contextPath('/home/me/Proj/src/a.ts', '/home/me/proj')).toBe('/home/me/Proj/src/a.ts')
+  })
+
+  it('returns the original path unchanged when it is not under cwd', () => {
+    expect(contextPath('/other/x.ts', '/home/me/proj')).toBe('/other/x.ts')
+  })
+
+  it('returns the path unchanged when cwd is empty', () => {
+    expect(contextPath('C:\\Users\\me\\a.ts', '')).toBe('C:\\Users\\me\\a.ts')
   })
 })
 

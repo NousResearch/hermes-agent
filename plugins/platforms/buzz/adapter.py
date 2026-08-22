@@ -37,6 +37,7 @@ environment and is never logged.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -77,9 +78,11 @@ logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    CachedMedia,
     SendResult,
     MessageEvent,
     MessageType,
+    cache_media_bytes,
 )
 from gateway.config import Platform
 
@@ -99,6 +102,58 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+
+# Inbound attachment limits. Attachments are downloaded only after the sender,
+# mention, and allow-list gates pass; each one must declare and match an exact
+# size and SHA-256 in its NIP-94 ``imeta`` tag.
+_MAX_INBOUND_ATTACHMENTS = 4
+_MAX_INBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_ATTACHMENT_DOWNLOAD_TIMEOUT = 30.0
+_MAX_ATTACHMENT_FILENAME_BYTES = 120
+
+
+def _safe_attachment_filename(value: str) -> str:
+    """Return a basename that is safe for cache files and agent context."""
+    name = str(value or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(
+        character
+        for character in name
+        if ord(character) >= 32 and character != "\x7f"
+    ).strip()
+    if name in {"", ".", ".."}:
+        return "attachment.bin"
+
+    suffix = Path(name).suffix
+    if len(suffix.encode("utf-8")) > 20:
+        suffix = ""
+    stem = name[:-len(suffix)] if suffix else name
+    byte_budget = _MAX_ATTACHMENT_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    safe_stem = (
+        stem.encode("utf-8")[:byte_budget]
+        .decode("utf-8", errors="ignore")
+        .rstrip(" .")
+    )
+    if not safe_stem:
+        safe_stem = "attachment"
+    return f"{safe_stem}{suffix}"
+
+
+def _attachment_origin(value: str) -> Optional[tuple[str, int]]:
+    """Normalize a configured host/URL to an exact HTTPS-equivalent origin."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port or 443
+    except ValueError:
+        return None
+    if parsed.scheme and parsed.scheme not in {"https", "wss"}:
+        return None
+    if not host:
+        return None
+    return host, port
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
@@ -363,6 +418,20 @@ class BuzzAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.relay_url = (os.getenv("BUZZ_RELAY_URL") or extra.get("relay_url", "")).strip()
+        configured_attachment_hosts = extra.get("attachment_hosts", [])
+        if isinstance(configured_attachment_hosts, str):
+            configured_attachment_hosts = configured_attachment_hosts.split(",")
+        configured_origins = (
+            _attachment_origin(host)
+            for host in configured_attachment_hosts
+            if isinstance(host, str)
+        )
+        self._attachment_origins = {
+            origin for origin in configured_origins if origin is not None
+        }
+        relay_origin = _attachment_origin(self.relay_url)
+        if relay_origin is not None:
+            self._attachment_origins.add(relay_origin)
         self.cli_path = _resolve_cli_path(
             os.getenv("BUZZ_CLI_PATH", "").strip() or str(extra.get("cli_path", "") or "")
         )
@@ -1005,6 +1074,165 @@ class BuzzAdapter(BasePlatformAdapter):
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
 
+    @staticmethod
+    def _parse_imeta_attachments(event: dict) -> Tuple[List[dict], int]:
+        """Return accepted NIP-94 metadata and the rejected ``imeta`` count."""
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return [], 0
+        attachments: List[dict] = []
+        rejected = 0
+        total_declared_bytes = 0
+        for tag in tags:
+            if not isinstance(tag, (list, tuple)) or not tag or tag[0] != "imeta":
+                continue
+            if len(attachments) >= _MAX_INBOUND_ATTACHMENTS:
+                rejected += 1
+                continue
+            fields: Dict[str, str] = {}
+            for raw_field in tag[1:]:
+                if not isinstance(raw_field, str):
+                    continue
+                key, separator, value = raw_field.partition(" ")
+                if separator and key not in fields:
+                    fields[key] = value.strip()
+            url = fields.get("url", "")
+            digest = fields.get("x", "").lower()
+            filename = fields.get("filename", "")
+            mime_type = fields.get("m", "")
+            try:
+                size = int(fields.get("size", ""))
+                parsed = urlsplit(url)
+                parsed_hostname = parsed.hostname
+                # Access validates malformed/non-numeric ports even though exact
+                # origin authorization occurs immediately before downloading.
+                parsed.port
+            except (TypeError, ValueError):
+                rejected += 1
+                continue
+            if (
+                parsed.scheme != "https"
+                or not parsed_hostname
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not 0 < size <= _MAX_INBOUND_ATTACHMENT_BYTES
+                or total_declared_bytes + size > _MAX_INBOUND_ATTACHMENT_BYTES
+            ):
+                rejected += 1
+                continue
+            total_declared_bytes += size
+            attachments.append(
+                {
+                    "url": url,
+                    "sha256": digest,
+                    "size": size,
+                    "filename": _safe_attachment_filename(filename),
+                    "mime_type": mime_type[:255],
+                }
+            )
+        return attachments, rejected
+
+    @staticmethod
+    def _imeta_attachments(event: dict) -> List[dict]:
+        """Return bounded, structurally valid NIP-94 attachment metadata."""
+        attachments, _rejected = BuzzAdapter._parse_imeta_attachments(event)
+        return attachments
+
+    @staticmethod
+    def _attachment_rejection_note(rejected: int) -> str:
+        """Return a fixed-width diagnostic for malformed or excess metadata."""
+        shown = str(rejected) if rejected <= 999 else "999+"
+        return f"[{shown} Buzz attachment(s) rejected as malformed or over limits.]"
+
+    async def _download_attachment(self, metadata: dict) -> Optional[CachedMedia]:
+        """Download, integrity-check, and cache one authorized Buzz attachment."""
+        url = metadata["url"]
+        try:
+            parsed_url = urlsplit(url)
+            host = (parsed_url.hostname or "").lower().rstrip(".")
+            origin = (host, parsed_url.port or 443)
+        except ValueError:
+            parsed_url = None
+            origin = ("", 0)
+        if (
+            parsed_url is None
+            or parsed_url.scheme != "https"
+            or origin not in self._attachment_origins
+        ):
+            logger.warning(
+                "Buzz: refusing attachment from untrusted origin %s:%s",
+                origin[0] or "<missing>",
+                origin[1],
+            )
+            return None
+
+        import httpx
+
+        try:
+            timeout = httpx.Timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT)
+            async with asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT):
+                async with httpx.AsyncClient(
+                    follow_redirects=False,
+                    timeout=timeout,
+                    headers={"Accept-Encoding": "identity"},
+                ) as client:
+                    async with client.stream("GET", url) as response:
+                        if response.status_code != 200:
+                            logger.warning(
+                                "Buzz: attachment download returned HTTP %s",
+                                response.status_code,
+                            )
+                            return None
+                        content_length = response.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_response_size = int(content_length)
+                            except ValueError:
+                                return None
+                            if declared_response_size != metadata["size"]:
+                                logger.warning(
+                                    "Buzz: attachment Content-Length does not match imeta size"
+                                )
+                                return None
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > metadata["size"]:
+                                logger.warning("Buzz: attachment exceeded its declared size")
+                                return None
+        except (TimeoutError, httpx.HTTPError, OSError, ValueError) as exc:
+            logger.warning("Buzz: attachment download failed: %s", exc)
+            return None
+
+        if len(data) != metadata["size"]:
+            logger.warning("Buzz: attachment size does not match imeta")
+            return None
+        if hashlib.sha256(data).hexdigest() != metadata["sha256"]:
+            logger.warning("Buzz: attachment SHA-256 does not match imeta")
+            return None
+        try:
+            return cache_media_bytes(
+                bytes(data),
+                filename=metadata["filename"],
+                mime_type=metadata["mime_type"],
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Buzz: attachment cache write failed: %s", exc)
+            return None
+
+    async def _cache_inbound_attachments(
+        self,
+        metadata_items: List[dict],
+    ) -> List[CachedMedia]:
+        cached: List[CachedMedia] = []
+        for metadata in metadata_items:
+            attachment = await self._download_attachment(metadata)
+            if attachment is not None:
+                cached.append(attachment)
+        return cached
+
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
         event_id = str(event.get("id") or "")
@@ -1018,7 +1246,13 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
-        if not pubkey or not isinstance(content, str) or not content.strip():
+        attachment_metadata, rejected_attachments = self._parse_imeta_attachments(event)
+        has_imeta = bool(attachment_metadata or rejected_attachments)
+        if (
+            not pubkey
+            or not isinstance(content, str)
+            or (not content.strip() and not has_imeta)
+        ):
             return
 
         # Suppress self-echo: never dispatch our own messages back to the agent.
@@ -1047,15 +1281,61 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+        # Attachment fetch/cache is a security-sensitive side effect. Only the
+        # gateway's authoritative callback can permit it, and only an explicit
+        # True is permission: false, absent, or failed checks all fail closed.
+        # The message still dispatches so GatewayRunner can apply denial/pairing.
+        chat_type = "dm" if is_dm else "group"
+        attachment_fetch_allowed = bool(attachment_metadata) and (
+            self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        )
+        attachments = (
+            await self._cache_inbound_attachments(attachment_metadata)
+            if attachment_fetch_allowed
+            else []
+        )
+        if rejected_attachments:
+            dispatch_text = (
+                f"{dispatch_text}\n"
+                f"{self._attachment_rejection_note(rejected_attachments)}"
+            ).strip()
+        if (
+            attachment_fetch_allowed
+            and len(attachments) < len(attachment_metadata)
+        ):
+            failed = len(attachment_metadata) - len(attachments)
+            dispatch_text = (
+                f"{dispatch_text}\n"
+                f"[{failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]"
+            ).strip()
+
+        message_type = MessageType.TEXT
+        if attachments:
+            attachment_kinds = {attachment.kind for attachment in attachments}
+            if len(attachment_kinds) == 1:
+                message_type = {
+                    "image": MessageType.PHOTO,
+                    "video": MessageType.VIDEO,
+                    "audio": MessageType.AUDIO,
+                    "document": MessageType.DOCUMENT,
+                }.get(next(iter(attachment_kinds)), MessageType.DOCUMENT)
+            else:
+                # Mixed media must use document semantics so an audio member is
+                # not mistaken for a voice note and sent through STT.
+                message_type = MessageType.DOCUMENT
 
         await self._dispatch_message(
             text=dispatch_text,
             chat_id=channel_id,
-            chat_type="dm" if is_dm else "group",
+            chat_type=chat_type,
             user_id=pubkey,
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            media_urls=[attachment.path for attachment in attachments],
+            media_types=[attachment.media_type for attachment in attachments],
+            message_type=message_type,
+            raw_message=event,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1219,6 +1499,10 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+        message_type: MessageType = MessageType.TEXT,
+        raw_message: Any = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1234,9 +1518,13 @@ class BuzzAdapter(BasePlatformAdapter):
 
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
+            raw_message=raw_message,
             message_id=message_id,
+            media_urls=list(media_urls or []),
+            media_types=list(media_types or []),
+            media_text_inlined=[False] * len(media_urls or []),
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
         )
 

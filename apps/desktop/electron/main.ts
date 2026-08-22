@@ -265,7 +265,8 @@ import {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  wireChatWindowFullscreenState
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
@@ -11110,8 +11111,9 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 
   wireWindowReveal(win)
 
-  win.on('enter-full-screen', () => sendWindowStateChanged(true))
-  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+  // Per-window fullscreen chrome: send this window its own titlebar inset so its
+  // traffic lights hide/show independently of the primary.
+  wireChatWindowFullscreenState(win, sendWindowStateChanged)
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
@@ -11211,8 +11213,7 @@ function createInstanceWindow() {
 
   // Per-window fullscreen chrome: send this window its own titlebar inset so its
   // traffic lights hide/show independently of the primary.
-  win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
-  win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
+  wireChatWindowFullscreenState(win, sendWindowStateChanged)
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))

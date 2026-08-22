@@ -7,7 +7,8 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  instanceWindowBounds
+  instanceWindowBounds,
+  wireChatWindowFullscreenState
 } from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -250,4 +251,49 @@ test('chatWindowWebPreferences allows autoplay so wake-started voice speaks its 
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
   assert.equal(prefs.autoplayPolicy, 'no-user-gesture-required')
+})
+
+test('wireChatWindowFullscreenState reports fullscreen against the window that changed', () => {
+  // Regression: the pop-out builder wired `() => sendWindowStateChanged(true)`
+  // with no target, so both events fell through to the `mainWindow` default and
+  // a fullscreen pop-out rewrote the PRIMARY window's titlebar inset.
+  const win = makeFakeWindow()
+  const sent: { isFullscreen: boolean; target: unknown }[] = []
+
+  wireChatWindowFullscreenState(win, (isFullscreen, target) => {
+    sent.push({ isFullscreen, target })
+  })
+
+  win.emit('enter-full-screen')
+  win.emit('leave-full-screen')
+
+  assert.deepEqual(
+    sent.map(entry => entry.isFullscreen),
+    [true, false]
+  )
+  assert.equal(sent[0].target, win, 'enter-full-screen names its own window, not the primary')
+  assert.equal(sent[1].target, win, 'leave-full-screen names its own window, not the primary')
+})
+
+test('wireChatWindowFullscreenState also reports the start of the transition, like mainWindow', () => {
+  // mainWindow wires all four events, so its titlebar inset updates when the
+  // fullscreen animation BEGINS. A secondary window listening only to the bare
+  // pair holds its pre-transition chrome for the whole animation and then snaps.
+  const win = makeFakeWindow()
+  const sent: { isFullscreen: boolean; target: unknown }[] = []
+
+  wireChatWindowFullscreenState(win, (isFullscreen, target) => {
+    sent.push({ isFullscreen, target })
+  })
+
+  win.emit('will-enter-full-screen')
+  win.emit('will-leave-full-screen')
+
+  assert.deepEqual(
+    sent.map(entry => entry.isFullscreen),
+    [true, false],
+    'will-enter reports fullscreen, will-leave reports windowed'
+  )
+  assert.equal(sent[0].target, win, 'will-enter-full-screen names its own window, not the primary')
+  assert.equal(sent[1].target, win, 'will-leave-full-screen names its own window, not the primary')
 })

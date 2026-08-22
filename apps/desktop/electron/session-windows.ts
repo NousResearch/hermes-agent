@@ -56,6 +56,39 @@ function chatWindowWebPreferences(preloadPath: string) {
   }
 }
 
+// The slice of BrowserWindow the fullscreen wiring touches, so this module
+// stays Electron-free and unit-testable.
+type FullscreenEventWindow = { on: (event: string, handler: () => void) => unknown }
+
+// Per-window fullscreen chrome. Every chat window that isn't the primary must
+// tell the state push WHICH window changed, or the push falls through to the
+// `target = mainWindow` default in main.ts's sendWindowStateChanged() and the
+// primary's renderer gets a fullscreen flag it never earned — its titlebar
+// cluster slides under the still-visible traffic lights on macOS, and its panes
+// stop reserving the native control band on Windows/WSLg.
+//
+// Both secondary-window builders in main.ts wire this pair, and they are
+// hand-copies: the pop-out builder dropped the `win` argument while the
+// instance builder kept it. That is the same failure mode as the
+// chatWindowWebPreferences note above, where the copy silently lost
+// `backgroundThrottling: false`. One wiring path, so the two cannot drift again.
+//
+// All FOUR events, matching mainWindow's own wiring. Electron fires the `will-`
+// pair at the START of the fullscreen transition and the bare pair at the END,
+// so a window that only listens to the bare pair keeps its old titlebar inset
+// for the whole animation and then snaps. The primary window has always wired
+// both; wiring them here is what makes a pop-out or instance window's chrome
+// transition look the same as the primary's rather than lagging it.
+function wireChatWindowFullscreenState(
+  win: FullscreenEventWindow,
+  send: (isFullscreen: boolean, target: FullscreenEventWindow) => void
+) {
+  win.on('will-enter-full-screen', () => send(true, win))
+  win.on('enter-full-screen', () => send(true, win))
+  win.on('will-leave-full-screen', () => send(false, win))
+  win.on('leave-full-screen', () => send(false, win))
+}
+
 // Build the renderer URL for a secondary window. The renderer uses a
 // HashRouter, so the session route lives after the '#'. The `?win=secondary`
 // flag MUST sit in the query string BEFORE the '#': anything after the '#' is
@@ -183,5 +216,6 @@ export {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  wireChatWindowFullscreenState
 }

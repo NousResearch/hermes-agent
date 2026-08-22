@@ -2077,8 +2077,17 @@ def switch_model(
 
     # Override rejection if model is in the user's saved provider config.
     # API /v1/models may not list cloud/aliased models even though the server supports them.
+    #
+    # An explicit non-empty models list/dict catalogue is treated as valid
+    # verification: the user curated the model list themselves, so a failed
+    # /v1/models probe is not a cause for alarm.  In that case the warning
+    # is suppressed and recognized is set to True.  A bare model:
+    # scalar (or a bare-string models field) is NOT a catalogue — the old
+    # soft-accept-with-warning behaviour is preserved so the user is still told
+    # the endpoint could not be reached for verification.
     if not validation.get("accepted"):
         override = False
+        catalogue_verified = False
         if user_providers:
             from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
@@ -2086,8 +2095,12 @@ def switch_model(
                 if not is_provider_enabled(cfg):
                     continue
                 if slug == target_provider:
-                    if new_model in _declared_model_ids(cfg.get("models", {})):
+                    declared = cfg.get("models")
+                    if new_model in _declared_model_ids(declared):
                         override = True
+                        catalogue_verified = isinstance(
+                            declared, (list, tuple, dict)
+                        ) and bool(declared)
                         break
         # Also check custom_providers list — models declared there should be accepted
         # even if the remote /v1/models endpoint doesn't list them.
@@ -2108,12 +2121,32 @@ def switch_model(
                     entry_models = entry.get("models", {})
                     if new_model == entry_model:
                         override = True
+                        catalogue_verified = False
                         break
                     if new_model in _declared_model_ids(entry_models):
                         override = True
+                        catalogue_verified = isinstance(
+                            entry_models, (list, tuple, dict)
+                        ) and bool(entry_models)
                         break
         if override:
-            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+            if catalogue_verified:
+                # The user's explicit models catalogue is verification
+                # enough — suppress the misleading "could not reach /v1/models"
+                # warning and mark the model as recognized.
+                validation = {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            else:
+                validation = {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": validation.get("message", ""),
+                }
         else:
             msg = validation.get("message", "Invalid model")
             return ModelSwitchResult(

@@ -760,3 +760,166 @@ class TestMalformedYAMLConfigPreservation:
         assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Custom provider model IDs with dots — regression tests for #91095
+# ---------------------------------------------------------------------------
+
+class TestCustomProviderDottedModelKeys:
+    """#91095: hermes config set on custom_providers.<idx>.models.<model_id>.<leaf>
+    must handle model IDs containing dots (e.g. qwen3.5:4b, llama3.3:70b).
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_update_existing_dotted_model_override(self, _isolated_hermes_home):
+        """Updating an existing qwen3.5:4b override must update the exact model entry."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models:\n"
+            "    qwen3.5:4b:\n"
+            "      context_length: 16384\n"
+        ))
+
+        set_config_value("custom_providers.0.models.qwen3.5:4b.context_length", "65536")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        models = reloaded["custom_providers"][0]["models"]
+        assert "qwen3.5:4b" in models
+        assert models["qwen3.5:4b"]["context_length"] == 65536
+        assert "qwen3" not in models
+
+    def test_create_new_dotted_model_override_when_absent(self, _isolated_hermes_home):
+        """Creating an override for qwen3.5:4b when absent must not create nested sub-dicts."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models: {}\n"
+        ))
+
+        set_config_value("custom_providers.0.models.qwen3.5:4b.context_length", "65536")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        models = reloaded["custom_providers"][0]["models"]
+        assert "qwen3.5:4b" in models
+        assert models["qwen3.5:4b"]["context_length"] == 65536
+        assert "qwen3" not in models
+
+    def test_quoted_and_escaped_model_key_syntax(self, _isolated_hermes_home):
+        """Explicit quotes or backslashes work identically."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models: {}\n"
+        ))
+
+        set_config_value('custom_providers.0.models."deepseek-r1:1.5b".context_length', "32768")
+        set_config_value('custom_providers.0.models.llama3\\.3:70b.context_length', "131072")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        models = reloaded["custom_providers"][0]["models"]
+        assert models["deepseek-r1:1.5b"]["context_length"] == 32768
+        assert models["llama3.3:70b"]["context_length"] == 131072
+
+    def test_config_get_and_unset_dotted_model_keys(self, _isolated_hermes_home, capsys):
+        """config get and unset handle dotted model names seamlessly."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models:\n"
+            "    qwen3.5:4b:\n"
+            "      context_length: 65536\n"
+        ))
+
+        from hermes_cli.config import config_command
+        args_get = argparse.Namespace(config_command="get", key="custom_providers.0.models.qwen3.5:4b.context_length", json=False)
+        config_command(args_get)
+        assert capsys.readouterr().out.strip() == "65536"
+
+        args_unset = argparse.Namespace(config_command="unset", key="custom_providers.0.models.qwen3.5:4b.context_length")
+        config_command(args_unset)
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert "context_length" not in reloaded["custom_providers"][0].get("models", {}).get("qwen3.5:4b", {})
+
+    def test_end_to_end_custom_provider_context_length_resolved(self, _isolated_hermes_home):
+        """Verify get_custom_provider_context_length finds the override created by config set."""
+        from hermes_cli.config import get_custom_provider_context_length, load_config
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models: {}\n"
+        ))
+
+        set_config_value("custom_providers.0.models.qwen3.5:4b.context_length", "65536")
+
+        cfg = load_config()
+        resolved_ctx = get_custom_provider_context_length(
+            model="qwen3.5:4b",
+            base_url="http://localhost:11434/v1",
+            config=cfg,
+        )
+        assert resolved_ctx == 65536
+
+    def test_prefix_collision_with_shorter_existing_model_name(self, _isolated_hermes_home):
+        """Setting qwen3.5:4b when qwen3 already exists in models must not corrupt into qwen3.5:4b."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models:\n"
+            "    qwen3:\n"
+            "      context_length: 8192\n"
+        ))
+
+        set_config_value("custom_providers.0.models.qwen3.5:4b.context_length", "65536")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        models = reloaded["custom_providers"][0]["models"]
+        assert models["qwen3"]["context_length"] == 8192
+        assert models["qwen3.5:4b"]["context_length"] == 65536
+        assert "5:4b" not in models.get("qwen3", {})
+
+    def test_setting_whole_model_dict_without_leaf(self, _isolated_hermes_home):
+        """Setting custom_providers.0.models.qwen3.5:4b directly assigns the entire model mapping."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: Local Ollama\n"
+            "  base_url: http://localhost:11434/v1\n"
+            "  models: {}\n"
+        ))
+
+        set_config_value("custom_providers.0.models.qwen3.5:4b", '{"context_length": 65536}')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        models = reloaded["custom_providers"][0]["models"]
+        assert "qwen3.5:4b" in models
+        assert models["qwen3.5:4b"]["context_length"] == 65536
+
+    def test_model_catalog_standard_nesting_preserved(self, _isolated_hermes_home):
+        """Standard dotted nesting in model_catalog (e.g. providers.openrouter.url) is preserved."""
+        self._write_config(_isolated_hermes_home, "model_catalog: {}\n")
+
+        set_config_value("model_catalog.providers.openrouter.url", "https://example.com/custom.json")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model_catalog"]["providers"]["openrouter"]["url"] == "https://example.com/custom.json"
+
+
+
+

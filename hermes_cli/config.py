@@ -1017,6 +1017,88 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _parse_quoted_dotted_key(key: str) -> list[str]:
+    """Parse a dotted path that may contain double/single quotes or backslashes."""
+    parts = []
+    current = []
+    in_quote = None
+    escape = False
+    for ch in key:
+        if escape:
+            current.append(ch)
+            escape = False
+        elif ch == "\\":
+            escape = True
+        elif ch in ('"', "'"):
+            if in_quote == ch:
+                in_quote = None
+            elif in_quote is None:
+                in_quote = ch
+            else:
+                current.append(ch)
+        elif ch == "." and in_quote is None:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if escape:
+        current.append("\\")
+    if current or not parts:
+        parts.append("".join(current))
+    return parts
+
+
+def _split_config_key_path(dotted_key: str, root_config: Any = None) -> list[str]:
+    """Split a dotted configuration key into navigation segments.
+
+    Handles:
+      1. Explicit quotes or escapes: ``a."b.c".d`` or ``a.b\\.c.d``
+      2. Dotted model IDs under ``custom_providers.<idx>.models.<model_id>.<field>``:
+         e.g. ``custom_providers.0.models.qwen3.5:4b.context_length``
+         -> ``['custom_providers', '0', 'models', 'qwen3.5:4b', 'context_length']``
+      3. Standard dot-separated segments.
+    """
+    if '"' in dotted_key or "'" in dotted_key or "\\" in dotted_key:
+        return _parse_quoted_dotted_key(dotted_key)
+
+    # Check for custom_providers.<idx>.models.<model_id> pattern
+    cp_match = re.match(r"^custom_providers\.(\d+)\.models\.(.+)$", dotted_key)
+    if cp_match:
+        idx_str = cp_match.group(1)
+        rest = cp_match.group(2)
+        prefix = ["custom_providers", idx_str, "models"]
+
+        # Check existing models in root_config if available
+        if isinstance(root_config, dict):
+            cp_list = root_config.get("custom_providers")
+            if isinstance(cp_list, list) and int(idx_str) < len(cp_list):
+                entry = cp_list[int(idx_str)]
+                if isinstance(entry, dict):
+                    models = entry.get("models")
+                    if isinstance(models, dict):
+                        if rest in models:
+                            return prefix + [rest]
+                        for m_name in sorted(models.keys(), key=len, reverse=True):
+                            if rest.startswith(m_name + "."):
+                                sub_path = rest[len(m_name) + 1 :]
+                                # If sub_path contains ':', m_name was only a prefix match of a longer model ID
+                                # (e.g. existing 'qwen3' matching prefix of 'qwen3.5:4b.context_length')
+                                if ":" in sub_path:
+                                    continue
+                                return prefix + [m_name] + sub_path.split(".")
+
+        # If creating when absent or not matched against existing keys:
+        if "." in rest:
+            model_id, leaf = rest.rsplit(".", 1)
+            # If leaf contains ':', it is part of the model tag (e.g. '5:4b'), not a property attribute
+            if ":" in leaf:
+                return prefix + [rest]
+            return prefix + [model_id, leaf]
+        return prefix + [rest]
+
+    return dotted_key.split(".")
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1039,7 +1121,7 @@ def _set_nested(config, dotted_key: str, value):
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
     """
-    parts = dotted_key.split(".")
+    parts = _split_config_key_path(dotted_key, config)
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -1101,7 +1183,7 @@ _MISSING = object()
 def _get_nested(config, dotted_key: str):
     """Return a dotted-path value from nested dict/list config data."""
     current = config
-    for part in dotted_key.split("."):
+    for part in _split_config_key_path(dotted_key, config):
         if isinstance(current, list):
             try:
                 current = current[int(part)]
@@ -1118,7 +1200,7 @@ def _get_nested(config, dotted_key: str):
 
 def _unset_nested(config, dotted_key: str) -> bool:
     """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
+    parts = _split_config_key_path(dotted_key, config)
     if not parts:
         return False
 

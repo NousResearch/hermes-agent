@@ -5775,11 +5775,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
                 remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
                 return tool_error(
-                    f"MCP server '{server_name}' is unreachable after "
-                    f"{_server_error_counts[server_name]} consecutive "
-                    f"failures. Auto-retry available in ~{remaining}s. "
-                    f"Do NOT retry this tool yet — use alternative "
-                    f"approaches or ask the user to check the MCP server."
+                    f"MCP server '{server_name}' is temporarily unavailable "
+                    f"({_server_error_counts[server_name]} consecutive failures). "
+                    f"It will auto-retry in ~{remaining}s. You may use alternative "
+                    f"approaches in the meantime."
                 )
             # Cooldown elapsed → fall through as a half-open probe.
 
@@ -5813,8 +5812,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if _signal_reconnect(server):
                     return tool_error(
                         f"MCP server '{server_name}' transport is down; "
-                        f"reconnect requested. Do NOT retry this tool "
-                        f"immediately — give it a few seconds to come back."
+                        f"reconnect requested. It may take a few seconds "
+                        f"to come back. Alternative approaches may be used "
+                        f"in the meantime."
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 

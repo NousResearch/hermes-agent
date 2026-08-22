@@ -117,6 +117,58 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_session_messages_include_compacted_surfaces_archived_rows(adapter, session_db):
+    """include_compacted=true must reach db.get_messages so archived
+    (active=0, compacted=1) rows from in-place compaction stay reachable via
+    this gateway route, not just the desktop-local dashboard route (#90473,
+    same root cause family as #80680). Without threading the query param
+    through, "Show earlier messages" falsely reports no more history once a
+    session has been compacted.
+    """
+    session_id = session_db.create_session("compacted-visible", "api_server")
+    session_db.append_messages_batch(
+        session_id,
+        [
+            {"role": "user", "content": "old q"},
+            {"role": "assistant", "content": "old a"},
+        ],
+    )
+    session_db.archive_and_compact(
+        session_id,
+        [
+            {"role": "assistant", "content": "summary"},
+            {"role": "user", "content": "live q"},
+            {"role": "assistant", "content": "live a"},
+        ],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        default_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert default_resp.status == 200
+        default_payload = await default_resp.json()
+
+        compacted_resp = await cli.get(
+            f"/api/sessions/{session_id}/messages?include_compacted=true"
+        )
+        assert compacted_resp.status == 200
+        compacted_payload = await compacted_resp.json()
+
+    assert [m["content"] for m in default_payload["data"]] == [
+        "summary",
+        "live q",
+        "live a",
+    ]
+    assert [m["content"] for m in compacted_payload["data"]] == [
+        "old q",
+        "old a",
+        "summary",
+        "live q",
+        "live a",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

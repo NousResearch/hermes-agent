@@ -1559,6 +1559,13 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # Global reference to the active playback process so it can be interrupted.
 _active_playback: Optional[subprocess.Popen] = None
 _playback_lock = threading.Lock()
+# Serializes ALL audio playback across every caller (CLI voice mode, desktop
+# /api/audio/speak, TUI gateway, streaming consumer). Without it, concurrent
+# speak requests spawn parallel afplay/ffplay processes and the audio
+# overlaps. barge-in (stop_playback) is unaffected: it only takes the short
+# _playback_lock to grab the current process, so it can still cut the
+# playing file while a queued playback waits its turn.
+_serial_playback_lock = threading.Lock()
 
 
 def stop_playback() -> None:
@@ -1633,13 +1640,18 @@ def play_audio_file(file_path: str) -> bool:
     Returns:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
-    # Ref-count real speaker output for the whole call so the thinking-sound
-    # loop (and any other ambient cue) knows audio is flowing right now.
-    mark_audio_output_active(True)
-    try:
-        return _play_audio_file_impl(file_path)
-    finally:
-        mark_audio_output_active(False)
+    # Serialize with every other playback: concurrent callers (multiple
+    # desktop speak requests, CLI voice-mode threads) queue up instead of
+    # playing over each other. The active-output ref-count stays INSIDE the
+    # lock so queued-but-not-yet-playing audio does not count as active.
+    with _serial_playback_lock:
+        # Ref-count real speaker output for the whole call so the thinking-sound
+        # loop (and any other ambient cue) knows audio is flowing right now.
+        mark_audio_output_active(True)
+        try:
+            return _play_audio_file_impl(file_path)
+        finally:
+            mark_audio_output_active(False)
 
 
 def _play_audio_file_impl(file_path: str) -> bool:

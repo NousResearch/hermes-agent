@@ -20,6 +20,7 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import copy
 import os
 import json
 import re
@@ -39,6 +40,7 @@ from tools.registry import (
     tool_error,
 )
 from toolsets import resolve_toolset, validate_toolset
+from agent.prompt_overhead import get_prompt_overhead_modes
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +322,80 @@ def _clear_tool_defs_cache() -> None:
         _tool_defs_cache.clear()
 
 
+def _shorten_schema_text(text: str, max_chars: int) -> str:
+    """Shorten schema prose while preserving the leading instruction."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not cleaned or len(cleaned) <= max_chars:
+        return cleaned
+    first_sentence = re.split(r"(?<=[.!?。！？])\s+", cleaned, maxsplit=1)[0].strip()
+    if 12 <= len(first_sentence) <= max_chars:
+        return first_sentence
+    cut = cleaned[: max_chars + 1]
+    boundary = max(
+        cut.rfind(";"),
+        cut.rfind(","),
+        cut.rfind(" — "),
+        cut.rfind(" - "),
+        cut.rfind(" "),
+    )
+    if boundary >= max_chars // 2:
+        cut = cut[:boundary]
+    else:
+        cut = cleaned[:max_chars]
+    return cut.rstrip(" ,;:-—") + "…"
+
+
+def _compact_schema_node(node: Any, mode: str) -> Any:
+    """Recursively compact JSON-schema descriptions without changing shape."""
+    if isinstance(node, list):
+        return [_compact_schema_node(item, mode) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    result: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "description" and isinstance(value, str):
+            if mode == "compact":
+                result[key] = _shorten_schema_text(value, 56)
+            # Minimal keeps function descriptions but drops parameter prose.
+            continue
+        result[key] = _compact_schema_node(value, mode)
+    return result
+
+
+def _compact_tool_definitions(
+    tool_defs: List[Dict[str, Any]], mode: str
+) -> List[Dict[str, Any]]:
+    """Return compact model-facing copies of OpenAI-format tool definitions.
+
+    Tool Search's bridge schemas already own a bounded disclosure budget and
+    must retain their catalog instructions. The full pre-assembly list is
+    never passed here, so ``tool_describe`` continues to read full schemas.
+    """
+    if mode == "full":
+        return tool_defs
+
+    bridge_names = frozenset({"tool_search", "tool_describe", "tool_call"})
+    compacted: List[Dict[str, Any]] = []
+    for tool_def in tool_defs:
+        function = tool_def.get("function") if isinstance(tool_def, dict) else None
+        if isinstance(function, dict) and function.get("name") in bridge_names:
+            compacted.append(tool_def)
+            continue
+        cloned = copy.deepcopy(tool_def)
+        function = cloned.get("function") if isinstance(cloned, dict) else None
+        if isinstance(function, dict):
+            if isinstance(function.get("description"), str):
+                function["description"] = _shorten_schema_text(
+                    function["description"], 120 if mode == "compact" else 72
+                )
+            parameters = function.get("parameters")
+            if isinstance(parameters, dict):
+                function["parameters"] = _compact_schema_node(parameters, mode)
+        compacted.append(cloned)
+    return compacted
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -353,6 +429,8 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     cache_key = None
+    prompt_modes = get_prompt_overhead_modes()
+    schema_mode = prompt_modes.tool_schema_mode
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -374,6 +452,8 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                prompt_modes.platform,
+                schema_mode,
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -386,8 +466,14 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+    )
+    if not skip_tool_search_assembly:
+        result = _compact_tool_definitions(result, schema_mode)
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool

@@ -648,6 +648,40 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
+## Prompt Overhead
+
+Hermes keeps the full skill index and eager-tool schemas by default. For
+small-context models or messaging platforms where the fixed prompt payload is
+expensive, `prompt_overhead` can shorten the model-facing catalog without
+disabling skills or tools:
+
+```yaml
+prompt_overhead:
+  skill_index_mode: full   # full | compact | minimal
+  tool_schema_mode: full   # full | compact | minimal
+  platforms:
+    feishu:
+      skill_index_mode: compact
+      tool_schema_mode: minimal
+```
+
+| Mode | Skill index | Eager-tool schemas |
+| --- | --- | --- |
+| `full` | Existing instructions and descriptions | Complete function and parameter descriptions |
+| `compact` | Short instructions and clipped trigger descriptions | Short function and parameter descriptions |
+| `minimal` | Skill names grouped by category | Short function descriptions; parameter descriptions omitted |
+
+Platform keys are case-insensitive. Hermes resolves the two global modes
+first, then a matching `platforms.<name>` block overrides each key it
+specifies. Missing or invalid platform values fall back to the resolved global
+value; missing or invalid global values fall back to `full`.
+
+This setting compacts only what the model sees initially. Tool filtering still
+honors the session's enabled/disabled toolsets and availability checks. When
+[Tool Search](/user-guide/features/tool-search) defers an MCP or plugin tool,
+`tool_describe` still returns that tool's complete, session-scoped schema. The
+Tool Search bridge instructions and bounded catalog listing are not compacted.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

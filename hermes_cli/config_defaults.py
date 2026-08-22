@@ -953,6 +953,15 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Model-facing prompt/schema compaction. Defaults preserve the historical
+    # full skill index and full eager-tool schemas. Platform entries override
+    # only the keys they specify; all modes are full | compact | minimal.
+    "prompt_overhead": {
+        "skill_index_mode": "full",
+        "tool_schema_mode": "full",
+        "platforms": {},
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

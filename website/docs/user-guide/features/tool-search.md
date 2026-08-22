@@ -123,6 +123,14 @@ eager loading's task success while costing less than the bare bridge.
 If you want the old always-eager behavior for a small toolset, set
 `enabled: off`.
 
+## Prompt schema compaction
+
+`prompt_overhead.tool_schema_mode` can separately shorten the schemas of
+tools that remain eager. It runs after Tool Search assembly, leaves the three
+bridge schemas intact, and never changes the full session-scoped definitions
+used by `tool_describe`. See [Prompt Overhead in the configuration
+guide](/user-guide/configuration#prompt-overhead).
+
 ## Trade-offs that don't go away
 
 These come from the prompt-cache integrity invariant — they are inherent

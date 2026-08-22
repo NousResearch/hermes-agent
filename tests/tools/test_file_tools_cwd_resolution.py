@@ -89,6 +89,62 @@ def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     assert resolved == (workspace / "target.py")
 
 
+def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
+    """An absolute input path is never re-anchored."""
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setenv("TERMINAL_CWD", ".")
+    abs_target = str(workspace / "target.py")
+
+    resolved = ft._resolve_path_for_task(abs_target, task_id="default")
+
+    assert resolved == Path(abs_target).resolve()
+
+
+def test_cwd_shaped_relative_path_gets_leading_slash(_isolated_cwd, monkeypatch):
+    """A cwd-shaped relative path missing its leading "/" is treated as absolute.
+
+    Regression for issue #67185: a model emitting ``home/user/dev/notes/x.md``
+    (an absolute path without the leading slash) used to be joined with the
+    task base directory, producing a doubled path like
+    ``/home/user/dev/home/user/dev/notes/x.md``.  The structural check in
+    ``_resolve_path_for_task`` now prepends the missing "/" so the file lands
+    where the model intended instead of being silently nested under the cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    # Make the workspace path end with the same segments the model drops,
+    # so the structural check (base-dir tail match) fires.
+    cwd_shaped_workspace = workspace / "home" / "user" / "dev"
+    cwd_shaped_workspace.mkdir(parents=True)
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd_shaped_workspace))
+
+    resolved = ft._resolve_path_for_task("home/user/dev/notes/x.md", task_id="default")
+
+    # The path must be absolute (not doubled under the workspace).
+    assert str(resolved) == str(Path("/home/user/dev/notes/x.md").resolve())
+    # Must NOT be doubled under the workspace root.
+    assert str(cwd_shaped_workspace) not in str(resolved)
+
+
+def test_cwd_shaped_relative_path_with_non_root_base_dir(_isolated_cwd, monkeypatch):
+    """End-to-end: a cwd-shaped path under a non-standard base dir is coerced.
+
+    Exercises the bug structurally through ``_resolve_path_for_task`` with a
+    workspace whose first segment is NOT a known filesystem root, proving
+    detection is structural (base-dir-tail match) rather than allowlist-driven.
+    """
+    workspace, decoy = _isolated_cwd
+    custom = workspace.parent / "myproject"
+    custom.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(custom))
+
+    resolved = ft._resolve_path_for_task("myproject/src/main.py", task_id="default")
+
+    assert str(resolved) == "/myproject/src/main.py"
+    # The key assertion: the path must NOT be doubled under the workspace.
+    doubled = str(custom) + str(custom).lstrip("/")
+    assert not str(resolved).startswith(doubled)
+
+
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
     """Docker paths are sandbox-local and must not be host-dereferenced.
 
@@ -310,3 +366,63 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+# ── Cwd-shaped relative path (issue #67185) ────────────────────────────────────
+
+
+def test_cwd_shaped_relative_path_prepends_slash(tmp_path, monkeypatch):
+    """A relative path that reproduces the base dir's tail gets a leading '/'.
+
+    When a model emits ``home/user/dev/notes/x.md`` (intending
+    ``/home/user/dev/notes/x.md``), the structural check in
+    ``_resolve_path_for_task`` detects that the path starts with the base
+    dir's tail (``home/user/dev/``) and prepends ``/`` so the file lands at
+    the intended absolute path instead of a doubled path.
+    """
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    # This looks like an absolute path missing its leading "/".
+    cwd_shaped = "home/user/dev/notes/x.md"
+    resolved = ft._resolve_path_for_task(cwd_shaped, task_id="default")
+
+    # The fix should prepend "/" making it absolute, not doubled under base.
+    assert resolved == Path("/home/user/dev/notes/x.md").resolve()
+    assert not str(resolved).startswith(str(base) + "/" + "home")
+
+
+def test_cwd_shaped_relative_path_through_write_file(tmp_path, monkeypatch):
+    """write_file_tool with a cwd-shaped relative path resolves to the right place.
+
+    Integration-level test: the fix must work through the full write_file_tool
+    call chain, not just _resolve_path_for_task in isolation.  We verify the
+    resolved path is absolute (not doubled) rather than checking the file
+    content, because write_file_tool refuses to write to real system paths.
+    """
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    cwd_shaped = "home/user/dev/notes/x.md"
+    resolved = ft._resolve_path_for_task(cwd_shaped, task_id="default")
+
+    # The fix coerces to absolute, so the path should NOT be doubled under base.
+    expected = Path("/home/user/dev/notes/x.md").resolve()
+    assert resolved == expected
+    # Must NOT contain the base dir twice (the doubled-path bug).
+    assert str(base) not in str(resolved)
+
+
+def test_legitimate_relative_path_not_affected(tmp_path, monkeypatch):
+    """A normal relative path like 'notes/x.md' is not touched by the fix."""
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    resolved = ft._resolve_path_for_task("notes/x.md", task_id="default")
+    assert resolved == (base / "notes" / "x.md")

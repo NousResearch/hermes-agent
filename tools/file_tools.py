@@ -378,28 +378,52 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """
     container_paths = _uses_container_paths(task_id)
     if container_paths:
+        base_dir = _resolve_base_dir(task_id, container_paths=True)
         expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
-        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        resolved = base_dir / expanded
         return _normalize_without_host_deref(resolved)
 
     # Host paths only — never rewrite Linux paths inside a container/WSL env.
     from tools.environments.local import _msys_to_windows_path
 
+    base_dir = _resolve_base_dir(task_id, container_paths=False)
     expanded = _expand_tilde(_msys_to_windows_path(filepath))
     if sys.platform == "win32":
         import ntpath
 
         if ntpath.isabs(expanded):
             return Path(ntpath.normpath(expanded))
-        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        joined = ntpath.join(str(base_dir), expanded)
         return Path(ntpath.normpath(joined))
+
+    # Structural check: if a relative path reproduces the base directory's
+    # tail as its own prefix, the model likely intended an absolute path but
+    # dropped the leading "/".  Without this fix, joining such a path with
+    # the base dir produces a doubled path like
+    #   /home/user/dev/home/user/dev/notes/x.md  (issue #67185).
+    #
+    # Example: base_dir = /home/user/dev, filepath = "home/user/dev/notes/x.md"
+    #   → base_dir tail segments = ('home', 'user', 'dev')
+    #   → filepath prefix segments = ['home', 'user', 'dev', ...]
+    #   → match → prepend "/"
+    #
+    # This is purely structural — no hard-coded root allowlist — so it works
+    # for any base directory the model might drop the slash on, and it never
+    # fires on legitimate relative paths that don't reproduce the base dir.
+    if not expanded.startswith("/"):
+        base_parts = base_dir.parts[1:]  # strip leading '/'
+        file_parts = expanded.split("/")
+        for n in range(min(len(base_parts), len(file_parts) - 1), 0, -1):
+            if list(base_parts[-n:]) == file_parts[:n]:
+                expanded = "/" + expanded
+                break
 
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    resolved = base_dir / p
     return resolved.resolve()
 
 

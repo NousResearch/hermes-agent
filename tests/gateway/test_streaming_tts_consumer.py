@@ -9,9 +9,11 @@ suppression, cancellation idempotency, and concurrent-turn isolation.
 from __future__ import annotations
 
 import asyncio
+import gc
 import queue
 import threading
 import time
+import warnings
 
 import pytest
 
@@ -399,6 +401,93 @@ class TestAbortAndCancellation:
             await consumer.wait_complete(timeout=5.0)
             # Abort should have been called at most once on the adapter
             assert adapter.abort_count <= 1
+
+        _run_test(run)
+
+    def test_abort_on_a_closed_loop_closes_the_abort_coroutine(self):
+        """A closed loop must not leave the _safe_abort coroutine unawaited.
+
+        ``abort("cleanup")`` runs at turn teardown, which is exactly when the
+        gateway loop is most likely to already be closing.  Scheduling then
+        raises ``RuntimeError: Event loop is closed``; if that is swallowed
+        without closing the coroutine, its frame leaks and Python emits
+        ``coroutine '_safe_abort' was never awaited``.
+        """
+        loop = asyncio.new_event_loop()
+        adapter = FakeVoiceAdapter()
+        consumer = _make_consumer(adapter, "chat1", loop, FakeStreamer())
+        consumer._handle = StreamingTTSHandle(
+            chat_id="chat1", audio_format=consumer._audio_format
+        )
+        loop.close()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            # Must not raise: abort() is documented as callable from any
+            # thread at any point in the turn.
+            consumer.abort("cleanup")
+            gc.collect()
+
+        leaked = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "never awaited" in str(w.message)
+            and "_safe_abort" in str(w.message)
+        ]
+        assert leaked == [], f"abort coroutine leaked unawaited: {leaked}"
+
+        # Scheduling failed, so there is no future to wait on and the adapter
+        # was never reached — but the consumer is still marked aborted.
+        assert consumer._abort_future is None
+        assert adapter.abort_count == 0
+        assert consumer._aborted is True
+
+    def test_abort_future_anchors_the_task_and_reaches_the_adapter(self):
+        """A barge-in abort is owned by the consumer and reaches the adapter.
+
+        The drain task is anchored in ``self._task``; the abort scheduled by
+        ``abort()`` was the one coroutine the consumer did not own, and the
+        loop keeps only a weak reference to a task.  Retaining the future the
+        threadsafe bridge returns anchors the loop-side task and doubles as a
+        completion handle — without it there is no way for the caller to know
+        the abort landed before the adapter is torn down.
+        """
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = BlockingSecondChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("This is a sentence with a delayed tail. ")
+            await asyncio.wait_for(
+                asyncio.to_thread(streamer.first_chunk_written.wait, 2.0),
+                timeout=2.0,
+            )
+            assert consumer._handle is not None
+            assert consumer._handle.aborted is False
+
+            # Barge-in arrives on the agent worker thread, not the loop.
+            await asyncio.to_thread(consumer.abort, "barge-in")
+
+            abort_future = consumer._abort_future
+            assert abort_future is not None
+            # Nothing else owns the in-flight abort: the retained future is
+            # the only strong reference keeping the loop-side task alive.
+            gc.collect()
+
+            await asyncio.wait_for(asyncio.wrap_future(abort_future), timeout=2.0)
+
+            # abort_streaming_tts is what restores the adapter to
+            # "not streaming"; it must have run exactly once.
+            assert adapter.abort_count == 1
+            assert adapter.handle.aborted is True
+
+            # Let the blocked drain task unwind, and confirm the abort is not
+            # re-delivered on the way out.
+            streamer.allow_remaining_chunks.set()
+            await consumer.wait_complete(timeout=5.0)
+            assert adapter.abort_count == 1
 
         _run_test(run)
 

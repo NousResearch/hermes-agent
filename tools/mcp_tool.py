@@ -23,6 +23,12 @@ Example config::
                                 # 180). Set below the server's session TTL for
                                 # servers that GC idle sessions quickly (e.g.
                                 # Unreal Engine editor MCP, ~15s). Floored at 5s.
+        reconnect_backoff: 45   # base reconnect delay in seconds (default: 1,
+                                # doubling per attempt, capped at 60s). Raise
+                                # for endpoints whose outages come in
+                                # multi-minute bursts (e.g. 503 storms) so the
+                                # retry ladder spans the burst instead of
+                                # exhausting inside it and parking.
         idle_timeout_seconds: 3600      # optional stdio recycle after idle
         max_lifetime_seconds: 86400     # optional stdio recycle after age
         # The recycle settings may also live under lifecycle: {...}.
@@ -583,6 +589,35 @@ def _jittered(seconds: float) -> float:
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+
+# Base delay for the reconnect ladder (doubles per attempt, capped at
+# _MAX_BACKOFF_SECONDS). The 1s default recovers fast from a one-off blip,
+# but a hosted endpoint whose outages arrive in multi-minute bursts (e.g.
+# 503 storms from a shared SaaS MCP backend) exhausts the whole ladder
+# inside the burst and parks; a larger per-server ``reconnect_backoff``
+# spreads the same attempts across the burst so one lands after it clears.
+_DEFAULT_RECONNECT_BACKOFF = 1.0
+
+
+def _resolve_reconnect_backoff(server_name: str, config: dict) -> float:
+    """Return the reconnect-ladder base delay (seconds) for ``server_name``.
+
+    Reads ``reconnect_backoff`` from the server's config, clamped to
+    [_DEFAULT_RECONNECT_BACKOFF, _MAX_BACKOFF_SECONDS]. Invalid values warn
+    and fall back to the default rather than killing the run task.
+    """
+    raw = config.get("reconnect_backoff", _DEFAULT_RECONNECT_BACKOFF)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "MCP server '%s': invalid reconnect_backoff %r in config, "
+            "using default %.0fs",
+            server_name, raw, _DEFAULT_RECONNECT_BACKOFF,
+        )
+        return _DEFAULT_RECONNECT_BACKOFF
+    return min(max(_DEFAULT_RECONNECT_BACKOFF, value),
+               float(_MAX_BACKOFF_SECONDS))
 
 # Final shutdown gives pending MCP-loop tasks one bounded cancellation cycle
 # before closing their owning loop. Cooperative parked/reconnect waiters finish
@@ -3804,7 +3839,8 @@ class MCPServerTask:
 
         self._reconnect_retries = 0
         initial_retries = 0
-        backoff = 1.0
+        reconnect_backoff = _resolve_reconnect_backoff(self.name, config)
+        backoff = reconnect_backoff
 
         while True:
             try:
@@ -3850,7 +3886,15 @@ class MCPServerTask:
                 # served >=1 successful tool call (_mark_session_proven).
                 if self._session_proven:
                     self._reconnect_retries = 0
-                    backoff = 1.0
+                    # A proven session also refunds the initial-connect
+                    # budget: after the teardown below clears _ready, the
+                    # next cycle's failures count as "initial" again, and
+                    # without this reset the counter leaks across flap
+                    # cycles until one burst parks on its very first
+                    # attempt (observed: park 242ms after keepalive
+                    # failure, one attempt into a 3-attempt ladder).
+                    initial_retries = 0
+                    backoff = reconnect_backoff
                 else:
                     # Unproven session: charge the rapid-drop budget so a
                     # flapping transport still reaches the park.
@@ -3881,7 +3925,7 @@ class MCPServerTask:
                         # One probe attempt per wake — see the exception-path
                         # park below.
                         self._reconnect_retries = _MAX_RECONNECT_RETRIES
-                        backoff = 1.0
+                        backoff = reconnect_backoff
                 # Reset the session reference and readiness; _run_http/_run_stdio
                 # will repopulate both on successful re-entry.  Leaving
                 # _ready set here lets handler-side recovery mistake the stale
@@ -3972,7 +4016,7 @@ class MCPServerTask:
                         )
                         initial_retries = 0
                         self._reconnect_retries = 0
-                        backoff = 1.0
+                        backoff = reconnect_backoff
                         self._error = None
                         self._ready.clear()
                         continue
@@ -4004,7 +4048,7 @@ class MCPServerTask:
                         )
                         initial_retries = 0
                         self._reconnect_retries = 0
-                        backoff = 1.0
+                        backoff = reconnect_backoff
                         self._error = None
                         self._ready.clear()
                         continue
@@ -4061,7 +4105,7 @@ class MCPServerTask:
                         self.name,
                     )
                     self._reconnect_retries = _MAX_RECONNECT_RETRIES
-                    backoff = 1.0
+                    backoff = reconnect_backoff
                     continue
 
                 self._reconnect_retries += 1
@@ -4103,7 +4147,7 @@ class MCPServerTask:
                     # server parks again for another interval instead of
                     # burning 5 rapid retries each cycle.
                     self._reconnect_retries = _MAX_RECONNECT_RETRIES
-                    backoff = 1.0
+                    backoff = reconnect_backoff
                     continue
 
                 # Per-attempt retry chatter stays at DEBUG; state transitions

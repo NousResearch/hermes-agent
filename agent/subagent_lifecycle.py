@@ -524,13 +524,25 @@ class SubagentLifecycleService:
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
         if request.allowed_toolsets:
-            from toolsets import TOOLSETS
+            from toolsets import validate_toolset
 
-            unknown = set(request.allowed_toolsets) - set(TOOLSETS)
+            unknown = {
+                ts
+                for ts in request.allowed_toolsets
+                if not validate_toolset(ts)
+            }
             if unknown:
                 raise SubagentLifecycleError(
                     f"Unknown toolsets: {', '.join(sorted(unknown))}."
                 )
+            # The parent's enabled list is the authority for permission
+            # checks (validate_toolset above already confirmed each name
+            # is real). Plugin-registered toolsets register during plugin
+            # discovery and are legitimately present in a running agent's
+            # enabled set without necessarily appearing in the static
+            # TOOLSETS table. Comparing against the static table alone
+            # would reject valid plugin toolsets (e.g. a parent running
+            # with evey_*/a2a-style plugin toolsets enabled).
             enabled = getattr(parent, "enabled_toolsets", None)
             if enabled is not None and not set(request.allowed_toolsets).issubset(
                 set(enabled)

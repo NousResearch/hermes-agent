@@ -82,8 +82,11 @@ describe('MEDIA file fallback link context menu', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('/tmp/report.pdf'))
   })
 
-  it('does not reveal a transcript-controlled UNC path', async () => {
-    render(<MarkdownTextContent isRunning={false} text="Done: [report.pdf](#media:%5C%5Cserver%5Cshare%5Creport.pdf)" />)
+  it.each([
+    ['backslash UNC', '%5C%5Cserver%5Cshare%5Creport.pdf'],
+    ['forward-slash UNC', '//server/share/report.pdf']
+  ])('does not reveal a transcript-controlled %s path', async (_kind, mediaPath) => {
+    render(<MarkdownTextContent isRunning={false} text={`Done: [report.pdf](#media:${mediaPath})`} />)
 
     const link = await screen.findByText('Open report.pdf')
     fireEvent.contextMenu(link)

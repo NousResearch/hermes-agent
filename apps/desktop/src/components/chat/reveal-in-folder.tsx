@@ -13,14 +13,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { translateNow, useI18n } from '@/i18n'
 import { revealDesktopPath } from '@/lib/desktop-fs'
 import { pickRevealLabel } from '@/lib/file-manager'
+import { isUnsafeRevealPath } from '@/lib/reveal-path-guard'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
-
-function isUnsafeRevealPath(path: string): boolean {
-  // A transcript-controlled UNC/device path can make Explorer initiate an SMB
-  // connection merely by revealing it. Reveal only local filesystem paths.
-  return /^\\\\(?:[?.]\\|[^\\])/.test(path)
-}
 
 /**
  * Right-click menu over a transcript file affordance ("Open …" fallback link,

@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ 推論強度を `{effort}` に設定しました (設定に保存)\n_(次のメッセージから有効)_"
     set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
     set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"
+  switch_announce:
+    model:                     "🔀 モデル: {old} → {new}"
+    reasoning:                 "🔀 推論: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp をキャンセルしました。MCP ツールは変更されていません。"

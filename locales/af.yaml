@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ Redenering-inspanning gestel op `{effort}` (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
     set_global_save_failed:    "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — konfigurasie-stoor het misluk)\n_(neem effek by die volgende boodskap)_"
     set_session:               "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — voeg `--global` by om permanent te stoor)\n_(neem effek by die volgende boodskap)_"
+  switch_announce:
+    model:                     "🔀 Model: {old} → {new}"
+    reasoning:                 "🔀 Redenering: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp gekanselleer. MCP-gereedskap onveranderd."

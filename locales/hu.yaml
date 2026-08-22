@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
     set_global_save_failed:    "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — a konfiguráció mentése sikertelen)\n_(a következő üzenettől lép életbe)_"
     set_session:               "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — add hozzá a `--global` opciót a megőrzéshez)\n_(a következő üzenettől lép életbe)_"
+  switch_announce:
+    model:                     "🔀 Modell: {old} → {new}"
+    reasoning:                 "🔀 Gondolkodás: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp megszakítva. Az MCP-eszközök változatlanok."

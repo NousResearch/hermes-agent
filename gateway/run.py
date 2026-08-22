@@ -2809,6 +2809,14 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
 
+# Locale keys for the deliberate-switch announce (``GatewayRunner._announce_switch``).
+# The kind is a fixed enum, not free text, so the catalog lookup can never be
+# driven by caller-supplied strings.
+_SWITCH_ANNOUNCE_KEYS: dict = {
+    "model": "gateway.switch_announce.model",
+    "reasoning": "gateway.switch_announce.reasoning",
+}
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -9491,6 +9499,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_state(session_key).conversation.reasoning_override = (
             None if reasoning_config is None else dict(reasoning_config)
         )
+
+    def _resolved_effort_label(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        model: str = "",
+    ) -> str:
+        """Effective reasoning effort INCLUDING the config fallback.
+
+        This is the baseline the deliberate-switch announce compares against.
+        It must resolve the *effective* effort on both sides of the switch —
+        a session with no override sitting at the config default ``xhigh``
+        yields ``"xhigh"`` here, not ``""``. Otherwise ``/reasoning xhigh`` on
+        such a session would compare ``"" != "xhigh"`` and announce a change
+        that did not happen.
+        """
+        cfg = self._resolve_session_reasoning_config(
+            source=source, session_key=session_key, model=model,
+        )
+        if cfg is None:
+            # ``resolve_reasoning_config`` returns None when nothing is set;
+            # the provider default in that case is medium.
+            return "medium"
+        if not cfg.get("enabled", True):
+            return "none"
+        return str(cfg.get("effort", "medium") or "medium").strip()
+
+    @staticmethod
+    def _switch_announce_enabled(user_config: Optional[dict]) -> bool:
+        """Read ``model.announce_switch`` (default True).
+
+        Fails OPEN: any read error keeps the announce on, because silence is
+        the failure mode this feature exists to remove.
+        """
+        try:
+            gate = ((user_config or {}).get("model") or {}).get(
+                "announce_switch", True
+            )
+        except Exception:
+            return True
+        return str(gate).strip().lower() not in {"false", "0", "no", "off"}
+
+    async def _announce_switch(
+        self,
+        source: "SessionSource",
+        kind: str,
+        old: str,
+        new: str,
+    ) -> None:
+        """Post one channel-visible line for a deliberate ``/reasoning`` or
+        ``/model`` switch. ``kind`` is ``"model"`` or ``"reasoning"``.
+
+        A slash command's confirmation goes only to the person who ran it —
+        ephemeral on native Discord slash — so everyone else in the
+        conversation saw the model or effort change with no explanation. This
+        posts the change to the channel it happened in.
+
+        Silent on a genuine no-op (``old == new``). Gated by
+        ``model.announce_switch`` (default on). Best-effort: never raises, so a
+        failed send can't stop the handler returning its confirmation. Uses the
+        out-of-band ``adapter.send`` rail — the same one the hygiene
+        compression notices use — because slash handlers run in the gateway
+        without a live ``AIAgent``, so ``_emit_status`` is not in scope.
+        """
+        try:
+            if not old or not new or old == new:
+                return
+            if kind not in _SWITCH_ANNOUNCE_KEYS:
+                # Guard the dynamic catalog lookup: an unknown kind would post
+                # the raw dotted key into the user's channel.
+                logger.debug("switch announce: unknown kind %r", kind)
+                return
+            try:
+                cfg = _load_gateway_config()
+            except Exception:
+                cfg = None
+            if not self._switch_announce_enabled(cfg):
+                return
+            adapter = self._adapter_for_source(source)
+            chat_id = getattr(source, "chat_id", None)
+            if not (adapter and chat_id):
+                return
+            try:
+                meta = self._thread_metadata_for_source(source, None)
+            except Exception:
+                meta = None
+            await adapter.send(
+                chat_id,
+                t(_SWITCH_ANNOUNCE_KEYS[kind], old=old, new=new),
+                metadata=meta,
+            )
+        except Exception:
+            logger.debug("switch announce skipped (non-fatal)", exc_info=True)
 
     def _resolve_session_service_tier(
         self,

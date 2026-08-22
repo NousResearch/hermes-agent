@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (guardado en la configuración)\n_(se aplica en el próximo mensaje)_"
     set_global_save_failed:    "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (solo en la sesión — error al guardar la configuración)\n_(se aplica en el próximo mensaje)_"
     set_session:               "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (solo en la sesión — añade `--global` para persistir)\n_(se aplica en el próximo mensaje)_"
+  switch_announce:
+    model:                     "🔀 Modelo: {old} → {new}"
+    reasoning:                 "🔀 Razonamiento: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp cancelado. Las herramientas MCP no han cambiado."

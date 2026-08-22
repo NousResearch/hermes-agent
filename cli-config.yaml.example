@@ -306,6 +306,20 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Model / Reasoning Switch Announce
+# =============================================================================
+# When someone runs /model or /reasoning in a shared channel, the command's
+# confirmation goes only to them — ephemeral on native Discord slash commands.
+# Everyone else just sees the assistant start behaving differently. The gateway
+# therefore posts one short "🔀" line to the channel whenever a deliberate
+# switch actually changes the effective model or reasoning effort.
+#
+# Silent on a no-op (re-selecting the level you already have announces nothing).
+#
+# model:
+#   announce_switch: true    # Default. Set false to silence the announce.
+
+# =============================================================================
 # Kanban Review Dispatch
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker

@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (in Konfiguration gespeichert)\n_(wird mit der nächsten Nachricht wirksam)_"
     set_global_save_failed:    "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — Konfiguration konnte nicht gespeichert werden)\n_(wird mit der nächsten Nachricht wirksam)_"
     set_session:               "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — `--global` hinzufügen, um zu speichern)\n_(wird mit der nächsten Nachricht wirksam)_"
+  switch_announce:
+    model:                     "🔀 Modell: {old} → {new}"
+    reasoning:                 "🔀 Reasoning: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp abgebrochen. MCP-Tools unverändert."

@@ -231,6 +231,9 @@ gateway:
     set_global:                "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (حُفظ في الإعدادات)\n_(يسري على الرسالة التالية)_"
     set_global_save_failed:    "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — فشل حفظ الإعدادات)\n_(يسري على الرسالة التالية)_"
     set_session:               "🧠 ✓ ضُبط جهد التفكير إلى `{effort}` (الجلسة فقط — أضف `--global` للحفظ الدائم)\n_(يسري على الرسالة التالية)_"
+  switch_announce:
+    model:                     "🔀 النموذج: {old} → {new}"
+    reasoning:                 "🔀 التفكير: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 أُلغي /reload-mcp. أدوات MCP دون تغيير."

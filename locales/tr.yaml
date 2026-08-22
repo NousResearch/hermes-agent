@@ -208,6 +208,9 @@ gateway:
     set_global:                "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yapılandırmaya kaydedildi)\n_(sonraki mesajda etkili)_"
     set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
     set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"
+  switch_announce:
+    model:                     "🔀 Model: {old} → {new}"
+    reasoning:                 "🔀 Akıl yürütme: {old} → {new}"
 
   reload_mcp:
     cancelled:             "🟡 /reload-mcp iptal edildi. MCP araçları değiştirilmedi."

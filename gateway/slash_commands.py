@@ -2011,6 +2011,16 @@ class GatewaySlashCommandsMixin:
                             "api_mode": result.api_mode,
                         }
 
+                        # Announce the deliberate switch to the conversation —
+                        # same rationale as the typed /model path above (the
+                        # picker's confirmation is likewise invoker-only).
+                        await _self._announce_switch(
+                            event.source,
+                            "model",
+                            f"{_cur_provider}/{_cur_model}",
+                            f"{result.target_provider}/{result.new_model}",
+                        )
+
                         # Write-through the non-secret parts to the session
                         # store so the picked model survives a gateway restart
                         # (api_key is never persisted).
@@ -2322,6 +2332,18 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+
+            # Announce the deliberate switch to the conversation. The command's
+            # own confirmation reaches only the invoker, so without this the
+            # rest of the channel sees the model change with no explanation.
+            # Compares the full provider/model route, so a same-slug switch
+            # across providers still announces; silent on a true no-op.
+            await self._announce_switch(
+                source,
+                "model",
+                f"{current_provider}/{current_model}",
+                f"{result.target_provider}/{result.new_model}",
+            )
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
                     self._pending_one_turn_model_restores = {}
@@ -3559,18 +3581,23 @@ class GatewaySlashCommandsMixin:
             logger.error("Failed to save config key %s: %s", key_path, e)
             return False
 
-    def _apply_reasoning_selection(
+    async def _apply_reasoning_selection(
         self,
         session_key: str,
         platform_key: str,
         value: str,
         persist_global: bool = False,
+        source=None,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply.
 
         Single application path shared by the typed `/reasoning <arg>` branch
         and the interactive choice picker, so both surfaces stay in lockstep
         with the canonical parser.
+
+        ``source`` (the invoking :class:`SessionSource`) is what lets both
+        surfaces announce the change to the channel; omit it and the switch
+        applies silently, as before.
         """
         from hermes_constants import parse_reasoning_effort
 
@@ -3590,12 +3617,41 @@ class GatewaySlashCommandsMixin:
             )
             return t("gateway.reasoning.display_set_off", platform=platform_key)
 
+        # Resolve the session's *effective* model (a session /model override
+        # wins over the config default) so per-model ``agent.reasoning_overrides``
+        # resolve against what the session actually runs — the same model the
+        # /reasoning status card reads.
+        _effective_model = str(
+            (
+                (getattr(self, "_session_model_overrides", {}) or {}).get(session_key)
+                or {}
+            ).get("model")
+            or ""
+        )
+
+        def _effort_now() -> str:
+            return self._resolved_effort_label(
+                session_key=session_key, model=_effective_model,
+            )
+
+        # Snapshot the effective effort BEFORE applying, so the announce can
+        # compare like with like and stay silent on a genuine no-op.
+        old_effort = _effort_now()
+
+        async def _announce() -> None:
+            if source is None:
+                return
+            await self._announce_switch(
+                source, "reasoning", old_effort, _effort_now(),
+            )
+
         if value == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
+            await _announce()
             return t("gateway.reasoning.reset_done")
 
         parsed = parse_reasoning_effort(value)
@@ -3607,13 +3663,16 @@ class GatewaySlashCommandsMixin:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
                 self._set_session_reasoning_override(session_key, None)
                 self._evict_cached_agent(session_key)
+                await _announce()
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_session_reasoning_override(session_key, parsed)
             self._evict_cached_agent(session_key)
+            await _announce()
             return t("gateway.reasoning.set_global_save_failed", effort=value)
 
         self._set_session_reasoning_override(session_key, parsed)
         self._evict_cached_agent(session_key)
+        await _announce()
         return t("gateway.reasoning.set_session", effort=value)
 
     def _reasoning_picker_choices(self, current_effort: str) -> list:
@@ -3743,8 +3802,9 @@ class GatewaySlashCommandsMixin:
             _picker_platform_key = _platform_config_key(event.source.platform)
 
             async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-                return self._apply_reasoning_selection(
-                    session_key, _picker_platform_key, value
+                return await self._apply_reasoning_selection(
+                    session_key, _picker_platform_key, value,
+                    source=_reasoning_source,
                 )
 
             picker_sent = await self._try_send_choice_picker(
@@ -3771,8 +3831,10 @@ class GatewaySlashCommandsMixin:
 
         # Typed argument path — same applier the picker uses.
         platform_key = _platform_config_key(event.source.platform)
-        return self._apply_reasoning_selection(
-            session_key, platform_key, args, persist_global=persist_global
+        return await self._apply_reasoning_selection(
+            session_key, platform_key, args,
+            persist_global=persist_global,
+            source=_reasoning_source,
         )
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:

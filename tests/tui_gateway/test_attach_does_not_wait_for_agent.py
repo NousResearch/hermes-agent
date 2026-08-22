@@ -47,7 +47,7 @@ def building_session(tmp_path, sid: str) -> dict:
 @pytest.fixture
 def no_build(monkeypatch):
     """Never let the real builder run — the point is the unfinished build."""
-    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session, **kwargs: None)
 
 
 @pytest.fixture

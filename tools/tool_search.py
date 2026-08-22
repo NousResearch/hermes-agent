@@ -101,6 +101,10 @@ class ToolSearchConfig:
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
     listing_max_tokens: int = 4000
+    # Plugin/MCP tools whose schemas must remain directly visible. This is for
+    # small, high-frequency policy tools where requiring the model to first
+    # remember that a hidden capability exists defeats the capability itself.
+    always_visible: frozenset[str] = frozenset()
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -150,6 +154,19 @@ class ToolSearchConfig:
             listing = "auto"
         listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
+        always_visible_raw = raw.get("always_visible", [])
+        if isinstance(always_visible_raw, str):
+            always_visible_values = always_visible_raw.split(",")
+        elif isinstance(always_visible_raw, (list, tuple, set, frozenset)):
+            always_visible_values = always_visible_raw
+        else:
+            always_visible_values = []
+        always_visible = frozenset(
+            str(name).strip()
+            for name in always_visible_values
+            if str(name).strip()
+        )
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
@@ -157,6 +174,7 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=listing,
             listing_max_tokens=listing_max_tokens,
+            always_visible=always_visible,
         )
 
 
@@ -240,13 +258,19 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    *,
+    always_visible: Iterable[str] = (),
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, every session-gated GUI surface tool, plus any tool we
-    can't classify. ``deferrable`` is the candidate set for catalog entry.
+    every core tool, every session-gated GUI surface tool, every explicitly
+    pinned tool, plus any tool we can't classify. ``deferrable`` is the
+    candidate set for catalog entry.
     """
+    pinned = frozenset(always_visible)
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td in tool_defs:
@@ -255,6 +279,9 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
         if name in BRIDGE_TOOL_NAMES:
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
+            continue
+        if name in pinned:
+            visible.append(td)
             continue
         if is_deferrable_tool_name(name):
             deferrable.append(td)
@@ -807,7 +834,10 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(
+        incoming,
+        always_visible=config.always_visible,
+    )
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
@@ -911,7 +941,10 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(
+        current_tool_defs,
+        always_visible=config.always_visible,
+    )
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
     result: Dict[str, Any] = {

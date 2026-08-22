@@ -2751,6 +2751,11 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
             "listing_max_tokens": 4000,
+            # Exact tool names (list or comma-separated string) whose full
+            # schemas stay directly visible when tool search is active.
+            # Unknown names are ignored. Use for small, high-frequency
+            # plugin/MCP tools the model should not have to discover first.
+            "always_visible": [],
         },
     },
 

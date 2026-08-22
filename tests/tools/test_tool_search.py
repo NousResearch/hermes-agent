@@ -61,6 +61,51 @@ class TestConfigParsing:
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
 
+    def test_always_visible_accepts_list_and_csv(self):
+        from tools.tool_search import ToolSearchConfig
+        listed = ToolSearchConfig.from_raw({
+            "always_visible": ["papercuts", "mcp_ticket_create", ""],
+        })
+        assert listed.always_visible == frozenset({"papercuts", "mcp_ticket_create"})
+
+        csv = ToolSearchConfig.from_raw({
+            "always_visible": "papercuts, mcp_ticket_create",
+        })
+        assert csv.always_visible == listed.always_visible
+
+    def test_always_visible_dedupes_and_tolerates_invalid_entries(self, monkeypatch):
+        import tools.tool_search as tool_search
+        cfg = tool_search.ToolSearchConfig.from_raw({
+            "always_visible": [
+                "papercuts",
+                "papercuts",
+                "  mcp_ticket_create  ",
+                "unknown_tool_xyz",
+                42,
+            ],
+        })
+        # Parsing keeps unknown names; matching is a no-op when no tool exists.
+        assert cfg.always_visible == frozenset({
+            "papercuts", "mcp_ticket_create", "unknown_tool_xyz", "42",
+        })
+        assert tool_search.ToolSearchConfig.from_raw({"always_visible": 99}).always_visible == frozenset()
+
+        monkeypatch.setattr(
+            tool_search,
+            "is_deferrable_tool_name",
+            lambda name: name in {"papercuts", "other_deferrable"},
+        )
+        defs = [_td("papercuts", "Pinned"), _td("other_deferrable", "Deferred")]
+        visible, deferrable = tool_search.classify_tools(
+            defs,
+            always_visible=cfg.always_visible,
+        )
+        visible_names = {(td.get("function") or {}).get("name") for td in visible}
+        deferrable_names = {(td.get("function") or {}).get("name") for td in deferrable}
+        assert "papercuts" in visible_names
+        assert "unknown_tool_xyz" not in visible_names
+        assert "other_deferrable" in deferrable_names
+
 
 # ---------------------------------------------------------------------------
 # Classification — the hard invariant: core tools NEVER defer.
@@ -280,6 +325,35 @@ class TestAssembly:
         # activation happened; here it didn't).
         assert "tool_search" not in names
 
+    def test_always_visible_tool_stays_direct_when_search_activates(self, monkeypatch):
+        import tools.tool_search as tool_search
+
+        defs = [
+            _td("terminal", "Run shell"),
+            _td("papercuts", "Record reusable workflow friction"),
+            _td("other_plugin_tool", "A deferred plugin tool"),
+        ]
+        monkeypatch.setattr(
+            tool_search,
+            "is_deferrable_tool_name",
+            lambda name: name in {"papercuts", "other_plugin_tool"},
+        )
+
+        result = tool_search.assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=tool_search.ToolSearchConfig.from_raw({
+                "enabled": "on",
+                "always_visible": ["papercuts"],
+            }),
+        )
+
+        names = {td["function"]["name"] for td in result.tool_defs}
+        assert result.activated
+        assert "papercuts" in names
+        assert "other_plugin_tool" not in names
+        assert tool_search.BRIDGE_TOOL_NAMES.issubset(names)
+
 
 # ---------------------------------------------------------------------------
 # Bridge dispatch
@@ -317,6 +391,33 @@ class TestBridgeDispatch:
         ]
         assert "remain available" in result["hint"]
         assert "before concluding" in result["hint"]
+
+    def test_pinned_tool_excluded_from_deferred_search_catalog(self, monkeypatch):
+        import tools.tool_search as tool_search
+
+        defs = [
+            _td("pinned_policy_tool", "High-frequency policy action"),
+            _td("deferred_catalog_tool", "Deferred catalog action"),
+        ]
+        monkeypatch.setattr(
+            tool_search,
+            "is_deferrable_tool_name",
+            lambda name: name in {"pinned_policy_tool", "deferred_catalog_tool"},
+        )
+        config = tool_search.ToolSearchConfig.from_raw({
+            "always_visible": ["pinned_policy_tool"],
+        })
+
+        result = json.loads(tool_search.dispatch_tool_search(
+            {"query": "tool", "limit": 10},
+            current_tool_defs=defs,
+            config=config,
+        ))
+
+        match_names = {m["name"] for m in result["matches"]}
+        assert "pinned_policy_tool" not in match_names
+        assert "deferred_catalog_tool" in match_names
+        assert result["total_available"] == 1
 
 
     def test_resolve_underlying_call_parses_object_args(self):

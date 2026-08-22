@@ -926,7 +926,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         void removeSession(id)
       }
     },
-    onDeleteSession: sessionId => void removeSession(sessionId),
+    onDeleteSession: (sessionId, profile) => removeSession(sessionId, profile),
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
@@ -1136,7 +1136,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           <CommandCenterView
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
-            onDeleteSession={removeSession}
+            onDeleteSession={async sessionId => {
+              await removeSession(sessionId)
+            }}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
             onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
@@ -1153,6 +1155,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
+            onDeleteSession={removeSession}
             onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
         </Suspense>

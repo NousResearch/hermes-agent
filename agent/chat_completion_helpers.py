@@ -2483,7 +2483,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         unavailable = set()
         agent._unavailable_fallback_keys = unavailable
     if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        logger.warning("Fallback skip: %s previously marked unavailable", fb_key)
         return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()

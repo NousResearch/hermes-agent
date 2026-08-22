@@ -6,6 +6,7 @@ Diagnoses issues with Hermes Agent setup.
 
 import os
 import sys
+import sysconfig
 import subprocess
 import shutil
 import importlib.util
@@ -1982,16 +1983,86 @@ def run_doctor(args):
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
 
-    if sys.platform != "win32":
-        _section("Command Installation")
-        # Determine the venv entry point location
-        _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
+    # Entry-point detection runs on ALL platforms. The environment's scripts
+    # directory is platform-aware via sysconfig: on Windows it is
+    # venv\Scripts (console scripts installed as hermes.exe/.cmd/.bat), on
+    # POSIX venv/bin (bare "hermes"). Only the *symlink* management below is
+    # POSIX-specific, so that part stays guarded.
+    _section("Command Installation")
+    # Determine the venv entry point location
+    _venv_bin = None
+    _uses_environment_entry_point = False
+    for _venv_name in ("venv", ".venv"):
+        _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
+        if _candidate.exists():
+            _venv_bin = _candidate
+            break
+
+    # A wheel-installed virtualenv keeps the console script under the
+    # environment's scripts directory while PROJECT_ROOT points inside
+    # site-packages.  The source-checkout candidates above cannot describe
+    # that layout, so consult Python's platform-aware install scheme before
+    # reporting a missing entry point (#49529).
+    _active_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    _environment_scripts_dir = None
+    if _active_venv:
+        try:
+            _scripts_path = sysconfig.get_path("scripts")
+            if _scripts_path:
+                _environment_scripts_dir = Path(_scripts_path)
+        except (KeyError, TypeError, ValueError):
+            pass
+    if _venv_bin is None and _environment_scripts_dir is not None:
+        # Windows console scripts are installed as <name>.exe (plus .cmd/.bat
+        # shims); POSIX installs a bare <name>. Check all platform variants so
+        # an environment-installed entry point is not reported missing on
+        # Windows (verified on Win11: venv\Scripts\hermes.exe, bare "hermes"
+        # absent) or in cross-layout venvs.
+        for _script_name in ("hermes", "hermes.exe", "hermes.cmd", "hermes.bat"):
+            _candidate = _environment_scripts_dir / _script_name
             if _candidate.exists():
                 _venv_bin = _candidate
+                _uses_environment_entry_point = True
                 break
 
+    _source_checkout = (PROJECT_ROOT / "pyproject.toml").is_file()
+
+    if _venv_bin is None:
+        if _active_venv and not _source_checkout:
+            _expected_dir = _environment_scripts_dir or Path(sys.prefix) / "bin"
+            _reinstall_cmd = (
+                f"{sys.executable} -m pip install --force-reinstall hermes-agent"
+            )
+            check_warn(
+                "Venv entry point not found",
+                f"(hermes not in {_expected_dir} — reinstall with {_reinstall_cmd})",
+            )
+            manual_issues.append(f"Reinstall entry point: {_reinstall_cmd}")
+        else:
+            check_warn(
+                "Venv entry point not found",
+                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+            )
+            manual_issues.append(
+                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+            )
+    else:
+        try:
+            _venv_bin_display = _venv_bin.relative_to(PROJECT_ROOT)
+        except ValueError:
+            _venv_bin_display = _venv_bin
+        check_ok(f"Venv entry point exists ({_venv_bin_display})")
+
+        # A wheel's console script is already installed in the active
+        # environment.  Requiring a second global link would turn a
+        # healthy isolated venv into a false failure and make --fix leak
+        # that environment into the user's global command path.
+        if _uses_environment_entry_point and not _source_checkout:
+            check_ok("Active environment entry point needs no global symlink")
+
+    # POSIX-only: the ~/.local/bin symlink management does not apply on
+    # Windows (command resolution goes through the console script + PATH).
+    if sys.platform != "win32":
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
         _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
@@ -2003,18 +2074,7 @@ def run_doctor(args):
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 
-        if _venv_bin is None:
-            check_warn(
-                "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
-            )
-            manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
-            )
-        else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
-
-            # Check the symlink at the command link location
+        if _venv_bin is not None and not (_uses_environment_entry_point and not _source_checkout):
             if _cmd_link.is_symlink():
                 _target = _cmd_link.resolve()
                 _expected = _venv_bin.resolve()

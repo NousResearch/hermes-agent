@@ -487,6 +487,68 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
 
 
 
+def test_partial_recovery_skips_rows_rejected_by_current_schema(
+    tmp_path: Path,
+) -> None:
+    """Legacy optional rows must not abort recovery of the canonical data."""
+    source = tmp_path / "legacy-delegation.db"
+    output = tmp_path / "legacy-delegation-recovered.db"
+    _make_source(source)
+
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        create_sql = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'async_delegations'"
+        ).fetchone()[0]
+        conn.execute(
+            "ALTER TABLE async_delegations RENAME TO async_delegations_strict"
+        )
+        conn.execute(create_sql.replace("state TEXT NOT NULL", "state TEXT"))
+        columns = [
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(async_delegations)")
+        ]
+        quoted = ", ".join(f'"{column}"' for column in columns)
+        conn.execute(
+            f"INSERT INTO async_delegations ({quoted}) "
+            f"SELECT {quoted} FROM async_delegations_strict"
+        )
+        conn.execute("DROP TABLE async_delegations_strict")
+        conn.execute(
+            """
+            INSERT INTO async_delegations (
+                delegation_id, origin_session, state, dispatched_at, updated_at
+            ) VALUES (?, ?, NULL, ?, ?)
+            """,
+            ("legacy-invalid", "recovery-session-0", 3.0, 4.0),
+        )
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=16,
+        allow_partial=True,
+    )
+
+    copied = report["copy"]["async_delegations"]
+    assert copied["status"] == "partial"
+    assert copied["copied_rows"] == 1
+    assert copied["destination_rejected_rows"] == 1
+    assert any(
+        "destination constraint rejected row" in item["error"]
+        for item in copied["skipped_rowid_ranges"]
+    )
+    assert report["verified"] is True
+    assert report["partial"] is True
+
+    with sqlite3.connect(str(output)) as conn:
+        rows = conn.execute(
+            "SELECT delegation_id, state FROM async_delegations"
+        ).fetchall()
+    assert rows == [("delegation-1", "completed")]
+
+
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     tmp_path: Path,
 ) -> None:
@@ -646,6 +708,5 @@ def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
         )
     finally:
         conn.close()
-
 
 

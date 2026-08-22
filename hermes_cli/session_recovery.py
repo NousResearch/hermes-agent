@@ -601,6 +601,7 @@ def _copy_table_salvage(
         "columns": columns,
         "range_queries": 0,
         "exact_lookup_recovered": 0,
+        "destination_rejected_rows": 0,
         "skipped_rowid_ranges": [],
     }
     if not source_columns:
@@ -686,6 +687,16 @@ def _copy_table_salvage(
         try:
             destination.execute(insert_sql, value)
             destination.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            destination.execute("ROLLBACK")
+            result["destination_rejected_rows"] += 1
+            _append_skipped_range(
+                result["skipped_rowid_ranges"],
+                rowid,
+                rowid,
+                f"destination constraint rejected row: {exc}",
+            )
+            return True
         except BaseException:
             destination.execute("ROLLBACK")
             raise

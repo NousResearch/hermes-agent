@@ -175,6 +175,12 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         except ValueError:
             return None
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
+            # Prose globs/placeholders — e.g. ``references/type-*.md`` or
+            # ``references/type-<name>.md`` (which the regex truncates to the
+            # bare prefix ``references/type-``) — are agent instructions, not
+            # files. Only tokens that can name an actual file are references.
+            if re.search(r"[*?<>]", safe) or "." not in safe.rsplit("/", 1)[-1]:
+                continue
             paths.add(safe)
     return paths
 
@@ -676,22 +682,30 @@ class GitHubSource(SkillSource):
             for rel_path in sorted(referenced):
                 item_path = f"{prefix}{rel_path}"
                 item = entries_by_path.get(item_path)
+                # A missing or unfetchable support file (a repo-only dev tool,
+                # a prose mention, a transient API miss) must not abort the
+                # whole install — bundle what exists and warn about the rest.
                 if item is None:
-                    logger.warning("Referenced skill support file is missing: %s", item_path)
-                    return None
+                    logger.warning("Referenced skill support file is missing; "
+                                   "continuing without it: %s", item_path)
+                    continue
                 if item.get("type") != "blob" or item.get("mode") == "120000":
                     logger.warning("Rejected non-regular file in skill bundle: %s", item_path)
                     return None
                 content = self._fetch_file_bytes(repo, item_path)
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", item_path)
+                    continue
                 files[rel_path] = content
             revision = self._tree_revisions.get(repo) or branch
         else:
             for rel_path in referenced:
                 content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", rel_path)
+                    continue
                 files[rel_path] = content
             revision = ""
 
@@ -1524,7 +1538,9 @@ class UrlSource(SkillSource):
                 return None
             content = self._fetch_bytes(support_url)
             if content is None:
-                return None
+                logger.warning("Failed to fetch referenced skill support "
+                               "file; continuing without it: %s", rel_path)
+                continue
             files[rel_path] = content
 
         # When auto-resolution fails, return a bundle with an empty name and

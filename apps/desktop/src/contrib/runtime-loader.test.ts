@@ -80,14 +80,19 @@ describe('scanDiskPlugins (#66899)', () => {
         ? { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
         : { entries: [] }
     )
-    // No desktop half in this package — probe must target desktop/plugin.js.
+    // No desktop half in this package. The probe is a directory listing, not a
+    // read: readFileText is a hardened handler that throws for a missing path,
+    // and Electron logs a full stack for every rejection -- which spammed the
+    // console once per 5s poll for every Python-only plugin folder.
     readFileText.mockRejectedValue(new Error('ENOENT'))
 
     await discoverRuntimePlugins()
 
-    expect(readFileText).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop/plugin.js')
-    // The Python half's files must never be probed as a desktop entry.
-    expect(readFileText).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/plugin.js')
+    // Probe targets the desktop half's directory, never the package root.
+    expect(readDir).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop')
+    expect(readDir).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature')
+    // A miss must cost no read at all, so nothing reaches the throwing handler.
+    expect(readFileText).not.toHaveBeenCalled()
   })
 
   it('still scans the standalone root when agentPluginsRoot is absent (older shell)', async () => {
@@ -104,11 +109,23 @@ describe('scanDiskPlugins (#66899)', () => {
   it('loads a unified desktop half OPT-IN: inventoried but not activated by default', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir =>
-      dir === '/local/.hermes/plugins'
-        ? { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
-        : { entries: [] }
-    )
+    // Two levels: the root lists the package, and the package's desktop/ dir
+    // lists the entry file the probe looks for.
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/plugins') {
+        return { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
+      }
+
+      if (dir === '/local/.hermes/plugins/uni/desktop') {
+        return {
+          entries: [
+            { isDirectory: false, name: 'plugin.js', path: '/local/.hermes/plugins/uni/desktop/plugin.js' }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
 
     const register = vi.fn()
 

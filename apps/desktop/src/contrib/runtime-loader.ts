@@ -366,10 +366,34 @@ async function scanDiskPlugins(): Promise<void> {
           continue
         }
 
+        // Probe with a directory listing, not a read. `readFileText` is a
+        // hardened handler that THROWS for a missing path, and Electron logs a
+        // full "Error occurred in handler" stack for every rejection -- so the
+        // ordinary case (a folder in this root that is not a desktop plugin)
+        // spammed the console on every pass of the 5s poll. The unified root
+        // `~/.hermes/plugins` is full of such folders: its Python plugins
+        // (mnemosyne, vaultwarden, quota, ...) legitimately have no plugin.js.
+        // A listing answers the same question and cannot throw for a miss.
+        // Derive the listing target from the entry path, not from dir.path:
+        // the unified root's entry is `<folder>/desktop/plugin.js`, so the
+        // directory to list is the entry's own parent, which may be a level
+        // deeper than the scanned folder. A missing `desktop/` throws here and
+        // is treated as "no desktop half", same as a missing entry file.
+        const slash = file.lastIndexOf('/')
+        const entryDir = file.slice(0, slash)
+        const wanted = file.slice(slash + 1)
+        let hasEntry = false
+
         try {
-          await desktop.readFileText(file)
+          const { entries: inner } = await desktop.readDir(entryDir)
+
+          hasEntry = inner.some(candidate => !candidate.isDirectory && candidate.name === wanted)
         } catch {
-          continue // No entry file (yet) — not a plugin folder for this root.
+          continue // No such directory — not a plugin folder for this root.
+        }
+
+        if (!hasEntry) {
+          continue // Not a plugin folder for this root.
         }
 
         const record: DiskPlugin = {

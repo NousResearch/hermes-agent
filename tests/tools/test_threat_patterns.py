@@ -260,3 +260,15 @@ class TestNFKCNormalisation:
 
     def test_benign_content_not_flagged_by_normalisation(self):
         assert scan_for_threats("Refactor the parser module.", scope="context") == []
+
+
+    @pytest.mark.parametrize("scope", ["context", "strict"])
+    def test_persian_zwnj_is_allowed(self, scope):
+        assert scan_for_threats("می\u200cرود", scope=scope) == []
+
+    def test_zwnj_cannot_hide_injection(self):
+        findings = scan_for_threats(
+            "system prompt over\u200cride",
+            scope="strict",
+        )
+        assert "sys_prompt_override" in findings

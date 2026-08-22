@@ -168,6 +168,17 @@ class TestScanFile:
         findings = scan_file(f, "safe.py")
         assert findings == []
 
+    def test_persian_zwnj_is_allowed(self, tmp_path):
+        persian = tmp_path / "persian.md"
+        persian.write_text("می\u200cرود\n", encoding="utf-8")
+        assert scan_file(persian, "persian.md") == []
+
+    def test_zwnj_cannot_hide_injection(self, tmp_path):
+        injected = tmp_path / "injected.md"
+        injected.write_text("system prompt over\u200cride\n", encoding="utf-8")
+        findings = scan_file(injected, "injected.md")
+        assert any(f.pattern_id == "sys_prompt_override" for f in findings)
+
 
     def test_detect_gitlab_pat(self, tmp_path):
         f = tmp_path / "leak.md"

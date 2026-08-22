@@ -568,6 +568,12 @@ INVISIBLE_CHARS = {
     '\u2069',  # pop directional isolate
 }
 
+# U+200C is required orthography in scripts such as Persian.  Do not flag it
+# by itself, but delete it from the regex scan copy so it cannot split an
+# otherwise detectable injection keyword.
+_ORTHOGRAPHIC_JOINERS = {'\u200c'}
+_REGEX_SCAN_TRANSLATION = {ord(ch): None for ch in _ORTHOGRAPHIC_JOINERS}
+
 
 # ---------------------------------------------------------------------------
 # Scanning functions
@@ -604,7 +610,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if pattern.search(line):
+            if pattern.search(line.translate(_REGEX_SCAN_TRANSLATION)):
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:
@@ -621,7 +627,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
 
     # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):
-        for char in INVISIBLE_CHARS:
+        for char in INVISIBLE_CHARS - _ORTHOGRAPHIC_JOINERS:
             if char in line:
                 char_name = _unicode_char_name(char)
                 findings.append(Finding(

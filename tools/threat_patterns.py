@@ -158,6 +158,13 @@ INVISIBLE_CHARS = frozenset({
     '\u2069',  # pop directional isolate
 })
 
+# U+200C is an orthographic half-space in scripts such as Persian.  It may
+# separate attack keywords too, so retain it in the canonical candidate set
+# (used by stricter consumers) but remove it from the regex scan copy instead
+# of reporting it as malicious by itself.
+_ORTHOGRAPHIC_JOINERS = frozenset({'\u200c'})
+_REGEX_SCAN_TRANSLATION = {ord(ch): None for ch in _ORTHOGRAPHIC_JOINERS}
+
 
 # Compiled pattern sets, indexed by scope.  Compiled once at import time;
 # scan_for_threats() looks them up.
@@ -232,7 +239,7 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # ``in`` lookups.  Run this on the RAW content before NFKC normalisation,
     # since normalisation can strip some of these codepoints.
     char_set = set(content)
-    invisible_hits = char_set & INVISIBLE_CHARS
+    invisible_hits = char_set & (INVISIBLE_CHARS - _ORTHOGRAPHIC_JOINERS)
     for ch in invisible_hits:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
@@ -242,7 +249,9 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # bypassing keyword checks (e.g. ``ｃａｔ ~/.hermes/.env``).  NOTE: this
     # does NOT defend against cross-script confusables (Cyrillic ``а`` U+0430),
     # which NFKC leaves untouched — that needs a TR#39 confusable database.
-    normalised = unicodedata.normalize("NFKC", content)
+    normalised = unicodedata.normalize("NFKC", content).translate(
+        _REGEX_SCAN_TRANSLATION
+    )
 
     # Threat patterns
     patterns = _COMPILED.get(scope)

@@ -609,6 +609,16 @@ def browser_exec(
     if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
         env["BU_AUTOSPAWN"] = "1"
 
+    # On headless Linux with no resolved backend, provision a local headless
+    # Chrome and point the harness at it via BU_CDP_URL. The harness's own
+    # "local Chrome" path launches a GUI and can't work over SSH, so without
+    # this every browser_exec on a VPS fails with "chrome-not-running".
+    from tools.browser_headless import ensure_headless_chrome
+
+    headless_err = ensure_headless_chrome(env)
+    if headless_err:
+        return tool_error(headless_err)
+
     try:
         timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
     except (TypeError, ValueError):

@@ -57,6 +57,12 @@ def test_would_grow_refusal_restores_prune_runway(tmp_path: Path) -> None:
     compressor = agent.context_compressor
     armed_runway = 250_000
     compressor._proactive_prune_rearm_tokens = armed_runway
+    # Arm the durable copy too, exactly as a committed prune would have
+    # (prune_tool_results_only persists it via archive_and_compact's
+    # model_config_patch) — the refusal must leave it untouched.
+    db.patch_session_model_config(
+        session_id, {"_proactive_prune_rearm_tokens": armed_runway}
+    )
 
     messages = [{"role": "user", "content": f"m{i} " + "x" * 200} for i in range(10)]
 
@@ -78,5 +84,11 @@ def test_would_grow_refusal_restores_prune_runway(tmp_path: Path) -> None:
     # The runway must survive the refusal — memory re-aligned with the
     # (never-cleared) durable copy, keeping the #79640 throttle armed.
     assert compressor._proactive_prune_rearm_tokens == armed_runway
+    assert (
+        db.get_session_model_config_value(
+            session_id, "_proactive_prune_rearm_tokens", 0
+        )
+        == armed_runway
+    )
     # And the compression lock must not leak.
     assert db.get_compression_lock_holder(session_id) is None

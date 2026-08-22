@@ -3471,8 +3471,7 @@ def compress_context(
                     # The durable copy was never cleared (that clear only rides
                     # the archive_and_compact / child-row commit that never
                     # ran), so restoring the snapshot re-aligns memory with
-                    # disk. When compress() aborted before its tail, snapshot
-                    # and current value are identical and this is a no-op.
+                    # disk.
                     if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
                         agent.context_compressor._proactive_prune_rearm_tokens = (
                             _compressor_attempt_snapshot[

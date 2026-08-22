@@ -1005,6 +1005,181 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_named_custom_child_uses_requested_provider_pool_when_endpoints_are_shared(self):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.requested_provider = "open-ai"
+        parent.base_url = "https://shared.example/v1"
+        parent._credential_pool = None
+
+        wrong_pool = MagicMock(name="wrong_pool")
+        wrong_pool.has_credentials.return_value = True
+        correct_pool = MagicMock(name="correct_pool")
+        correct_pool.has_credentials.return_value = True
+
+        def load_pool(provider):
+            return {
+                "custom:claude-ai": wrong_pool,
+                "custom:open-ai": correct_pool,
+            }.get(provider)
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                side_effect=lambda _url, provider_name=None: (
+                    f"custom:{provider_name}" if provider_name else "custom:claude-ai"
+                ),
+            ),
+            patch("agent.credential_pool.load_pool", side_effect=load_pool),
+        ):
+            result = _resolve_child_credential_pool(
+                "custom",
+                parent,
+                parent.base_url,
+                effective_requested_provider="open-ai",
+            )
+
+        self.assertIs(result, correct_pool)
+
+    def test_named_custom_child_resolves_shared_endpoint_from_real_config(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir)
+            (hermes_home / "config.yaml").write_text(
+                "providers:\n"
+                "  claude-ai:\n"
+                "    api: https://shared.example/v1\n"
+                "    api_key: claude-key\n"
+                "  open-ai:\n"
+                "    api: https://shared.example/v1\n"
+                "    api_key: openai-key\n",
+                encoding="utf-8",
+            )
+
+            parent = _make_mock_parent()
+            parent.provider = "custom"
+            parent.requested_provider = "open-ai"
+            parent.base_url = "https://shared.example/v1"
+            parent._credential_pool = None
+
+            correct_pool = MagicMock(name="correct_pool")
+            correct_pool.has_credentials.return_value = True
+
+            with (
+                patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+                patch(
+                    "agent.credential_pool.load_pool",
+                    side_effect=lambda provider: (
+                        correct_pool if provider == "custom:open-ai" else None
+                    ),
+                ),
+            ):
+                result = _resolve_child_credential_pool(
+                    "custom",
+                    parent,
+                    parent.base_url,
+                    effective_requested_provider="open-ai",
+                )
+
+        self.assertIs(result, correct_pool)
+
+    def test_named_custom_parent_pool_sharing_uses_requested_provider_not_endpoint_order(self):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.requested_provider = "open-ai"
+        parent.base_url = "https://shared.example/v1"
+        parent_pool = MagicMock(name="parent_open_ai_pool")
+        parent._credential_pool = parent_pool
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            side_effect=lambda _url, provider_name=None: (
+                f"custom:{provider_name}" if provider_name else "custom:claude-ai"
+            ),
+        ):
+            result = _resolve_child_credential_pool(
+                "custom",
+                parent,
+                parent.base_url,
+                effective_requested_provider="open-ai",
+            )
+
+        self.assertIs(result, parent_pool)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_inherits_requested_provider_identity(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.requested_provider = "open-ai"
+        parent.base_url = "https://shared.example/v1"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Preserve named provider identity",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs["requested_provider"], "open-ai")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_explicit_provider_overrides_parent_requested_provider(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.requested_provider = "open-ai"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use explicit provider",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="anthropic",
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs["requested_provider"], "anthropic")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_raw_base_url_does_not_inherit_named_provider_identity(self, _mock_cfg):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.requested_provider = "open-ai"
+        parent.base_url = "https://shared.example/v1"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use raw endpoint",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="https://raw.example/v1",
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs["requested_provider"], "custom")
+
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
 

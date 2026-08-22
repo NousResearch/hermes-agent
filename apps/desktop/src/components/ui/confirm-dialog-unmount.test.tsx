@@ -34,15 +34,7 @@ test('the close timer does not fire after unmount', async () => {
   const onClose = vi.fn()
   const onConfirm = vi.fn()
 
-  render(
-    <ConfirmDialog
-      confirmLabel="Delete"
-      onClose={onClose}
-      onConfirm={onConfirm}
-      open
-      title="Delete session"
-    />
-  )
+  render(<ConfirmDialog confirmLabel="Delete" onClose={onClose} onConfirm={onConfirm} open title="Delete session" />)
 
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 

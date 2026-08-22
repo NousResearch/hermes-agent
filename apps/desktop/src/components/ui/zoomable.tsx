@@ -141,9 +141,11 @@ function Toolbar({
 
     await onCopy()
     setCopied(true)
+
     if (resetRef.current !== null) {
       window.clearTimeout(resetRef.current)
     }
+
     resetRef.current = window.setTimeout(() => {
       resetRef.current = null
       setCopied(false)

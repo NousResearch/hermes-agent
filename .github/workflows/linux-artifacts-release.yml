@@ -253,11 +253,14 @@ jobs:
           sg lxd -c "env SNAPCRAFT_BUILD_ENVIRONMENT_TYPE=container snapcraft"
 
       - name: Verify Snap
+        working-directory: apps/desktop
         run: |
-          snap info hermes-desktop_*.snap || true
-          snap run --shell hermes-desktop_*.snap -c '
-            test -x /snap/hermes-desktop/current/bin/hermes-desktop && echo "OK: Snap" || exit 1
-          ' || exit 1
+          SNAP_FILE=$(ls hermes-desktop_*.snap)
+          snap info "$SNAP_FILE" || true
+          # install locally and confirm the wrapper is executable
+          sudo snap install --dangerous "$SNAP_FILE"
+          test -x /snap/bin/hermes-desktop && echo "OK: Snap" || exit 1
+          sudo snap remove hermes-desktop
 
       - name: Upload Snap
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

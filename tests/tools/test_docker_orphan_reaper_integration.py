@@ -2,7 +2,7 @@
 
 The reaper itself is unit-tested in tests/tools/test_docker_environment.py
 under the "Orphan reaper" section. These tests cover the terminal_tool-side
-gates: once-per-process behavior, the disable flag, and the
+gates: once-per-profile behavior, the disable flag, and the
 ``lifetime_seconds`` doubling that determines the reaper's age threshold.
 
 Issue #20561 — without these gates, parallel subagents would each fire the
@@ -17,12 +17,12 @@ import tools.terminal_tool as terminal_tool
 
 
 def _reset_reaper_gate():
-    """Clear the once-per-process flag between tests."""
-    terminal_tool._docker_orphan_reaper_ran = False
+    """Clear the once-per-profile set between tests."""
+    terminal_tool._docker_orphan_reaper_profiles.clear()
 
 
-def test_maybe_reap_runs_once_per_process(monkeypatch):
-    """The reaper sweep must run at most once per Python interpreter.
+def test_maybe_reap_runs_once_per_profile(monkeypatch):
+    """The reaper sweep must run at most once for each active profile.
     Parallel subagents that each call _create_environment(env_type='docker')
     would otherwise fire N concurrent docker ps + inspect storms against the
     daemon and waste 5–10s of startup."""
@@ -33,14 +33,17 @@ def test_maybe_reap_runs_once_per_process(monkeypatch):
         call_count["reap"] += 1
         return 0
 
-    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap):
+    with patch("tools.environments.docker.reap_orphan_containers", _fake_reap), patch(
+        "tools.environments.docker._get_active_profile_name",
+        side_effect=["default", "default", "research"],
+    ):
         config = {"docker_orphan_reaper": True}
         terminal_tool._maybe_reap_docker_orphans(config)
         terminal_tool._maybe_reap_docker_orphans(config)
         terminal_tool._maybe_reap_docker_orphans(config)
 
-    assert call_count["reap"] == 1, (
-        f"reaper must run exactly once per process; got {call_count['reap']} calls"
+    assert call_count["reap"] == 2, (
+        f"reaper must run once per profile; got {call_count['reap']} calls"
     )
 
 

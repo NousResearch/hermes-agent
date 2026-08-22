@@ -799,7 +799,7 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    terminal_env = _get_profile_terminal_env().get("TERMINAL_ENV", "local").strip().lower() or "local"
     if terminal_env != "local":
         return False
 
@@ -1104,10 +1104,10 @@ _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
-# Once-per-process guard for the docker orphan reaper (issue #20561).
-# Set when _maybe_reap_docker_orphans first runs; concurrent _create_environment
-# calls for parallel subagents won't re-trigger the sweep.
-_docker_orphan_reaper_ran = False
+# Once-per-profile guard for the docker orphan reaper (issue #20561).
+# Concurrent environments in one profile share a sweep, while multiplexed
+# profiles each retain their own container-cleanup boundary.
+_docker_orphan_reaper_profiles: set[str] = set()
 _docker_orphan_reaper_lock = threading.Lock()
 
 
@@ -1127,21 +1127,27 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
       operator opted out — usually because they're running multiple
       Hermes processes in the same profile and don't trust the
       conservative defaults).
-    * ``_docker_orphan_reaper_ran`` flag — sweep runs once per Python
-      interpreter, not on every subagent / RL-rollout / parallel
-      ``terminal()`` call.
+    * ``_docker_orphan_reaper_profiles`` set — sweep runs once per active
+      profile, not on every subagent / RL-rollout / parallel ``terminal()``
+      call, without letting one routed profile suppress another's cleanup.
     """
-    global _docker_orphan_reaper_ran
     if not container_config.get("docker_orphan_reaper", True):
         return
+    try:
+        from tools.environments.docker import (
+            reap_orphan_containers, _get_active_profile_name,
+        )
+    except ImportError:
+        return
+    profile = _get_active_profile_name()
     # Cheap double-checked-locking: read without the lock, take the lock
-    # only on first run, recheck inside.
-    if _docker_orphan_reaper_ran:
+    # only on the first run for this profile, recheck inside.
+    if profile in _docker_orphan_reaper_profiles:
         return
     with _docker_orphan_reaper_lock:
-        if _docker_orphan_reaper_ran:
+        if profile in _docker_orphan_reaper_profiles:
             return
-        _docker_orphan_reaper_ran = True
+        _docker_orphan_reaper_profiles.add(profile)
 
     # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
     # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
@@ -1149,20 +1155,13 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     # ``container_config`` only carries container_* keys, so read
     # lifetime_seconds from the env var the rest of the module uses.
     try:
-        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+        lifetime = int(_get_profile_terminal_env().get("TERMINAL_LIFETIME_SECONDS", "300"))
     except (TypeError, ValueError):
         lifetime = 300
     lifetime = max(60, lifetime)
     max_age = lifetime * 2
 
     try:
-        from tools.environments.docker import (
-            reap_orphan_containers, _get_active_profile_name,
-        )
-    except ImportError:
-        return
-    try:
-        profile = _get_active_profile_name()
         removed = reap_orphan_containers(
             max_age_seconds=max_age, profile_filter=profile,
         )
@@ -1335,10 +1334,10 @@ def _docker_session_isolation_enabled() -> bool:
     ``container_persistent: true`` the documented ONE-long-lived-container
     contract is unchanged.
     """
-    _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    env = _get_profile_terminal_env()
+    if env.get("TERMINAL_ENV", "local") != "docker":
         return False
-    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+    return env.get("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1592,14 +1591,76 @@ def _ensure_terminal_env_bridged() -> None:
         logger.debug("terminal config → env fallback bridge failed", exc_info=True)
 
 
+def _get_profile_terminal_env() -> Dict[str, str]:
+    """Return an isolated TERMINAL_* overlay for the active profile scope."""
+    profile_env = None
+    try:
+        from agent.secret_scope import current_secret_scope
+
+        profile_env = current_secret_scope()
+    except Exception:
+        logger.debug("profile terminal secret overlay failed", exc_info=True)
+    # The one-shot bridge mutates os.environ and is therefore launch-profile
+    # only. A routed profile applies its config exclusively to the private map.
+    if profile_env is None:
+        _ensure_terminal_env_bridged()
+    env = dict(os.environ)
+    if profile_env is not None:
+        # A multiplexed profile's .env is context-local.  Never retain a
+        # launch profile's TERMINAL_* values here: absent SSH settings must
+        # fail at SSH creation rather than connect using another profile's
+        # host or identity.  The profile's own .env values are restored
+        # below before its config.yaml overrides them.
+        env = {
+            key: value for key, value in env.items()
+            if not key.startswith("TERMINAL_")
+        }
+        env.update({
+            key: value for key, value in profile_env.items()
+            if key.startswith("TERMINAL_")
+        })
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        # The active profile is selected by get_hermes_home()'s contextvar.
+        # Applying into this private mapping keeps the profile bridge isolated
+        # and intentionally re-evaluates it for each scoped read.
+        apply_terminal_config_to_env(env=env, override=True)
+    except Exception:
+        logger.debug("profile terminal config overlay failed", exc_info=True)
+    return env
+
+
 def _get_env_config() -> Dict[str, Any]:
-    """Get terminal environment configuration from environment variables."""
+    """Get terminal configuration for the current profile runtime scope.
+
+    ``gateway.run._profile_runtime_scope`` selects a routed profile via a
+    contextvar, but ``os.environ`` belongs to the gateway process and normally
+    contains only its launch profile.  Build a per-call overlay instead of
+    trusting that process-global state: an environment re-created after idle
+    cleanup therefore resolves the same profile backend as its initial one,
+    without changing another concurrently routed session's environment.
+    """
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env = _get_profile_terminal_env()
+
+    getenv = env.get
+
+    def _parse_config_env(
+        name: str, default: str, cast: Any = int, expectation: str = "integer"
+    ) -> Any:
+        value = getenv(name, default)
+        try:
+            return cast(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name} must be a valid {expectation} (got {value!r})"
+            ) from exc
+
+    env_type = getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1608,20 +1669,20 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_config_env("TERMINAL_CONTAINER_CPU", "1", float, "number")
+        container_memory = _parse_config_env("TERMINAL_CONTAINER_MEMORY", "5120")
+        container_disk = _parse_config_env("TERMINAL_CONTAINER_DISK", "51200")
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_forward_env = _parse_config_env("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
+        docker_volumes = _parse_config_env("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+        docker_env = _parse_config_env("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
+        docker_extra_args = _parse_config_env("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+        docker_shm_size = getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1645,13 +1706,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = getenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1669,41 +1730,41 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(getenv("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_config_env("TERMINAL_TIMEOUT", "180"),
+        "lifetime_seconds": _parse_config_env("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": getenv("TERMINAL_SSH_HOST", ""),
+        "ssh_user": getenv("TERMINAL_SSH_USER", ""),
+        "ssh_port": _parse_config_env("TERMINAL_SSH_PORT", "22"),
+        "ssh_key": getenv("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
+        "ssh_persistent": getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1712,14 +1773,14 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": getenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }
@@ -3647,7 +3708,7 @@ def terminal_tool(
         #   warn (default) — return a structured degraded result the model
         #                    can act on (reason + retry hint, no traceback).
         #   fail           — preserve the historical error+traceback result.
-        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        degraded_mode = _get_profile_terminal_env().get("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
         if degraded_mode == "fail":
             import traceback
             tb_str = traceback.format_exc()

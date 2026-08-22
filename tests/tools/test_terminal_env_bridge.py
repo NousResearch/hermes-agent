@@ -7,11 +7,18 @@ config.yaml.
 """
 
 import os
+import time
+from unittest.mock import patch
 
 import pytest
 
 import tools.terminal_tool as terminal_tool
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
+from agent.secret_scope import reset_secret_scope, set_secret_scope
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +29,9 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_ENV",
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
+        "TERMINAL_CONTAINER_PERSISTENT",
+        "TERMINAL_LIFETIME_SECONDS",
+        "TERMINAL_DEGRADED_MODE",
         "TERMINAL_SSH_HOST",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -117,7 +127,7 @@ def test_defaults_backfill_when_neither_config_nor_env_selects_backend():
     assert os.environ["TERMINAL_ENV"] == "local"
 
 
-def test_bridge_only_attempted_once(monkeypatch):
+def test_global_bridge_once_but_profile_overlay_runs_per_config_read(monkeypatch):
     calls = []
 
     import hermes_cli.config as config_mod
@@ -134,7 +144,9 @@ def test_bridge_only_attempted_once(monkeypatch):
     terminal_tool._get_env_config()
     terminal_tool._get_env_config()
 
-    assert len(calls) == 1
+    # One call is the global one-shot bridge; each config read applies a
+    # private profile-scoped overlay so idle recreation cannot use launch env.
+    assert len(calls) == 3
 
 
 def test_bridge_config_failure_does_not_crash(monkeypatch):
@@ -152,3 +164,126 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
 
     assert config["env_type"] == "ssh"
     assert config["ssh_host"] == "example.test"
+
+
+def test_routed_ssh_profile_recreates_ssh_after_idle_cleanup(monkeypatch, tmp_path):
+    """A routed profile must not inherit the gateway's local process backend."""
+    profile_home = tmp_path / "profiles" / "vps"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: ssh\n"
+        "  ssh_host: remote.example.test\n"
+        "  ssh_user: deploy\n"
+        "  lifetime_seconds: 1\n"
+    )
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    task_id = "routed-ssh"
+    effective_task_id = terminal_tool._resolve_container_task_id(task_id)
+    terminal_tool._active_environments.pop(effective_task_id, None)
+    terminal_tool._last_activity.pop(effective_task_id, None)
+    token = set_hermes_home_override(str(profile_home))
+    created = []
+
+    class FakeEnvironment:
+        def cleanup(self):
+            pass
+
+    def fake_create(**kwargs):
+        created.append(kwargs)
+        return FakeEnvironment()
+
+    try:
+        with patch.object(terminal_tool, "_start_cleanup_thread"), patch.object(
+            terminal_tool, "_create_environment", side_effect=fake_create
+        ):
+            assert terminal_tool.ensure_task_env(task_id) is not None
+            terminal_tool._last_activity[effective_task_id] = time.time() - 2
+            terminal_tool._cleanup_inactive_envs(lifetime_seconds=1)
+            assert terminal_tool.ensure_task_env(task_id) is not None
+    finally:
+        reset_hermes_home_override(token)
+        terminal_tool._active_environments.pop(effective_task_id, None)
+        terminal_tool._last_activity.pop(effective_task_id, None)
+
+    assert [call["env_type"] for call in created] == ["ssh", "ssh"]
+    assert all(call["ssh_config"]["host"] == "remote.example.test" for call in created)
+
+
+def test_routed_ssh_profile_missing_connection_config_fails_closed(monkeypatch, tmp_path):
+    """An SSH-selected profile must raise, never fall through to local."""
+    profile_home = tmp_path / "profiles" / "broken-vps"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("terminal:\n  backend: ssh\n")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    scope = set_secret_scope({})
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        config = terminal_tool._get_env_config()
+        assert config["env_type"] == "ssh"
+        with pytest.raises(ValueError, match="SSH environment requires"):
+            terminal_tool._create_environment(
+                env_type=config["env_type"], image="", cwd=config["cwd"],
+                timeout=config["timeout"],
+                ssh_config=terminal_tool._ssh_config_from_config(config),
+            )
+    finally:
+        reset_hermes_home_override(token)
+        reset_secret_scope(scope)
+
+
+def test_routed_ssh_profile_does_not_inherit_gateway_ssh_settings(monkeypatch, tmp_path):
+    """Missing profile SSH credentials cannot connect to the gateway's host."""
+    profile_home = tmp_path / "profiles" / "isolated-vps"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("terminal:\n  backend: ssh\n")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "gateway.example.test")
+    monkeypatch.setenv("TERMINAL_SSH_USER", "gateway-user")
+    scope = set_secret_scope({})
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        config = terminal_tool._get_env_config()
+    finally:
+        reset_hermes_home_override(token)
+        reset_secret_scope(scope)
+
+    assert config["env_type"] == "ssh"
+    assert config["ssh_host"] == ""
+    assert config["ssh_user"] == ""
+
+
+def test_routed_profile_direct_terminal_consumers_use_scoped_overlay(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "docker"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  container_persistent: false\n"
+        "  lifetime_seconds: 30\n"
+        "  degraded_mode: fail\n"
+    )
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "300")
+    monkeypatch.setenv("TERMINAL_DEGRADED_MODE", "warn")
+    monkeypatch.setattr(terminal_tool, "_docker_orphan_reaper_profiles", set())
+    scope = set_secret_scope({})
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        with patch.object(terminal_tool.subprocess, "run") as sudo_probe:
+            assert terminal_tool._sudo_nopasswd_works() is False
+            sudo_probe.assert_not_called()
+        assert terminal_tool._docker_session_isolation_enabled() is True
+        assert terminal_tool._get_profile_terminal_env()["TERMINAL_DEGRADED_MODE"] == "fail"
+        assert os.environ["TERMINAL_ENV"] == "local"
+        with patch(
+            "tools.environments.docker._get_active_profile_name",
+            return_value="docker",
+        ), patch("tools.environments.docker.reap_orphan_containers", return_value=[]) as reap:
+            terminal_tool._maybe_reap_docker_orphans({"docker_orphan_reaper": True})
+            assert reap.call_args.kwargs["max_age_seconds"] == 120
+    finally:
+        reset_hermes_home_override(token)
+        reset_secret_scope(scope)
+    assert os.environ["TERMINAL_ENV"] == "local"

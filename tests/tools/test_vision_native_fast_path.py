@@ -43,6 +43,39 @@ class TestSupportsMediaInToolResults:
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]
 
+    def test_profile_tool_message_veto_overrides_supports_vision(self):
+        """An explicit supports_vision_tool_messages=False is a hard veto (#89981).
+
+        xiaomi/MiMo declares supports_vision=True (user-message images work)
+        alongside supports_vision_tool_messages=False (list-type tool-result
+        content answers 400 "text is not set"). supports_vision alone used to
+        flip this gate to True, so the multimodal envelope 400'd every turn
+        instead of falling back to the legacy aux-LLM path.
+        """
+        # "xiaomi" resolves through the registered provider profile.
+        assert _supports_media_in_tool_results("xiaomi", "mimo-v2.5") is False
+        assert _supports_media_in_tool_results("mimo", "mimo-v2.5") is False
+
+    def test_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
+        """The veto also blocks the native fast path's second gate: a
+        capability source marking the model vision-capable must not re-open
+        the multimodal-envelope route for a provider that rejects list-type
+        tool-result content."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("xiaomi", "mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

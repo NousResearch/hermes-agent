@@ -1025,8 +1025,17 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
-        if profile is not None and profile.supports_vision:
-            return True
+        if profile is not None:
+            # An explicit supports_vision_tool_messages=False is a hard veto:
+            # the provider accepts images in user messages but rejects
+            # list-type tool-result content outright (xiaomi/MiMo answers
+            # 400 "text is not set"). supports_vision alone must not
+            # override that — the multimodal tool-result envelope would
+            # 400 every turn and the image never enters context (#89981).
+            if getattr(profile, "supports_vision_tool_messages", True) is False:
+                return False
+            if profile.supports_vision:
+                return True
     except Exception:
         pass
 
@@ -1057,6 +1066,21 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
+        # The profile veto applies here too, ahead of the capability lookup:
+        # a provider that rejects list-type tool-result content must not
+        # take the native multimodal-envelope fast path just because a
+        # capability source (models.dev, custom_providers models entry)
+        # marks the model vision-capable (#89981).
+        try:
+            from providers import get_provider_profile
+            _profile = get_provider_profile(str(provider or "").strip().lower())
+            if (
+                _profile is not None
+                and getattr(_profile, "supports_vision_tool_messages", True) is False
+            ):
+                return False
+        except Exception:
+            pass
         return (
             _supports_media_in_tool_results(provider, model)
             or _lookup_supports_vision(provider, model, cfg) is True

@@ -15,6 +15,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextvars import Context
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -71,6 +72,23 @@ def _kanban_dispatch_allowed() -> bool:
     except ImportError:
         return True
     return not check_paused("kanban", logger)
+
+
+def _run_in_fresh_context(func: Callable[..., Any], /, *args: Any) -> Any:
+    """Run *func* in an empty ``Context`` so request-local ContextVars stay behind.
+
+    ``asyncio.to_thread`` copies the calling task's context onto the worker
+    thread. Supervised Kanban ticks are process-owned writers; if that copy
+    still carries a ``delegate_task`` child marker (spawn-time snapshot or a
+    later polluted task), ``write_txn`` false-trips. An empty Context keeps
+    the DB guard intact for real children without exempting dispatcher writes.
+    """
+    return Context().run(func, *args)
+
+
+async def _to_thread_process_service(func: Callable[..., Any], /, *args: Any) -> Any:
+    """Offload blocking dispatcher work without inheriting request-local ContextVars."""
+    return await asyncio.to_thread(_run_in_fresh_context, func, *args)
 
 
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
@@ -1681,7 +1699,7 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.
-                pids = await asyncio.to_thread(_kb.reap_worker_zombies)
+                pids = await _to_thread_process_service(_kb.reap_worker_zombies)
                 if pids:
                     logger.info(
                         "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
@@ -1704,8 +1722,8 @@ class GatewayKanbanWatchersMixin:
                     # takes effect on the next tick, not on gateway restart (#49638).
                     _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
                     if _ad_enabled:
-                        await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
-                    results = await asyncio.to_thread(_tick_once)
+                        await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
+                    results = await _to_thread_process_service(_tick_once)
                     any_spawned = False
                     for slug, res in (results or []):
                         if res is not None and getattr(res, "spawned", None):
@@ -1724,7 +1742,7 @@ class GatewayKanbanWatchersMixin:
                                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                             )
                     # Health telemetry (aggregate across boards)
-                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    ready_pending = await _to_thread_process_service(_ready_nonempty)
                     if ready_pending and not any_spawned:
                         bad_ticks += 1
                     else:

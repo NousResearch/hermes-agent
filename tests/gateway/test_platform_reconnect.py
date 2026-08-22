@@ -468,6 +468,30 @@ class TestSpawnSupervised:
         assert observed == [False]
 
     @pytest.mark.asyncio
+    async def test_dispatcher_to_thread_does_not_trip_kanban_guard(self):
+        """Already-running ticks copy the caller task context into to_thread.
+
+        Issue #91958 is a dispatcher that was spawned at boot, then a later
+        ``delegate_task`` leaves the worker copy marked as a child. Spawn
+        isolation does not rewrite that frozen task context; the offload
+        helper must scrub it at the tick boundary. The in-task child guard
+        stays closed.
+        """
+        from agent.delegation_context import (
+            delegated_child_context,
+            is_delegated_child_context,
+        )
+        from gateway.kanban_watchers import _to_thread_process_service
+        from hermes_cli.kanban_db import _assert_not_delegated_child_mutation
+
+        with delegated_child_context():
+            assert is_delegated_child_context() is True
+            with pytest.raises(PermissionError, match="delegate_task child"):
+                _assert_not_delegated_child_mutation()
+            await _to_thread_process_service(_assert_not_delegated_child_mutation)
+            assert is_delegated_child_context() is True
+
+    @pytest.mark.asyncio
     async def test_clean_synchronous_return_is_not_respawned(self):
         # A supervised coro that returns immediately (clean exit) must be
         # invoked EXACTLY ONCE — a clean return means deliberate shutdown or a

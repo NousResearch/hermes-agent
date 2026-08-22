@@ -597,3 +597,40 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestAttachmentReferenceNotTitled:
+    """Regression for #92068: a session whose opening message is only an
+    attachment reference must not be titled after the raw @file: path."""
+
+    def test_attachment_only_opener_is_not_untitled_garbage(self):
+        from agent.title_generator import derive_title, is_titleable_user_message
+
+        msg = "@file:AppData/Local/hermes/profiles/name/attach-abc.png"
+        assert is_titleable_user_message(msg) is False
+        assert derive_title(msg) is None
+
+    def test_folder_only_opener_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message("@folder:/some/dir") is False
+
+    def test_text_with_reference_keeps_the_text(self):
+        from agent.title_generator import derive_title, is_titleable_user_message
+
+        msg = "Review @file:notes.txt and fix the bug"
+        assert is_titleable_user_message(msg) is True
+        assert derive_title(msg) == "Review and fix the bug"
+
+    def test_quoted_reference_removed(self):
+        from agent.title_generator import derive_title
+
+        # Space-bearing path is written backtick-quoted; must still be dropped.
+        assert derive_title("summarize @file:`my file.txt` please") == "summarize please"
+
+    def test_strip_context_reference_tokens_single_char(self):
+        from agent.title_generator import _strip_context_reference_tokens
+
+        assert _strip_context_reference_tokens("") == ""
+        assert _strip_context_reference_tokens("plain text") == "plain text"
+        assert _strip_context_reference_tokens("a @file:x b") == "a b"

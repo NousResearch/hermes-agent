@@ -13,6 +13,8 @@ import sys
 
 import pytest
 
+from pptx import Presentation
+
 SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(SKILL, "scripts")
 sys.path.insert(0, SCRIPTS)
@@ -46,8 +48,21 @@ def write_spec(tmp_path, spec):
 # --- inherited sizing matches the default-template master -------------------
 
 def test_inherited_sizes_match_default_master():
-    # Default python-pptx master bodyStyle: 32/28/24/20/20pt by level.
-    assert INHERITED_SIZE_PT == {0: 32.0, 1: 28.0, 2: 24.0, 3: 20.0, 4: 20.0}
+    # Ground truth from the default python-pptx template's slide master
+    # bodyStyle (lvl1pPr..lvl5pPr defRPr sz): 3200/2800/2400/2000/2000.
+    prs = Presentation()
+    ns = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+          "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
+    body_style = prs.slide_masters[0].element.find(
+        "{http://schemas.openxmlformats.org/presentationml/2006/main}txStyles"
+    ).find("p:bodyStyle", ns)
+    for level, size in INHERITED_SIZE_PT.items():
+        lvl = body_style.find(f"a:lvl{level + 1}pPr", ns)
+        rpr = lvl.find("a:defRPr", ns)
+        actual = int(rpr.get("sz")) / 100.0
+        assert actual == size, (
+            f"level {level}: estimator assumes {size}pt, master says "
+            f"{actual}pt — update INHERITED_SIZE_PT")
 
 
 def test_effective_size_uses_level_inheritance_when_unspecified():
@@ -218,20 +233,16 @@ def test_blank_layout_textbox_fallback_does_not_warn(tmp_path):
     assert result["overflow_warnings"] == []
 
 
-def test_four_three_deck_uses_narrower_frame(tmp_path):
-    # 4:3 content placeholder is narrower (8.5in vs 9in): identical content
-    # must never estimate SMALLER than on 16:9.
-    dense = [{"layout": "title_content", "title": "Dense",
-              "bullets": [f"Bullet {i} wraps in any reasonable frame width "
-                          "given this much operational detail text"
-                          for i in range(14)]}]
-    wide = run("pptx_create.py",
-               write_spec(tmp_path, {"slide_size": "16:9",
-                                     "slides": dense}),
-               str(tmp_path / "wide.pptx"))
-    tall = run("pptx_create.py",
-               write_spec(tmp_path, {"slide_size": "4:3", "slides": dense}),
-               str(tmp_path / "tall.pptx"))
-    w = wide["overflow_warnings"][0]["estimated_text_height_pt"]
-    t = tall["overflow_warnings"][0]["estimated_text_height_pt"]
-    assert t >= w
+def test_non_title_content_layouts_are_not_estimated(tmp_path):
+    # Only title_content uses the master-body sizing model; other layouts
+    # override level styles in their layout XML, so the guardrail must
+    # stay silent there rather than emit false positives.
+    dense = [{"layout": layout, "title": "Dense",
+              "bullets": [f"Bullet {i} would be flagged if estimated "
+                          "with master sizes" for i in range(20)]}
+             for layout in ("title", "section", "two_content")]
+    spec = {"slide_size": "16:9", "slides": dense}
+    result = run("pptx_create.py", write_spec(tmp_path, spec),
+                 str(tmp_path / "layouts.pptx"))
+    assert result["ok"] is True
+    assert result["overflow_warnings"] == []

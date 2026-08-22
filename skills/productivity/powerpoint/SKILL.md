@@ -186,9 +186,11 @@ say so rather than approximating.
   per-bullet `"size"` values. The estimator is heuristic — it may warn
   on borderline slides that render fine, but warnings on fixed-frame
   placeholders should never be ignored without checking a render.
-  Note: bullets on layouts without a body placeholder go into an
-  auto-fitting textbox that grows instead of clipping, so no warning
-  is emitted there.
+  Note: the estimate applies only to `title_content` slides (the one
+  layout whose level sizing matches the master); other layouts override
+  level styles in their own XML, and bullets that land in an
+  auto-fitting textbox grow instead of clipping — no warning is
+  emitted in either case.
 - **Run splitting**: PowerPoint fragments paragraph text into runs at
   spell-check and edit boundaries. `--replace-text` first merges adjacent
   runs whose formatting is identical, so matches split across such runs

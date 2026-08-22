@@ -338,3 +338,76 @@ class TestGitHubCommentDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_github_comment_delivery_updates_existing_comment(self):
+        routes = {
+            "pr-bot": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Review: {pull_request.title}",
+                "deliver": "github_comment",
+                "deliver_extra": {
+                    "repo": "{repository.full_name}",
+                    "pr_number": "{number}",
+                    "comment_id": "{response_comment_id}",
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+        payload = {**GITHUB_PR_PAYLOAD, "response_comment_id": 12345}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/pr-bot",
+                json=payload,
+                headers={
+                    "X-GitHub-Event": "pull_request",
+                    "X-GitHub-Delivery": "gh-comment-update-001",
+                },
+            )
+            assert resp.status == 202
+
+        chat_id = "webhook:pr-bot:gh-comment-update-001"
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "gateway.platforms.webhook.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            result = await adapter.send(chat_id, "Updated review result.")
+
+        assert result.success is True
+        mock_run.assert_called_once_with(
+            [
+                "gh", "api", "--method", "PATCH",
+                "repos/org/repo/issues/comments/12345",
+                "-f", "body=Updated review result.",
+                "--silent",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_github_comment_delivery_rejects_invalid_comment_id(self):
+        adapter = _make_adapter({})
+        chat_id = "webhook:pr-bot:gh-comment-update-invalid"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "github_comment",
+            "deliver_extra": {
+                "repo": "org/repo",
+                "pr_number": "42",
+                "comment_id": "--delete",
+            },
+        }
+
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            result = await adapter.send(chat_id, "Must not execute.")
+
+        assert result.success is False
+        assert result.error == "Invalid comment_id"
+        mock_run.assert_not_called()

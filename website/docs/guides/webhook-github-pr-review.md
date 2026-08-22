@@ -74,6 +74,9 @@ platforms:
           deliver_extra:
             repo: "{repository.full_name}"
             pr_number: "{number}"
+            # Optional: when a route script returns response_comment_id,
+            # update that existing PR issue comment instead of creating one.
+            # comment_id: "{response_comment_id}"
 ```
 
 **Key fields:**
@@ -86,6 +89,7 @@ platforms:
 | `deliver` | `github_comment` posts via `gh pr comment`. `log` just writes to the gateway log. |
 | `deliver_extra.repo` | Resolves to e.g. `org/repo` from the payload. |
 | `deliver_extra.pr_number` | Resolves to the PR number from the payload. |
+| `deliver_extra.comment_id` | Optional positive issue-comment ID, often rendered from route-script output. When set, Hermes updates that comment via `gh api` instead of creating another one. |
 
 :::note The payload does not contain code
 The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The default `hermes-webhook` toolset is deliberately constrained (web search/extract, vision, clarify — **no terminal**) because webhook payloads can carry untrusted content. To let this route run `gh`, add a per-route toolset grant: `toolsets: ["terminal", "web"]` on the route config — see [Per-route toolsets](/docs/user-guide/messaging/webhooks#per-route-toolsets).
@@ -232,6 +236,9 @@ platforms:
           deliver_extra:
             repo: "{repository.full_name}"
             pr_number: "{number}"
+            # Optional: when a route script returns response_comment_id,
+            # update that existing PR issue comment instead of creating one.
+            # comment_id: "{response_comment_id}"
 ```
 
 > **Note:** Only the first skill in the list that is found is loaded. Hermes does not stack multiple skills — subsequent entries are ignored.

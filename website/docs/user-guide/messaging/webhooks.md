@@ -302,7 +302,7 @@ The `deliver` field controls where the agent's response goes after processing th
 | Deliver Type | Description |
 |-------------|-------------|
 | `log` | Logs the response to the gateway log output. This is the default and is useful for testing. |
-| `github_comment` | Posts the response as a PR/issue comment via the `gh` CLI. Requires `deliver_extra.repo` and `deliver_extra.pr_number`. The `gh` CLI must be installed and authenticated on the gateway host (`gh auth login`). |
+| `github_comment` | Posts the response as a PR/issue comment via the `gh` CLI. Requires `deliver_extra.repo` and `deliver_extra.pr_number`. Optional `deliver_extra.comment_id` updates that existing issue comment instead of creating another one. The `gh` CLI must be installed and authenticated on the gateway host (`gh auth login`). |
 | `telegram` | Routes the response to Telegram. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 | `discord` | Routes the response to Discord. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 | `slack` | Routes the response to Slack. Uses the home channel, or specify `chat_id` in `deliver_extra`. |

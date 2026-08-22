@@ -1333,10 +1333,11 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_github_comment(
         self, content: str, delivery: dict
     ) -> SendResult:
-        """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""
+        """Post or update a GitHub PR/issue comment via ``gh`` CLI."""
         extra = delivery.get("deliver_extra", {})
         repo = extra.get("repo", "")
         pr_number = extra.get("pr_number", "")
+        comment_id = extra.get("comment_id", "")
 
         if not repo or not pr_number:
             logger.error(
@@ -1367,9 +1368,36 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Invalid repo format"
             )
 
+        # comment_id is optional. When present, update that existing issue
+        # comment instead of creating another PR comment.
+        comment_int = None
+        if comment_id not in (None, ""):
+            try:
+                comment_int = int(comment_id)
+                if comment_int <= 0:
+                    raise ValueError("non-positive")
+            except (ValueError, TypeError):
+                logger.error(
+                    "[webhook] invalid comment_id: %r", comment_id
+                )
+                return SendResult(
+                    success=False, error="Invalid comment_id"
+                )
+
         try:
-            result = subprocess.run(
-                [
+            if comment_int is not None:
+                command = [
+                    "gh",
+                    "api",
+                    "--method",
+                    "PATCH",
+                    f"repos/{repo}/issues/comments/{comment_int}",
+                    "-f",
+                    f"body={content}",
+                    "--silent",
+                ]
+            else:
+                command = [
                     "gh",
                     "pr",
                     "comment",
@@ -1378,19 +1406,25 @@ class WebhookAdapter(BasePlatformAdapter):
                     repo,
                     "--body",
                     content,
-                ],
+                ]
+            result = subprocess.run(
+                command,
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=30,
             )
             if result.returncode == 0:
                 logger.info(
-                    "[webhook] Posted comment on %s#%s", repo, pr_number
+                    "[webhook] %s comment on %s#%s",
+                    "Updated" if comment_int is not None else "Posted",
+                    repo,
+                    pr_number,
                 )
                 return SendResult(success=True)
             else:
                 logger.error(
-                    "[webhook] gh pr comment failed: %s", result.stderr
+                    "[webhook] GitHub comment delivery failed: %s",
+                    result.stderr,
                 )
                 return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:

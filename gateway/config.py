@@ -346,6 +346,7 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    AG_UI = "ag_ui"  # AG-UI protocol server adapter
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -2242,6 +2243,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
+
+    # AG-UI protocol server
+    ag_ui_key = getenv("AG_UI_KEY", "")
+    ag_ui_port = getenv("AG_UI_PORT")
+    ag_ui_host = getenv("AG_UI_HOST")
+    if ag_ui_key or is_truthy_value(getenv("AG_UI_ENABLED", "")):
+        if Platform.AG_UI not in config.platforms:
+            config.platforms[Platform.AG_UI] = PlatformConfig()
+        config.platforms[Platform.AG_UI].enabled = True
+        if ag_ui_key:
+            config.platforms[Platform.AG_UI].token = ag_ui_key
+        if ag_ui_port:
+            try:
+                config.platforms[Platform.AG_UI].extra["port"] = int(ag_ui_port)
+            except ValueError:
+                pass
+        if ag_ui_host:
+            config.platforms[Platform.AG_UI].extra["host"] = ag_ui_host
     # Webhook platform
     webhook_enabled = is_truthy_value(getenv("WEBHOOK_ENABLED", ""))
     webhook_port = getenv("WEBHOOK_PORT")

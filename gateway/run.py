@@ -16053,6 +16053,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.gateway_runner = self
             return adapter
 
+        elif platform == Platform.AG_UI:
+            from gateway.platforms.ag_ui_server import AGUIServerAdapter, check_ag_ui_requirements
+            if not check_ag_ui_requirements():
+                logger.warning("AG-UI: aiohttp not installed")
+                return None
+            adapter = AGUIServerAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
             if not check_webhook_requirements():

@@ -1113,6 +1113,13 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "ag_ui": (
+        "You are responding through an AG-UI protocol server. "
+        "The frontend is an AG-UI-compatible application (CopilotKit, custom React UI, "
+        "mobile app, or similar). Use plain text; avoid markdown formatting. "
+        "Tool calls, approvals, and state updates are streamed as structured AG-UI "
+        "events — do not describe them in prose. Keep responses concise and natural."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

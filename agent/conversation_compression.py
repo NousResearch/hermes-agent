@@ -1379,6 +1379,50 @@ def _compression_lock_holder(agent: Any) -> str:
     )
 
 
+def _persist_pre_compaction_transcript(agent: Any, messages: Any) -> None:
+    """Write the parent's messages before compaction rotates the session.
+
+    Compaction ends the current session with reason ``compression`` and creates
+    a child with ``parent_session_id`` set. Because messages are serialized only
+    at clean session end, the parent exports ``messages: []`` and every turn
+    before the compaction is lost. The generated summary is not a substitute: it
+    comes from a separate ``call_llm(task="compression", ...)``, so it is
+    synthetic text that exists nowhere in the input.
+
+    Called only once compression is confirmed to have made progress, so the
+    no-op and abort paths (which return early above) write nothing.
+    """
+    session_id = getattr(agent, "session_id", None)
+    if not session_id or not messages:
+        return
+    try:
+        from hermes_constants import get_hermes_home
+
+        dest_dir = get_hermes_home() / "transcripts"
+        os.makedirs(dest_dir, exist_ok=True)
+        index = getattr(agent, "_precompact_index", 0) + 1
+        agent._precompact_index = index
+        dest = os.path.join(
+            dest_dir, f"precompact_{session_id}_{index:03d}.json"
+        )
+        tmp = dest + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "session_id": str(session_id),
+                    "compaction_index": index,
+                    "message_count": len(messages),
+                    "messages": messages,
+                },
+                fh,
+            )
+        os.replace(tmp, dest)
+    except Exception as exc:
+        # Loud, not silent: a pre-compaction dump that is quietly not written
+        # leaves a session that looks archived and is not.
+        logger.warning("pre-compaction transcript not saved: %s", exc)
+
+
 def _supported_compression_kwargs(
     compress_fn: Any,
     *,
@@ -3202,6 +3246,10 @@ def compress_context(
                 _existing_sp = agent._build_system_prompt(system_message)
             _release_lock()
             return messages, _existing_sp
+
+        # Compression made real progress and the session is about to rotate:
+        # this is the last point at which the parent's history still exists.
+        _persist_pre_compaction_transcript(agent, messages_before_compression)
 
         if commit_fence is not None:
             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)

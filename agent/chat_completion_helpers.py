@@ -1975,6 +1975,9 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         or base_url_host_matches(agent.base_url, "moonshot.cn")
     )
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
+    # Aliyun MaaS OpenAI-compatible endpoint (token-plan.<region>.maas.aliyuncs.com).
+    # Top-level reasoning_effort emission — see chat_completions.build_kwargs().
+    _is_aliyun_maas = base_url_host_matches(agent._base_url_lower, "maas.aliyuncs.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
 
     # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
@@ -2093,6 +2096,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_nvidia_nim=_is_nvidia,
         is_kimi=_is_kimi,
         is_tokenhub=_is_tokenhub,
+        is_aliyun_maas=_is_aliyun_maas,
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
@@ -2984,6 +2988,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             agent._resolve_lmstudio_summary_reasoning_effort()
             if _is_lmstudio_summary else None
         )
+        # Aliyun MaaS: top-level reasoning_effort, mirroring
+        # ChatCompletionsTransport.build_kwargs(). _supports_reasoning_extra_body()
+        # is False for this route, so the generic extra_body["reasoning"] branch
+        # below is skipped and the summary call would otherwise run at the
+        # provider default (xhigh) regardless of the configured effort.
+        _aliyun_reasoning_effort: str | None = None
+        if base_url_host_matches(agent._base_url_lower, "maas.aliyuncs.com"):
+            _ali_cfg = agent.reasoning_config if isinstance(agent.reasoning_config, dict) else {}
+            if _ali_cfg.get("enabled") is False:
+                _aliyun_reasoning_effort = "none"
+            else:
+                _ali_e = str(_ali_cfg.get("effort") or "").strip().lower()
+                if _ali_e == "ultra":
+                    _ali_e = "max"
+                _aliyun_reasoning_effort = _ali_e or None
         if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
             if agent.reasoning_config is not None:
                 summary_extra_body["reasoning"] = agent.reasoning_config
@@ -3014,6 +3033,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            if _aliyun_reasoning_effort is not None:
+                summary_kwargs["reasoning_effort"] = _aliyun_reasoning_effort
 
             # Merge the profile's canonical body even when routing is unset:
             # profiles may always emit required metadata such as Portal tags.
@@ -3149,6 +3170,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+                if _aliyun_reasoning_effort is not None:
+                    summary_kwargs["reasoning_effort"] = _aliyun_reasoning_effort
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 

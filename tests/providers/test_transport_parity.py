@@ -170,3 +170,82 @@ class TestCustomOllamaParity:
             reasoning_config={"enabled": False, "effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+
+class TestAliyunMaasParity:
+    """Aliyun MaaS OpenAI-compatible endpoint: top-level reasoning_effort.
+
+    Aliyun MaaS (token-plan.<region>.maas.aliyuncs.com /compatible-mode/v1)
+    only understands a top-level ``reasoning_effort`` field — it does NOT
+    read OpenRouter-style ``extra_body.reasoning``. ``_supports_reasoning_extra_body()``
+    returns False for custom providers, so without this branch the configured
+    reasoning_config was silently dropped and reasoning models (e.g.
+    qwen3.8-max-preview, default xhigh / ~131k budget) ran at full thinking
+    depth regardless of the user's setting. This is the legacy flag path
+    (no provider profile), same shape as Kimi / Tencent TokenHub.
+    """
+
+    def test_effort_emitted_top_level(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.8-max-preview",
+            messages=_simple_messages(),
+            tools=None,
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning_config={"enabled": True, "effort": "medium"},
+            is_aliyun_maas=True,
+            supports_reasoning=False,
+        )
+        assert kw["reasoning_effort"] == "medium"
+        # Must NOT go into extra_body — the endpoint ignores that shape.
+        assert "reasoning" not in (kw.get("extra_body") or {})
+
+    def test_no_config_preserves_provider_default(self, transport):
+        """Unset reasoning_config emits nothing (endpoint default applies)."""
+        kw = transport.build_kwargs(
+            model="qwen3.8-max-preview",
+            messages=_simple_messages(),
+            tools=None,
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning_config=None,
+            is_aliyun_maas=True,
+            supports_reasoning=False,
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_disabled_maps_to_none(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.8-max-preview",
+            messages=_simple_messages(),
+            tools=None,
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning_config={"enabled": False},
+            is_aliyun_maas=True,
+            supports_reasoning=False,
+        )
+        assert kw["reasoning_effort"] == "none"
+
+    def test_ultra_normalizes_to_max(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.8-max-preview",
+            messages=_simple_messages(),
+            tools=None,
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            is_aliyun_maas=True,
+            supports_reasoning=False,
+        )
+        assert kw["reasoning_effort"] == "max"
+
+    def test_not_emitted_for_other_custom_providers(self, transport):
+        """The branch is base_url-gated upstream; verify no leakage when the
+        flag is absent (e.g. a generic custom provider)."""
+        kw = transport.build_kwargs(
+            model="qwen3.8-max-preview",
+            messages=_simple_messages(),
+            tools=None,
+            base_url="https://example.com/v1",
+            reasoning_config={"enabled": True, "effort": "medium"},
+            is_custom_provider=True,
+            supports_reasoning=False,
+        )
+        assert "reasoning_effort" not in kw

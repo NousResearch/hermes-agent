@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { startNewSessionDrag } from '@/app/chat/new-session-drag'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
@@ -8,6 +10,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
+import type { TileDock } from '@/store/session-states'
 
 // Shared, content-agnostic sidebar chrome — used by both the flat session
 // sections and the project/workspace tree, so it lives outside either to keep
@@ -16,6 +19,62 @@ import { $sidebarRowMeta } from '@/store/layout'
 /** The muted slot beside a section label (loading glyph, status hint). */
 export function SidebarSectionMeta({ children }: { children: React.ReactNode }) {
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
+}
+
+// The section header's "+" button, hover-revealed (group/section lives on
+// SidebarSectionHeader), mirroring the artifacts/file browser header
+// affordances. focus-visible keeps them keyboard-reachable.
+const HEADER_ACTION_BTN =
+  'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100'
+
+// The sessions section header's "+" — the flat list's top-level new-session
+// control. Also a drag source, the same gesture as the nav's "New session"
+// row: drag it onto a chat zone's tab strip / edge / center to create the
+// session exactly there (stack / split). The pointer drag session owns the
+// gesture — a sub-threshold release falls through to the onClick (ordinary
+// new session), and an engaged drag suppresses that click so it never
+// double-creates. Both paths resolve the session's profile identically: the
+// create path (`openNewSessionTile`) reads `$newChatProfile` at commit, and
+// neither gesture resets it — matching the header "+" click behavior exactly
+// (only the nav "New session" row resets it, since it navigates to the draft
+// composer instead).
+export function SidebarSectionAddButton({
+  ariaLabel,
+  onNewSessionSplit,
+  onPlainClick
+}: {
+  ariaLabel: string
+  /** Absent when this header "+" has no session-creating drag semantics
+   *  (e.g. the project-overview mode, where the "+" opens the project
+   *  dialog). Then the button stays click-only. */
+  onNewSessionSplit?: (dir: TileDock, opts?: { anchor?: string; before?: null | string; cwd?: null | string }) => void
+  onPlainClick: () => void
+}) {
+  return (
+    <Tip label={ariaLabel}>
+      <Button
+        aria-label={ariaLabel}
+        className={HEADER_ACTION_BTN}
+        onClick={event => {
+          event.stopPropagation()
+          onPlainClick()
+        }}
+        onPointerDown={
+          onNewSessionSplit
+            ? event => {
+                startNewSessionDrag(placement => {
+                  onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                }, event)
+              }
+            : undefined
+        }
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </Button>
+    </Tip>
+  )
 }
 
 // ── Row geometry (session row is canonical — everything composes these) ─────

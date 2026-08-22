@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useMemo } from 'react'
 
+import { startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -20,6 +21,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import type { TileDock } from '@/store/session-states'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { orderRowsWithinGroups, reorderableRowIds } from './order'
@@ -106,6 +108,8 @@ interface SidebarSessionsSectionProps {
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
+  /** Create a new session as a tile at a drop target (drag from a project "+"). */
+  onNewSessionSplit?: (dir: TileDock, opts?: { anchor?: string; before?: null | string; cwd?: null | string }) => void
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -184,6 +188,7 @@ export function SidebarSessionsSection({
   onTogglePin,
   onToggleUnread,
   onNewSessionInWorkspace,
+  onNewSessionSplit,
   pinned,
   rootClassName,
   contentClassName,
@@ -288,10 +293,29 @@ export function SidebarSessionsSection({
 
   // Date dividers head a group the same way a repo header does, so they carry
   // the same hover-revealed "+". Only for dates: "new session in WORKING" is
-  // not a thing.
+  // not a thing. The divider "+" is a drag source too (the same gesture as the
+  // nav's "New session" row): drag it onto a chat zone to create the session
+  // exactly there; a sub-threshold release stays the ordinary click. The ONE
+  // element here feeds both the plain and the virtualized list paths, so this
+  // single wiring covers every date-divider "+" on screen.
   const dividerAction =
     grouping === 'date' && onNewSessionInWorkspace ? (
-      <WorkspaceAddButton label={t.sidebar.nav['new-session']} onClick={() => onNewSessionInWorkspace(null)} />
+      <WorkspaceAddButton
+        label={t.sidebar.nav['new-session']}
+        onClick={() => onNewSessionInWorkspace(null)}
+        onPointerDown={
+          onNewSessionSplit
+            ? event => {
+                startNewSessionDrag(placement => {
+                  onNewSessionSplit(placement.dir, {
+                    anchor: placement.anchor,
+                    before: placement.before
+                  })
+                }, event)
+              }
+            : undefined
+        }
+      />
     ) : null
 
   // A single flat/virtual/lane list row — either a divider or a session.
@@ -391,6 +415,7 @@ export function SidebarSessionsSection({
           <EnteredProjectContent
             liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
+            onNewSessionSplit={onNewSessionSplit}
             project={projectContent}
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
@@ -419,7 +444,8 @@ export function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
-        previewSessions={projectOverviewPreviews?.[project.id]}
+        onNewSessionSplit={onNewSessionSplit}
+        previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}
         project={project}
         renderRows={renderRows}
       />
@@ -450,6 +476,7 @@ export function SidebarSessionsSection({
         group={group}
         key={group.id}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}
       />
     ))

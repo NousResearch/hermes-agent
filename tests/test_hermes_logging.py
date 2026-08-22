@@ -31,6 +31,11 @@ def _reset_logging_state():
     assertions are stable regardless of test ordering.
     """
     hermes_logging._logging_initialized = False
+    for logger_name in hermes_logging._SLACK_BOLT_LOGGERS:
+        logger = logging.getLogger(logger_name)
+        for log_filter in list(logger.filters):
+            if getattr(log_filter, hermes_logging._SLACK_FILTER_MARKER, False):
+                logger.removeFilter(log_filter)
     # File handlers now live behind the async QueueListener, not on the root
     # logger; tear down any leaked from other xdist tests in this worker.
     hermes_logging._reset_queued_handlers()
@@ -51,6 +56,11 @@ def _reset_logging_state():
             h.close()
     root.setLevel(prev_root_level)
     hermes_logging._logging_initialized = False
+    for logger_name in hermes_logging._SLACK_BOLT_LOGGERS:
+        logger = logging.getLogger(logger_name)
+        for log_filter in list(logger.filters):
+            if getattr(log_filter, hermes_logging._SLACK_FILTER_MARKER, False):
+                logger.removeFilter(log_filter)
     hermes_logging.clear_session_context()
 
 
@@ -97,6 +107,95 @@ class TestSetupLogging:
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
+
+    def test_installs_one_shared_slack_reconnect_filter(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        installed = []
+        for logger_name in hermes_logging._SLACK_BOLT_LOGGERS:
+            filters = [
+                log_filter
+                for log_filter in logging.getLogger(logger_name).filters
+                if getattr(
+                    log_filter, hermes_logging._SLACK_FILTER_MARKER, False
+                )
+            ]
+            assert len(filters) == 1
+            installed.extend(filters)
+
+        assert installed[0] is installed[1]
+
+
+class TestSlackReconnectSpamFilter:
+    """Slack reconnect storms retain signal without flooding stderr."""
+
+    @staticmethod
+    def _record(message, *, name="slack_bolt.AsyncApp"):
+        return logging.LogRecord(
+            name=name,
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg=message,
+            args=(),
+            exc_info=None,
+        )
+
+    def test_suppresses_duplicates_and_reports_count_after_window(self):
+        now = [100.0]
+        spam_filter = hermes_logging._SlackReconnectSpamFilter(
+            window_seconds=60.0,
+            clock=lambda: now[0],
+        )
+        message = "Failed to connect (error: Session is closed); Retrying..."
+
+        assert spam_filter.filter(self._record(message))
+        for _ in range(25):
+            assert not spam_filter.filter(self._record(message))
+
+        now[0] += 60.0
+        summary = self._record(message)
+        assert spam_filter.filter(summary)
+        assert summary.getMessage() == (
+            f"{message} [+25 identical reconnect retries suppressed]"
+        )
+
+    def test_does_not_suppress_unrelated_slack_errors(self):
+        spam_filter = hermes_logging._SlackReconnectSpamFilter(clock=lambda: 0.0)
+        message = "Slack API request failed"
+
+        assert spam_filter.filter(self._record(message))
+        assert spam_filter.filter(self._record(message))
+
+    def test_tracks_distinct_reconnect_errors_independently(self):
+        spam_filter = hermes_logging._SlackReconnectSpamFilter(clock=lambda: 0.0)
+        closed = "Failed to connect (error: Session is closed); Retrying..."
+        timeout = "Failed to connect (error: Timeout); Retrying..."
+
+        assert spam_filter.filter(self._record(closed))
+        assert spam_filter.filter(self._record(timeout))
+        assert not spam_filter.filter(self._record(closed))
+        assert not spam_filter.filter(self._record(timeout))
+
+    def test_filter_is_thread_safe(self):
+        spam_filter = hermes_logging._SlackReconnectSpamFilter(clock=lambda: 0.0)
+        message = "Failed to connect (error: Session is closed); Retrying..."
+        barrier = threading.Barrier(20)
+        results = []
+
+        def emit_once():
+            barrier.wait()
+            results.append(spam_filter.filter(self._record(message)))
+
+        threads = [threading.Thread(target=emit_once) for _ in range(20)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert results.count(True) == 1
+        assert results.count(False) == 19
 
 
 
@@ -676,5 +775,4 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging.rotating_file_handlers()
         )
-
 

@@ -35,9 +35,10 @@ import os
 import queue
 import sys
 import threading
+import time
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 # On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
 # ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
@@ -231,6 +232,88 @@ class _ComponentFilter(logging.Filter):
         return record.name.startswith(self._prefixes)
 
 
+class _SlackReconnectSpamFilter(logging.Filter):
+    """Rate-limit identical Slack Socket Mode reconnect tracebacks.
+
+    Slack Bolt logs every failed reconnect attempt with ``exc_info``.  During
+    an extended outage that can produce hundreds of thousands of identical
+    tracebacks on stderr.  Preserve the first failure, suppress duplicates for
+    a short window, then report how many retries were omitted on the next
+    emitted copy.
+    """
+
+    _MESSAGE_PREFIX = "Failed to connect (error: "
+    _MESSAGE_SUFFIX = "); Retrying..."
+
+    def __init__(
+        self,
+        window_seconds: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__()
+        self._window_seconds = window_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._state: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if not (
+            message.startswith(self._MESSAGE_PREFIX)
+            and message.endswith(self._MESSAGE_SUFFIX)
+        ):
+            return True
+
+        key = (record.name, message)
+        now = self._clock()
+        with self._lock:
+            previous = self._state.get(key)
+            if previous is None:
+                self._state[key] = (now, 0)
+                return True
+
+            last_emitted, suppressed = previous
+            if now - last_emitted < self._window_seconds:
+                self._state[key] = (last_emitted, suppressed + 1)
+                return False
+
+            self._state[key] = (now, 0)
+
+        if suppressed:
+            record.msg = (
+                f"{message} [+{suppressed} identical reconnect retries suppressed]"
+            )
+            record.args = ()
+        return True
+
+
+_SLACK_BOLT_LOGGERS = ("slack_bolt.AsyncApp", "slack_bolt.App")
+_SLACK_FILTER_MARKER = "_hermes_slack_reconnect_spam_filter"
+
+
+def _install_slack_reconnect_spam_filter() -> None:
+    """Install one shared reconnect filter on Slack Bolt's app loggers."""
+    existing = next(
+        (
+            log_filter
+            for logger_name in _SLACK_BOLT_LOGGERS
+            for log_filter in logging.getLogger(logger_name).filters
+            if getattr(log_filter, _SLACK_FILTER_MARKER, False)
+        ),
+        None,
+    )
+    spam_filter = existing or _SlackReconnectSpamFilter()
+    setattr(spam_filter, _SLACK_FILTER_MARKER, True)
+
+    for logger_name in _SLACK_BOLT_LOGGERS:
+        logger = logging.getLogger(logger_name)
+        if not any(
+            getattr(log_filter, _SLACK_FILTER_MARKER, False)
+            for log_filter in logger.filters
+        ):
+            logger.addFilter(spam_filter)
+
+
 # Logger name prefixes that belong to each component.
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
@@ -316,6 +399,11 @@ def setup_logging(
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
+
+    # Filter at the Slack logger rather than on Hermes' file handlers so the
+    # same retry storm is also suppressed on stderr (which launchd captures in
+    # gateway.error.log).
+    _install_slack_reconnect_spam_filter()
 
     # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(

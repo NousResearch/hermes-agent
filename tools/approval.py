@@ -4253,6 +4253,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
     )
 
+    # Birth record for the approval gate (#91980): the BLOCKED outcome only
+    # lands in logs after the full timeout window, and a notify write onto a
+    # dead client transport drops silently — without this line a delivery
+    # failure leaves no trace and is indistinguishable from user silence.
+    # Session/pattern/surface only; the raw command stays out of logs.
+    logger.warning(
+        "Approval prompt raised: session=%s pattern=%s surface=%s",
+        session_key, primary_key, surface,
+    )
+
     # Notify the user (bridges sync agent thread → async gateway)
     try:
         notify_cb(dict(entry.data))

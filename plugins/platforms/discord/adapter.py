@@ -4340,6 +4340,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.config import read_raw_config
             cfg = read_raw_config() or {}
+            cfg = cfg.get("platforms") or cfg
             raw = (cfg.get("discord") or {}).get(key, default)
             value = int(raw)
             return max(minimum, value)

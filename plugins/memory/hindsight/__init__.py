@@ -933,7 +933,13 @@ class HindsightMemoryProvider(MemoryProvider):
         from hermes_cli.config import save_config
         from hermes_cli.secret_prompt import masked_secret_prompt
 
-        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
+        from hermes_cli.memory_setup import (
+            _CANCELLED,
+            _curses_select,
+            _hindsight_local_embedded_deps,
+            _maybe_run_intel_macos_local_embedded_smoke_check,
+            _print_cancelled_setup,
+        )
 
         print("\n  Configuring Hindsight memory:\n")
 
@@ -962,9 +968,12 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Step 2: Install/upgrade deps for selected mode
         cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
-        local_dep = "hindsight-all"
+        # Single source of truth shared with the refresh/heal path
+        # (``_provider_pip_dependencies``): selects the slim stack on Intel
+        # macOS and the full bundle elsewhere (#81421, #81530).
+        local_dep = _hindsight_local_embedded_deps()
         if mode == "local_embedded":
-            deps_to_install = [local_dep]
+            deps_to_install = local_dep
         elif mode == "local_external":
             deps_to_install = [cloud_dep]
         else:
@@ -997,6 +1006,7 @@ class HindsightMemoryProvider(MemoryProvider):
         from tools.lazy_deps import install_specs
 
         outcome = install_specs(deps_to_install, timeout=120)
+        install_ok = outcome.ok
         if outcome.ok:
             print("  ✓ Dependencies up to date")
         elif outcome.blocked:
@@ -1087,6 +1097,23 @@ class HindsightMemoryProvider(MemoryProvider):
         save_config(config)
 
         self.save_config(provider_config, hermes_home)
+
+        # Post-install smoke check (#81421): only after the install actually
+        # reported success. pip can report ok while the resolver backtracks
+        # the slim runtime to an ancient ``hindsight_api`` that no longer
+        # exposes ``LocalSTEmbeddings`` — the daemon then crashes with
+        # "Unknown embeddings provider: onnx" while the wizard claims success.
+        # Called here, after the freshly-selected mode is persisted to
+        # config.json, so the helper's own Intel+local gate can see it — on a
+        # fresh setup there is no config on disk at install time, so calling
+        # the helper right after install would silently no-op.  The helper is
+        # a no-op on every other platform or mode, and its RuntimeError
+        # propagates so the wizard cannot claim a configured-but-broken
+        # runtime.  A failed or blocked install never reaches it, so the
+        # "Run manually:" guidance and the smoke error cannot contradict each
+        # other (#81530 follow-up).
+        if install_ok:
+            _maybe_run_intel_macos_local_embedded_smoke_check()
 
         if env_writes:
             env_path = Path(hermes_home) / ".env"

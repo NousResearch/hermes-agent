@@ -6003,6 +6003,12 @@ _MEMORY_PROVIDER_IMPORT_NAMES = {
     "mem0ai": "mem0",
     "hindsight-client": "hindsight_client",
     "hindsight-all": "hindsight",
+    # Intel-macOS slim stack (#81421): the slim meta-packages don't expose
+    # a top-level import at their pip name — map them to the modules they
+    # ship so the availability recheck doesn't reinstall them every run.
+    "hindsight-all-slim": "hindsight_api",
+    "hindsight-api-slim": "hindsight_api",
+    "hindsight-embed": "hindsight_embed",
 }
 
 

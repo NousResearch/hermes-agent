@@ -281,7 +281,30 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_uses_proportional_skill_loading_guidance(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: Demonstrate a workflow\n---\n"
+        )
 
+        result = build_skills_system_prompt()
+
+        assert "load only skills that clearly and materially govern" in result
+        assert "a distinct required subtask, or a dependency" in result
+        assert "Prefer the smallest sufficient set." in result
+        assert "The explicit mandatory triggers below still apply." in result
+        assert "Load a qualifying skill even if you think you could handle" in result
+        assert "Load the skill even if you think you could handle" not in result
+        assert "even partially relevant" not in result
+        assert "context you don't need" not in result
+        assert "Proceed without loading a skill when none meets that standard." in result
+        assert "if genuinely none are relevant" not in result
+        proportional_at = result.index("Prefer the smallest sufficient set.")
+        mandatory_at = result.index("load the `hermes-agent` skill first")
+        no_skill_at = result.index("Proceed without loading a skill when none meets that standard.")
+        assert proportional_at < mandatory_at < no_skill_at
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

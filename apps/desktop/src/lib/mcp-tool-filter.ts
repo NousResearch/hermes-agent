@@ -11,7 +11,11 @@ export interface McpToolsFilter {
 type ServerConfig = Record<string, unknown>
 
 const asNames = (value: unknown): string[] | undefined =>
-  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : undefined
+  typeof value === 'string'
+    ? [value]
+    : Array.isArray(value)
+      ? value.filter((v): v is string => typeof v === 'string')
+      : undefined
 
 const toolsObject = (server: ServerConfig | null | undefined): Record<string, unknown> => {
   const tools = server?.tools

@@ -1193,7 +1193,19 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3.6-flash"
+# NOTE: The OpenRouter default MUST carry a ``:free`` suffix. Auxiliary tasks
+# (compression, title generation, session search, …) fire in the background and
+# are expected to be cost-free by users who have pinned all visible surfaces to
+# free/local lanes. A paid model here creates a silent cash lane reachable from
+# vendor code the moment an ``OPENROUTER_API_KEY`` exists (e.g. for a separate
+# deliberate ``:free`` fallback rung). See #75803.
+_OPENROUTER_MODEL = "inclusionai/ring-2.6-1t:free"
+# OpenRouter vision-capable free model for auxiliary vision tasks.
+# The text-only ``_OPENROUTER_MODEL`` cannot process images; when the vision
+# auto-detect chain falls through to OpenRouter (step 2), use this model
+# instead so image-bearing requests succeed without silently dropping to a
+# paid model. See #75803.
+_OPENROUTER_VISION_MODEL = "google/gemini-2.0-flash-exp:free"
 _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -2964,7 +2976,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # The /api/nous/recommended-models endpoint is the authoritative source:
     # it distinguishes paid vs free tier recommendations, and get_nous_recommended_aux_model
     # auto-detects the caller's tier via check_nous_free_tier().  Fall back to
-    # _NOUS_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
+    # _NOUS_MODEL (google/gemini-3.6-flash) when the Portal is unreachable
     # or returns a null recommendation for this task type.
     model = _NOUS_MODEL
     if not _aux_probe_active():
@@ -3027,7 +3039,7 @@ def _refresh_nous_recommended_model(
 
       * the Portal's current recommendation for the task, if it differs from
         the model that just failed; otherwise
-      * ``_NOUS_MODEL`` (google/gemini-3-flash-preview), the known-good default,
+      * ``_NOUS_MODEL`` (google/gemini-3.6-flash), the known-good default,
         if it too differs from the failed model.
 
     Returns ``None`` when no usable alternative is available (e.g. the Portal
@@ -6408,7 +6420,7 @@ def resolve_provider_client(
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
         # local server), an OpenRouter-formatted model override like
-        # "google/gemini-3-flash-preview" won't work.  Drop it and use
+        # "google/gemini-3.6-flash" won't work.  Drop it and use
         # the provider's own default model instead.
         if model and "/" in model and resolved and "/" not in resolved:
             logger.debug(
@@ -6988,7 +7000,7 @@ def resolve_provider_client(
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
+        default_model = "google/gemini-3.6-flash"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
             # Alias the import: a bare `from openai import OpenAI` here would
@@ -7204,7 +7216,11 @@ def _resolve_strict_vision_backend(
     if provider == "copilot":
         return resolve_provider_client("copilot", model, is_vision=True)
     if provider == "openrouter":
-        return _try_openrouter(model=model)
+        # Use a vision-capable free model — the text-only _OPENROUTER_MODEL
+        # cannot process images. Fall back to _OPENROUTER_VISION_MODEL when
+        # no explicit model is supplied.
+        vision_model = model or _OPENROUTER_VISION_MODEL
+        return _try_openrouter(model=vision_model)
     if provider == "nous":
         # Must go through resolve_provider_client so anthropic/* vision
         # recommendations wrap onto /v1/messages — _try_nous alone returns

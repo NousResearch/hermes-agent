@@ -4122,7 +4122,11 @@ class AIAgent:
             return
         try:
             from agent.rate_limit_tracker import parse_rate_limit_headers
-            state = parse_rate_limit_headers(headers, provider=self.provider)
+            state = parse_rate_limit_headers(
+                headers,
+                provider=self.provider,
+                base_url=str(getattr(self, "base_url", "") or ""),
+            )
             if state is not None:
                 self._rate_limit_state = state
         except Exception:

@@ -1529,6 +1529,14 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    rpm_throttle_threshold = entry.get("rpm_throttle_threshold")
+    if (
+        isinstance(rpm_throttle_threshold, (int, float))
+        and not isinstance(rpm_throttle_threshold, bool)
+        and rpm_throttle_threshold >= 0
+    ):
+        normalized["rpm_throttle_threshold"] = int(rpm_throttle_threshold)
+
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
@@ -1580,6 +1588,7 @@ def _custom_provider_entry_to_provider_config(
         "models_discovered",
         "context_length",
         "rate_limit_delay",
+        "rpm_throttle_threshold",
         "discover_models",
         "extra_body",
         "extra_headers",
@@ -1707,6 +1716,37 @@ def get_custom_provider_tls_settings(
             out["ssl_verify"] = verify
         return out
     return {}
+
+
+def get_custom_provider_rpm_throttle_threshold(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return a configured pre-emptive RPM threshold for a provider route."""
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return None
+
+    target_url = normalize_route_base_url(base_url)
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        if normalize_route_base_url(entry.get("base_url")) != target_url:
+            continue
+        value = entry.get("rpm_throttle_threshold")
+        if isinstance(value, bool):
+            return None
+        try:
+            threshold = int(value)
+        except (TypeError, ValueError):
+            return None
+        return threshold if threshold >= 0 else None
+    return None
 
 
 def apply_custom_provider_tls_to_client_kwargs(

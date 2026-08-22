@@ -1,7 +1,16 @@
 """Tests for agent.rate_limit_tracker — header parsing and formatting."""
 
 import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 import pytest
+from agent.chat_completion_helpers import (
+    _dispatch_nonstreaming_api_request,
+    interruptible_api_call,
+    interruptible_streaming_api_call,
+)
+from hermes_cli.config import get_custom_provider_rpm_throttle_threshold
 from agent.rate_limit_tracker import (
     RateLimitBucket,
     RateLimitState,
@@ -11,6 +20,7 @@ from agent.rate_limit_tracker import (
     _fmt_count,
     _fmt_seconds,
     _bar,
+    wait_for_low_rpm,
 )
 
 
@@ -57,6 +67,34 @@ class TestParseHeaders:
         state = parse_rate_limit_headers({})
         assert state is None
 
+    def test_documented_reset_formats_preserve_route_and_remaining(self):
+        state = parse_rate_limit_headers(
+            {
+                "x-ratelimit-limit-requests": "100",
+                "x-ratelimit-remaining-requests": "2",
+                "x-ratelimit-reset-requests": "1m30s",
+            },
+            provider="openai",
+            base_url="https://api.openai.com/v1/",
+        )
+        assert state is not None
+        assert state.requests_min.reset_seconds == 90.0
+        assert state.requests_min.has_remaining is True
+        assert state.base_url == "https://api.openai.com/v1"
+
+        reset_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+        anthropic = parse_rate_limit_headers(
+            {
+                "anthropic-ratelimit-requests-limit": "50",
+                "anthropic-ratelimit-requests-remaining": "1",
+                "anthropic-ratelimit-requests-reset": reset_at.isoformat(),
+            },
+            provider="anthropic",
+        )
+        assert anthropic is not None
+        assert anthropic.requests_min.remaining == 1
+        assert 28.0 <= anthropic.requests_min.reset_seconds <= 30.0
+
 
 
 
@@ -73,6 +111,101 @@ class TestBucket:
         b = RateLimitBucket(limit=800, remaining=795, reset_seconds=60.0, captured_at=now - 10)
         # ~50 seconds should remain
         assert 49 <= b.remaining_seconds_now <= 51
+
+
+class TestPreemptivePacing:
+    def test_waits_only_for_the_matching_low_rpm_route(self):
+        clock = [0.0]
+        sleeps = []
+        state = SimpleNamespace(
+            has_data=True,
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            requests_min=SimpleNamespace(
+                has_remaining=True,
+                limit=100,
+                remaining=2,
+                remaining_seconds_now=0.5,
+            ),
+        )
+
+        waited = wait_for_low_rpm(
+            state,
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            sleep_fn=lambda seconds: (
+                sleeps.append(seconds), clock.__setitem__(0, clock[0] + seconds)
+            ),
+            monotonic_fn=lambda: clock[0],
+        )
+        assert waited == 0.5
+        assert sleeps == [0.25, 0.25]
+        assert wait_for_low_rpm(
+            state,
+            provider="openai",
+            base_url="https://other.example/v1",
+            sleep_fn=MagicMock(),
+        ) == 0.0
+        assert wait_for_low_rpm(
+            state,
+            provider="openrouter",
+            base_url="https://api.openai.com/v1",
+            sleep_fn=MagicMock(),
+        ) == 0.0
+
+    def test_custom_provider_threshold_and_api_entries_are_wired(self):
+        config = {
+            "providers": {
+                "gateway": {
+                    "api": "https://gateway.example/v1",
+                    "rpm_throttle_threshold": 4,
+                }
+            }
+        }
+        assert get_custom_provider_rpm_throttle_threshold(
+            "https://gateway.example/v1/", config=config
+        ) == 4
+
+        parsed = object()
+        raw_response = SimpleNamespace(headers={}, parse=lambda: parsed)
+        raw_create = MagicMock(return_value=raw_response)
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    with_raw_response=SimpleNamespace(create=raw_create),
+                    create=MagicMock(),
+                )
+            )
+        )
+        agent = SimpleNamespace(
+            api_mode="chat_completions",
+            provider="openai",
+            _capture_rate_limits=MagicMock(),
+        )
+        assert _dispatch_nonstreaming_api_request(
+            agent,
+            {"model": "test", "messages": []},
+            make_client=lambda _reason: client,
+        ) is parsed
+        agent._capture_rate_limits.assert_called_once_with(raw_response)
+
+        agent = MagicMock(
+            platform="cron", api_mode="chat_completions", provider="openai"
+        )
+        agent._interrupt_requested = False
+        with (
+            patch("agent.rate_limit_tracker.wait_for_low_rpm") as throttle,
+            patch("agent.chat_completion_helpers.direct_api_call", return_value=parsed),
+        ):
+            assert interruptible_api_call(agent, {"messages": []}) is parsed
+        throttle.assert_called_once()
+
+        agent.platform = "cli"
+        agent.api_mode = "codex_responses"
+        agent._interruptible_api_call.return_value = parsed
+        with patch("agent.rate_limit_tracker.wait_for_low_rpm") as throttle:
+            assert interruptible_streaming_api_call(agent, {"input": []}) is parsed
+        throttle.assert_called_once()
 
 
 

@@ -66,6 +66,26 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def _maybe_preemptively_throttle_rpm(agent) -> None:
+    """Pace a request from the preceding successful response headers."""
+    try:
+        from agent.rate_limit_tracker import wait_for_low_rpm
+        from hermes_cli.config import get_custom_provider_rpm_throttle_threshold
+
+        base_url = str(getattr(agent, "base_url", "") or "")
+        wait_for_low_rpm(
+            getattr(agent, "_rate_limit_state", None),
+            provider=str(getattr(agent, "provider", "") or ""),
+            base_url=base_url,
+            threshold=get_custom_provider_rpm_throttle_threshold(
+                base_url, getattr(agent, "_custom_providers", None)
+            ),
+            is_interrupted=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+        )
+    except Exception:
+        logger.debug("Pre-emptive RPM throttle check failed", exc_info=True)
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
@@ -996,7 +1016,19 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
-    return request_client.chat.completions.create(**api_kwargs)
+    raw_api = getattr(request_client.chat.completions, "with_raw_response", None)
+    raw_create = getattr(raw_api, "create", None)
+    from unittest.mock import Mock
+
+    if not isinstance(request_client, Mock) and callable(raw_create):
+        raw_response = raw_create(**api_kwargs)
+        agent._capture_rate_limits(raw_response)
+        parse = getattr(raw_response, "parse", None)
+        return parse() if callable(parse) else raw_response
+
+    response = request_client.chat.completions.create(**api_kwargs)
+    agent._capture_rate_limits(getattr(response, "response", None))
+    return response
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1346,6 +1378,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    _maybe_preemptively_throttle_rpm(agent)
+    if agent._interrupt_requested:
+        raise InterruptedError("Agent interrupted before API call")
+
     # Cron and other non-interactive, nested-pool contexts must not spawn the
     # interrupt worker — it wedges before the socket opens on the 2nd+ call
     # (#62151). Run inline instead. See should_use_direct_api_call.
@@ -3288,6 +3324,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     Falls back to _interruptible_api_call on provider errors indicating
     streaming is not supported.
     """
+    if agent._interrupt_requested:
+        raise InterruptedError("Agent interrupted before streaming API call")
+
+    _maybe_preemptively_throttle_rpm(agent)
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 

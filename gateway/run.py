@@ -9512,6 +9512,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             None if reasoning_config is None else dict(reasoning_config)
         )
 
+    def _rehydrate_session_reasoning_override(self, session_entry) -> None:
+        """Copy a durable override from an already-loaded routing entry."""
+        session_key = str(getattr(session_entry, "session_key", "") or "")
+        persisted = getattr(session_entry, "reasoning_override", None)
+        if not session_key or persisted is None:
+            return
+        state = self._session_state(session_key)
+        if state.conversation.reasoning_override is None:
+            state.conversation.reasoning_override = dict(persisted)
+
     def _resolve_session_service_tier(
         self,
         source=None,
@@ -19050,6 +19060,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 touch_activity=not bool(getattr(event, "internal", False)),
             )
         session_key = session_entry.session_key
+        self._rehydrate_session_reasoning_override(session_entry)
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(
                 session_entry,
@@ -19058,6 +19069,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+            session_key = session_entry.session_key
+            self._rehydrate_session_reasoning_override(session_entry)
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:

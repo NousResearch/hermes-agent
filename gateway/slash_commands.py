@@ -3559,7 +3559,23 @@ class GatewaySlashCommandsMixin:
             logger.error("Failed to save config key %s: %s", key_path, e)
             return False
 
-    def _apply_reasoning_selection(
+    async def _persist_session_reasoning_override(
+        self, session_key: str, reasoning_config: Optional[dict]
+    ) -> None:
+        """Write through via AsyncSessionStore when the runner owns a store."""
+        if getattr(self, "session_store", None) is None:
+            return
+        try:
+            await self.async_session_store.set_reasoning_override(
+                session_key, reasoning_config
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist session reasoning override",
+                exc_info=True,
+            )
+
+    async def _apply_reasoning_selection(
         self,
         session_key: str,
         platform_key: str,
@@ -3594,6 +3610,7 @@ class GatewaySlashCommandsMixin:
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
             self._set_session_reasoning_override(session_key, None)
+            await self._persist_session_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
@@ -3606,13 +3623,20 @@ class GatewaySlashCommandsMixin:
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
                 self._set_session_reasoning_override(session_key, None)
+                await self._persist_session_reasoning_override(
+                    session_key, None
+                )
                 self._evict_cached_agent(session_key)
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_session_reasoning_override(session_key, parsed)
+            await self._persist_session_reasoning_override(
+                session_key, parsed
+            )
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
 
         self._set_session_reasoning_override(session_key, parsed)
+        await self._persist_session_reasoning_override(session_key, parsed)
         self._evict_cached_agent(session_key)
         return t("gateway.reasoning.set_session", effort=value)
 
@@ -3743,7 +3767,7 @@ class GatewaySlashCommandsMixin:
             _picker_platform_key = _platform_config_key(event.source.platform)
 
             async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-                return self._apply_reasoning_selection(
+                return await self._apply_reasoning_selection(
                     session_key, _picker_platform_key, value
                 )
 
@@ -3771,7 +3795,7 @@ class GatewaySlashCommandsMixin:
 
         # Typed argument path — same applier the picker uses.
         platform_key = _platform_config_key(event.source.platform)
-        return self._apply_reasoning_selection(
+        return await self._apply_reasoning_selection(
             session_key, platform_key, args, persist_global=persist_global
         )
 

@@ -31,6 +31,9 @@ from contextvars import copy_context
 import pytest
 
 import gateway.session_context as sc
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.session import SessionSource
 from gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
     _UNSET,
@@ -148,6 +151,66 @@ def test_reset_session_vars_closes_inheritance_leak():
     assert captured["bound"]["HERMES_SESSION_KEY"] == FOREIGN["session_key"]
 
 
+class _IngressProbeAdapter(BasePlatformAdapter):
+    """Capture the session env at the adapter's message-ingress boundary."""
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True), Platform.FEISHU)
+        self.set_message_handler(lambda _event: None)
+        self.ingress_env = None
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        return SendResult(success=True)
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        return None
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+    def _start_session_processing(self, event, session_key, **kwargs):
+        self.ingress_env = _spawn_view()
+        return True
+
+
+def test_message_ingress_drops_inherited_session_before_adapter_work():
+    """A newly spawned message task must be clean at the adapter boundary.
+
+    ``GatewayRunner._handle_message`` also resets inherited state, but the base
+    adapter performs typing and lifecycle-hook work before it calls the runner.
+    That pre-runner window must not expose a sibling session to adapter code.
+    """
+    set_session_vars(**MINE)
+    adapter = _IngressProbeAdapter()
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="FOREIGN_CHAT",
+            chat_type="dm",
+            user_id="FOREIGN_USER",
+        ),
+        message_id="FOREIGN_MSG",
+    )
+
+    async def _dispatch():
+        await asyncio.create_task(adapter.handle_message(event))
+
+    asyncio.run(_dispatch())
+
+    assert adapter.ingress_env == {
+        "HERMES_SESSION_CHAT_ID": None,
+        "HERMES_SESSION_THREAD_ID": None,
+        "HERMES_SESSION_KEY": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Async-delivery capability inheritance (the sibling var outside _VAR_MAP)
 # ---------------------------------------------------------------------------
@@ -198,5 +261,4 @@ def test_reset_session_vars_closes_async_delivery_leak():
         "After reset, async delivery must default to supported; "
         f"got {captured['window']!r}"
     )
-
 

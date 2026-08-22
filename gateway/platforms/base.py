@@ -6053,6 +6053,16 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
+        # Message-processing tasks inherit the ContextVars of the task that
+        # dispatches them.  Drop any sibling session identity at the adapter
+        # boundary, before topic recovery, lifecycle/typing work, or
+        # background-task creation can run.  GatewayRunner._handle_message
+        # repeats this reset as defense in depth for synthetic/direct
+        # entrypoints that bypass the adapter.
+        from gateway.session_context import reset_session_vars
+
+        reset_session_vars()
+
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
 

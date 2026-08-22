@@ -9,6 +9,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageType
 from plugins.platforms.weixin import adapter as weixin
 from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
 from gateway.outbound.targets import _parse_target_ref
@@ -906,3 +907,30 @@ def test_account_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, move):
     with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
         weixin._account_dir(str(home))
     assert not home.exists()
+
+
+class TestWeixinCommandClassification:
+    """Invisible-padded commands must not land in the text-batching path.
+
+    _enqueue_text_event holds TEXT events for a debounce window and
+    concatenates whatever arrives next, so a command misclassified as TEXT
+    gets the user's follow-up glued on as its arguments.
+    """
+
+    def test_plain_command_classifies_as_command(self):
+        assert weixin._message_type_from_media([], "/deny") == MessageType.COMMAND
+
+    def test_invisible_padded_command_classifies_as_command(self):
+        assert (
+            weixin._message_type_from_media([], "⁠/deny⁠")
+            == MessageType.COMMAND
+        )
+
+    def test_plain_text_still_classifies_as_text(self):
+        assert weixin._message_type_from_media([], "hello") == MessageType.TEXT
+
+    def test_media_still_wins_over_command_text(self):
+        assert (
+            weixin._message_type_from_media(["image/jpeg"], "/deny")
+            == MessageType.PHOTO
+        )

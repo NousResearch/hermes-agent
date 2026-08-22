@@ -52,6 +52,23 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+def _metadata_requests_new_email_thread(metadata: Optional[Dict[str, Any]]) -> bool:
+    """True when this send should start a fresh email conversation.
+
+    Cron deliveries pass ``job_id`` (and may set ``force_new_thread`` /
+    ``email_new_thread``). Conversational replies leave those keys absent so
+    ``_thread_context`` still threads normal inbound/outbound mail (#84533).
+    """
+    if not metadata:
+        return False
+    if is_truthy_value(metadata.get("force_new_thread")) or is_truthy_value(
+        metadata.get("email_new_thread")
+    ):
+        return True
+    job_id = metadata.get("job_id")
+    return job_id is not None and str(job_id).strip() != ""
+
+
 def _get_esecret(name: str, default: str = "") -> str:
     """Scope-aware ``EMAIL_*`` read with the default-profile startup fallback.
 
@@ -1137,8 +1154,12 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
+            force_new = _metadata_requests_new_email_thread(metadata)
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None,
+                lambda: self._send_email(
+                    chat_id, content, reply_to, force_new_thread=force_new
+                ),
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1160,21 +1181,31 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        *,
+        force_new_thread: bool = False,
     ) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
+        """Send an email via SMTP. Runs in executor thread.
+
+        When *force_new_thread* is True (cron deliveries), do not inherit
+        subject/Message-ID from prior inbound mail for this recipient (#84533).
+        Explicit *reply_to_msg_id* still threads when provided by the caller.
+        """
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        # Thread context for reply (skipped for standalone cron notifications)
+        ctx = {} if force_new_thread else self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        if force_new_thread:
+            # Fresh subject without Re: prefix for standalone notifications.
+            subject = "Hermes Agent"
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
         # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        original_msg_id = reply_to_msg_id or (None if force_new_thread else ctx.get("message_id"))
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
@@ -1257,14 +1288,14 @@ class EmailAdapter(BasePlatformAdapter):
 
         body = "\n\n".join(body_parts)
 
+        force_new = _metadata_requests_new_email_thread(metadata)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                self._send_email_with_attachments,
-                chat_id,
-                body,
-                local_paths,
+                lambda: self._send_email_with_attachments(
+                    chat_id, body, local_paths, force_new_thread=force_new
+                ),
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -1275,19 +1306,23 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        *,
+        force_new_thread: bool = False,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = {} if force_new_thread else self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        if force_new_thread:
+            subject = "Hermes Agent"
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        original_msg_id = ctx.get("message_id")
+        original_msg_id = None if force_new_thread else ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
@@ -1331,18 +1366,25 @@ class EmailAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        # Prefer explicit metadata; kwargs keeps BasePlatformAdapter callers
+        # that pass metadata=… as a keyword still working.
+        md = metadata if metadata is not None else kwargs.get("metadata")
+        force_new = _metadata_requests_new_email_thread(md)
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None,
-                self._send_email_with_attachment,
-                chat_id,
-                caption or "",
-                file_path,
-                file_name,
+                lambda: self._send_email_with_attachment(
+                    chat_id,
+                    caption or "",
+                    file_path,
+                    file_name,
+                    force_new_thread=force_new,
+                ),
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -1355,19 +1397,23 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        *,
+        force_new_thread: bool = False,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = {} if force_new_thread else self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        if force_new_thread:
+            subject = "Hermes Agent"
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        original_msg_id = ctx.get("message_id")
+        original_msg_id = None if force_new_thread else ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id

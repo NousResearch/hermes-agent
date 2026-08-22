@@ -382,6 +382,56 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
 
+    def test_cron_force_new_thread_skips_inbound_context(self):
+        """Cron/job_id sends must not inherit prior inbound In-Reply-To (#84533)."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                adapter.send(
+                    "user@test.com",
+                    "Daily report",
+                    metadata={"job_id": "abc123"},
+                )
+            )
+
+            self.assertTrue(result.success)
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            self.assertIsNone(send_call.get("In-Reply-To"))
+            self.assertIsNone(send_call.get("References"))
+
+    def test_explicit_force_new_thread_flag(self):
+        """force_new_thread / email_new_thread metadata also starts a fresh thread."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Old chat",
+            "message_id": "<old@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email(
+                "user@test.com",
+                "Standalone notice",
+                force_new_thread=True,
+            )
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            self.assertIsNone(send_call.get("In-Reply-To"))
+
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""

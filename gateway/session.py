@@ -3674,24 +3674,34 @@ class SessionStore:
                 from hermes_state import CompressionSessionClosedError
 
                 if isinstance(exc, CompressionSessionClosedError):
-                    # Resolve the full continuation chain via the canonical
-                    # transitive API — a depth-1 live-child lookup misses
-                    # lineages with >=2 compression hops (root -> mid -> tip).
-                    # ``get_compression_tip`` returns the input id when no
-                    # continuation exists; adopt only a different, still-live
-                    # tip, otherwise fail closed as before.
-                    child_id = ""
-                    tip = self._db.get_compression_tip(session_id)
-                    if tip and tip != session_id:
-                        tip_row = self._db.get_session(tip)
-                        if tip_row is not None and tip_row.get("ended_at") is None:
-                            child_id = str(tip)
+                    # The conservative resolver validates the complete chain
+                    # and returns only its unique live canonical leaf.
+                    db: Any = self._db
+                    child = db.find_live_compression_child(session_id)
+                    child_id = (
+                        str(child["id"])
+                        if child and child.get("id")
+                        else ""
+                    )
                     if child_id:
+                        reroute_succeeded = False
                         try:
                             self._append_transcript_message(child_id, msg)
                         except Exception as reroute_exc:
                             exc = reroute_exc
+                            if (
+                                self._is_fts_corruption_error(reroute_exc)
+                                and self._rebuild_fts_once()
+                            ):
+                                try:
+                                    self._append_transcript_message(child_id, msg)
+                                except Exception as retry_exc:
+                                    exc = retry_exc
+                                else:
+                                    reroute_succeeded = True
                         else:
+                            reroute_succeeded = True
+                        if reroute_succeeded:
                             with self._transcript_retry_lock:
                                 if pending and pending[0] is msg:
                                     pending.pop(0)
@@ -3750,12 +3760,19 @@ class SessionStore:
                     except Exception as retry_exc:
                         exc = retry_exc
                     else:
+                        queue_empty = False
                         with self._transcript_retry_lock:
                             if pending and pending[0] is msg:
                                 pending.pop(0)
                             if not pending:
                                 self._dirty_transcripts.pop(queue_session_id, None)
                                 self._transcript_append_failures.pop(session_id, None)
+                                queue_empty = True
+                            else:
+                                msg = pending[0]
+                        if queue_empty:
+                            self._drain_spooled_drops(session_id)
+                            return
                         continue
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1

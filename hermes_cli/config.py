@@ -2638,7 +2638,8 @@ def _env_expand_match(m: re.Match) -> str:
     * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
       ``env:`` prefix is stripped.  Before this, the prefixed form worked in
       MCP config but stayed a literal string in config.yaml — a confusing
-      half-support.
+      half-support.  Process environment values take precedence, with a
+      direct ``~/.hermes/.env`` lookup as the startup-order fallback.
 
     Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``, ...)
     are NOT resolved here — external secret backends inject their values
@@ -2653,6 +2654,8 @@ def _env_expand_match(m: re.Match) -> str:
         if not name:
             return raw
         val = os.environ.get(name)
+        if val is None:
+            val = load_env().get(name)
         if val is not None:
             return val
         logger.warning(
@@ -2693,8 +2696,9 @@ def _expand_env_vars(obj):
     values.
 
     Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    None are left untouched.  Unresolved references (variable not available
+    from ``os.environ`` or ``~/.hermes/.env``) are kept verbatim so callers
+    can detect them.
     """
     if isinstance(obj, str):
         return re.sub(r"\${([^}]+)}", _env_expand_match, obj)

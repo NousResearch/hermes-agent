@@ -1,5 +1,7 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
+import logging
+
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
 
@@ -48,6 +50,41 @@ class TestLoadConfigExpansion:
         assert config["platforms"]["telegram"]["token"] == "1234567:ABC-token"
         assert config["plain"] == "no-substitution"
 
+
+    def test_load_config_resolves_env_ref_from_dotenv_without_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  bring:\n"
+            "    env:\n"
+            "      BRING_EMAIL: ${env:BRING_EMAIL}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "BRING_EMAIL=user@example.com\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("BRING_EMAIL", raising=False)
+        # Patch the imported function's own globals. Other tests may reload
+        # hermes_cli.config, so string-target monkeypatches can hit a
+        # different module object than this collection-time import.
+        monkeypatch.setitem(
+            load_config.__globals__, "get_config_path", lambda: config_file
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            config = load_config()
+
+        assert config["mcp_servers"]["bring"]["env"]["BRING_EMAIL"] == (
+            "user@example.com"
+        )
+        assert not any(
+            "BRING_EMAIL is not set" in record.getMessage()
+            for record in caplog.records
+        )
 
 class TestLoadConfigCacheEnvStaleness:
     """The load_config() cache must not pin expansions made against a stale

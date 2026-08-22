@@ -97,6 +97,9 @@ def test_background_and_main_agent_paths_call_refresh():
     # The stale startup-snapshot form must not remain at create sites.
     assert "fallback_model=self._fallback_model," not in source
     assert "fallback_model=self._runner._fallback_model," not in source
+    # Adaptive AGENTIC turns use this same normal construction path; the
+    # routing boundary must not disable the configured fallback chain.
+    assert "disable_provider_fallback" not in source
 
 
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):

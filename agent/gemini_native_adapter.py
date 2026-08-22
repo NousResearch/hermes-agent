@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_schema import sanitize_gemini_tool_parameters
+from agent.gemini_schema import sanitize_gemini_schema, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -603,6 +603,27 @@ def _effective_gemini_max_output_tokens(
     return requested
 
 
+def _normalize_response_format(config: Any) -> Optional[Dict[str, Any]]:
+    """Translate OpenAI JSON-schema output requests to Gemini REST fields."""
+    if not isinstance(config, dict):
+        return None
+    kind = str(config.get("type") or "").strip().lower()
+    if kind == "json_object":
+        return {"responseMimeType": "application/json"}
+    if kind != "json_schema":
+        return None
+    schema_wrapper = config.get("json_schema") or {}
+    if not isinstance(schema_wrapper, dict):
+        return None
+    schema = sanitize_gemini_schema(schema_wrapper.get("schema"))
+    if not schema:
+        return None
+    return {
+        "responseMimeType": "application/json",
+        "responseSchema": schema,
+    }
+
+
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
@@ -614,6 +635,7 @@ def build_gemini_request(
     stop: Any = None,
     thinking_config: Any = None,
     model: str = "",
+    response_format: Any = None,
 ) -> Dict[str, Any]:
     contents, system_instruction = _build_gemini_contents(
         messages,
@@ -644,6 +666,9 @@ def build_gemini_request(
     normalized_thinking = _normalize_thinking_config(thinking_config)
     if normalized_thinking:
         generation_config["thinkingConfig"] = normalized_thinking
+    normalized_response_format = _normalize_response_format(response_format)
+    if normalized_response_format:
+        generation_config.update(normalized_response_format)
     if generation_config:
         request["generationConfig"] = generation_config
 
@@ -1125,8 +1150,10 @@ class GeminiNativeClient:
         **_: Any,
     ) -> Any:
         thinking_config = None
+        response_format = None
         if isinstance(extra_body, dict):
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")
+            response_format = extra_body.get("response_format") or extra_body.get("responseFormat")
 
         request = build_gemini_request(
             messages=messages or [],
@@ -1138,6 +1165,7 @@ class GeminiNativeClient:
             stop=stop,
             thinking_config=thinking_config,
             model=model,
+            response_format=response_format,
         )
 
         model = bare_gemini_model_id(model)

@@ -25,6 +25,7 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -148,6 +149,15 @@ class GatewaySlashCommandsMixin:
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
+        # /new invalidates the adaptive routing owner through the normal
+        # running-state release below.  Restore a consumed /model --once
+        # instance before that release clears TurnState; the restore is
+        # identity/CAS guarded and therefore cannot overwrite newer state.
+        _reset_state = self._peek_session_state(session_key)
+        if _reset_state is not None:
+            self._restore_consumed_one_turn_model_override(
+                session_key, _reset_state.turn.one_turn_restore
+            )
         # Evict the running-agent slot now that the generation is bumped. The
         # in-flight run's own guarded release (run_generation=old) will return
         # False and leave its dead agent behind; clearing here keeps the slot
@@ -2010,6 +2020,9 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        _self._session_state(
+                            _session_key
+                        ).conversation.model_override_instance_id = None
 
                         # Write-through the non-secret parts to the session
                         # store so the picked model survives a gateway restart
@@ -2323,13 +2336,33 @@ class GatewaySlashCommandsMixin:
                 "api_mode": result.api_mode,
             }
             if one_turn:
+                _one_turn_id = uuid.uuid4().hex
                 if not hasattr(self, "_pending_one_turn_model_restores"):
                     self._pending_one_turn_model_restores = {}
-                self._pending_one_turn_model_restores[session_key] = (
-                    restore_snapshot or {"had_override": False, "override": None}
+                _restore_record = dict(
+                    restore_snapshot
+                    or {"had_override": False, "override": None}
                 )
-            elif hasattr(self, "_pending_one_turn_model_restores"):
-                self._pending_one_turn_model_restores.pop(session_key, None)
+                _restore_record["restore_id"] = _one_turn_id
+                _restore_record["baseline_instance_id"] = (
+                    getattr(
+                        self._session_state(session_key).conversation,
+                        "model_override_instance_id",
+                        None,
+                    )
+                    if _restore_record.get("had_override")
+                    else None
+                )
+                self._pending_one_turn_model_restores[session_key] = _restore_record
+                self._session_state(
+                    session_key
+                ).conversation.model_override_instance_id = _one_turn_id
+            else:
+                if hasattr(self, "_pending_one_turn_model_restores"):
+                    self._pending_one_turn_model_restores.pop(session_key, None)
+                self._session_state(
+                    session_key
+                ).conversation.model_override_instance_id = None
 
             # Write-through the non-secret parts (model/provider/base_url) to
             # the session store so the override survives a gateway restart.

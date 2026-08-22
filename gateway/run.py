@@ -41,6 +41,7 @@ import signal
 import threading
 import time
 import traceback
+import uuid
 from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
@@ -2173,7 +2174,7 @@ def _current_max_iterations() -> int:
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
-from contextlib import contextmanager as _contextmanager
+from contextlib import contextmanager as _contextmanager, nullcontext as _contextlib_nullcontext
 
 
 # Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
@@ -6820,6 +6821,143 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """True when the session holds a running-turn slot (agent or sentinel)."""
         state = self._peek_session_state(session_key)
         return state is not None and state.turn.agent is not None
+
+    def _claim_whatsapp_adaptive_routing_owner(
+        self, session_key: str, source: SessionSource
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Claim the existing session slot for the adaptive pre-agent phase.
+
+        This is deliberately synchronous and uses the normal pending sentinel
+        so a concurrent message follows the existing busy/queue path while the
+        fast provider is awaited.  The owner token makes every later adaptive
+        cleanup conditional on the turn that installed the sentinel.
+        """
+        if not session_key:
+            return None, None
+        state = self._peek_session_state(session_key)
+        if state is not None and (
+            state.turn.agent is not None or state.turn.routing_owner is not None
+        ):
+            return None, None
+        lease, limit_message = self._claim_active_session_slot(session_key, source)
+        if limit_message is not None:
+            return None, limit_message
+        state = self._session_state(session_key)
+        # A cross-process claim can fail without returning a user-facing limit;
+        # never turn that into an unowned adaptive turn.
+        if state.turn.agent is not None or state.turn.routing_owner is not None:
+            if lease is not None:
+                try:
+                    lease.release()
+                except Exception:
+                    logger.debug("Failed to release unused adaptive lease", exc_info=True)
+            return None, None
+        token = uuid.uuid4().hex
+        state.turn.lease = lease
+        state.turn.agent = _AGENT_PENDING_SENTINEL
+        state.turn.routing_owner = token
+        state.turn.started_ts = time.time()
+        self._persist_active_agents()
+        return token, None
+
+    def _adaptive_routing_owner_matches(self, event: MessageEvent, session_key: str) -> bool:
+        token = getattr(event, "_whatsapp_adaptive_routing_owner", None)
+        state = self._peek_session_state(session_key)
+        return bool(token and state is not None and state.turn.routing_owner == token)
+
+    def _consume_pending_one_turn_model_override(
+        self, event: MessageEvent, session_key: str
+    ) -> bool:
+        """Bind the pending /model --once restore to this exact adaptive turn.
+
+        The restore record is consumed before the fast router awaits.  The
+        event keeps its immutable copy, while the turn state lets control
+        commands restore it immediately before releasing the running slot.
+        Neither path relies on ``routing_owner`` remaining current.
+        """
+        if not session_key:
+            return False
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return False
+        pending = state.conversation.one_turn_restore
+        if not isinstance(pending, dict):
+            return False
+        restore_id = str(pending.get("restore_id") or "").strip()
+        current_id = state.conversation.model_override_instance_id
+        if not restore_id or current_id != restore_id:
+            return False
+        record = dict(pending)
+        record["consumed_override"] = dict(state.conversation.model_override or {})
+        record["consumed_override_instance_id"] = restore_id
+        state.conversation.one_turn_restore = None
+        state.turn.one_turn_restore = dict(record)
+        setattr(event, "_whatsapp_adaptive_one_turn_restore", dict(record))
+        return True
+
+    def _restore_consumed_one_turn_model_override(
+        self, session_key: str, restore_record: Optional[Dict[str, Any]]
+    ) -> bool:
+        """CAS-restore one consumed /model --once instance.
+
+        ``restore_record`` is owned by the turn/event that consumed it.  The
+        current override must still carry the same instance id; a newer
+        /model --once, ordinary /model, /new, or other state transition wins
+        and is left untouched.
+        """
+        if not session_key or not isinstance(restore_record, dict):
+            return False
+        restore_id = str(
+            restore_record.get("consumed_override_instance_id")
+            or restore_record.get("restore_id")
+            or ""
+        ).strip()
+        if not restore_id:
+            return False
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return False
+        if state.conversation.model_override_instance_id != restore_id:
+            return False
+        if restore_record.get("had_override"):
+            state.conversation.model_override = dict(
+                restore_record.get("override") or {}
+            )
+            state.conversation.model_override_instance_id = restore_record.get(
+                "baseline_instance_id"
+            )
+        else:
+            state.conversation.model_override = None
+            state.conversation.model_override_instance_id = None
+        if (
+            state.turn.one_turn_restore is not None
+            and str(
+                state.turn.one_turn_restore.get("consumed_override_instance_id")
+                or state.turn.one_turn_restore.get("restore_id")
+                or ""
+            )
+            == restore_id
+        ):
+            state.turn.one_turn_restore = None
+        self._evict_cached_agent(session_key)
+        return True
+
+    def _release_whatsapp_adaptive_routing_owner(
+        self, event: MessageEvent, session_key: str, *, restore: bool = True
+    ) -> bool:
+        """Release only the adaptive sentinel owned by *event*."""
+        token = getattr(event, "_whatsapp_adaptive_routing_owner", None)
+        if not token or not self._adaptive_routing_owner_matches(event, session_key):
+            return False
+        if restore:
+            self._restore_consumed_one_turn_model_override(
+                session_key,
+                getattr(event, "_whatsapp_adaptive_one_turn_restore", None),
+            )
+            self._restore_pending_one_turn_model_override(
+                session_key, owner_token=token
+            )
+        return self._release_running_agent_state(session_key)
 
     def _running_agent_items(self) -> List[tuple]:
         """(session_key, agent) pairs for sessions with a running turn
@@ -16666,6 +16804,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
+    async def _run_whatsapp_adaptive_route(self, event: MessageEvent, source):
+        """Run the opt-in, tool-free WhatsApp fast lane.
+
+        This hook is intentionally placed after command/protocol handling and
+        before the normal active-session claim.  It therefore cannot consume
+        approval replies or load an agent session merely to choose a route.
+        """
+        from gateway.whatsapp_adaptive import (
+            AdaptiveDecision,
+            AdaptiveRoute,
+            WhatsAppAdaptiveConfig,
+            WhatsAppFastRouter,
+        )
+
+        if source.platform not in (Platform.WHATSAPP, Platform.WHATSAPP_CLOUD):
+            return None
+        if event.message_type != MessageType.TEXT or event.get_command():
+            return None
+        if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
+            return None
+        if not source.user_id or bool(getattr(event, "internal", False)):
+            return None
+
+        config = _load_gateway_config()
+        adaptive_config = WhatsAppAdaptiveConfig.from_gateway_config(config)
+        if not adaptive_config.enabled:
+            return None
+
+        session_key = self._session_key_for_source(source)
+        owner, limit_message = self._claim_whatsapp_adaptive_routing_owner(
+            session_key, source
+        )
+        if limit_message is not None:
+            event._whatsapp_adaptive_busy = limit_message
+            return None
+        if owner is None:
+            event._whatsapp_adaptive_busy = (
+                "⏳ Another turn is still running on this session. "
+                "Please resend shortly."
+            )
+            return None
+        event._whatsapp_adaptive_routing_owner = owner
+        self._consume_pending_one_turn_model_override(event, session_key)
+
+        def _route_in_profile_scope():
+            config_obj = getattr(self, "config", None)
+            multiplex = bool(getattr(config_obj, "multiplex_profiles", False))
+            if multiplex:
+                profile_home = self._resolve_profile_home_for_source(source)
+                scope = _profile_runtime_scope(profile_home)
+            else:
+                scope = _contextlib_nullcontext()
+            with scope:
+                try:
+                    fast_runtime = _resolve_runtime_agent_kwargs_for_provider("gemini")
+                except Exception:
+                    return AdaptiveDecision(
+                        AdaptiveRoute.AGENTIC,
+                        reason="fast_provider_unavailable",
+                    )
+                if str(fast_runtime.get("provider") or "").strip() != "gemini":
+                    return AdaptiveDecision(
+                        AdaptiveRoute.AGENTIC,
+                        reason="fast_provider_unavailable",
+                    )
+                fast_router = WhatsAppFastRouter(
+                    api_key=fast_runtime.get("api_key") or "",
+                    base_url=fast_runtime.get("base_url"),
+                    config=adaptive_config,
+                )
+                decision = fast_router.route(event.text or "")
+                # AGENTIC deliberately stops at the routing boundary.  The
+                # normal agent pipeline resolves provider/model, channel
+                # overrides, profile scope, credentials, tools, and the
+                # original message exactly as it does without this feature.
+                return decision
+
+        try:
+            decision = await asyncio.to_thread(_route_in_profile_scope)
+            if not self._adaptive_routing_owner_matches(event, session_key):
+                self._restore_consumed_one_turn_model_override(
+                    session_key,
+                    getattr(event, "_whatsapp_adaptive_one_turn_restore", None),
+                )
+                event._whatsapp_adaptive_ownership_lost = True
+                return None
+            return decision
+        except BaseException:
+            self._restore_consumed_one_turn_model_override(
+                session_key,
+                getattr(event, "_whatsapp_adaptive_one_turn_restore", None),
+            )
+            self._release_whatsapp_adaptive_routing_owner(event, session_key)
+            raise
+
+    def _whatsapp_adaptive_route_metadata(self, event: MessageEvent) -> Optional[str]:
+        reason = str(getattr(event, "_whatsapp_adaptive_reason", "") or "").strip()
+        if not reason:
+            return None
+        # Bounded routing metadata is a hint, not authority and never contains
+        # generated Gemini text or credentials.
+        return f"[WhatsApp fast router: AGENTIC; reason={reason}]"
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -17899,6 +18139,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "api_key": "moa-virtual-provider",
                     "api_mode": "chat_completions",
                 }
+                _moa_state.conversation.model_override_instance_id = None
                 self._evict_cached_agent(_quick_key)
                 event._moa_disable_after_turn = True
             except Exception:
@@ -18173,6 +18414,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "please resend shortly."
             )
 
+        # Authenticated WhatsApp free text gets a bounded, tool-free route
+        # decision before the normal active-session claim.  Commands and
+        # approval/confirm protocols have already returned above, and active
+        # sessions have already taken their priority path, so this hook cannot
+        # steal a deterministic control-plane reply or expose agent tools to
+        # the fast request.
+        _adaptive_decision = await self._run_whatsapp_adaptive_route(event, source)
+        if getattr(event, "_whatsapp_adaptive_ownership_lost", False):
+            self._restore_consumed_one_turn_model_override(
+                _quick_key,
+                getattr(event, "_whatsapp_adaptive_one_turn_restore", None),
+            )
+            return (
+                "⚠️ The WhatsApp adaptive turn was cancelled by another session "
+                "operation. Please resend the message."
+            )
+        if getattr(event, "_whatsapp_adaptive_busy", None):
+            return event._whatsapp_adaptive_busy
+        if _adaptive_decision is not None:
+            from gateway.whatsapp_adaptive import AdaptiveRoute
+
+            if _adaptive_decision.route is AdaptiveRoute.DIRECT:
+                self._release_whatsapp_adaptive_routing_owner(event, _quick_key)
+                return _adaptive_decision.response or ""
+            event._whatsapp_adaptive_reason = _adaptive_decision.reason
+            event._whatsapp_adaptive_route = AdaptiveRoute.AGENTIC.value
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -18180,23 +18448,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
-        _active_session_lease, _limit_message = self._claim_active_session_slot(
-            _quick_key,
-            source,
-        )
-        if _limit_message is not None:
-            logger.info(
-                "Rejecting new active session %s: max_concurrent_sessions reached",
-                _quick_key,
-            )
-            return _limit_message
         _claim_state = self._session_state(_quick_key)
-        if _active_session_lease is not None:
-            _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.started_ts = time.time()
-        self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        _adaptive_owner = getattr(event, "_whatsapp_adaptive_routing_owner", None)
+        if not _adaptive_owner:
+            # Between here and _run_agent registering the real AIAgent, there
+            # are numerous await points.  Keep the pre-existing claim path for
+            # every non-adaptive turn.
+            _active_session_lease, _limit_message = self._claim_active_session_slot(
+                _quick_key,
+                source,
+            )
+            if _limit_message is not None:
+                logger.info(
+                    "Rejecting new active session %s: max_concurrent_sessions reached",
+                    _quick_key,
+                )
+                return _limit_message
+            if _active_session_lease is not None:
+                _claim_state.turn.lease = _active_session_lease
+            _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+            _claim_state.turn.started_ts = time.time()
+            self._persist_active_agents()
+        try:
+            _run_generation = self._begin_session_run_generation(_quick_key)
+        except BaseException:
+            if _adaptive_owner:
+                self._release_whatsapp_adaptive_routing_owner(event, _quick_key)
+            raise
 
         try:
             try:
@@ -18238,23 +18516,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # permanently (every later message silently fans out through MoA).
             # Putting it in finally guarantees the revert on success, exception,
             # and interrupt alike.
+            _adaptive_owned = bool(
+                _adaptive_owner
+                and self._adaptive_routing_owner_matches(event, _quick_key)
+            )
             self._restore_moa_one_shot(event, _quick_key)
-            self._restore_pending_one_turn_model_override(_quick_key)
+            _adaptive_one_turn_restore = getattr(
+                event, "_whatsapp_adaptive_one_turn_restore", None
+            )
+            if _adaptive_one_turn_restore is not None:
+                self._restore_consumed_one_turn_model_override(
+                    _quick_key, _adaptive_one_turn_restore
+                )
+            elif _adaptive_owned:
+                self._restore_pending_one_turn_model_override(
+                    _quick_key, owner_token=_adaptive_owner
+                )
+            elif not _adaptive_owner:
+                self._restore_pending_one_turn_model_override(
+                    _quick_key, run_generation=_run_generation
+                )
             # Normal completion/exception/interrupt owns and clears this exact
-            # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
-            # the next unclean startup's recovery pass.
+            # durable marker.  Its event-owned CAS token is independent of the
+            # routing owner, so /stop or /new invalidating routing ownership
+            # must not strand the marker. SIGKILL/OOM skips finally, leaving the
+            # marker for the next unclean startup's recovery pass.
             await self._clear_durable_active_turn(event)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            # Ordinary finalization releases only its own generation, so a late
+            # gen-N unwind cannot clear a replacement gen-(N+1) turn. Control
+            # invalidation paths already release the invalidated slot explicitly;
+            # the adaptive owner branch below uses its owner token instead.
+            if _adaptive_owned:
+                self._release_whatsapp_adaptive_routing_owner(
+                    event, _quick_key, restore=False
+                )
+            elif not _adaptive_owner:
+                self._release_running_agent_state(
+                    _quick_key, run_generation=_run_generation
+                )
             # Turn lease (#64934): release THIS turn's lease token — keyed by
             # (routing key, run generation) so this unwind can only ever free
             # the lease its own turn acquired, never a newer turn's.
+            # The turn lease is likewise owned by this exact run generation;
+            # its primitive checks the stored token/generation pair. Do not
+            # make routing_owner the authority for releasing it: /stop or
+            # /new may legitimately invalidate routing ownership first.
             self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
@@ -18270,17 +18576,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         try:
             _restore = getattr(event, "_moa_restore_override", None)
-            self._session_state(quick_key).conversation.model_override = _restore
+            _moa_state = self._session_state(quick_key).conversation
+            _moa_state.model_override = _restore
+            _moa_state.model_override_instance_id = None
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
 
-    def _restore_pending_one_turn_model_override(self, session_key: str) -> None:
+    def _restore_pending_one_turn_model_override(
+        self,
+        session_key: str,
+        *,
+        owner_token: Optional[str] = None,
+        run_generation: Optional[int] = None,
+    ) -> None:
         """Restore a per-session model override after ``/model --once`` runs."""
         if not session_key:
             return
         try:
             _otr_state = self._peek_session_state(session_key)
+            if owner_token is None and run_generation is None:
+                return
+            if owner_token is not None and (
+                _otr_state is None or _otr_state.turn.routing_owner != owner_token
+            ):
+                return
+            if run_generation is not None and not self._is_session_run_current(
+                session_key, run_generation
+            ):
+                return
             snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
             if _otr_state is not None:
                 _otr_state.conversation.one_turn_restore = None
@@ -19224,6 +19548,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ride the current user message via the api_content sidecar instead
         # (staged below, consumed in run_sync → build_turn_context).
         turn_sidecar_notes: List[str] = []
+        _adaptive_note = self._whatsapp_adaptive_route_metadata(event)
+        if _adaptive_note:
+            turn_sidecar_notes.append(_adaptive_note)
 
         # If the previous session expired and was auto-reset, deliver a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -26513,7 +26840,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "(provider=%s); using credential-less override",
                     provider, exc_info=True,
                 )
-        self._session_state(session_key).conversation.model_override = override
+        _rehydrate_state = self._session_state(session_key).conversation
+        _rehydrate_state.model_override = override
+        _rehydrate_state.model_override_instance_id = None
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
@@ -26563,13 +26892,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         if snapshot.get("had_override"):
-            self._session_state(session_key).conversation.model_override = dict(
-                snapshot.get("override") or {}
-            )
+            _restore_state = self._session_state(session_key).conversation
+            _restore_state.model_override = dict(snapshot.get("override") or {})
+            _restore_state.model_override_instance_id = None
         else:
             _rst_state = self._peek_session_state(session_key)
             if _rst_state is not None:
                 _rst_state.conversation.model_override = None
+                _rst_state.conversation.model_override_instance_id = None
         self._evict_cached_agent(session_key)
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
@@ -26913,6 +27243,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _iac_state is not None:
             _iac_state.persistent.pending_command_text = None
         if release_running_state:
+            # Ordinary /model --once state remains conversation-scoped until
+            # the turn finalizer restores it.  Control invalidation advances
+            # the generation before the old finalizer runs, so restore it
+            # against the post-invalidation generation here.  This keeps the
+            # ordinary pending-state authority separate from the adaptive
+            # consumed-record CAS cleanup below.
+            self._restore_pending_one_turn_model_override(
+                session_key, run_generation=_generation_at_interrupt
+            )
+            if _iac_state is not None:
+                self._restore_consumed_one_turn_model_override(
+                    session_key, _iac_state.turn.one_turn_restore
+                )
             self._release_running_agent_state(session_key)
             # Evict the cached agent: ``_interrupt_requested`` is only
             # cleared by the turn finalizer, so on a hung or still-draining

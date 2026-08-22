@@ -65,6 +65,14 @@ class TurnState:
     started_ts: float = 0.0
     # Cross-process active-session slot lease (None = none held).
     lease: Any = None
+    # Owner token for the pre-agent adaptive routing phase.  The pending
+    # sentinel alone prevents a second turn from starting, but this token is
+    # what makes adaptive cleanup conditional on the turn that acquired it.
+    routing_owner: Optional[str] = None
+    # Consumed /model --once restore record for this exact turn.  This is
+    # deliberately turn-scoped rather than owner-scoped: /stop and /new may
+    # invalidate routing_owner before the old turn's cleanup runs.
+    one_turn_restore: Optional[Dict[str, Any]] = None
     # Last busy-ack timestamp (debounce; 0.0 = never acked).
     busy_ack_ts: float = 0.0
     # Held turn-lease token + the run generation that acquired it.  The old
@@ -84,6 +92,8 @@ class TurnState:
         self.agent = None
         self.started_ts = 0.0
         self.lease = None
+        self.routing_owner = None
+        self.one_turn_restore = None
         self.busy_ack_ts = 0.0
 
 
@@ -93,6 +103,10 @@ class ConversationState:
 
     # /model per-session override (model/provider/api_key/base_url/api_mode).
     model_override: Optional[Dict[str, Any]] = None
+    # Identity of the currently installed in-memory model override.  It is
+    # used as a compare-and-swap fence for one-turn restoration and is never
+    # persisted as part of the user-facing session override.
+    model_override_instance_id: Optional[str] = None
     # /model --once restore snapshot.
     one_turn_restore: Optional[Dict[str, Any]] = None
     # /reasoning per-session override.
@@ -118,6 +132,7 @@ class ConversationState:
         automatically.
         """
         self.model_override = None
+        self.model_override_instance_id = None
         self.one_turn_restore = None
         self.reasoning_override = None
         self.service_tier_override = _UNSET_TIER

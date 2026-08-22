@@ -194,16 +194,53 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
 
     monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
 
-    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    client = GeminiNativeClient(api_key="test-gemini-key", base_url="https://generativelanguage.googleapis.com/v1beta")
     response = client.chat.completions.create(
         model="gemini-2.5-flash",
         messages=[{"role": "user", "content": "Hello"}],
     )
 
     assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    assert recorded["headers"]["x-goog-api-key"] == "AIza-test"
+    assert recorded["headers"]["x-goog-api-key"] == "test-gemini-key"
     assert "Authorization" not in recorded["headers"]
     assert response.choices[0].message.content == "hello"
+
+
+def test_native_request_translates_structured_output_to_generate_content_schema():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "route this"}],
+        tools=None,
+        tool_choice="none",
+        max_tokens=128,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "route",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "route": {"type": "string", "enum": ["DIRECT", "AGENTIC"]}
+                    },
+                    "required": ["route"],
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "additionalProperties": False,
+                },
+            },
+        },
+    )
+
+    assert "tools" not in request
+    assert request["generationConfig"]["responseMimeType"] == "application/json"
+    assert request["generationConfig"]["responseSchema"] == {
+        "type": "object",
+        "properties": {
+            "route": {"type": "string", "enum": ["DIRECT", "AGENTIC"]}
+        },
+        "required": ["route"],
+    }
 
 
 
@@ -216,7 +253,7 @@ def test_native_client_accepts_injected_http_client():
     from agent.gemini_native_adapter import GeminiNativeClient
 
     injected = SimpleNamespace(close=lambda: None)
-    client = GeminiNativeClient(api_key="AIza-test", http_client=injected)
+    client = GeminiNativeClient(api_key="test-gemini-key", http_client=injected)
     assert client._http is injected
 
 
@@ -247,7 +284,7 @@ async def test_async_native_client_streams_without_requiring_async_iterator_from
             return True, None
 
     sync_client = SimpleNamespace(
-        api_key="AIza-test",
+        api_key="test-gemini-key",
         base_url="https://generativelanguage.googleapis.com/v1beta",
         chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: sync_stream)),
         _advance_stream_iterator=_advance,
@@ -342,9 +379,6 @@ def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
 # ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------
-
-
-
 
 
 

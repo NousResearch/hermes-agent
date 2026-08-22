@@ -1,5 +1,7 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -199,7 +201,6 @@ class TestMaybePersistToolResult:
 
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
-        import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write.
         env.execute.side_effect = [
@@ -293,6 +294,23 @@ class TestEnforceTurnBudget:
         )
         assert persisted_count >= 2  # Need to shed at least ~52K
 
+    def test_budget_spill_extracts_mcp_text(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        markdown = "# Archive\n\n" + "one page\n" * 4_000
+        envelope = json.dumps({"result": markdown})
+        msgs = [{
+            "role": "tool",
+            "name": "mcp__archive__read",
+            "tool_call_id": "tc_budget_mcp",
+            "content": envelope,
+        }]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=10_000))
+
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        spill_file = get_spillover_dir() / "tc_budget_mcp.txt"
+        assert spill_file.read_text(encoding="utf-8") == markdown
+
 
     def test_empty_messages(self):
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
@@ -360,6 +378,63 @@ class TestSpillover:
         assert spill_file.exists()
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
+
+    def test_mcp_envelope_persists_plain_text(self):
+        markdown = "# Research guide\n\n" + "pageable content\n" * 4_000
+        content = json.dumps({
+            "result": markdown,
+            "structuredContent": {"result": markdown},
+        })
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="mcp__archive__read_guide",
+            tool_use_id="tc_mcp_text",
+            env=None,
+            threshold=30_000,
+        )
+
+        spill_file = get_spillover_dir() / "tc_mcp_text.txt"
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "# Research guide" in result
+        assert spill_file.read_text(encoding="utf-8") == markdown
+
+    def test_mcp_content_blocks_are_joined_as_plain_text(self):
+        first = "first section\n" * 2_000
+        second = "second section\n" * 2_000
+        content = json.dumps({
+            "content": [
+                {"type": "text", "text": first},
+                {"type": "image", "data": "ignored"},
+                {"type": "text", "text": second},
+            ],
+        })
+
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="mcp__archive__read_sections",
+            tool_use_id="tc_mcp_blocks",
+            env=None,
+            threshold=30_000,
+        )
+
+        spill_file = get_spillover_dir() / "tc_mcp_blocks.txt"
+        assert spill_file.read_text(encoding="utf-8") == f"{first}\n{second}"
+
+    def test_non_mcp_json_envelope_remains_verbatim(self):
+        text = "ordinary tool output\n" * 3_000
+        content = json.dumps({"result": text})
+
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="custom_json_tool",
+            tool_use_id="tc_json_envelope",
+            env=None,
+            threshold=30_000,
+        )
+
+        spill_file = get_spillover_dir() / "tc_json_envelope.txt"
+        assert spill_file.read_text(encoding="utf-8") == content
 
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""

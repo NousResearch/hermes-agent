@@ -43,6 +43,7 @@ Defense against context-window overflow operates at three levels:
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -65,6 +66,7 @@ SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+_MCP_TOOL_NAME_PREFIX = "mcp__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -239,6 +241,46 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return truncated, True
 
 
+def _content_for_persistence(content: str, tool_name: str) -> str:
+    """Extract model-facing text from an MCP result envelope.
+
+    MCP handlers return a JSON string so structured metadata remains available
+    inline.  Persisting that string verbatim turns newlines in a large text
+    result into escapes on one giant line.  Only unwrap registered MCP tools;
+    JSON returned by every other tool remains opaque.
+    """
+    if not tool_name.startswith(_MCP_TOOL_NAME_PREFIX):
+        return content
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+    if not isinstance(payload, dict):
+        return content
+
+    result = payload.get("result")
+    if isinstance(result, str) and result:
+        return result
+
+    content_blocks = payload.get("content")
+    if content_blocks is None and isinstance(result, dict):
+        content_blocks = result.get("content")
+    if isinstance(content_blocks, list):
+        text_parts = [
+            block["text"]
+            for block in content_blocks
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and block["text"]
+        ]
+        if text_parts:
+            return "\n".join(text_parts)
+
+    return content
+
+
 def _heredoc_marker(content: str) -> str:
     """Return a heredoc delimiter that doesn't collide with content."""
     if HEREDOC_MARKER not in content:
@@ -344,21 +386,22 @@ def maybe_persist_tool_result(
     if len(content) <= effective_threshold:
         return content
 
+    persisted_content = _content_for_persistence(content, tool_name)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     # Always persist host-side first: $HERMES_HOME/cache/spillover is the
     # single canonical home for spilled results (with the other Hermes-owned
     # caches, pruned by gateway housekeeping) regardless of backend.
-    host_path = _write_to_spillover(content, filename)
+    host_path = _write_to_spillover(persisted_content, filename)
 
     if _is_host_side_env(env):
         if host_path is not None:
             logger.info(
                 "Persisted large tool result: %s (%s, %d chars -> %s)",
-                tool_name, tool_use_id, len(content), host_path,
+                tool_name, tool_use_id, len(persisted_content), host_path,
             )
-            return _build_persisted_message(preview, has_more, len(content), host_path)
+            return _build_persisted_message(preview, has_more, len(persisted_content), host_path)
     elif env is not None:
         # Remote backend: the spillover dir is auto-mounted (docker) or
         # file-synced (modal/ssh/daytona) into the sandbox, so reference the
@@ -368,20 +411,20 @@ def maybe_persist_tool_result(
             if visible is not None:
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
-                    tool_name, tool_use_id, len(content), visible, host_path,
+                    tool_name, tool_use_id, len(persisted_content), visible, host_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), visible)
+                return _build_persisted_message(preview, has_more, len(persisted_content), visible)
         # Fallback: write into the sandbox temp dir (pre-existing containers
         # without the spillover mount, translation/probe failures).
         storage_dir = _resolve_storage_dir(env)
         remote_path = f"{storage_dir}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persisted_content, remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
-                    tool_name, tool_use_id, len(content), remote_path,
+                    tool_name, tool_use_id, len(persisted_content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                return _build_persisted_message(preview, has_more, len(persisted_content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
@@ -432,7 +475,7 @@ def enforce_turn_budget(
 
         replacement = maybe_persist_tool_result(
             content=content,
-            tool_name=_BUDGET_TOOL_NAME,
+            tool_name=msg.get("name") or _BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
             config=config,

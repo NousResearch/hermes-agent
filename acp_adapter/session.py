@@ -632,10 +632,23 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        # Mirror hermes_cli/tools_config.py::_get_platform_tools -- a configured
+        # non-default context engine keeps its recovery/status tools available.
+        # ACP builds its own toolset list rather than calling that resolver, so
+        # without this the ``context_engine`` marker is absent and the gate in
+        # agent_init never attaches the engine's tool schemas.
+        _acp_seed_toolsets = ["hermes-acp"]
+        _context_cfg = config.get("context") or {}
+        if not isinstance(_context_cfg, dict):
+            _context_cfg = {}
+        _engine_name = str(_context_cfg.get("engine") or "compressor").strip().lower()
+        if _engine_name and _engine_name != "compressor":
+            _acp_seed_toolsets.append("context_engine")
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                _acp_seed_toolsets,
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

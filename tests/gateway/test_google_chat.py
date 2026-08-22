@@ -1454,6 +1454,21 @@ class TestFormatMessage:
         out = GoogleChatAdapter.format_message("# Heading\nbody with # mid-line hash")
         assert out == "*Heading*\nbody with # mid-line hash"
 
+    def test_nested_backticks_inside_bold_restore(self):
+        """Bold wrapping inline code must not leak GC{n} placeholders."""
+        out = GoogleChatAdapter.format_message("as **`octocat`** (using GH_TOKEN)")
+        assert "GC" not in out
+        assert "HERMES_GC_PH" not in out
+        assert "`octocat`" in out
+
+    def test_inline_code_survives_nul_strip_placeholder(self):
+        out = GoogleChatAdapter.format_message(
+            "Yes, I am authenticated with GitHub via the gh CLI as `user` (using GH_TOKEN)."
+        )
+        assert out == (
+            "Yes, I am authenticated with GitHub via the gh CLI as `user` (using GH_TOKEN)."
+        )
+
 
     def test_strips_zwj_and_variation_selector(self):
         """ZWJ (U+200D) + Variation Selector 16 (U+FE0F) get stripped.

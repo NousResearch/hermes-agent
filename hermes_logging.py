@@ -514,7 +514,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def emit(self, record: logging.LogRecord) -> None:
         # Cheap-ish stat-per-record check; the kernel caches inode metadata
         # so the syscall is sub-microsecond on a hot file.
-        if self.stream is not None or os.path.exists(self.baseFilename):
+        if self.stream is None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
         super().emit(record)
 
@@ -798,3 +798,5 @@ def _read_logging_config():
     except Exception:
         pass
     return (None, None, None)
+
+

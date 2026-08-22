@@ -1236,14 +1236,18 @@ def _windows_marketing_version() -> str:
 
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
-    "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
+    "bash (Git Bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
     "syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal "
-    "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
-    "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
+    "calls. Prefer forward-slash Windows paths like `C:/Users/<user>/...` "
+    "for cross-tool references and scripts; use MSYS paths like "
+    "`/c/Users/<user>/...` only when a particular bash command requires them. "
+    "PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`). Path arguments for NATIVE "
-    "Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
-    "path conversion is disabled here, so `git -C /c/Users/x` or "
+    "POSIX equivalents (`ls`, `$FOO`, `grep`). If PowerShell is specifically "
+    "required, invoke it explicitly from bash, for example "
+    "`powershell.exe -NoProfile -NonInteractive -Command 'Get-ChildItem'`. Path arguments for "
+    "NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: "
+    "MSYS path conversion is disabled here, so `git -C /c/Users/x` or "
     "`node /tmp/a.js` fails with 'cannot change to'/'not found' even though "
     "`cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style "
     "forward-slash native paths to native tools, and prefer "
@@ -1438,7 +1442,7 @@ def build_environment_hints() -> str:
             host_lines.append(
                 "Note: on Windows, the machine hostname (e.g. from `hostname` "
                 "or uname) is NOT the username. Use the 'User home directory' "
-                "above to construct paths under C:\\Users\\<user>\\, never the "
+                "above exactly when constructing paths; never substitute the "
                 "hostname."
             )
         hints.append("\n".join(host_lines))

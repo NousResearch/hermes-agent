@@ -767,6 +767,34 @@ class TestPromptBuilderConstants:
 
 class TestEnvironmentHints:
 
+    def test_windows_local_backend_describes_bash_and_uses_explicit_home(self, monkeypatch):
+        """Windows host identity and the terminal's shell are separate facts."""
+        import agent.prompt_builder as _pb
+        import os
+        import platform
+        import socket
+        import sys
+
+        explicit_home = "C:/Users/davep"
+        machine_hostname = "DAVE-HUB-01"
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "release", lambda: "11")
+        monkeypatch.setattr(os.path, "expanduser", lambda _path: explicit_home)
+        monkeypatch.setattr(socket, "gethostname", lambda: machine_hostname)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", "C:/Users/davep/workspace")
+
+        result = _pb.build_environment_hints()
+
+        assert f"User home directory: {explicit_home}" in result
+        assert machine_hostname not in result
+        assert "bash (Git Bash / MSYS), NOT PowerShell or cmd.exe" in result
+        assert "C:/Users/<user>/..." in result
+        assert "/c/Users/<user>/..." in result
+        assert "Get-ChildItem" in result and "will NOT work" in result
+        assert "powershell.exe -NoProfile -NonInteractive -Command" in result
+
 
 
 
@@ -1056,5 +1084,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

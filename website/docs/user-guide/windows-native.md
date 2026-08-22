@@ -105,6 +105,23 @@ The dashboard's `/chat` tab embeds a real terminal via a POSIX PTY (`ptyprocess`
 
 Hermes's terminal tool runs commands through **Git Bash**, same strategy Claude Code uses. This sidesteps the POSIX-vs-Windows gap without rewriting every tool.
 
+Commands entered through Hermes's `terminal` tool therefore require **POSIX
+shell syntax**, even though Hermes itself is running on Windows. Use `ls`,
+`$HOME`, `grep`, `&&`, and pipes. PowerShell builtins such as `Get-ChildItem`,
+`$env:FOO`, and `Select-String` do not work in an ordinary terminal call.
+When a task genuinely requires PowerShell, invoke it explicitly from bash:
+
+```bash
+powershell.exe -NoProfile -NonInteractive -Command 'Get-ChildItem Env:'
+```
+
+For paths shared between Hermes tools, scripts, and Windows programs, prefer
+forward-slash Windows paths such as `C:/Users/alice/project`. Use the MSYS form
+`/c/Users/alice/project` only for a bash command that specifically requires it.
+Do not derive `C:/Users/<user>` from `hostname`: a machine name is not a Windows
+account name. Use the user home directory reported in Hermes's execution-
+environment context.
+
 Resolution order for `bash.exe`:
 
 1. `HERMES_GIT_BASH_PATH` environment variable if set.

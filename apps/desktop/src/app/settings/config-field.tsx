@@ -268,7 +268,6 @@ function ListField({
       }}
       onKeyDown={e => {
         if (e.key === 'Enter') {
-          commitDraft()
           e.currentTarget.blur()
         }
       }}

@@ -296,6 +296,11 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
         """
+        from agent.tool_argument_integrity import (
+            neutralize_completed_incomplete_tool_calls,
+        )
+
+        messages = neutralize_completed_incomplete_tool_calls(messages)
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )

@@ -18,6 +18,7 @@ from pathlib import Path
 import logging
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.tool_argument_integrity import (
+    INCOMPLETE_TOOL_ARGUMENTS_KEY,
+    incomplete_tool_arguments_after_schema_decode as _incomplete_after_schema_decode,
+    incomplete_tool_arguments_error_result as _incomplete_tool_arguments_error_result,
+    is_incomplete_tool_arguments_error_result as _is_incomplete_tool_arguments_error_result,
+)
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -53,6 +60,14 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+_INCOMPLETE_KEY_ESCAPE_RE = re.compile(
+    "".join(
+        rf"(?:{re.escape(char)}|\\+u00{ord(char):02x})"
+        for char in INCOMPLETE_TOOL_ARGUMENTS_KEY
+    ),
+    re.IGNORECASE,
+)
 
 
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
@@ -162,11 +177,14 @@ class _BatchAbandoned(BaseException):
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
-    """Parse model-emitted arguments without repairing or coercing them."""
+    """Parse model-emitted arguments and reject lossy historical previews."""
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):
         arguments = None
+    incomplete_result = _incomplete_tool_arguments_error_result(arguments)
+    if isinstance(arguments, dict) and incomplete_result:
+        return {}, incomplete_result
     if isinstance(arguments, dict):
         return arguments, None
     return {}, json.dumps(
@@ -178,6 +196,69 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
         },
         ensure_ascii=False,
     )
+
+
+def _schema_decoded_integrity_result(
+    function_name: str, function_args: dict[str, Any]
+) -> Optional[str]:
+    """Purely preview schema container decoding before execution lifecycle."""
+    from tools.registry import registry
+
+    schema = registry.get_schema(function_name)
+    parameters = schema.get("parameters") if isinstance(schema, dict) else None
+    if not isinstance(parameters, dict):
+        return None
+    preview_args = function_args
+    try:
+        from tools.schema_sanitizer import unrename_tool_args
+
+        preview_args = unrename_tool_args(parameters, dict(function_args))
+    except Exception:
+        pass
+    return _incomplete_after_schema_decode(preview_args, parameters)
+
+
+def _may_contain_incomplete_provenance(value: Any) -> bool:
+    """Cheap gate for literal or JSON-escaped reserved provenance keys."""
+    if isinstance(value, str):
+        serialized = value
+    else:
+        try:
+            serialized = json.dumps(value, ensure_ascii=True)
+        except (TypeError, ValueError):
+            return False
+    return _INCOMPLETE_KEY_ESCAPE_RE.search(serialized) is not None
+
+
+def _integrity_preflight(function_name: str, raw_arguments: Any) -> Optional[str]:
+    """Return an integrity rejection before interrupt or lifecycle handling."""
+    function_args, parse_result = _parse_tool_arguments(raw_arguments)
+    if _is_incomplete_tool_arguments_error_result(parse_result):
+        return parse_result
+    if parse_result is not None:
+        return None
+    if not _may_contain_incomplete_provenance(raw_arguments):
+        return None
+
+    try:
+        from tools import tool_search as _ts
+
+        if function_name == _ts.TOOL_CALL_NAME:
+            underlying, underlying_args, error = _ts.resolve_underlying_call(
+                function_args
+            )
+            if not error and underlying:
+                direct_result = _incomplete_tool_arguments_error_result(
+                    underlying_args
+                )
+                if direct_result:
+                    return direct_result
+                return _schema_decoded_integrity_result(
+                    underlying, underlying_args
+                )
+    except Exception:
+        pass
+    return _schema_decoded_integrity_result(function_name, function_args)
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -1088,6 +1169,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
+            integrity_result = _integrity_preflight(
+                tc.function.name, tc.function.arguments
+            )
+            if integrity_result is not None:
+                messages.append(make_tool_result_message(
+                    tc.function.name,
+                    integrity_result,
+                    tc.id,
+                    effect_disposition="none",
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent, messages, stage=f"rejected tool result {tc.function.name}"
+                )
+                continue
             cancelled_result = (
                 f"[Tool execution cancelled — {tc.function.name} was skipped "
                 "due to user interrupt]"
@@ -1162,7 +1257,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    _integrity_result = _incomplete_tool_arguments_error_result(
+                        _underlying_args
+                    )
+                    if _integrity_result:
+                        _ts_scope_block = _integrity_result
+                    elif _underlying in _tool_search_scoped_names(agent):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
                         # instead of dispatching into an opaque failure.
@@ -1180,6 +1280,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        if _ts_scope_block is None and _may_contain_incomplete_provenance(
+            function_args
+        ):
+            _schema_integrity_result = _schema_decoded_integrity_result(
+                function_name, function_args
+            )
+            if _schema_integrity_result:
+                _ts_scope_block = _schema_integrity_result
+
         parsed_calls.append(
             (tool_call, function_name, function_args, [], None, _ts_scope_block)
         )
@@ -1192,9 +1301,32 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
-    for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
-        if block_result is not None:
-            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+    for i, (
+        tc,
+        name,
+        args,
+        middleware_trace,
+        block_result,
+        scope_block,
+    ) in enumerate(parsed_calls):
+        integrity_result = (
+            block_result
+            if _is_incomplete_tool_arguments_error_result(block_result)
+            else scope_block
+            if _is_incomplete_tool_arguments_error_result(scope_block)
+            else None
+        )
+        terminal_result = block_result or integrity_result
+        if terminal_result is not None:
+            results[i] = (
+                name,
+                args,
+                terminal_result,
+                0.0,
+                True,
+                True,
+                middleware_trace,
+            )
 
     start_condition = threading.Condition()
     next_start_order = 0
@@ -1271,10 +1403,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     timeout_s = _resolve_concurrent_tool_timeout()
     gate_timeout_s = _start_order_gate_timeout(timeout_s)
 
-    # Touch activity before launching workers so the gateway knows
-    # we're executing tools (not stuck).
-    agent._current_tool = tool_names_str
-    agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+    runnable_calls = [
+        (i, tc, name, args, scope_block)
+        for i, (tc, name, args, _trace, parse_error, scope_block) in enumerate(
+            parsed_calls
+        )
+        if parse_error is None
+        and not _is_incomplete_tool_arguments_error_result(scope_block)
+    ]
+    runnable_names_str = ", ".join(name for _, _, name, _, _ in runnable_calls)
+
+    # Touch activity only when at least one call can actually execute.
+    if runnable_calls:
+        agent._current_tool = runnable_names_str
+        agent._touch_activity(
+            f"executing {len(runnable_calls)} tools concurrently: {runnable_names_str}"
+        )
 
     def _run_tool(
         index,
@@ -1456,21 +1600,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
 
-    # Start spinner for CLI mode (skip when TUI handles tool progress)
+    # Start spinner for CLI mode only when at least one tool can run.
     spinner = None
-    if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+    if (
+        runnable_calls
+        and agent._should_emit_quiet_tool_messages()
+        and agent._should_start_quiet_spinner()
+    ):
         face = random.choice(KawaiiSpinner.get_waiting_faces())
-        spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=agent._print_fn)
+        spinner = KawaiiSpinner(
+            f"{face} ⚡ running {len(runnable_calls)} tools concurrently",
+            spinner_type="dots",
+            print_fn=agent._print_fn,
+        )
         spinner.start()
 
     try:
-        runnable_calls = [
-            (i, tc, name, args, scope_block)
-            for i, (tc, name, args, _trace, parse_error, scope_block) in enumerate(
-                parsed_calls
-            )
-            if parse_error is None
-        ]
         futures = []
         future_to_index = {}
         timed_out_indices: set[int] = set()
@@ -1659,14 +1804,48 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     finally:
         if spinner:
             # Build a summary message for the spinner stop
-            completed = sum(1 for r in results if r is not None)
-            total_dur = sum(r[3] for r in results if r is not None)
-            spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
+            runnable_indices = {call[0] for call in runnable_calls}
+            completed = sum(
+                1 for i in runnable_indices if results[i] is not None
+            )
+            total_dur = sum(
+                results[i][3]
+                for i in runnable_indices
+                if results[i] is not None
+            )
+            spinner.stop(
+                f"⚡ {completed}/{len(runnable_calls)} tools completed "
+                f"in {total_dur:.1f}s total"
+            )
 
     # ── Post-execution: display per-tool results ─────────────────────
     for i, (tc, name, args, middleware_trace, _parse_error, _scope_block) in enumerate(
         parsed_calls
     ):
+        integrity_result = (
+            _parse_error
+            if _is_incomplete_tool_arguments_error_result(_parse_error)
+            else _scope_block
+            if _is_incomplete_tool_arguments_error_result(_scope_block)
+            else None
+        )
+        if integrity_result is not None:
+            messages.append(
+                make_tool_result_message(
+                    name,
+                    integrity_result,
+                    tc.id,
+                    effect_disposition="none",
+                )
+            )
+            if not _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"rejected incomplete tool arguments {name}",
+            ):
+                return
+            continue
+
         r = results[i]
         blocked = False
         is_error = True
@@ -1941,6 +2120,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                integrity_result = _integrity_preflight(
+                    skipped_name, skipped_tc.function.arguments
+                )
+                if integrity_result is not None:
+                    messages.append(make_tool_result_message(
+                        skipped_name,
+                        integrity_result,
+                        skipped_tc.id,
+                        effect_disposition="none",
+                    ))
+                    if not _flush_session_db_after_tool_progress(
+                        agent, messages, stage=f"rejected tool result {skipped_name}"
+                    ):
+                        return
+                    continue
                 cancelled_result = (
                     f"[Tool execution cancelled — {skipped_name} was skipped "
                     "due to user interrupt]"
@@ -1976,22 +2170,32 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call.function.arguments
         )
         if malformed_args_result is not None:
-            _emit_terminal_post_tool_call(
-                agent,
-                function_name=function_name,
-                function_args=function_args,
-                result=malformed_args_result,
-                effective_task_id=effective_task_id,
-                tool_call_id=getattr(tool_call, "id", "") or "",
-                status="error",
-                error_type="invalid_tool_arguments",
-                error_message="Tool arguments must be a valid JSON object",
-            )
+            if not _is_incomplete_tool_arguments_error_result(
+                malformed_args_result
+            ):
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=malformed_args_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="error",
+                    error_type="invalid_tool_arguments",
+                    error_message="Tool arguments must be a valid JSON object",
+                )
             messages.append(
                 make_tool_result_message(
                     function_name,
                     malformed_args_result,
                     tool_call.id,
+                    effect_disposition=(
+                        "none"
+                        if _is_incomplete_tool_arguments_error_result(
+                            malformed_args_result
+                        )
+                        else None
+                    ),
                 )
             )
             if not _flush_session_db_after_tool_progress(
@@ -2011,7 +2215,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
+                    _integrity_result = _incomplete_tool_arguments_error_result(
+                        _underlying_args
+                    )
+                    if _integrity_result:
+                        _ts_scope_block = _integrity_result
+                    elif _underlying in _tool_search_scoped_names(agent):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
                         # instead of dispatching into an opaque failure.
@@ -2038,6 +2247,32 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         )
         except Exception:
             pass
+
+        if _ts_scope_block is None and _may_contain_incomplete_provenance(
+            function_args
+        ):
+            _schema_integrity_result = _schema_decoded_integrity_result(
+                function_name, function_args
+            )
+            if _schema_integrity_result:
+                _ts_scope_block = _schema_integrity_result
+
+        if _is_incomplete_tool_arguments_error_result(_ts_scope_block):
+            messages.append(
+                make_tool_result_message(
+                    function_name,
+                    _ts_scope_block,
+                    tool_call.id,
+                    effect_disposition="none",
+                )
+            )
+            if not _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"rejected incomplete tool arguments {function_name}",
+            ):
+                return
+            continue
 
         middleware_trace: list[dict[str, Any]] = []
         _execution_blocked = False

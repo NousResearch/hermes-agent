@@ -40,6 +40,7 @@ from agent.model_metadata import (
     estimate_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_argument_integrity import completed_tool_call_pairs
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -1560,50 +1561,43 @@ def _strip_image_parts_from_parts(parts: Any) -> Any:
     return out if had_image else None
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string values inside a tool-call arguments JSON blob while
-    preserving JSON validity.
+def _truncate_tool_call_args_json(args: str) -> str:
+    """Externalize a large historical tool-call argument object safely.
 
-    The ``function.arguments`` field on a tool call is a JSON-encoded string
-    passed through to the LLM provider; downstream providers strictly
-    validate it and return a non-retryable 400 when it is not well-formed.
-    An earlier implementation sliced the raw JSON at a fixed byte offset and
-    appended ``...[truncated]`` — which routinely produced strings like::
+    ``function.arguments`` must remain valid JSON for strict providers, but a
+    shortened command, patch, file body, or code string is not a safe summary:
+    a later model can mistake it for a complete operation and replay it. Once
+    an already-executed call reaches context pruning, replace the complete
+    argument object with non-replayable provenance instead of preserving any
+    executable field.
 
-        {"path": "/foo/bar", "content": "# long markdown
-        ...[truncated]
+    The original call remains in the persisted transcript. The compressed API
+    copy carries its exact character count and SHA-256 so diagnostics can prove
+    which payload was omitted without exposing or partially reconstructing it.
+    Invalid provider-specific non-JSON arguments are left unchanged because
+    replacing them could break the provider's own format.
 
-    i.e. an unterminated string and a missing closing brace. MiniMax, for
-    example, rejects this with ``invalid function arguments json string``
-    and the session gets stuck re-sending the same broken history on every
-    turn. See issue #11762 for the observed loop.
-
-    This helper parses the arguments, shrinks long string leaves inside the
-    parsed structure, and re-serialises. Non-string values (paths, ints,
-    booleans) are preserved intact. If the arguments are not valid JSON
-    to begin with — some model backends use non-JSON tool arguments — the
-    original string is returned unchanged rather than replaced with
-    something neither we nor the backend can parse.
     """
+    if len(args) <= 500:
+        return args
     try:
-        parsed = json.loads(args)
+        json.loads(args)
     except (ValueError, TypeError):
         return args
 
-    def _shrink(obj: Any) -> Any:
-        if isinstance(obj, str):
-            if len(obj) > head_chars:
-                return obj[:head_chars] + "...[truncated]"
-            return obj
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
-
-    shrunken = _shrink(parsed)
-    # ensure_ascii=False preserves CJK/emoji instead of bloating with \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    provenance = {
+        "__hermes_incomplete_tool_arguments__": {
+            "version": 1,
+            "reason": "context_compression",
+            "arguments_omitted": True,
+            "replayable": False,
+            "original_chars": len(args),
+            "sha256": hashlib.sha256(
+                args.encode("utf-8", errors="surrogatepass")
+            ).hexdigest(),
+        }
+    }
+    return json.dumps(provenance, ensure_ascii=False)
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -3599,6 +3593,7 @@ class ContextCompressor(ContextEngine):
             return messages, 0
 
         result = [m.copy() for m in messages]
+        completed_calls = set(completed_tool_call_pairs(result))
         pruned = 0
 
         # Build index: tool_call_id -> (tool_name, arguments_json)
@@ -3751,10 +3746,10 @@ class ContextCompressor(ContextEngine):
                 return False
             new_tcs = []
             modified = False
-            for tc in msg["tool_calls"]:
+            for call_index, tc in enumerate(msg["tool_calls"]):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
+                    if (idx, call_index) in completed_calls and len(args) > 500:
                         new_args = _truncate_tool_call_args_json(args)
                         if new_args != args:
                             tc = {**tc, "function": {**tc["function"], "arguments": new_args}}

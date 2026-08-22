@@ -1824,6 +1824,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    from agent.tool_argument_integrity import (
+        neutralize_completed_incomplete_tool_calls,
+    )
+
+    # Request-copy boundary shared by Anthropic, Bedrock, Codex Responses, and
+    # Chat Completions. The canonical transcript remains unchanged.
+    api_messages = neutralize_completed_incomplete_tool_calls(api_messages)
     if tools_for_api is None:
         tools_for_api = agent.tools
 

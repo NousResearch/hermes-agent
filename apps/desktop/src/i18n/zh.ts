@@ -2571,7 +2571,9 @@ export const zh: Translations = {
         description: '讲解所选代码的工作方式，并链接到关键文件。',
         text: '请解释这是如何工作的，并指给我关键文件。'
       }
-    }
+    },
+    quoteSelected: '引用到聊天',
+    addImageToChat: '添加到聊天'
   },
 
   statusStack: {
@@ -3256,7 +3258,8 @@ export const zh: Translations = {
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
-      attachingFile: '正在附加…'
+      attachingFile: '正在附加…',
+      quoteInChat: '引用到聊天'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',

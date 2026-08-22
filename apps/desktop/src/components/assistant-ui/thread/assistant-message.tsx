@@ -17,6 +17,7 @@ import {
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import { MessageQuoteButton } from '@/components/assistant-ui/thread/message-selection-quote'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -234,6 +235,7 @@ export const AssistantMessage: FC<{
             )}
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
+        <MessageQuoteButton messageId={messageId} />
       </div>
       <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
       {hasVisibleText && !isInterim && (

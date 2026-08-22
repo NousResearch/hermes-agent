@@ -7,6 +7,7 @@ import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
+import { MessageQuoteButton } from '@/components/assistant-ui/thread/message-selection-quote'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -568,6 +569,7 @@ export const UserMessage: FC<{
                     )}
                   </div>
                 )}
+              <MessageQuoteButton messageId={messageId} />
               </div>
             </ReactionPicker>
             {/* Below the bubble, same register as the assistant action row:

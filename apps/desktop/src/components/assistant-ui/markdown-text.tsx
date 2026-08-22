@@ -10,6 +10,7 @@ import {
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { ArtifactImageSelection } from '@/components/chat/artifact-image-selection'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -417,18 +418,27 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
   // max-width resolves to none while the container measures its fit-content
   // width, so the box overshoots the rendered image and strands the download
   // button — which anchors to the container — out in the margin.
+  const imageId = useMemo(() => `img-${rawSrc.slice(0, 40).replace(/[^a-zA-Z0-9]/g, '-')}`, [rawSrc])
+
   return (
-    <ZoomableImage
+    <ArtifactImageSelection
       alt={alt}
-      className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
-        className
-      )}
-      containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
-      slot="aui_markdown-image"
+      artifactId={imageId}
+      className="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
       src={resolvedSrc}
-      {...props}
-    />
+    >
+      <ZoomableImage
+        alt={alt}
+        className={cn(
+          'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+          className
+        )}
+        containerClassName="!my-0"
+        slot="aui_markdown-image"
+        src={resolvedSrc}
+        {...props}
+      />
+    </ArtifactImageSelection>
   )
 }
 

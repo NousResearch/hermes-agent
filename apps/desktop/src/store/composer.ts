@@ -584,6 +584,100 @@ export function clearComposerTerminalSelections() {
   $composerTerminalSelections.set({})
 }
 
+// ---------------------------------------------------------------------------
+// @message: reference support — quoted-text storage keyed by messageId
+// ---------------------------------------------------------------------------
+
+const MESSAGE_REF_RE = /@message:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+
+export const $composerMessageQuotes = atom<Record<string, string>>({})
+
+function messageIdsFromDraft(draft: string) {
+  const ids: string[] = []
+  const seen = new Set<string>()
+
+  for (const match of draft.matchAll(MESSAGE_REF_RE)) {
+    const id = unquoteRefValue(match[1] || '')
+
+    if (!id || seen.has(id)) {
+      continue
+    }
+
+    seen.add(id)
+    ids.push(id)
+  }
+
+  return ids
+}
+
+export function setComposerMessageQuote(messageId: string, text: string) {
+  const nextMessageId = messageId.trim()
+  const nextText = text.trim()
+
+  if (!nextMessageId || !nextText) {
+    return
+  }
+
+  const current = $composerMessageQuotes.get()
+
+  if (current[nextMessageId] === nextText) {
+    return
+  }
+
+  $composerMessageQuotes.set({
+    ...current,
+    [nextMessageId]: nextText
+  })
+}
+
+export function reconcileComposerMessageQuotes(draft: string) {
+  const current = $composerMessageQuotes.get()
+  const messageIds = new Set(messageIdsFromDraft(draft))
+  let changed = false
+  const next: Record<string, string> = {}
+
+  for (const [messageId, text] of Object.entries(current)) {
+    if (!messageIds.has(messageId)) {
+      changed = true
+      continue
+    }
+
+    next[messageId] = text
+  }
+
+  if (changed) {
+    $composerMessageQuotes.set(next)
+  }
+}
+
+export function messageQuoteContextBlocks(draft: string) {
+  const ids = messageIdsFromDraft(draft)
+
+  if (ids.length === 0) {
+    return []
+  }
+
+  const quotes = $composerMessageQuotes.get()
+
+  return ids.flatMap(messageId => {
+    const text = quotes[messageId]?.trim()
+
+    if (!text) {
+      return []
+    }
+
+    return `\`\`\`quote<${messageId}>\n${text}\n\`\`\``
+  })
+}
+
+export function clearComposerMessageQuotes() {
+  if (Object.keys($composerMessageQuotes.get()).length === 0) {
+    return
+  }
+
+  $composerMessageQuotes.set({})
+}
+
 function upsertAttachment(attachments: ComposerAttachment[], attachment: ComposerAttachment) {
   const index = attachments.findIndex(item => item.id === attachment.id)
 

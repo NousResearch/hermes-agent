@@ -301,6 +301,10 @@ export function refChipLabel(type: string, id: string): string {
     return id || 'terminal'
   }
 
+  if (type === 'message') {
+    return id || 'message'
+  }
+
   if (type === 'session') {
     return sessionRefFallbackLabel(id)
   }

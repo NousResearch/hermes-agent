@@ -26,6 +26,50 @@ if not hasattr(_mcp_server_mod, "MCPServer"):
     )
 
 
+class _FakeCLI:
+    console = None
+
+    def __init__(self, on_command):
+        self._on_command = on_command
+
+    def process_command(self, cmd: str) -> None:
+        self._on_command(cmd)
+
+
+def test_tools_waits_for_inflight_discovery_before_enumerating(monkeypatch):
+    from hermes_cli import mcp_startup
+    from tui_gateway import slash_worker
+
+    discovery_joined = False
+
+    def _join(*, timeout):
+        nonlocal discovery_joined
+        assert timeout == 30.0
+        discovery_joined = True
+        return True
+
+    monkeypatch.setattr(mcp_startup, "join_mcp_discovery", _join)
+    cli = _FakeCLI(lambda cmd: (
+        discovery_joined or pytest.fail(f"{cmd} enumerated tools before MCP discovery joined")
+    ))
+
+    slash_worker._run(cli, "/tools")
+
+    assert discovery_joined is True
+
+
+def test_non_catalog_command_does_not_wait_for_mcp_discovery(monkeypatch):
+    from hermes_cli import mcp_startup
+    from tui_gateway import slash_worker
+
+    def _unexpected_join(*, timeout):
+        pytest.fail(f"/help unexpectedly waited {timeout}s for MCP discovery")
+
+    monkeypatch.setattr(mcp_startup, "join_mcp_discovery", _unexpected_join)
+
+    slash_worker._run(_FakeCLI(lambda _cmd: None), "/help")
+
+
 def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     profile_home = tmp_path / "profile-home"
     profile_home.mkdir()

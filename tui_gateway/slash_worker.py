@@ -97,6 +97,15 @@ def _run(cli: HermesCLI, command: str) -> str:
     if not cmd.startswith("/"):
         cmd = f"/{cmd}"
 
+    # This process has no late-refresh path: once bare /tools renders its
+    # catalog, a slow profile-local MCP server stays invisible in that output.
+    # Wait only at this worker-owned inspection boundary so interactive TUI/CLI
+    # surfaces and unrelated slash commands keep their short startup bound.
+    if cmd.casefold() == "/tools":
+        from hermes_cli.mcp_startup import join_mcp_discovery
+
+        join_mcp_discovery(timeout=30.0)
+
     buf = io.StringIO()
 
     # Rich Console captures its file handle at construction time, so

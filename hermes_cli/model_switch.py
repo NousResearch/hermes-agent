@@ -2675,15 +2675,22 @@ def list_authenticated_providers(
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY as _reg
         except Exception:
-            return
+            _reg = {}
         pcfg = _reg.get(slug)
-        if not pcfg:
-            return
         url = ""
-        if getattr(pcfg, "base_url_env_var", ""):
-            url = os.environ.get(pcfg.base_url_env_var, "") or ""
+        if pcfg:
+            if getattr(pcfg, "base_url_env_var", ""):
+                url = os.environ.get(pcfg.base_url_env_var, "") or ""
+            if not url:
+                url = getattr(pcfg, "inference_base_url", "") or ""
         if not url:
-            url = getattr(pcfg, "inference_base_url", "") or ""
+            try:
+                from providers import get_provider_profile as _gpp
+                prof = _gpp(slug)
+                if prof:
+                    url = getattr(prof, "base_url", "") or ""
+            except Exception:
+                pass
         normed = _norm_url(url)
         if normed:
             _builtin_endpoints.add(normed)
@@ -3697,7 +3704,23 @@ def list_authenticated_providers(
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
             # to avoid shadowing a real provider.
-            if slug.lower() in seen_slugs and slug.lower() not in _section4_emitted_slugs:
+            #
+            # For exact slug matches (e.g. user-provider from section 3),
+            # skip unconditionally. For bare-slug / alias matches, gate on
+            # endpoint URL matching a built-in endpoint so custom proxies
+            # sharing a vendor name on a private host (e.g. a local OpenAI
+            # or Groq proxy) are not suppressed. Fixes #92430.
+            _grp_url_norm = str(grp["api_url"]).strip().rstrip("/").lower()
+            bare_slug = slug[7:] if slug.lower().startswith("custom:") else slug
+            _name_matches_builtin = (
+                bare_slug.lower() in seen_slugs
+                or any(str(alias).lower() in seen_slugs for alias in grp.get("aliases", set()))
+            )
+            _claimed = (
+                slug.lower() in seen_slugs
+                or (_name_matches_builtin and _grp_url_norm in _builtin_endpoints)
+            )
+            if _claimed and slug.lower() not in _section4_emitted_slugs:
                 continue
             # If a prior section-4 group already used this slug (two custom
             # endpoints with the same cleaned name — e.g. two OpenAI-

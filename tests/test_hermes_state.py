@@ -384,6 +384,157 @@ class TestSessionLifecycle:
             """
         )
 
+    def test_end_session_after_reopen_allows_re_end(self, db):
+        """reopen_session() is the explicit escape hatch for re-ending a
+        closed session. After reopen, end_session() takes effect again.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.end_session("s1", end_reason="compression")
+        db.reopen_session("s1")
+        db.end_session("s1", end_reason="user_exit")
+
+        session = db.get_session("s1")
+        assert session["end_reason"] == "user_exit"
+
+    def test_list_open_cron_sessions_returns_only_open_cron(self, db):
+        """list_open_cron_sessions returns open (ended_at IS NULL) cron
+        sessions only, with id and started_at for reaper inspection."""
+        db.create_session("cron_open1", source="cron")
+        db.create_session("cron_open2", source="cron")
+        db.create_session("cron_done", source="cron")
+        db.end_session("cron_done", "cron_complete")
+        db.create_session("cli_open", source="cli")
+        db.create_session("cli_done", source="cli")
+        db.end_session("cli_done", "user_exit")
+
+        rows = db.list_open_cron_sessions()
+        ids = {r["id"] for r in rows}
+        assert ids == {"cron_open1", "cron_open2"}
+        for r in rows:
+            assert "started_at" in r
+
+    def test_list_open_cron_sessions_empty_when_none(self, db):
+        """Returns an empty list when no open cron sessions exist."""
+        db.create_session("cli1", source="cli")
+        db.create_session("cron1", source="cron")
+        db.end_session("cron1", "cron_complete")
+
+        assert db.list_open_cron_sessions() == []
+
+    def test_cron_listing_preserves_message_and_usage_persistence(self, db):
+        """The reaper query is additive to current session persistence."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
+        session_id = "cron_schema_contract"
+        db.create_session(session_id, source="cron", model="test/model")
+        db.replace_messages(
+            session_id,
+            [
+                make_tool_result_message(
+                    "write_file",
+                    "worker detached",
+                    "call-1",
+                    effect_disposition="unknown",
+                )
+            ],
+        )
+        db.update_token_counts(
+            session_id,
+            input_tokens=12,
+            output_tokens=3,
+            model="test/model",
+            billing_provider="test-provider",
+            api_call_count=1,
+        )
+
+        assert [row["id"] for row in db.list_open_cron_sessions()] == [session_id]
+        messages = db.get_messages_as_conversation(session_id)
+        assert messages[0]["effect_disposition"] == "unknown"
+        usage = db._conn.execute(
+            "SELECT model, billing_provider, input_tokens, output_tokens "
+            "FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert dict(usage) == {
+            "model": "test/model",
+            "billing_provider": "test-provider",
+            "input_tokens": 12,
+            "output_tokens": 3,
+        }
+
+    def test_update_system_prompt(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_system_prompt("s1", "You are a helpful assistant.")
+
+        session = db.get_session("s1")
+        assert session["system_prompt"] == "You are a helpful assistant."
+
+    def test_update_token_counts(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=200, output_tokens=100)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50)
+
+        session = db.get_session("s1")
+        assert session["input_tokens"] == 300
+        assert session["output_tokens"] == 150
+
+    def test_update_token_counts_tracks_api_call_count(self, db):
+        """api_call_count increments with each update_token_counts call."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 3
+
+    def test_update_token_counts_api_call_count_absolute(self, db):
+        """absolute mode sets api_call_count directly."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=300, output_tokens=150,
+                               api_call_count=5, absolute=True)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 5
+        assert session["input_tokens"] == 300
+
+    def test_update_token_counts_backfills_model_when_null(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
+
+        session = db.get_session("s1")
+        assert session["model"] == "openai/gpt-5.4"
+
+    def test_first_accounted_fallback_replaces_requested_primary_route(self, db):
+        """First successful fallback usage must persist one coherent route pair."""
+        db.create_session(session_id="s1", source="cli", model="gpt-5.6-sol")
+        # Local audit table + trigger: records every ended_at transition so the
+        # concurrent end_session race below can assert exactly one end wins.
+        db._conn.execute(
+            "CREATE TABLE session_end_audit (reason TEXT NOT NULL)"
+        )
+        db._conn.execute(
+            """
+            CREATE TRIGGER audit_session_end
+            AFTER UPDATE OF ended_at ON sessions
+            WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+            BEGIN
+                INSERT INTO session_end_audit(reason) VALUES (NEW.end_reason);
+            END
+            """
+        )
+
+        db.update_token_counts(
+            "s1",
+            input_tokens=10,
+            output_tokens=5,
+            model="glm-5.2",
+            billing_provider="custom:zai",
+            billing_base_url="https://api.z.ai/api/coding/paas/v4/",
+            api_call_count=1,
+        )
+
         peer = SessionDB(db_path=db.db_path)
         barrier = threading.Barrier(2)
         errors = []

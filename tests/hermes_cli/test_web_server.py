@@ -766,35 +766,83 @@ class TestWebServerEndpoints:
         memory_config = load_config().get("memory", {})
         assert "openviking" not in memory_config
 
+    def test_declared_surface_preserves_local_embedded_values(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import save_env_value
 
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mode": "local_embedded",
+                    "llm_provider": "openai_compatible",
+                    "llm_base_url": "https://llm.example/v1",
+                    "llm_model": "example-model",
+                }
+            ),
+            encoding="utf-8",
+        )
+        save_env_value("HINDSIGHT_LLM_API_KEY", "local-secret")
 
+        resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
 
-
-
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["mode"]["value"] == "local_embedded"
+        local_option = next(
+            option
+            for option in fields["mode"]["options"]
+            if option["value"] == "local_embedded"
+        )
+        assert local_option["disabled"] is True
+        assert fields["llm_provider"]["value"] == "openai_compatible"
+        assert fields["llm_base_url"]["value"] == "https://llm.example/v1"
+        assert fields["llm_model"]["value"] == "example-model"
+        assert fields["llm_api_key"]["is_set"] is True
+        assert fields["llm_api_key"]["value"] == ""
+        assert "local-secret" not in json.dumps(data)
     def test_declared_surface_put_writes_config_and_secret(self):
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_env
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"mode": "local_embedded"}), encoding="utf-8"
+        )
 
         resp = self.client.put(
             "/api/memory/providers/hindsight/config?surface=declared",
             json={
                 "values": {
-                    "mode": "local_external",
-                    "api_url": "http://localhost:8888",
-                    "api_key": "hs-declared-key",
+                    "llm_provider": "openai_compatible",
+                    "llm_base_url": "https://llm.example/v1",
+                    "llm_model": "example-model",
+                    "llm_api_key": "hs-llm-key",
                 }
             },
         )
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        assert load_env()["HINDSIGHT_API_KEY"] == "hs-declared-key"
+        assert load_env()["HINDSIGHT_LLM_API_KEY"] == "hs-llm-key"
 
-        config_path = get_hermes_home() / "hindsight" / "config.json"
         provider_config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert provider_config["mode"] == "local_external"
-        assert provider_config["api_url"] == "http://localhost:8888"
-        assert "api_key" not in provider_config
+        assert provider_config["mode"] == "local_embedded"
+        assert provider_config["llm_provider"] == "openai_compatible"
+        assert provider_config["llm_base_url"] == "https://llm.example/v1"
+        assert provider_config["llm_model"] == "example-model"
+        assert "llm_api_key" not in provider_config
+
+    def test_declared_surface_put_keeps_local_embedded_setup_cli_owned(self):
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={"values": {"mode": "local_embedded"}},
+        )
+
+        assert resp.status_code == 400
 
 
 

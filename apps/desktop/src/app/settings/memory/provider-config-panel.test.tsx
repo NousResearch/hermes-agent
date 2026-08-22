@@ -99,6 +99,7 @@ function honchoSchema(): MemoryProviderConfig {
 }
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn()
   getMemoryProviderConfig.mockResolvedValue(honchoSchema())
   saveMemoryProviderConfig.mockResolvedValue({ ok: true })
 })
@@ -184,6 +185,32 @@ describe('ProviderConfigPanel', () => {
 
     await screen.findByDisplayValue('myws')
     expect(screen.getByRole('button', { name: /Full config/ })).toBeTruthy()
+  })
+
+  it('shows a stored select value that Desktop cannot choose', async () => {
+    const config = honchoSchema()
+    const environment = config.fields.find(field => field.key === 'environment')
+
+    if (!environment) {
+      throw new Error('environment field missing from fixture')
+    }
+
+    environment.value = 'local_embedded'
+    environment.options.push({
+      value: 'local_embedded',
+      label: 'Local Embedded',
+      description: 'This stored value is not selectable in Desktop.',
+      disabled: true
+    })
+
+    getMemoryProviderConfig.mockResolvedValue(config)
+
+    await renderPanel()
+
+    expect(await screen.findByText('Local Embedded')).toBeTruthy()
+    fireEvent.click(screen.getByRole('combobox'))
+    const option = await screen.findByRole('option', { name: 'Local Embedded' })
+    expect(option.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('shows an inline error with retry when the load fails, then recovers', async () => {

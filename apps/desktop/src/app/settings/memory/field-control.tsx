@@ -87,7 +87,7 @@ export function FieldControl({
         </SelectTrigger>
         <SelectContent>
           {field.options.map(option => (
-            <SelectItem key={option.value} value={option.value}>
+            <SelectItem disabled={option.disabled} key={option.value} value={option.value}>
               {option.label}
             </SelectItem>
           ))}

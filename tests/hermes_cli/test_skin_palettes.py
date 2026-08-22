@@ -123,7 +123,7 @@ def contrast(a: str, b: str) -> float:
 # lift), which reproduces exactly what minimumContrastRatio hosts display —
 # the look the maintainers standardized on. Generated paired palettes are
 # explicitly NOT wanted; only ship one when a human tuned it.
-LIGHT_AUTHORED = frozenset({"daylight", "warm-lightmode"})
+LIGHT_AUTHORED = frozenset({"daylight", "warm-lightmode", "vanta-black-light"})
 
 
 # A `light_colors`/`dark_colors` block is an OVERLAY on `colors`, not a full

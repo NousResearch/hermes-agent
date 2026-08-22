@@ -56,6 +56,22 @@ class TestBuiltinSkins:
         assert isinstance(wings[0], tuple)
         assert len(wings[0]) == 2
 
+    @pytest.mark.parametrize("name", ["vanta-black", "vanta-black-light"])
+    def test_vanta_black_variants_load(self, name):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin(name)
+        assert skin.name == name
+        assert skin.get_branding("agent_name").startswith("Vanta Black")
+        assert skin.get_color("banner_title")
+
+    @pytest.mark.parametrize(
+        ("name", "accent"),
+        [("vanta-black", "#C9FF38"), ("vanta-black-light", "#31520E")],
+    )
+    def test_vanta_black_uses_authoritative_acid_lime_palette(self, name, accent):
+        from hermes_cli.skin_engine import load_skin
+        assert load_skin(name).get_color("ui_accent") == accent
+
 
 
 

@@ -1453,6 +1453,30 @@ class _ProviderAuthResolutionError(RuntimeError):
     """
 
 
+def _classify_provider_resolution_error(exc: Exception) -> tuple[str, str]:
+    """
+    Classify a provider resolution failure to avoid misleading diagnostics.
+
+    Returns (log_prefix, user_message_prefix).
+
+    When an OSError/IOError is found in the __cause__ chain, the error is an
+    I/O failure (disk full, quota exceeded, permission denied), not an
+    authentication failure. Return distinct prefixes so logs and user messages
+    don't mislead operators into chasing credentials when the disk is full.
+
+    See #91656: a disk-full OSError was surfaced to the user as "Provider
+    authentication failed" because every exception from resolve_runtime_provider()
+    was unconditionally wrapped as _ProviderAuthResolutionError. This helper
+    inspects the root cause before choosing the wording.
+    """
+    current = exc
+    while current is not None:
+        if isinstance(current, (OSError, IOError)):
+            return ("Provider resolution failed", "⚠️ Provider resolution failed")
+        current = getattr(current, '__cause__', None)
+    return ("Provider authentication failed", "⚠️ Provider authentication failed")
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -7341,11 +7365,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     # all (raw aiohttp 500, no JSON body).  Handling it
                     # here, once, covers every _run_agent() caller;
                     # /v1/runs has its own branch in its executor.
-                    logger.warning("Provider authentication failed for session=%s: %s",
-                                   session_id or "", exc)
+                    log_prefix, user_prefix = _classify_provider_resolution_error(exc)
+                    logger.warning("%s for session=%s: %s",
+                                   log_prefix, session_id or "", exc)
                     return (
                         {
-                            "final_response": f"⚠️ Provider authentication failed: {exc}",
+                            "final_response": f"{user_prefix}: {exc}",
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],
@@ -7844,8 +7869,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 # message the other endpoints give a provider auth/credential
                 # failure, instead of falling through to the generic
                 # except-Exception branch below.
-                logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-                error_msg = f"⚠️ Provider authentication failed: {exc}"
+                log_prefix, user_prefix = _classify_provider_resolution_error(exc)
+                logger.warning("%s for run=%s: %s", log_prefix, run_id, exc)
+                error_msg = f"{user_prefix}: {exc}"
                 self._set_run_status(
                     run_id,
                     "failed",

@@ -278,6 +278,12 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Some providers (Ollama Cloud) reject oversized request bodies with a
+    # generic "failed to read request body" 400 instead of a specific
+    # image-size message.  Route to shrink-on-reject so the image gets
+    # downscaled and retried.  If no image parts are present, the shrink
+    # function returns False and the original error surfaces unchanged.
+    "failed to read request body",
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
 ]

@@ -1291,6 +1291,21 @@ class TestExpandedOverflowPatterns:
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
 
+    def test_400_failed_to_read_request_body_is_image_too_large(self):
+        """Some providers (Ollama Cloud) reject oversized request bodies
+        with a generic 'failed to read request body' 400 instead of a
+        specific image-size message.  Must route to image_too_large so the
+        shrink-on-reject path fires and downscales the image for retry."""
+        e = Exception(
+            "Error code: 400 - "
+            "{'error': {'message': 'failed to read request body "
+            "(ref: 19ccdbf6-f526-4f9c-bd50-2f167acca31e)', "
+            "'type': 'invalid_request_error', 'param': None, 'code': None}}"
+        )
+        result = classify_api_error(e, provider="ollama-cloud", model="qwen3.5:cloud")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
 
 class TestServerInjectedParameterRejection:
     """A 400 blaming a parameter the client never sent is a server-side flake.

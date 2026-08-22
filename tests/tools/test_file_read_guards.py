@@ -437,6 +437,91 @@ class TestFileDedup(unittest.TestCase):
         self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_status_text_with_small_framing(self, mock_ops):
+        """write_file rejects small wrappers around the status text too.
+
+        Real-world corruption shapes aren't always the verbatim message — the
+        model sometimes prepends a short note or appends a trailing comment
+        before calling write_file.  A short, status-dominated write is still
+        corruption, not legitimate file content.
+        """
+        fake = MagicMock()
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        wrapped = "Note: " + _READ_DEDUP_STATUS_MESSAGE + "\n\n(continuing.)"
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            wrapped,
+            task_id="guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file display text", result["error"])
+        fake.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_allows_large_file_that_quotes_status_text(self, mock_ops):
+        """Legitimate large content that happens to quote the status is allowed.
+
+        Hermes' own docs / SKILL.md files may legitimately mention the dedup
+        message verbatim.  Only short, status-dominated writes are rejected —
+        a normal file that contains the message as one line out of many must
+        still write successfully.
+        """
+        fake = MagicMock()
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # Build content that contains the status text but is much larger,
+        # so the status doesn't "dominate" — this is a legitimate file.
+        large_content = (
+            "# Skill reference\n\n"
+            "Example internal message (do not write back):\n\n"
+            f"    {_READ_DEDUP_STATUS_MESSAGE}\n\n"
+            + ("This is documentation content. " * 200)
+        )
+        target = os.path.join(self._tmpdir, "large_quote.txt")
+        result = json.loads(write_file_tool(
+            target,
+            large_content,
+            task_id="guard",
+        ))
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("success"))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_modified_file_not_deduped(self, mock_ops):
+        """After the file is modified, dedup returns full content."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, task_id="mod")
+
+        # Modify the file — ensure mtime changes
+        time.sleep(0.05)
+        with open(self._tmpfile, "w") as f:
+            f.write("changed content\n")
+
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="mod"))
+        self.assertNotEqual(r2.get("dedup"), True, "Modified file should not dedup")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_different_range_not_deduped(self, mock_ops):
+        """Same file but different offset/limit should not dedup."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="rng")
+
+        r2 = json.loads(read_file_tool(
+            self._tmpfile, offset=10, limit=500, task_id="rng",
+        ))
+        self.assertNotEqual(r2.get("dedup"), True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_different_task_not_deduped(self, mock_ops):
@@ -821,9 +906,11 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # Read with different offsets to populate multiple dedup entries.
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
         read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
-        write_file_tool(self._tmpfile, "replaced\n", task_id="off")
+        write = json.loads(write_file_tool(self._tmpfile, "replaced\n", task_id="off"))
+        self.assertNotIn("error", write)
 
         # Both reads should return fresh content.
         r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))
@@ -833,6 +920,64 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertNotEqual(r2.get("dedup"), True,
                             "offset=50 should not dedup after write")
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_does_not_invalidate_other_files(self, mock_ops):
+        """Writing file A should not invalidate dedup for file B."""
+        other = os.path.join(self._tmpdir, "other.txt")
+        with open(other, "w") as f:
+            f.write("other content\n")
+
+        fake = MagicMock()
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="other content\n", total_lines=1, file_size=15,
+        )
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # Read file B.
+        read_file_tool(other, task_id="iso")
+        read_file_tool(self._tmpfile, task_id="iso")
+
+        # Write file A.
+        write = json.loads(write_file_tool(self._tmpfile, "changed A\n", task_id="iso"))
+        self.assertNotIn("error", write)
+
+        # File B should still dedup (untouched).
+        r2 = json.loads(read_file_tool(other, task_id="iso"))
+        self.assertTrue(r2.get("dedup"),
+                        "Unrelated file should still dedup after writing another file")
+
+        try:
+            os.unlink(other)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_does_not_invalidate_other_tasks(self, mock_ops):
+        """Writing in task A should not invalidate dedup for task B."""
+        fake = MagicMock()
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="original content\n", total_lines=1, file_size=18,
+        )
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # Both tasks read the file.
+        read_file_tool(self._tmpfile, task_id="taskA")
+        read_file_tool(self._tmpfile, task_id="taskB")
+
+        # Task A writes.
+        write = json.loads(write_file_tool(self._tmpfile, "new\n", task_id="taskA"))
+        self.assertNotIn("error", write)
+
+        # Task A's dedup should be invalidated.
+        rA = json.loads(read_file_tool(self._tmpfile, task_id="taskA"))
+        self.assertNotEqual(rA.get("dedup"), True,
+                            "Writing task's dedup should be invalidated")
 
         # Task B still sees dedup (its cache is separate — the file
         # *may* have changed on disk, but mtime comparison handles that;

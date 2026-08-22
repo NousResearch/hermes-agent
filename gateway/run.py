@@ -67,6 +67,7 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.update_lock import _pid_alive as _update_lock_pid_alive
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -23989,6 +23990,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         update process when it needs user input) and forwards the prompt to
         the messenger.  The user's next message is intercepted by
         ``_handle_message`` and written to ``.update_response``.
+
+        Also detects a *dead* updater: the update driver writes the
+        ``.hermes-update-in-progress`` lock (``pid\\nepoch``) for its whole
+        run and only removes it on a clean exit, and ``.update_exit_code`` is
+        written by the wrapping bash shell *after* the driver exits.  If the
+        lock exists but its pid is gone, the driver was killed (e.g. an
+        external gateway restart SIGKILLed its whole systemd cgroup
+        mid-build) and no exit code will ever arrive — fail fast instead of
+        polling for the full timeout and reporting a spurious timeout.
         """
         pending_path = _hermes_home / ".update_pending.json"
         claimed_path = _hermes_home / ".update_pending.claimed.json"
@@ -24094,6 +24104,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Update stream send failed: %s", e)
 
         while loop.time() < deadline:
+            # Fail fast when the updater died without writing an exit code.
+            # The update driver holds .hermes-update-in-progress (pid\nepoch)
+            # for its whole run; the wrapping bash shell writes
+            # .update_exit_code only AFTER the driver exits. So a lock whose
+            # pid is gone means the driver was killed (e.g. an external
+            # gateway/service restart SIGKILLed the whole systemd cgroup
+            # mid-build, KillMode=mixed) and no exit code will ever arrive.
+            # Previously this polled for the full 30-minute timeout and then
+            # sent a misleading "timed out" message.
+            if not exit_code_path.exists():
+                _lock_marker = _hermes_home / ".hermes-update-in-progress"
+                if _lock_marker.exists():
+                    try:
+                        _lock_pid = int(
+                            _lock_marker.read_text(encoding="utf-8").splitlines()[0]
+                        )
+                    except (OSError, ValueError, IndexError):
+                        _lock_pid = -1
+                    if _lock_pid > 0 and not _update_lock_pid_alive(_lock_pid):
+                        logger.warning(
+                            "Update process (pid %s) died without writing an exit code; failing fast",
+                            _lock_pid,
+                        )
+                        # The update died mid-run (e.g. during the desktop
+                        # rebuild). Report the failure with the output tail we
+                        # already streamed instead of waiting out the timeout.
+                        exit_code_path.write_text("1", encoding="utf-8")
+                        _lock_marker.unlink(missing_ok=True)
+
             # Check for completion
             if exit_code_path.exists():
                 # Read any remaining output
@@ -24247,6 +24286,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not pending_path.exists() and not claimed_path.exists():
             return False
+
+        # Fail fast when the updater died without writing an exit code (same
+        # check as in _watch_update_progress). This is the path taken right
+        # after a gateway restart, which is exactly when the updater may have
+        # been killed — the streaming watcher died with the old gateway, so
+        # the stale lock (dead pid, no .update_exit_code) is the only signal.
+        # Report the failure immediately instead of waiting for a watcher to
+        # time out.
+        if not exit_code_path.exists():
+            _lock_marker = _hermes_home / ".hermes-update-in-progress"
+            if _lock_marker.exists():
+                try:
+                    _lock_pid = int(
+                        _lock_marker.read_text(encoding="utf-8").splitlines()[0]
+                    )
+                except (OSError, ValueError, IndexError):
+                    _lock_pid = -1
+                if _lock_pid > 0 and not _update_lock_pid_alive(_lock_pid):
+                    logger.warning(
+                        "Update process (pid %s) died without writing an exit code; "
+                        "marking update as failed",
+                        _lock_pid,
+                    )
+                    exit_code_path.write_text("1", encoding="utf-8")
+                    _lock_marker.unlink(missing_ok=True)
 
         cleanup = True
         active_pending_path = claimed_path

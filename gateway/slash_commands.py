@@ -25,6 +25,7 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -54,6 +55,33 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+
+
+async def _atomic_json_write_completion_safe(
+    path: Path, payload: dict[str, Any]
+) -> None:
+    """Finish an in-flight marker write before propagating cancellation."""
+    write_task = asyncio.create_task(
+        asyncio.to_thread(atomic_json_write, path, payload, indent=None)
+    )
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(write_task)
+            break
+        except asyncio.CancelledError as exc:
+            if write_task.cancelled():
+                raise
+            # Repeated outer cancellation must not release the command lock while
+            # the worker thread can still overwrite a newer marker.
+            cancellation = exc
+        except Exception:
+            if cancellation is not None:
+                logger.debug("Cancelled marker write failed while draining", exc_info=True)
+                raise cancellation
+            raise
+    if cancellation is not None:
+        raise cancellation
 
 
 def _clean_str(value: Any) -> str:
@@ -1600,6 +1628,17 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Serialize restart marker publication and the restart state transition."""
+        lock = getattr(self, "_restart_command_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._restart_command_lock = lock
+        async with lock:
+            return await self._handle_restart_command_serialized(event)
+
+    async def _handle_restart_command_serialized(
+        self, event: MessageEvent
+    ) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
@@ -1631,10 +1670,14 @@ class GatewaySlashCommandsMixin:
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.
         try:
+            request_id = uuid.uuid4().hex
             notify_data = {
                 "platform": event.source.platform.value if event.source.platform else None,
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
+                # Distinguish a replacement marker even when the same source
+                # immediately requests another restart with identical routing.
+                "request_id": request_id,
             }
             if event.source.delivered_via_upstream_relay is True:
                 notify_data["delivered_via_upstream_relay"] = True
@@ -1656,11 +1699,13 @@ class GatewaySlashCommandsMixin:
                     )
                 except Exception:
                     self._restart_command_source = event.source
-            await asyncio.to_thread(
-                atomic_json_write,
+            # Publish the new generation on the event loop before the atomic
+            # write runs in a worker thread. An older delivery worker can then
+            # avoid unlinking this marker during a read/unlink race.
+            self._restart_notification_request_id = request_id
+            await _atomic_json_write_completion_safe(
                 _hermes_home / ".restart_notify.json",
                 notify_data,
-                indent=None,
             )
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
@@ -1677,11 +1722,9 @@ class GatewaySlashCommandsMixin:
             }
             if event.platform_update_id is not None:
                 dedup_data["update_id"] = event.platform_update_id
-            await asyncio.to_thread(
-                atomic_json_write,
+            await _atomic_json_write_completion_safe(
                 _hermes_home / ".restart_last_processed.json",
                 dedup_data,
-                indent=None,
             )
         except Exception as e:
             logger.debug("Failed to write restart dedup marker: %s", e)

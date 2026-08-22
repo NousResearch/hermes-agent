@@ -362,18 +362,70 @@ class TestBlueBubblesWebhookRegistration:
     # -- _register_webhook --
 
     def test_register_fresh(self, monkeypatch):
-        """No existing webhook → POST creates one."""
+        """No existing webhook → POST creates a new-message-only registration."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": []},
             post_response={"status": 200, "data": {"id": 42}},
         )
+        captured_payload = None
+        orig_api_post = adapter._api_post
+
+        async def tracking_post(path, payload):
+            nonlocal captured_payload
+            captured_payload = payload
+            return await orig_api_post(path, payload)
+
+        adapter._api_post = tracking_post
         ok = asyncio.get_event_loop().run_until_complete(
             adapter._register_webhook()
         )
         assert ok is True
+        assert captured_payload is not None
+        assert captured_payload["events"] == ["new-message"]
 
+
+    def test_register_replaces_stale_event_registration(self, monkeypatch):
+        """Existing matching URL with updated-message is removed and recreated cleanly."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted = []
+        captured_payload = None
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+            ]},
+            post_response={"status": 200, "data": {"id": 8}},
+        )
+
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0] if args else "")
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+            return R()
+
+        orig_api_post = adapter._api_post
+
+        async def tracking_post(path, payload):
+            nonlocal captured_payload
+            captured_payload = payload
+            return await orig_api_post(path, payload)
+
+        adapter.client.delete = tracking_delete
+        adapter._api_post = tracking_post
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        assert len(deleted) == 1
+        assert "/api/v1/webhook/7" in deleted[0]
+        assert captured_payload is not None
+        assert captured_payload["events"] == ["new-message"]
 
     def test_register_reuses_existing(self, monkeypatch):
         """Crash resilience — existing registration is reused, no POST needed."""
@@ -438,3 +490,81 @@ class TestBlueBubblesWebhookRegistration:
         assert len(deleted_ids) == 2
 
 
+
+
+class TestBlueBubblesStaleRegistrationFailureHandling:
+    """A failed stale-registration DELETE must not be followed by a POST.
+
+    ``_unregister_webhook`` catches a failing DELETE and returns False. If
+    ``_register_webhook`` ignores that result it will create a second live
+    registration while the stale ``updated-message`` one survives, which is
+    exactly the double-delivery this PR removes.
+    """
+
+    @staticmethod
+    def _adapter(monkeypatch, registrations, delete_ok):
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+
+        async def mock_get(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"status": 200, "data": registrations}
+            return R()
+
+        async def mock_post(*args, **kwargs):
+            posted.append((args, kwargs))
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"status": 200, "data": {"id": 99}}
+            return R()
+
+        async def mock_delete(*args, **kwargs):
+            class R:
+                status_code = 200 if delete_ok else 500
+                def raise_for_status(self_inner):
+                    if not delete_ok:
+                        raise Exception("delete failed")
+            return R()
+
+        adapter.client = type(
+            "MockClient", (),
+            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+        )()
+        return adapter, posted
+
+    @pytest.mark.asyncio
+    async def test_failed_delete_performs_no_replacement_post(self, monkeypatch):
+        adapter, _ = self._adapter(monkeypatch, [], True)
+        url = adapter._webhook_register_url
+        adapter, posted = self._adapter(
+            monkeypatch,
+            [{"id": 1, "url": url, "events": ["new-message", "updated-message"]}],
+            delete_ok=False,
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is False, "failed stale cleanup must be reported"
+        assert not posted, "no replacement POST while the stale registration is live"
+
+    @pytest.mark.asyncio
+    async def test_successful_delete_registers_replacement(self, monkeypatch):
+        adapter, _ = self._adapter(monkeypatch, [], True)
+        url = adapter._webhook_register_url
+        adapter, posted = self._adapter(
+            monkeypatch,
+            [{"id": 1, "url": url, "events": ["new-message", "updated-message"]}],
+            delete_ok=True,
+        )
+
+        ok = await adapter._register_webhook()
+
+        assert ok is True
+        assert len(posted) == 1, "stale registration replaced with the desired one"

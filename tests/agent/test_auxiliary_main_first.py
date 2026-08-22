@@ -16,6 +16,18 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
+def test_read_main_api_key_resolves_model_key_env(monkeypatch):
+    """The auxiliary fallback resolves model.key_env without inline secrets."""
+    import agent.auxiliary_client as aux
+
+    monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"model": {"key_env": "CUSTOM_MAIN_KEY"}},
+    ), patch("hermes_cli.config.get_env_value", return_value="sk-main-env"):
+        assert aux._read_main_api_key() == "sk-main-env"
+
+
 
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
 

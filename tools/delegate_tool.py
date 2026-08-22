@@ -4418,12 +4418,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    OpenAI-compatible endpoint. ``delegation.key_env`` is the preferred way to
+    reference its API key from ``.env``; the legacy ``delegation.api_key`` field
+    remains supported. When neither is configured, ``api_key`` is returned as
+    ``None`` so ``_build_child_agent`` inherits the parent agent's key
+    (``effective_api_key = override_api_key or parent_api_key``).
 
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
@@ -4439,6 +4438,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_key_env = str(
+        cfg.get("key_env") or cfg.get("api_key_env") or ""
+    ).strip() or None
+    if configured_key_env:
+        from hermes_cli.config import get_env_value
+
+        configured_api_key = (get_env_value(configured_key_env) or "").strip() or None
+        if not configured_api_key:
+            raise ValueError(
+                f"Delegation key_env '{configured_key_env}' is not set. "
+                "Add it to ~/.hermes/.env or remove delegation.key_env."
+            )
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
@@ -4452,7 +4463,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
-        # When delegation.api_key is not set, return None so _build_child_agent
+        # When neither delegation.api_key nor delegation.key_env is set, return
+        # None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
         # lets providers that store their key in a non-OPENAI_API_KEY env var

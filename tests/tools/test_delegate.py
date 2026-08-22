@@ -801,6 +801,22 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    @patch("hermes_cli.config.get_env_value", return_value="env-key")
+    def test_direct_endpoint_resolves_key_env(self, mock_get_env_value):
+        """A direct delegation endpoint resolves its key from the named env var."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "provider": "custom",
+            "base_url": "http://localhost:1234/v1",
+            "key_env": "DELEGATION_API_KEY",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "env-key")
+        mock_get_env_value.assert_called_once_with("DELEGATION_API_KEY")
+
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
         # a /anthropic URL suffix. Subagents must pick anthropic_messages

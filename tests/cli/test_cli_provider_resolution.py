@@ -542,9 +542,10 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
 
-    # The key itself goes to .env; config.yaml only references it (#69449).
+    # The key itself goes to .env; config.yaml only names the env var (#57547).
     key_env = captured_provider["key_env"]
-    assert saved_cfg["model"]["api_key"] == f"${{{key_env}}}"
+    assert saved_cfg["model"]["key_env"] == key_env
+    assert "api_key" not in saved_cfg["model"]
     assert saved_env[key_env] == "test-key"
 
 
@@ -680,3 +681,14 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
 
+def test_custom_endpoint_identity_includes_path_and_query():
+    """Same host/port endpoints must receive independent credential slots."""
+    from hermes_cli.config import custom_endpoint_identity, custom_endpoint_key_env
+
+    first = custom_endpoint_identity("https://gateway.example/v1/tenant-a")
+    second = custom_endpoint_identity("https://gateway.example/v1/tenant-b")
+    query_variant = custom_endpoint_identity("https://gateway.example/v1?tenant=b")
+
+    assert first != second
+    assert second != query_variant
+    assert custom_endpoint_key_env(first) != custom_endpoint_key_env(second)

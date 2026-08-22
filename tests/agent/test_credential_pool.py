@@ -1312,6 +1312,82 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
     assert entries[0].source == "config:Together.ai"
 
 
+def test_custom_endpoint_pool_seeds_from_config_key_env(tmp_path, monkeypatch):
+    """Resolve a custom provider's key_env without persisting its secret."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Together.ai",
+                        "base_url": "https://api.together.ai/v1",
+                        "key_env": "TOGETHER_API_KEY",
+                    }
+                ]
+            }
+        )
+    )
+    (tmp_path / "hermes" / ".env").write_text(
+        "TOGETHER_API_KEY=sk-config-env\n", encoding="utf-8"
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.access_token == "sk-config-env"
+    assert entry.source == "env:TOGETHER_API_KEY"
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    persisted = yaml.safe_load(auth_text)
+    assert "sk-config-env" not in auth_text
+    assert (
+        persisted["credential_pool"]["custom:together.ai"][0]["source"]
+        == "env:TOGETHER_API_KEY"
+    )
+
+
+def test_custom_endpoint_pool_warns_when_key_env_is_missing(
+    tmp_path, monkeypatch, caplog
+):
+    """A configured but unavailable key_env must be visible, not silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    missing_key_env = "HERMES_TEST_MISSING_CUSTOM_KEY_80927"
+    monkeypatch.delenv(missing_key_env, raising=False)
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import logging
+    import yaml
+
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Missing Key Endpoint",
+                        "base_url": "https://missing.example/v1",
+                        "key_env": missing_key_env,
+                    }
+                ]
+            }
+        )
+    )
+
+    from agent.credential_pool import load_pool
+
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+        pool = load_pool("custom:missing-key-endpoint")
+
+    assert not pool.has_credentials()
+    assert missing_key_env in caplog.text
+
+
 def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     """Verify seeding from model.api_key when model.provider=='custom' and base_url matches."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -1342,6 +1418,45 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     model_entries = [e for e in entries if e.source == "model_config"]
     assert len(model_entries) == 1
     assert model_entries[0].access_token == "sk-model-key"
+
+
+def test_custom_endpoint_pool_seeds_from_model_key_env(tmp_path, monkeypatch):
+    """Resolve model.key_env for a custom endpoint without inline secrets."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Together.ai",
+                        "base_url": "https://api.together.ai/v1",
+                    }
+                ],
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://api.together.ai/v1",
+                    "key_env": "TOGETHER_API_KEY",
+                },
+            }
+        )
+    )
+    (tmp_path / "hermes" / ".env").write_text(
+        "TOGETHER_API_KEY=sk-model-env\n", encoding="utf-8"
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:together.ai")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.access_token == "sk-model-env"
+    assert entry.source == "env:TOGETHER_API_KEY"
+    assert "sk-model-env" not in (tmp_path / "hermes" / "auth.json").read_text()
 
 
 

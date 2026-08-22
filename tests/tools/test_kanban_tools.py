@@ -132,6 +132,33 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_review_verdict_error_gives_actionable_guidance(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "Spec-axis review found a blocking issue.",
+        "metadata": {
+            "review_axis": "spec",
+            "findings_count": 1,
+            "blocking": True,
+        },
+    })
+    result = json.loads(out)
+
+    assert "error" in result
+    assert "partial review axis must report back to its parent" in result["error"]
+    assert "kanban_request_changes" in result["error"]
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

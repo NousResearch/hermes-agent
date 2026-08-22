@@ -113,6 +113,96 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_with_fanout_preserves_existing_root_assignee(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship an approved workflow",
+            assignee="operator",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split implementation from verification",
+        "tasks": [
+            {"title": "build", "body": "implement it", "assignee": "builder", "parents": []},
+        ],
+    })
+
+    def reassign_during_decomposition(*_args, **_kwargs):
+        with kb.connect() as conn:
+            assert kb.assign_task(conn, tid, "new-owner")
+        return _fake_aux_response(llm_payload)
+
+    patches = _patch_list_profiles(["masa", "operator", "new-owner", "builder"])
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=reassign_during_decomposition,
+        ), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "masa"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.assignee == "new-owner"
+
+
+def test_decompose_with_fanout_respects_concurrent_root_unassignment(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="reroute an approved workflow",
+            assignee="operator",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split implementation from verification",
+        "tasks": [
+            {"title": "build", "body": "implement it", "assignee": "builder", "parents": []},
+        ],
+    })
+
+    def unassign_during_decomposition(*_args, **_kwargs):
+        with kb.connect() as conn:
+            assert kb.assign_task(conn, tid, None)
+        return _fake_aux_response(llm_payload)
+
+    patches = _patch_list_profiles(["masa", "operator", "builder"])
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=unassign_during_decomposition,
+        ), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "masa"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.assignee == "masa"
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)

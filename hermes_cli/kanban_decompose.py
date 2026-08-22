@@ -291,6 +291,9 @@ def decompose_task(
         )
 
     cfg = _load_config()
+    # This is only a fallback. decompose_triage_task() resolves final ownership
+    # from the current DB row inside its write transaction, so an assignment or
+    # unassignment made while the LLM call is running wins over this value.
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}

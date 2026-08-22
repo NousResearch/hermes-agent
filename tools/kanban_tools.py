@@ -772,6 +772,15 @@ def _handle_complete(args: dict, **kw) -> str:
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
                 )
+            except kb.ReviewVerdictError as review_err:
+                return tool_error(
+                    f"kanban_complete blocked: {review_err}. The task is still "
+                    f"in-flight and the rejected attempt was recorded. A partial "
+                    f"review axis must report back to its parent instead of closing "
+                    f"the card. If independent review found correctable defects, "
+                    f"call kanban_request_changes; complete only after an aggregate "
+                    f"approval verdict."
+                )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
                     f"kanban_complete could not preserve the declared artifacts: "

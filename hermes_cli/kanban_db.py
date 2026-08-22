@@ -5349,6 +5349,109 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ReviewVerdictError(ValueError):
+    """Raised when completion metadata explicitly says review did not approve."""
+
+
+_APPROVED_REVIEW_RESULTS = frozenset({
+    "approved", "approved_with_findings", "approved_with_notes", "approve",
+    "pass", "passed",
+})
+_AGGREGATE_REVIEW_AXES = frozenset({"aggregate", "final", "full"})
+
+
+def _review_completion_rejection_reason(metadata: Optional[dict]) -> Optional[str]:
+    """Return why explicit review metadata cannot represent approval.
+
+    Ordinary completion metadata stays free-form. Once any review-specific key
+    is present, every top-level and nested review field is validated together:
+    one approval cannot hide a conflicting rejection or partial review axis.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    review_identity_keys = {
+        "review_axis", "review_result", "review_outcome", "review_verdict",
+    }
+    if not review_identity_keys.intersection(metadata):
+        return None
+
+    envelopes: list[tuple[str, dict]] = [("top-level", metadata)]
+    nested = metadata.get("review_verdict")
+    if isinstance(nested, dict):
+        recognized_nested = {
+            "approved", "blocking", "review_axis", "review_result",
+            "review_outcome",
+        }
+        if not recognized_nested.intersection(nested):
+            return "review_verdict contains no recognized review fields"
+        envelopes.append(("review_verdict", nested))
+    elif isinstance(nested, str) and nested.strip():
+        envelopes.append(("review_verdict", {"review_result": nested}))
+    elif "review_verdict" in metadata:
+        return "review_verdict must be a non-empty string or object"
+
+    explicitly_approved = False
+    aggregate_axes: list[str] = []
+    saw_verdict_field = False
+
+    for label, verdict in envelopes:
+        if "blocking" in verdict:
+            saw_verdict_field = True
+            if not isinstance(verdict["blocking"], bool):
+                return f"{label}.blocking must be a boolean"
+            if verdict["blocking"]:
+                return f"{label} review metadata marks the review as blocking"
+        if "approved" in verdict:
+            saw_verdict_field = True
+            if not isinstance(verdict["approved"], bool):
+                return f"{label}.approved must be a boolean"
+            if not verdict["approved"]:
+                return f"{label} review metadata explicitly sets approved=false"
+            explicitly_approved = True
+
+        for key in ("review_result", "review_outcome"):
+            if key not in verdict:
+                continue
+            saw_verdict_field = True
+            value = verdict[key]
+            if not isinstance(value, str) or not value.strip():
+                return f"{label}.{key} must be a non-empty string"
+            normalized = "_".join(
+                value.strip().casefold().replace("-", " ").split()
+            )
+            if normalized not in _APPROVED_REVIEW_RESULTS:
+                return (
+                    f"{label} metadata reports nonapproval or unrecognized "
+                    f"review result {normalized!r}"
+                )
+            explicitly_approved = True
+
+        if "review_axis" in verdict:
+            saw_verdict_field = True
+            axis = verdict["review_axis"]
+            if not isinstance(axis, str) or not axis.strip():
+                return f"{label}.review_axis must be a non-empty string"
+            normalized_axis = "_".join(
+                axis.strip().casefold().replace("-", " ").split()
+            )
+            if normalized_axis not in _AGGREGATE_REVIEW_AXES:
+                return (
+                    f"partial review axis {normalized_axis!r} cannot close a task; "
+                    "an aggregate approval verdict is required"
+                )
+            aggregate_axes.append(normalized_axis)
+
+    if not saw_verdict_field:
+        return "review_verdict contains no review fields"
+    if aggregate_axes and not explicitly_approved:
+        return (
+            f"aggregate review axis {aggregate_axes[0]!r} has no explicit "
+            "approval verdict"
+        )
+    return None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5424,6 +5527,41 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    review_rejection = _review_completion_rejection_reason(metadata)
+    if review_rejection:
+        with write_txn(conn):
+            eligible = conn.execute(
+                "SELECT status, current_run_id FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if eligible is None or eligible["status"] not in {
+                "running", "ready", "blocked", "review",
+            }:
+                return False
+            if eligible["current_run_id"] is None:
+                return False
+            if (
+                expected_run_id is not None
+                and eligible["current_run_id"] != int(expected_run_id)
+            ):
+                return False
+            _append_event(
+                conn,
+                task_id,
+                "completion_blocked_review_verdict",
+                {
+                    "reason": review_rejection,
+                    "metadata_keys": sorted(metadata) if isinstance(metadata, dict) else [],
+                    "summary_preview": (
+                        (summary or result or "").strip().splitlines()[0][:200]
+                        if (summary or result)
+                        else None
+                    ),
+                },
+                run_id=eligible["current_run_id"],
+            )
+        raise ReviewVerdictError(review_rejection)
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -7370,7 +7508,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, assignee, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7466,10 +7604,13 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
-        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Flip the root: triage -> todo. An assignee chosen or changed before
+        # this transaction is durable workflow intent; only an unassigned root
+        # receives the configured orchestrator fallback.
+        effective_root_assignee = root_row["assignee"] or root_assignee
         sets = ["status = 'todo'"]
         params: list[Any] = []
-        if root_assignee is not None:
+        if root_row["assignee"] is None and root_assignee is not None:
             sets.append("assignee = ?")
             params.append(root_assignee)
         params.append(task_id)
@@ -7496,7 +7637,7 @@ def decompose_triage_task(
             conn, task_id, "decomposed",
             {
                 "child_ids": child_ids,
-                "root_assignee": root_assignee,
+                "root_assignee": effective_root_assignee,
             },
         )
 

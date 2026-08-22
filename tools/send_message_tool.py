@@ -954,6 +954,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Feishu adapter migrated to a plugin (#41112); its max_message_length
     # (8000) now flows through the registry fallback below.
 
+    try:
+        from gateway.platforms.qqbot.constants import MAX_MESSAGE_LENGTH as QQBOT_MAX_MESSAGE_LENGTH
+    except ImportError:
+        QQBOT_MAX_MESSAGE_LENGTH = 4000
+
     media_files = media_files or []
 
     # Slack mrkdwn formatting is applied inside the slack plugin's
@@ -966,6 +971,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # migrated to plugins in #41112).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.QQBOT: QQBOT_MAX_MESSAGE_LENGTH,
     }
 
     # Check plugin registry for max_message_length

@@ -50,9 +50,9 @@ class TestBuildAnthropicClient:
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-something")
+            build_anthropic_client("«redacted:sk-…»")
             kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["api_key"] == "sk-ant-api03-something"
+            assert kwargs["api_key"] == "«redacted:sk-…»"
             assert "auth_token" not in kwargs
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
@@ -61,10 +61,50 @@ class TestBuildAnthropicClient:
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
+    def test_custom_provider_bearer_auth_uses_bearer_auth(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            with patch(
+                "agent.anthropic_adapter._custom_provider_requires_bearer_auth",
+                return_value=False,
+            ):
+                build_anthropic_client(
+                    "custom-provider-secret",
+                    base_url="https://gateway.example.com/anthropic",
+                    bearer_auth=True,
+                )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "custom-provider-secret"
+            assert "api_key" not in kwargs
 
+    def test_custom_provider_default_uses_api_key(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            with patch(
+                "agent.anthropic_adapter._custom_provider_requires_bearer_auth",
+                return_value=False,
+            ):
+                build_anthropic_client(
+                    "custom-provider-secret",
+                    base_url="https://gateway.example.com/anthropic",
+                )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "custom-provider-secret"
+            assert "auth_token" not in kwargs
 
-
-
+    def test_custom_provider_config_lookup_enables_bearer_auth(self):
+        """A custom-provider config entry with bearer_auth=True opts the
+        endpoint into Bearer auth even without the explicit argument."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            with patch(
+                "agent.anthropic_adapter._custom_provider_requires_bearer_auth",
+                return_value=True,
+            ):
+                build_anthropic_client(
+                    "custom-provider-secret",
+                    base_url="https://gateway.example.com/anthropic",
+                )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "custom-provider-secret"
+            assert "api_key" not in kwargs
 
     def test_opencode_endpoint_gets_attribution_headers(self):
         """OpenCode identifies clients by request headers, like OpenRouter.

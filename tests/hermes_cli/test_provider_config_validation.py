@@ -11,6 +11,7 @@ import pytest
 from hermes_cli.config import (
     _PROVIDER_NORMALIZE_WARNED,
     _normalize_custom_provider_entry,
+    get_custom_provider_bearer_auth,
 )
 
 
@@ -66,5 +67,38 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry, provider_key="PROVIDER_A")
         assert result is not None
         assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
+
+    def test_bearer_auth_is_preserved_and_defaults_to_false(self):
+        entry = {
+            "name": "anthropic-proxy",
+            "base_url": "https://gateway.example.com/anthropic",
+            "bearer_auth": True,
+        }
+        normalized = _normalize_custom_provider_entry(entry, provider_key="anthropic-proxy")
+        assert normalized is not None
+        assert normalized["bearer_auth"] is True
+        assert get_custom_provider_bearer_auth(
+            entry["base_url"], [normalized]
+        ) is True
+
+        default_entry = dict(entry)
+        default_entry.pop("bearer_auth")
+        normalized_default = _normalize_custom_provider_entry(
+            default_entry, provider_key="anthropic-proxy"
+        )
+        assert normalized_default is not None
+        assert get_custom_provider_bearer_auth(
+            entry["base_url"], [normalized_default]
+        ) is False
+
+        false_entry = dict(default_entry, bearer_auth=False)
+        normalized_false = _normalize_custom_provider_entry(
+            false_entry, provider_key="anthropic-proxy"
+        )
+        assert normalized_false is not None
+        assert normalized_false["bearer_auth"] is False
+        assert get_custom_provider_bearer_auth(
+            entry["base_url"], [normalized_false]
+        ) is False
 
 

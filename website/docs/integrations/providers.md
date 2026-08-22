@@ -1281,7 +1281,18 @@ providers:
     transport: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `bearer_auth`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+
+`bearer_auth: true` (Anthropic-compatible `anthropic_messages` endpoints only) sends the API key as `Authorization: Bearer <key>` instead of Anthropic's native `x-api-key` header. Some third-party Anthropic-style gateways and proxies require this even though their hostname is not in Hermes' built-in allow-list (MiniMax, Azure AI Foundry, Palantir, Nous Portal, CommandCode are auto-detected and do not need the flag). For example:
+
+```yaml
+providers:
+  my-anthropic-gateway:
+    api: https://gateway.example.com/anthropic
+    key_env: MY_GATEWAY_KEY
+    transport: anthropic_messages
+    bearer_auth: true
+```
 
 #### Command-minted credentials (`key_cmd`)
 

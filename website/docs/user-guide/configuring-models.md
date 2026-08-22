@@ -206,6 +206,7 @@ providers:
   anthropic-proxy:
     api: https://gateway.example.com/anthropic
     transport: anthropic_messages
+    # bearer_auth: true   # if the gateway wants Authorization: Bearer instead of x-api-key
     models:
       fable:
         context_length: 1000000

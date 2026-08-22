@@ -194,7 +194,7 @@ Two peers × two toggles = four flags. `observationMode` is a shorthand preset:
 
 | Preset | User flags | AI flags | Semantics |
 |--------|-----------|----------|-----------|
-| `"directional"` (default) | me: on, others: on | me: on, others: on | Full mutual observation. Enables cross-peer dialectic — "what does the AI know about the user, based on what the user said and the AI replied." |
+| `"directional"` (default) | me: on, others: on | me: off, others: on | AI models the user from user messages; AI self-observation off so echoed user facts (e.g. *"you play tennis Tuesdays"*) don't land in AI self-representation. Cross-peer dialectic still works via `observeOthers`. |
 | `"unified"` | me: on, others: off | me: off, others: on | Shared-pool semantics — the AI observes the user's messages only, the user peer only self-models. Single-observer pool. |
 
 Override the preset with an explicit `observation` block for per-peer control:
@@ -210,9 +210,9 @@ Common patterns:
 
 | Intent | Config |
 |--------|--------|
-| Full observation (most users) | `"observationMode": "directional"` |
+| Default (most users) — AI models user, not its own echoes | `"observationMode": "directional"` |
+| Full mutual observation (all four on) | `"observation": { "user": {"observeMe": true, "observeOthers": true}, "ai": {"observeMe": true, "observeOthers": true} }` |
 | AI shouldn't re-model the user from its own replies | `"ai": {"observeMe": true, "observeOthers": false}` |
-| Strong persona the AI peer shouldn't update from self-observation | `"ai": {"observeMe": false, "observeOthers": true}` |
 
 Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Hermes syncs them back at session init.
 

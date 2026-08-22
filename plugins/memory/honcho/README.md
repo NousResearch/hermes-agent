@@ -324,11 +324,11 @@ Maps 1:1 to Honcho's per-peer `SessionPeerConfig`. When present, overrides `obse
 |-------|---------|-------------|
 | `user.observeMe` | `true` | User peer self-observation (Honcho builds user representation) |
 | `user.observeOthers` | `true` | User peer observes AI messages |
-| `ai.observeMe` | `true` | AI peer self-observation (Honcho builds AI representation) |
+| `ai.observeMe` | `false` | AI peer self-observation (Honcho builds AI representation). Off by default — when on, user facts echoed in AI replies can leak into AI self-representation |
 | `ai.observeOthers` | `true` | AI peer observes user messages (enables cross-peer dialectic) |
 
 Presets:
-- `"directional"` (default): all four `true`
+- `"directional"` (default): user both on; AI `observeMe=false`, `observeOthers=true`
 - `"unified"`: user `observeMe=true`, AI `observeOthers=true`, rest `false`
 
 ### Hardcoded Limits

@@ -138,6 +138,7 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.status import acquire_crypto_lease, release_crypto_lease
 
 logger = logging.getLogger(__name__)
 
@@ -1217,6 +1218,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
+        # Inter-process crypto lease identity held while this adapter owns the
+        # OlmMachine on the shared crypto store (see #46310). None when the
+        # lease is not held.
+        self._crypto_lease_identity: Optional[str] = None
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
@@ -1711,6 +1716,23 @@ class MatrixAdapter(BasePlatformAdapter):
     # Required overrides
     # ------------------------------------------------------------------
 
+    def _release_crypto_lease(self) -> None:
+        """Release the inter-process crypto lease if this adapter holds it.
+
+        No-op when the lease was never acquired. Swallows release errors
+        (log-and-continue): a failed release only strands a stale lock file
+        that the next starter reclaims, whereas raising from a disconnect or
+        failure path would mask the original error.
+        """
+        identity = self._crypto_lease_identity
+        if identity is None:
+            return
+        self._crypto_lease_identity = None
+        try:
+            release_crypto_lease(str(_CRYPTO_DB_PATH), identity)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Matrix: could not release crypto lease: %s", exc)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
         self._device_id_unverified = False
@@ -1914,6 +1936,44 @@ class MatrixAdapter(BasePlatformAdapter):
                         )
                         legacy_pickle.unlink()
 
+                    _acct_id = self._user_id or "hermes"
+
+                    # Acquire the inter-process lease BEFORE the destructive act
+                    # of opening the resolved crypto DB. A second live OlmMachine
+                    # on the same store + device id races the gateway's OTK
+                    # claims and account-pickle saves — the E2EE split brain
+                    # behind corrupted state and permanently undecryptable
+                    # messages (UTD, #46310). Fail closed: if the lease is held
+                    # by another live process, or if acquisition itself cannot be
+                    # confirmed, back out before ever touching the store.
+                    lease_identity = (
+                        f"{_CRYPTO_DB_PATH}:{_acct_id}:"
+                        f"{client.device_id or self._device_id or 'default'}"
+                    )
+                    try:
+                        acquired, existing = acquire_crypto_lease(
+                            str(_CRYPTO_DB_PATH), lease_identity
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Matrix: crypto lease acquisition failed — refusing "
+                            "to open crypto DB to prevent E2EE split brain (two "
+                            "OlmMachines on one store, #46310): %s",
+                            exc,
+                        )
+                        await api.session.close()
+                        return False
+                    if not acquired:
+                        logger.error(
+                            "Matrix: crypto lease held by PID %s — refusing to "
+                            "open crypto DB to prevent E2EE split brain (two "
+                            "OlmMachines on one store, #46310)",
+                            existing.get("pid") if existing else "unknown",
+                        )
+                        await api.session.close()
+                        return False
+                    self._crypto_lease_identity = lease_identity
+
                     crypto_db = Database.create(
                         f"sqlite:///{_CRYPTO_DB_PATH}",
                         upgrade_table=PgCryptoStore.upgrade_table,
@@ -1921,7 +1981,6 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_db.start()
                     self._crypto_db = crypto_db
 
-                    _acct_id = self._user_id or "hermes"
                     # Use the resolved client.device_id (from whoami or password
                     # login), not self._device_id (the configured value), because
                     # #71543 makes the token's real device win over a stale
@@ -1964,6 +2023,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
                     if not await self._verify_device_keys_on_server(client, olm):
                         await crypto_db.stop()
+                        self._release_crypto_lease()
                         await api.session.close()
                         return False
 
@@ -1980,6 +2040,7 @@ class MatrixAdapter(BasePlatformAdapter):
                                 client.device_id,
                             )
                             await crypto_db.stop()
+                            self._release_crypto_lease()
                             await api.session.close()
                             return False
                         logger.warning("Matrix: share_keys() warning during startup: %s", exc)
@@ -2055,12 +2116,14 @@ class MatrixAdapter(BasePlatformAdapter):
                             _E2EE_INSTALL_HINT,
                         )
                         self._encryption = False
+                        self._release_crypto_lease()
                     else:
                         logger.error(
                             "Matrix: failed to create E2EE client: %s. %s",
                             exc,
                             _E2EE_INSTALL_HINT,
                         )
+                        self._release_crypto_lease()
                         await api.session.close()
                         return False
 
@@ -2177,6 +2240,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._crypto_db.stop()
             except Exception as exc:
                 logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
+
+        # Release the inter-process crypto lease (if held) so a subsequent
+        # standalone send is not refused after we stop.
+        self._release_crypto_lease()
 
         if self._client:
             try:

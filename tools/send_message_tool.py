@@ -1952,22 +1952,6 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 # (_send_matrix_via_adapter below stays — it's the native-media upload path.)
 
 
-def _gateway_process_running() -> bool:
-    """True when a gateway process is running for the current profile.
-
-    Same verified detector as ``hermes cron status`` (PID file + runtime
-    lock + start-time/cmdline match) — a stale PID file from a crashed
-    gateway does not count. Kept as a module-level function so tests (and
-    any future callers) can patch it hermetically.
-    """
-    try:
-        from gateway.status import get_running_pid
-
-        return get_running_pid() is not None
-    except Exception:
-        return False
-
-
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via the Matrix adapter so native Matrix media uploads are preserved.
 
@@ -2020,29 +2004,15 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         )
 
     # --- Fallback: ephemeral adapter (standalone / cron context) ---
-    # Blast wall: an ephemeral MatrixAdapter runs a full OlmMachine on the same
-    # crypto store + device id the live gateway uses. If a gateway PROCESS is
-    # up, the two race on OTK claims and account-pickle saves — the split brain
-    # behind corrupted E2EE state and permanently undecryptable messages
-    # (UTD). A missing live-adapter ref while the gateway is running means the
-    # send arrived in the wrong process (e.g. the desktop cron ticker winning
-    # the .tick.lock race); booting a second OlmMachine there would corrupt
-    # shared state. Fail loudly instead — the delivery is retried/reported,
-    # never silently poisons the store. With no gateway running, the ephemeral
-    # connect is the only Matrix path and stays correct.
-    if _gateway_process_running():
-        logger.error(
-            "Matrix: refusing ephemeral adapter while a gateway process is "
-            "running — a second OlmMachine on the shared crypto store causes "
-            "E2EE split brain (see #46310); route this send through the "
-            "gateway's live adapter"
-        )
-        return _error(
-            "Matrix send refused: an ephemeral adapter would race the running "
-            "gateway's E2EE state. Route delivery through the gateway (live "
-            "adapter) instead."
-        )
-
+    # An ephemeral MatrixAdapter runs a full OlmMachine on the same crypto
+    # store + device id the live gateway uses. The split-brain guard is no
+    # longer a liveness probe here (the old ``_gateway_process_running()``
+    # blast wall was a TOCTOU probe that could not catch a gateway starting
+    # between the probe and the connect). Instead, ``MatrixAdapter.connect()``
+    # acquires an inter-process crypto lease BEFORE opening the crypto DB and
+    # returns False (fail-closed) if the gateway — or any other live process
+    # — holds it. The ``if not connected`` check below surfaces that refusal
+    # as a connect failure, and the adapter logs the split-brain reason.
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:

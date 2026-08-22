@@ -63,6 +63,11 @@ from gateway.platforms.webhook_filters import (
     DEFAULT_SCRIPT_TIMEOUT_SECONDS,
     WebhookRouteProcessor,
 )
+from gateway.platforms.webhook_profile_admission import (
+    WebhookProfileAdmissionMixin,
+    _PROFILE_REJECTED,
+)
+from gateway.platforms.webhook_rendering import WebhookRenderingMixin
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -95,11 +100,6 @@ def _is_webhook_silence_response(content: Any) -> bool:
     path untouched.
     """
     return is_autonomous_silence_response(content)
-
-# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
-# names a profile this gateway does not serve (→ 404). Distinct from None
-# (no prefix / multiplexing off → handle as the default profile).
-_PROFILE_REJECTED = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
@@ -174,7 +174,11 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class WebhookAdapter(BasePlatformAdapter):
+class WebhookAdapter(
+    WebhookRenderingMixin,
+    WebhookProfileAdmissionMixin,
+    BasePlatformAdapter,
+):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
     # No human is present to answer a "session restored — what next?" prompt:
@@ -559,65 +563,6 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
-
-    def _resolve_request_profile(self, request: "web.Request"):
-        """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
-
-        Returns:
-          - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored, request handled as the default profile).
-          - the profile name (str) when present, multiplexing is on, and the
-            profile is one this gateway serves.
-          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured (handler returns 404).
-        """
-        profile = (request.match_info.get("profile") or "").strip()
-        if not profile:
-            return None
-        runner = self.gateway_runner
-        cfg = getattr(runner, "config", None)
-        if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
-            # the single-profile gateway (don't 404 a would-be valid route).
-            return None
-        try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {
-                name
-                for name, _ in profiles_to_serve(
-                    multiplex=True,
-                    profile_allowlist=getattr(
-                        cfg, "multiplex_profile_allowlist", None
-                    ),
-                )
-            }
-        except Exception:
-            return _PROFILE_REJECTED
-        if profile not in served:
-            return _PROFILE_REJECTED
-        return profile
-
-    @staticmethod
-    def _route_allows_profile(
-        route_config: dict,
-        request_profile: Optional[str],
-    ) -> bool:
-        """Return whether a route is bound to the URL-selected profile.
-
-        Omitting ``profile`` keeps a route on the default profile. An explicit
-        null, blank, or non-string value is malformed and fails closed.
-        """
-        if "profile" not in route_config:
-            configured_profile = "default"
-        else:
-            configured_profile = route_config.get("profile")
-        if not isinstance(configured_profile, str):
-            return False
-        configured_profile = configured_profile.strip()
-        if not configured_profile:
-            return False
-        effective_profile = request_profile or "default"
-        return configured_profile == effective_profile
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -1240,63 +1185,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    # ------------------------------------------------------------------
-    # Prompt rendering
-    # ------------------------------------------------------------------
-
-    def _render_prompt(
-        self,
-        template: str,
-        payload: dict,
-        event_type: str,
-        route_name: str,
-    ) -> str:
-        """Render a prompt template with the webhook payload.
-
-        Supports dot-notation access into nested dicts:
-        ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
-
-        Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
-        any webhook where the agent needs to see the full payload.
-        """
-        if not template:
-            truncated = json.dumps(payload, indent=2)[:4000]
-            return (
-                f"Webhook event '{event_type}' on route "
-                f"'{route_name}':\n\n```json\n{truncated}\n```"
-            )
-
-        def _resolve(match: re.Match) -> str:
-            key = match.group(1)
-            # Special token: dump the entire payload as JSON
-            if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
-            if key == "event_type":
-                return event_type
-            value: Any = payload
-            for part in key.split("."):
-                if isinstance(value, dict):
-                    value = value.get(part, f"{{{key}}}")
-                else:
-                    return f"{{{key}}}"
-            if isinstance(value, (dict, list)):
-                return json.dumps(value, indent=2)[:2000]
-            return str(value)
-
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
-
-    def _render_delivery_extra(
-        self, extra: dict, payload: dict
-    ) -> dict:
-        """Render delivery_extra template values with payload data."""
-        rendered: Dict[str, Any] = {}
-        for key, value in extra.items():
-            if isinstance(value, str):
-                rendered[key] = self._render_prompt(value, payload, "", "")
-            else:
-                rendered[key] = value
-        return rendered
 
     # ------------------------------------------------------------------
     # Response delivery

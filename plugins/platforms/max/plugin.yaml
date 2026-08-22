@@ -1,7 +1,7 @@
 name: max-platform
 label: MAX (Russian Messenger)
 kind: platform
-version: 0.21.0
+version: 0.22.0
 description: >
   MAX messenger gateway adapter for Hermes Agent (Russia).
   Connects to MAX via Long Polling (GET /updates) and sends replies via
@@ -46,4 +46,8 @@ optional_env:
   - name: MAX_APPROVED_CHATS
     description: "Comma-separated chat IDs (groups) pre-approved for the bot. Empty = bot asks the owner for approval when added to a new group"
     prompt: "Pre-approved group chat IDs (comma-separated)"
+    password: false
+  - name: MAX_SHOW_REASONING
+    description: "true = show the reasoning/thinking block in bot replies (hidden by default)"
+    prompt: "Show reasoning block? (true/false)"
     password: false

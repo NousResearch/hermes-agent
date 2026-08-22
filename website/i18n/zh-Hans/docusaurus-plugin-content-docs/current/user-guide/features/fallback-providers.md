@@ -85,6 +85,10 @@ fallback_model:
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | 自定义端点 | `custom` | `base_url` + `key_env`（见下文） |
 
+:::warning Gemini 备用身份验证
+使用 `provider: gemini` 的备用项始终消耗所配置 Google AI Studio API 密钥的配额；若密钥属于付费层级，则相关 API 费用会单独结算——即使你拥有 Google AI Pro 或 Ultra 订阅。Hermes 不会在处理该备用项时静默改用 Gemini CLI OAuth、Antigravity 或 Vertex AI 凭据。如果未配置 Gemini API 密钥，该项会被跳过，而不会切换到其他 Google 计费路径。详情请参见 [Google Gemini 指南](/guides/google-gemini)。
+:::
+
 ### 自定义端点备用
 
 对于兼容 OpenAI 的自定义端点，添加 `base_url` 并可选填 `key_env`：

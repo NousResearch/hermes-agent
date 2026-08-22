@@ -3,7 +3,7 @@ A2A client tools — let the Hermes agent talk to *other* agents as a peer.
 
 Tools (registered in the ``a2a`` toolset):
   - a2a_discover(url)         -> fetch + summarize a peer's Agent Card
-  - a2a_call(agent, message)  -> send a task to a peer, return its reply
+  - a2a_call(agent, message, metadata?) -> send a task to a peer, return its reply
   - a2a_list()                -> list configured peers + persisted conversations
   - a2a_history(context_id)   -> recall a persisted A2A conversation
   - a2a_orchestrate(...)      -> fan-out task to multiple peers by capability
@@ -146,7 +146,13 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
-def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
+def _send_task(
+    agent_label: str,
+    peer: dict,
+    message: str,
+    context_id: str,
+    metadata: Optional[dict] = None,
+) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
     Raises urllib errors / ValueError for the caller to format. Handles
@@ -174,12 +180,24 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
             "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx),
         },
     }
+    safe_metadata = None
+    if metadata is not None:
+        safe_metadata = security.redact_outbound_data(metadata)
+        rpc_body["params"]["metadata"] = safe_metadata
 
     tenant = _interface_tenant(card, peer)
     if tenant:
         rpc_body["params"]["tenant"] = tenant
 
-    security.audit("outbound", agent_label, rpc_body["id"], safe_message)
+    audit_summary = safe_message
+    if safe_metadata is not None:
+        metadata_summary = json.dumps(
+            safe_metadata, ensure_ascii=False, separators=(",", ":")
+        )
+        if len(metadata_summary) > 240:
+            metadata_summary = metadata_summary[:240] + "…"
+        audit_summary = f"metadata={metadata_summary}\nmessage={safe_message}"
+    security.audit("outbound", agent_label, rpc_body["id"], audit_summary)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
 
@@ -268,6 +286,9 @@ def a2a_call(args: dict, **_: Any) -> str:
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return "Error: 'metadata' must be a JSON object."
 
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
@@ -277,7 +298,9 @@ def a2a_call(args: dict, **_: Any) -> str:
         )
 
     try:
-        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+        reply, reply_ctx, state = _send_task(
+            agent, peer, message, context_id, metadata=metadata
+        )
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return f"Error: peer '{agent}' rejected auth (HTTP {e.code}). Check the configured token."
@@ -517,6 +540,15 @@ _SCHEMAS: dict[str, _ToolSchema] = {
                     "agent": {"type": "string", "description": "Configured peer name (from a2a_agents) or a full http(s):// URL."},
                     "message": {"type": "string", "description": "The task / message to send the peer, in natural language."},
                     "context_id": {"type": "string", "description": "Optional: context id from a prior reply, to continue the conversation."},
+                    "metadata": {
+                        "type": "object",
+                        "description": (
+                            "Optional JSON metadata added to SendMessage "
+                            "params.metadata. Use keys advertised by the "
+                            "peer's Agent Card extensions."
+                        ),
+                        "additionalProperties": True,
+                    },
                 },
                 "required": ["agent", "message"],
             },

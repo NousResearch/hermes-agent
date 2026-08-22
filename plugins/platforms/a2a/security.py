@@ -32,7 +32,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +238,26 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"), "[redacted-email]"),
 )
 
+_SENSITIVE_METADATA_KEYS = frozenset({
+    "apikey",
+    "auth",
+    "authorization",
+    "authtoken",
+    "bearer",
+    "clientsecret",
+    "credential",
+    "credentials",
+    "idtoken",
+    "jwt",
+    "password",
+    "passwd",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+    "token",
+})
+_MAX_OUTBOUND_DATA_DEPTH = 32
+
 
 def redact_outbound(text: str) -> str:
     """Scrub credential-shaped substrings before sending text to a peer."""
@@ -247,6 +267,55 @@ def redact_outbound(text: str) -> str:
     for pat, repl in _REDACTION_PATTERNS:
         out = pat.sub(repl, out)
     return out
+
+
+def _is_sensitive_metadata_key(key: str) -> bool:
+    canonical = re.sub(r"[^a-z0-9]", "", key.casefold())
+    return canonical in _SENSITIVE_METADATA_KEYS
+
+
+def redact_outbound_data(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _seen: Optional[set[int]] = None,
+) -> Any:
+    """Recursively scrub strings in JSON-compatible outbound data.
+
+    JSON container shapes and scalar types are preserved except that values
+    under credential-bearing field names are replaced wholesale.
+    """
+    if _depth > _MAX_OUTBOUND_DATA_DEPTH:
+        return "[redacted-depth-limit]"
+    if isinstance(value, str):
+        return redact_outbound(value)
+    if not isinstance(value, (dict, list, tuple)):
+        return value
+
+    if _seen is None:
+        _seen = set()
+    value_id = id(value)
+    if value_id in _seen:
+        return "[redacted-cycle]"
+    _seen.add(value_id)
+    try:
+        if isinstance(value, (list, tuple)):
+            return [
+                redact_outbound_data(item, _depth=_depth + 1, _seen=_seen)
+                for item in value
+            ]
+        out = {}
+        for key, item in value.items():
+            safe_key = redact_outbound(key) if isinstance(key, str) else key
+            if isinstance(key, str) and _is_sensitive_metadata_key(key):
+                out[safe_key] = "[redacted]"
+            else:
+                out[safe_key] = redact_outbound_data(
+                    item, _depth=_depth + 1, _seen=_seen
+                )
+        return out
+    finally:
+        _seen.remove(value_id)
 
 
 # --------------------------------------------------------------------------

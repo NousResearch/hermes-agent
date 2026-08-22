@@ -1201,6 +1201,79 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
 
+## Update Pipeline (`hermes update`)
+
+The updater is transactional in shape (fleet-update campaign, #91277 —
+Aug 2026). Every stage exists because its absence was a real field
+failure; PRs that weaken a stage need to answer for the failure class it
+guards:
+
+```
+plan → snapshot → apply → restart-per-kind → verify → report
+```
+
+- **Plan** (`hermes_cli/update_inventory.py`, `hermes update --plan`):
+  read-only inventory — install kind, all profiles, every live gateway
+  with supervisor + running code version. Deployment kinds are
+  first-class: `git` updates in place; `docker`/`nix`/`apt` are NOT
+  in-place-updatable and the updater reports the correct external
+  command instead of fighting the deployment model.
+- **Snapshot** (`hermes_cli/backup.py`): pre-update quick snapshot for
+  EVERY profile (the code swap + fleet restart touch all of them), each
+  into its own `state-snapshots/`, identical file set + 1 GiB per-file
+  cap + keep=1. **Never add a partial/tiered snapshot set** — mixed
+  coverage creates torn-restore states across schema generations. Quick
+  snapshots are FILE-LOSS RECOVERY (the per-profile cron-jobs safety
+  net restores from them), NOT code-rollback insurance; `--backup` full
+  mode owns rollback.
+- **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY
+  when git itself failed (`_should_zip_fallback_on_update_error`,
+  argv-classified; a dependency-install failure must never trigger a
+  tree-clobbering re-download), REFUSES a dirty working tree
+  (`-uall`, plus a pre-swap TOCTOU re-check), and grafts the live
+  `apps/desktop/release/` into the staged swap (the GitHub source ZIP
+  has no built desktop app; without the graft the swap deletes it).
+- **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE
+  (every `hermes-gateway*` unit / `ai.hermes.gateway*` LaunchAgent),
+  drain-first (SIGUSR1) with per-unit/per-label failure isolation.
+  Restarting only the invoking profile's service leaves siblings on
+  stale `sys.modules` until they crash — the largest dupe-PR cluster in
+  the repo's history came from that bug.
+- **Verify**: gateways stamp their running `code_sha`/`code_version`
+  into `gateway_state.json` on every runtime-status write
+  (`gateway/status.py`); after the restart phase the updater compares
+  each live gateway against the fresh checkout and prints a fleet
+  version matrix. A provably-stale gateway fails the update (exit 1) —
+  automation must never treat a mixed-version fleet as healthy.
+- **Report**: every run writes a machine-readable receipt to
+  `~/.hermes/logs/update_receipts/` (`latest.json` pointer; steps,
+  skips WITH reasons, restart outcome, plan, fleet snapshot).
+  Finalization is owned by the `cmd_update` command boundary — early
+  `sys.exit` paths (preflight refusals, fetch failures) still persist
+  a receipt with the real exit code. A begun-but-unwritten receipt is
+  a bug: the refused/failed runs are the ones receipts exist for.
+
+Architecture direction: process-scan-based coordination between the
+updater, serve/dashboard, and the gateway is being replaced by a
+gateway-owned control socket (#92091). Do not add new scan heuristics
+without checking that design; scans are the fallback layer.
+
+### Gateway lifecycle vs. the Desktop app
+
+`hermes serve` (control plane, desktop-spawned child) dies with the app
+— by design. The messaging gateway (`gateway run`) SURVIVES the app: the
+serve backend's `/api/gateway/*` endpoints spawn it detached
+(`_spawn_hermes_action` — `start_new_session` / `DETACHED_PROCESS`), so
+`before-quit`'s backend SIGTERM never reaches it. Bots keep running
+when the user closes the app. The known breach of this contract is the
+Windows shim-unlock teardown (`taskkill /T /F` on venv-shim holders,
+#85265) — it exists to let updates proceed, and its replacement is
+#92091's `pause-for-update`. Do not "fix" gateway-dies-with-app reports
+by re-parenting the gateway under the backend, and do not "fix" update
+locks by widening the tree-kill.
+
+---
+
 ## Important Policies
 
 ### Prompt Caching Must Not Break
@@ -1313,6 +1386,27 @@ automatically scope to the active profile.
      fallback-after-miss shape.
 
 ## Known Pitfalls
+
+### DO NOT infer process identity from argv substrings
+The bug class behind ~10 fleet-update issues (#90778, #87594, #78089,
+#76129, #91964, ...): classifying a process by `"serve" in cmdline` or
+similar. `kanban --preserve-cache` contains "serve"; a flag VALUE can
+equal a subcommand (`-m dashboard serve`); truncated cmdlines hide the
+real subcommand. Rules:
+- Use the canonical matchers: `gateway.status.looks_like_gateway_command_line`
+  (gateway run), `hermes_cli.update_cmd._hermes_holder_subcommand`
+  (top-level subcommand of any Hermes argv). Never hand-roll token scans.
+- Flag sets must be DERIVED from the parser
+  (`_holder_value_flags()` introspects `build_top_level_parser()`), never
+  hand-written lists — they drift.
+- Never blanket-exclude ancestors from process scans: when `/update` runs
+  as the gateway's child, a gateway ancestor must stay visible to the
+  pause machinery (#87594). Exclude interactive ancestry, carve out
+  gateway-shaped ancestors.
+- Match on FULL cmdlines; truncate only at display time (#78089).
+- Before adding any new scan heuristic, read #92091 — the gateway control
+  socket replaces scans as the primary coordination mechanism; scans are
+  the fallback layer for old/crashed processes.
 
 ### DO NOT hardcode `~/.hermes` paths
 Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_hermes_home()`
@@ -1490,6 +1584,22 @@ The line: **if the test needs the interpreter to believe it is on another OS
 in order to pass, it belongs on that OS.**
 When one test body walks several platforms in sequence, split it.
 Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
+
+**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
+real Windows process behavior that mocks cannot reproduce (venv-holder
+scans, process-tree parentage, launcher/worker chains, detach semantics),
+there is an on-demand workflow `windows-venv-e2e.yml` that runs
+`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
+`windows-latest` runner — spawning actual processes and driving the real
+detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
+branches (inert on PRs and main; costs nothing on normal work). The proven
+workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
+branch to reproduce the bugs live on unfixed code, build the fix, iterate
+until the lane is green, then open the PR — the live receipt on the exact
+head is the Windows proof reviewers ask for. Extend the live suite when
+touching that subsystem; assert against the gateway ANCESTOR found by
+argv, not the direct parent (the venv shim makes every spawn a
+launcher/worker chain).
 
 **Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
 decides which files the macOS/Windows lanes import by grepping for the marker

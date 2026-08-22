@@ -1182,9 +1182,15 @@ platform_toolsets:
 #       native_task_cards: false
 #   webhook:
 #     extra:
-#       # Route scripts default to a 30 second timeout. Scripts must live under
-#       # the active profile's scripts directory and receive webhook JSON on stdin.
+#       # Filter/transform and completion scripts default to a 30 second timeout.
+#       # Scripts must live under the active profile's scripts directory and
+#       # receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       # routes:
+#       #   code-review:
+#       #     secret: ${WEBHOOK_SECRET}
+#       #     prompt: "Review item {item.id}"
+#       #     completion_script: "finalize.py"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

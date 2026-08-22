@@ -478,6 +478,45 @@ class TestPayloadFilters:
         assert captured[0].text == "Task: PAY BILLS"
         assert captured[0].raw_message["body"] == "PAY BILLS"
 
+    @pytest.mark.asyncio
+    async def test_completion_script_is_snapshotted_at_dispatch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        first_script = scripts_dir / "first.py"
+        first_script.write_text("", encoding="utf-8")
+        second_script = scripts_dir / "second.py"
+        second_script.write_text("", encoding="utf-8")
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "prompt": "Task: {body}",
+            "completion_script": "first.py",
+        }
+        adapter = _make_adapter(routes={"todoist": route})
+        captured = []
+        captured_event = asyncio.Event()
+
+        async def _capture(event):
+            captured.append(event)
+            captured_event.set()
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"body": "pay bills"},
+                headers={"X-GitHub-Delivery": "completion-snapshot-1"},
+            )
+            assert resp.status == 202
+
+        route["completion_script"] = "second.py"
+        await asyncio.wait_for(captured_event.wait(), timeout=1)
+        assert captured[0].metadata == {
+            "webhook_route": "todoist",
+            "webhook_completion_script": "first.py",
+        }
+
 
 # ===================================================================
 # HTTP handling

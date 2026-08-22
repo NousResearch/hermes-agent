@@ -22,8 +22,10 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -415,6 +417,62 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
         return None
 
 
+def _write_jwt_store_atomically(path: Path, store: dict) -> None:
+    """Persist ``store`` to ``path`` as an owner-only file, preserving symlinks.
+
+    Single chokepoint for every write of the persisted store (save + eviction),
+    mirroring ``_read_jwt_store`` on the read side. The store holds live Copilot
+    API tokens, so two properties matter and both were previously missing:
+
+    * The temp file is created with ``os.open(O_EXCL, 0o600)`` instead of
+      ``Path.write_text`` + a post-write ``chmod``, so it never exists at the
+      process umask (typically ``0o644``). Mirrors ``hermes_cli.auth``,
+      ``agent/google_oauth.py`` (#19673) and ``tools/mcp_oauth.py`` (#21148).
+    * ``utils.atomic_replace`` resolves a symlinked target before renaming, so a
+      ``.copilot_jwt.json`` symlinked into a managed profile package survives the
+      write instead of being replaced by a regular file (#16743). It also falls
+      back to copy/fsync/unlink on ``EXDEV``/``EBUSY`` for bind-mount and
+      cross-device deployments, and returns the resolved real path so the final
+      ``chmod`` targets the real inode explicitly rather than the link.
+
+    The temp name carries pid + uuid so two processes writing the store
+    concurrently cannot collide on a single fixed ``.tmp`` name.
+
+    Raises on failure; both callers log at debug and continue, since the disk
+    store is only a restart-survivability cache for the in-process one.
+    """
+    # Imported lazily, matching this module's convention for its other
+    # cross-package dependencies (``get_hermes_home`` in ``_jwt_disk_path``,
+    # ``urllib.request`` in ``exchange_copilot_token``). ``utils`` pulls in
+    # PyYAML, which costs ~10ms of import time this module does not otherwise
+    # pay — and ``copilot_auth`` sits on the credential-resolution path that
+    # ``tests/tui_gateway/test_cold_start_gil_stall.py`` guards.
+    from utils import atomic_replace
+
+    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(store))
+            handle.flush()
+            os.fsync(handle.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        try:
+            os.chmod(real_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
 def evict_cached_exchanged_token(raw_token: str) -> None:
     """Drop any cached exchanged JWT for ``raw_token`` (in-process + on-disk).
 
@@ -440,13 +498,7 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
         store = _read_jwt_store(path)
         if store is not None and fp in store:
             del store[fp]
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(store), encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except Exception:
-                pass
-            os.replace(tmp, path)
+            _write_jwt_store_atomically(path, store)
     except Exception as exc:
         logger.debug("Failed to evict cached Copilot JWT: %s", exc)
 
@@ -505,17 +557,7 @@ def _save_jwt_to_disk(
             "expires_at": expires_at,
             "base_url": base_url,
         }
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(store), encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except Exception:
-            pass
-        os.replace(tmp, path)
-        try:
-            os.chmod(path, 0o600)
-        except Exception:
-            pass
+        _write_jwt_store_atomically(path, store)
     except Exception as exc:
         logger.debug("Failed to persist Copilot JWT: %s", exc)
 

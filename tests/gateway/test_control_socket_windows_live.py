@@ -42,7 +42,11 @@ from gateway.control_socket import GatewayControlServer
 async def main():
     server = GatewayControlServer()
     ok = await server.start()
-    print("SERVER_STARTED" if ok else "SERVER_FAILED", flush=True)
+    # Print our REAL pid: on Windows uv venvs, python.exe is a trampoline
+    # that spawns the actual interpreter as a child, so Popen.pid is the
+    # shim, not the server process. (That spawner-view-vs-reality gap is
+    # the exact bug class the control socket exists to eliminate.)
+    print(f"SERVER_STARTED {os.getpid()}" if ok else "SERVER_FAILED", flush=True)
     if not ok:
         return
     await asyncio.sleep(120)
@@ -63,30 +67,41 @@ def live_server(tmp_path: Path):
         cwd=str(PROJECT_ROOT),
     )
     line = proc.stdout.readline().strip()
-    if line != "SERVER_STARTED":
+    if not line.startswith("SERVER_STARTED"):
         err = proc.stderr.read() if proc.poll() is not None else ""
         proc.kill()
         pytest.fail(f"pipe server child failed to start: {line!r} {err}")
-    yield proc, home
+    server_pid = int(line.split()[1])
+    yield proc, home, server_pid
+    _kill_tree(proc)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the spawned child AND its descendants (uv trampoline shims)."""
     if proc.poll() is None:
-        proc.kill()
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+        )
         proc.wait()
 
 
 def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch):
-    proc, home = live_server
+    proc, home, server_pid = live_server
     from gateway.control_socket import identify_gateway, query_gateway_control
 
     ident = identify_gateway(home, timeout=5.0)
     assert ident is not None, "identify returned None against a live pipe server"
-    assert ident["pid"] == proc.pid
+    # Compare against the server's SELF-reported pid, not Popen.pid — uv's
+    # Windows trampoline makes the spawner's view wrong (see _CHILD_CODE).
+    assert ident["pid"] == server_pid
     assert ident["protocol"] == 1
     assert ident["kind"] == "hermes-gateway"
     assert ident["supervisor"] in {"systemd", "launchd", "desktop", "external", "manual"}
 
     status = query_gateway_control(home, "status", timeout=5.0)
     assert status is not None
-    assert status["answering_pid"] == proc.pid
+    assert status["answering_pid"] == server_pid
 
     # Real fleet consumer prefers the pipe
     import hermes_cli.update_receipt as ur
@@ -102,16 +117,15 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
     assert fleet[0]["source"] == "socket"
-    assert fleet[0]["pid"] == proc.pid
+    assert fleet[0]["pid"] == server_pid
 
 
 def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
-    proc, home = live_server
+    proc, home, server_pid = live_server
     from gateway.control_socket import identify_gateway
 
     assert identify_gateway(home, timeout=5.0) is not None
-    proc.kill()
-    proc.wait()
+    _kill_tree(proc)
     time.sleep(0.5)
 
     assert identify_gateway(home, timeout=2.0) is None

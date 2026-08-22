@@ -19,6 +19,8 @@ npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
 _resolve_private_key = _buzz_mod._resolve_private_key
+_resolve_auth_tag = _buzz_mod._resolve_auth_tag
+_exec_buzz = _buzz_mod._exec_buzz
 check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
@@ -38,6 +40,7 @@ DM_CHANNEL = "6468cc16-a114-4f23-8b8c-02c1655cbf6b"
 _ENV_VARS = (
     "BUZZ_RELAY_URL",
     "BUZZ_PRIVATE_KEY",
+    "BUZZ_AUTH_TAG",
     "BUZZ_CHANNELS",
     "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
@@ -481,6 +484,71 @@ class TestCredentialResolution:
         monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
         assert _resolve_private_key() == "nsec1fromfile"
 
+    def test_auth_tag_env_wins(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_AUTH_TAG", "owner-attestation")
+        assert _resolve_auth_tag() == "owner-attestation"
+
+    def test_auth_tag_credentials_file_fallback(self, monkeypatch, tmp_path):
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(
+            json.dumps({"nsec": "nsec1fromfile", "BUZZ_AUTH_TAG": "owner-attestation"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        assert _resolve_auth_tag() == "owner-attestation"
+
+    @pytest.mark.asyncio
+    async def test_exec_buzz_passes_auth_tag_only_in_subprocess_env(self, monkeypatch):
+        captured = {}
+        monkeypatch.setenv("BUZZ_AUTH_TAG", "wrong-profile-attestation")
+
+        class FakeProcess:
+            returncode = 0
+
+            async def communicate(self, _input):
+                return b"{}", b""
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured.update(args=args, kwargs=kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        await _exec_buzz(
+            "/usr/bin/buzz",
+            ["users", "get"],
+            relay_url="wss://relay.example",
+            private_key="nsec1secret",
+            auth_tag="owner-attestation",
+        )
+
+        assert "owner-attestation" not in captured["args"]
+        assert captured["kwargs"]["env"]["BUZZ_AUTH_TAG"] == "owner-attestation"
+
+    @pytest.mark.asyncio
+    async def test_exec_buzz_removes_unresolved_ambient_auth_tag(self, monkeypatch):
+        captured = {}
+        monkeypatch.setenv("BUZZ_AUTH_TAG", "wrong-profile-attestation")
+
+        class FakeProcess:
+            returncode = 0
+
+            async def communicate(self, _input):
+                return b"{}", b""
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured.update(args=args, kwargs=kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        await _exec_buzz(
+            "/usr/bin/buzz",
+            ["users", "get"],
+            relay_url="wss://relay.example",
+            private_key="nsec1secret",
+        )
+
+        assert "BUZZ_AUTH_TAG" not in captured["kwargs"]["env"]
+
 
 # ── Env enablement / registration / standalone send ──────────────────────
 
@@ -524,8 +592,16 @@ class TestStandaloneSend:
 
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
-            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, input_text=input_text)
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0
+        ):
+            captured.update(
+                cli_path=cli_path,
+                args=args,
+                relay_url=relay_url,
+                auth_tag=auth_tag,
+                input_text=input_text,
+            )
             return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
@@ -534,6 +610,7 @@ class TestStandaloneSend:
         assert result == {"success": True, "message_id": "evt-cron"}
         assert captured["args"][:2] == ["messages", "send"]
         assert captured["input_text"] == "cron says hi"
+        assert captured["auth_tag"] == ""
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 

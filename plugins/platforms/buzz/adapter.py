@@ -275,12 +275,46 @@ def _resolve_private_key(extra: Optional[dict] = None) -> str:
     return ""
 
 
+def _resolve_auth_tag(extra: Optional[dict] = None) -> str:
+    """Resolve the optional community owner-attestation auth tag.
+
+    Hosted Buzz communities can require this tag in addition to the Nostr
+    private key. Keep the same precedence and credentials-file behavior as
+    :func:`_resolve_private_key` so scoped secrets and systemd credential
+    files work for both values.
+    """
+    auth_tag = _get_scoped_secret("BUZZ_AUTH_TAG", "").strip()
+    if auth_tag:
+        return auth_tag
+    configured = os.getenv("BUZZ_CREDENTIALS_FILE", "").strip() or (extra or {}).get("credentials_file", "")
+    if configured:
+        candidates = [Path(configured).expanduser()]
+    else:
+        try:
+            candidates = sorted(_DEFAULT_CREDENTIALS_DIR.glob("*credentials*.json"))
+        except OSError:
+            candidates = []
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for field in ("BUZZ_AUTH_TAG", "auth_tag"):
+            value = data.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 async def _exec_buzz(
     cli_path: str,
     args: List[str],
     *,
     relay_url: str,
     private_key: str,
+    auth_tag: str = "",
     input_text: Optional[str] = None,
     timeout: float = _CLI_TIMEOUT,
 ) -> Tuple[int, str, str]:
@@ -293,6 +327,11 @@ async def _exec_buzz(
     env = os.environ.copy()
     env["BUZZ_RELAY_URL"] = relay_url
     env["BUZZ_PRIVATE_KEY"] = private_key
+    # Do not let another profile's ambient community attestation bleed into
+    # this subprocess. Only the value resolved for this adapter may pass.
+    env.pop("BUZZ_AUTH_TAG", None)
+    if auth_tag:
+        env["BUZZ_AUTH_TAG"] = auth_tag
     proc = await asyncio.create_subprocess_exec(
         cli_path,
         *args,
@@ -451,6 +490,7 @@ class BuzzAdapter(BasePlatformAdapter):
             args,
             relay_url=self.relay_url,
             private_key=self._private_key,
+            auth_tag=_resolve_auth_tag(self._extra),
             input_text=input_text,
         )
 
@@ -1392,7 +1432,12 @@ async def _standalone_send(
         args += ["--file", str(path)]
     try:
         code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+            cli_path,
+            args,
+            relay_url=relay,
+            private_key=private_key,
+            auth_tag=_resolve_auth_tag(extra),
+            input_text=message,
         )
     except asyncio.CancelledError:
         raise

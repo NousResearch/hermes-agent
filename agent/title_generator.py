@@ -149,7 +149,30 @@ def _summarize_user_message(user_message: str) -> str:
         described = describe_skill_invocation(user_message)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    text = described if described is not None else user_message
+    text = _strip_context_reference_tokens(text)
+    return strip_control_wrappers(text)
+
+
+# Matches an ``@file:``/``@folder:`` context reference the way the canonical
+# ``agent.context_references.REFERENCE_PATTERN`` does: an unquoted ``\S+``
+# value, or a backtick/double/single-quoted value. Kept local so the titler
+# doesn't import the context-reference machinery (circularity / startup cost)
+# just to drop the tokens from a title candidate (#92068).
+_CONTEXT_REFERENCE_TOKEN_RE = re.compile(
+    r"(?<![\w/])@(?:file|folder):(?P<value>(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')|\S+)",
+)
+
+
+def _strip_context_reference_tokens(text: str) -> str:
+    """Remove ``@file:``/``@folder:`` tokens so an attachment-only opener
+    titles as untitled rather than as the raw file path."""
+    if not text:
+        return ""
+    stripped = _CONTEXT_REFERENCE_TOKEN_RE.sub("", text)
+    # Collapse any whitespace left between removed tokens back to a single
+    # space so "look at  @file:x  please" reads "look at please".
+    return re.sub(r"[ \t]{2,}", " ", stripped).strip()
 
 
 def is_titleable_user_message(user_message: str) -> bool:

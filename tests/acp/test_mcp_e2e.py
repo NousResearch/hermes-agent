@@ -109,6 +109,56 @@ class TestMcpRegistrationE2E:
         }
 
     @pytest.mark.asyncio
+    async def test_session_with_mcp_servers_preserves_configured_timeout(
+        self, acp_agent, mock_manager, monkeypatch, tmp_path
+    ):
+        """ACP-supplied servers inherit the operator-configured ``timeout``.
+
+        The ACP client stays authoritative for the transport (command, args,
+        env), but a matching server in config.yaml with a ``timeout`` must not
+        be dropped during reconstruction — otherwise the registration falls
+        back to the 300 s default and legitimate long tool calls fail.
+        """
+        (tmp_path / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  test-fs:\n"
+            "    command: /usr/bin/mcp-fs\n"
+            "    timeout: 28800\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        servers = [
+            McpServerStdio(
+                name="test-fs",
+                command="/usr/bin/mcp-fs",
+                args=["--root", "/tmp"],
+                env=[EnvVariable(name="DEBUG", value="1")],
+            ),
+        ]
+
+        registered_configs = {}
+
+        def mock_register(config_map):
+            registered_configs.update(config_map)
+            return ["mcp_test_fs_read"]
+
+        fake_tools = [{"function": {"name": "mcp_test_fs_read"}}]
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert isinstance(resp, NewSessionResponse)
+        fs_cfg = registered_configs["test-fs"]
+        # Transport fields stay ACP-authoritative ...
+        assert fs_cfg["command"] == "/usr/bin/mcp-fs"
+        assert fs_cfg["args"] == ["--root", "/tmp"]
+        assert fs_cfg["env"] == {"DEBUG": "1"}
+        # ... while the configured per-tool-call timeout is preserved.
+        assert fs_cfg["timeout"] == 28800
+
+    @pytest.mark.asyncio
     async def test_prompt_with_tool_calls_emits_acp_events(self, acp_agent, mock_manager):
         """Prompt → agent fires callbacks → ACP ToolCallStart + ToolCallUpdate events."""
         resp = await acp_agent.new_session(cwd="/tmp")

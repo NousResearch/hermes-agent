@@ -1123,6 +1123,33 @@ class HermesACPAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, self._send_usage_update(state))
 
+    async def _load_configured_mcp_timeouts(self) -> dict[str, object]:
+        """Load per-server ``timeout`` values from the operator's config.
+
+        Returns a mapping of server name → configured ``timeout`` for the
+        servers that declare one. Config load failures are fail-open (an
+        empty map), matching the defensive style of the rest of this adapter:
+        a broken config must not break ACP session startup.
+        """
+        try:
+            from hermes_cli.config import load_config
+        except ImportError:
+            return {}
+
+        try:
+            cfg = await asyncio.to_thread(load_config)
+            raw = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+        except Exception:
+            logger.debug("Could not read MCP config for ACP timeouts", exc_info=True)
+            return {}
+
+        configured: dict[str, object] = {}
+        if isinstance(raw, dict):
+            for server_name, entry in raw.items():
+                if isinstance(entry, dict) and entry.get("timeout") is not None:
+                    configured[server_name] = entry["timeout"]
+        return configured
+
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
@@ -1150,6 +1177,18 @@ class HermesACPAgent(acp.Agent):
                         "headers": {item.name: item.value for item in server.headers},
                     }
                 config_map[name] = config
+
+            # The ACP client is authoritative for the transport (command,
+            # args, env, url, headers), but the operator-configured per-tool
+            # call ``timeout`` must survive reconstruction — otherwise every
+            # ACP-supplied server silently falls back to the 300 s default
+            # and legitimate calls longer than that fail. Copy only
+            # ``timeout`` from an exact server-name match in config.yaml.
+            configured_timeouts = await self._load_configured_mcp_timeouts()
+            for name, config in config_map.items():
+                timeout = configured_timeouts.get(name)
+                if timeout is not None:
+                    config["timeout"] = timeout
 
             await asyncio.to_thread(register_mcp_servers, config_map)
         except Exception:

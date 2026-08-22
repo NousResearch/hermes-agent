@@ -244,6 +244,106 @@ class TestMemoryConsolidationGracefulDegrade:
         assert "continue with your reply" not in r["error"]
 
 
+class TestMemoryMutationBudget:
+    """Issue #81120: a model can loop SUCCESSFUL memory writes (each with
+    different parameters, each returning done=true) to bypass the consecutive-
+    failure cap and rewrite/delete unrelated facts indefinitely —
+    _success_response resets _consolidation_failures on every success. The
+    per-turn mutation budget counts ALL attempts (success AND failure alike)
+    and stops the loop within a bounded number of calls, leaving the last
+    known-good store state intact."""
+
+    def test_loop_of_distinct_successful_writes_is_bounded(self, store):
+        # Seed an unrelated fact plus near-full usage so the maintenance
+        # situation from the issue (an overflow add) triggers.
+        store.add("memory", "keep me: unrelated fact")
+        fill = "a" * 468
+        store.add("memory", fill)
+        r = store.add("memory", "brand new fact")  # overflow
+        assert r["success"] is False
+        assert "exceed" in r["error"].lower()
+
+        cap = store._MAX_MUTATIONS_PER_TURN
+        used = store._mutations_this_turn  # 2 seeds + 1 overflow attempt
+        assert used == 3
+        remaining = cap - used
+
+        # Every replacement SUCCEEDS and is DISTINCT, so the old consecutive-
+        # failure cap never fires (each success resets it via _success_response).
+        # Only the cumulative mutation budget can stop this sequence.
+        current = fill
+        for i in range(remaining):
+            nxt = f"v{i}" + "x" * (len(fill) - len(f"v{i}"))
+            r = store.replace("memory", current, nxt)
+            assert r["success"] is True, f"replace {i} should succeed"
+            assert r["done"] is True
+            current = nxt
+
+        # The next attempt is rejected: terminal, and NOTHING changed — the
+        # budget is checked before any mutation is applied.
+        before = list(store.memory_entries)
+        r = store.replace("memory", "keep me", "clobbered")
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "budget" in r["error"]
+        assert store.memory_entries == before
+        # The unrelated persistent entry survived the whole sequence.
+        assert "keep me: unrelated fact" in store.memory_entries
+        assert "clobbered" not in store.memory_entries
+
+    def test_normal_single_writes_still_work(self, store):
+        store.add("memory", "first fact")
+        store.replace("memory", "first", "first updated")
+        store.remove("memory", "first updated")
+        store.add("user", "Name: Alice")
+        assert "first updated" not in store.memory_entries
+        assert "Name: Alice" in store.user_entries
+        assert store._mutations_this_turn == 4
+
+    def test_terminated_turn_resumes_after_boundary(self, store):
+        cap = store._MAX_MUTATIONS_PER_TURN
+        for i in range(cap):
+            r = store.add("memory", f"filler {i}")
+            assert r["success"] is True
+        # Budget exhausted: next call is terminal (done=true), store unchanged —
+        # the terminal semantics do not break the model's ability to reply.
+        before = list(store.memory_entries)
+        r = store.add("memory", "extra")
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "budget" in r["error"]
+        assert store.memory_entries == before
+        # A new turn boundary resets the budget — normal writes resume.
+        store.reset_consolidation_failures()
+        r = store.add("memory", "fresh after reset")
+        assert r["success"] is True
+        assert "fresh after reset" in store.memory_entries
+        assert store._mutations_this_turn == 1
+
+    def test_batch_counts_as_single_mutation(self, store):
+        store.add("memory", "stale A")
+        store.add("memory", "stale B")
+        before = store._mutations_this_turn
+        r = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "stale A"},
+            {"action": "remove", "old_text": "stale B"},
+            {"action": "add", "content": "fresh fact"},
+        ])
+        assert r["success"] is True
+        assert "fresh fact" in store.memory_entries
+        assert store._mutations_this_turn == before + 1
+
+    def test_over_budget_batch_is_rejected_before_mutation(self, store):
+        cap = store._MAX_MUTATIONS_PER_TURN
+        for i in range(cap):
+            store.add("memory", f"filler {i}")
+        r = store.apply_batch("memory", [{"action": "remove", "old_text": "filler 0"}])
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "budget" in r["error"]
+        assert "filler 0" in store.memory_entries  # nothing was removed
+
+
 class TestMemoryStorePersistence:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)

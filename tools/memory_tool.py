@@ -173,6 +173,19 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
+    # Per-turn budget on TOTAL memory mutation attempts (add / replace / remove
+    # / apply_batch calls — successful AND failed alike). This is independent
+    # of whether each individual write succeeds: _consolidation_failures only
+    # caps CONSECUTIVE failures, and a successful write resets it, so a model
+    # that keeps issuing DIFFERENT successful replace/remove calls could loop
+    # forever, rewriting or deleting unrelated facts until the user interrupts
+    # (issue #81120). This counter bounds the whole memory-maintenance effort
+    # per turn — generous enough for normal multi-write turns (a couple of
+    # single adds/replaces, or one atomic operations= batch) while stopping a
+    # pathological loop within a handful of calls. When it is hit, the model is
+    # told to stop mutating memory and reply to the user.
+    _MAX_MUTATIONS_PER_TURN = 8
+
     def __init__(
         self,
         memory_char_limit: int = 2200,
@@ -192,14 +205,21 @@ class MemoryStore:
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
+        # Per-turn counter of TOTAL mutation attempts (successes + failures);
+        # reset at each turn boundary by reset_consolidation_failures()
+        # (#81120). Independent of _consolidation_failures: a successful write
+        # does NOT reset this, so a loop of distinct successful writes is still
+        # bounded.
+        self._mutations_this_turn = 0
 
     def target_enabled(self, target: str) -> bool:
         """Return whether this session's selected built-in store is writable."""
         return self.user_profile_enabled if target == "user" else self.memory_enabled
 
     def reset_consolidation_failures(self) -> None:
-        """Reset the per-turn consolidation-failure counter (call at turn start)."""
+        """Reset the per-turn consolidation-failure and mutation counters (call at turn start)."""
         self._consolidation_failures = 0
+        self._mutations_this_turn = 0
 
     def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Count an at-capacity consolidation failure and degrade gracefully.
@@ -221,6 +241,32 @@ class MemoryStore:
                 "this turn. Stop retrying memory calls — leave memory unchanged for "
                 "now and continue with your reply to the user. The fact can be saved "
                 "in a later turn."
+            ),
+        }
+
+    def _mutation_budget_exceeded(self) -> Dict[str, Any]:
+        """Terminal response when the per-turn mutation budget is exhausted.
+
+        The budget counts EVERY mutation attempt (success and failure alike),
+        so a model that loops successful replace/remove calls with different
+        parameters can no longer bypass the guard by resetting the
+        consecutive-failure counter via _success_response (issue #81120).
+        Returning a TERMINAL result tells the model to stop issuing memory
+        calls and continue with its reply to the user.
+
+        The store keeps its last-known-good state: the budget is checked
+        BEFORE any mutation is applied, so the over-budget call changes
+        nothing — unrelated persistent entries are never touched.
+        """
+        return {
+            "success": False,
+            "done": True,
+            "error": (
+                f"Memory mutations reached the per-turn budget of "
+                f"{self._MAX_MUTATIONS_PER_TURN} attempts. Stop making memory "
+                "changes for now and continue with your reply to the user. "
+                "Unrelated memory entries were left untouched. New memory can "
+                "be saved in a later turn."
             ),
         }
 
@@ -413,6 +459,13 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        # Count every mutation attempt (success AND failure) against the
+        # per-turn budget; the budget is checked before any change, so an
+        # over-budget call mutates nothing (#81120).
+        self._mutations_this_turn += 1
+        if self._mutations_this_turn > self._MAX_MUTATIONS_PER_TURN:
+            return self._mutation_budget_exceeded()
+
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -472,6 +525,11 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        # Count every mutation attempt against the per-turn budget (#81120).
+        self._mutations_this_turn += 1
+        if self._mutations_this_turn > self._MAX_MUTATIONS_PER_TURN:
+            return self._mutation_budget_exceeded()
+
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -543,6 +601,11 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        # Count every mutation attempt against the per-turn budget (#81120).
+        self._mutations_this_turn += 1
+        if self._mutations_this_turn > self._MAX_MUTATIONS_PER_TURN:
+            return self._mutation_budget_exceeded()
+
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -596,6 +659,11 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
+        # Count every mutation attempt against the per-turn budget (#81120).
+        self._mutations_this_turn += 1
+        if self._mutations_this_turn > self._MAX_MUTATIONS_PER_TURN:
+            return self._mutation_budget_exceeded()
+
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 
@@ -725,8 +793,11 @@ class MemoryStore:
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         # A successful write means the consolidation loop made progress, so the
-        # per-turn failure budget resets (the cap counts consecutive failures,
-        # not lifetime ones within a turn) (#42405).
+        # per-turn CONSECUTIVE-failure budget resets (the cap counts consecutive
+        # failures, not lifetime ones within a turn) (#42405). The cumulative
+        # per-turn mutation budget (_mutations_this_turn) is NOT reset here — it
+        # bounds the whole maintenance effort regardless of success, so a loop
+        # of distinct successful writes still gets stopped (#81120).
         self._consolidation_failures = 0
         entries = self._entries_for(target)
         current = self._char_count(target)

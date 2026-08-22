@@ -12059,6 +12059,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
             self._remove_session_files(sessions_dir, session_id)
+            # Drop the per-session delegate budget entry so the module-level
+            # dict in tools.delegate_tool does not grow unbounded in long-
+            # running gateway processes. Lazy import + try/except keeps this
+            # layer decoupled from the tools layer.
+            try:
+                from tools.delegate_tool import cleanup_session_budget
+                for sid in [session_id, *removed_delegate_ids]:
+                    cleanup_session_budget(sid)
+            except Exception:
+                pass
         return bool(deleted)
 
     def delete_session_if_empty(
@@ -12187,6 +12197,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all deleted sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in [*removed_ids, *removed_delegate_ids]:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     def count_empty_sessions(self) -> int:
@@ -12280,6 +12297,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all deleted sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     @staticmethod
@@ -12670,6 +12694,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        # Drop per-session delegate budget entries for all pruned sessions.
+        try:
+            from tools.delegate_tool import cleanup_session_budget
+            for sid in removed_ids:
+                cleanup_session_budget(sid)
+        except Exception:
+            pass
         return count
 
     def purge_stale_tool_call_markers(

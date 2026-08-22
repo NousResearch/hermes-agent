@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   deleteSelectionInEditor,
+  handleNumberedListKey,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
@@ -344,6 +347,76 @@ describe('replaceBeforeCaret', () => {
 
     expect(replaceBeforeCaret(editor, 20, fragment)).toBe(false)
     expect(composerPlainText(editor)).toBe('hi')
+
+    editor.remove()
+  })
+})
+
+describe('handleNumberedListKey', () => {
+  const editorWithCaret = (text: string, caretOffset?: number) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    renderComposerContents(editor, text)
+    if (caretOffset === undefined) {
+      caretIn(editor)
+    } else {
+      placeCaretAtOffset(editor, caretOffset)
+    }
+
+    return editor
+  }
+
+  it('continues a numbered item and exits on a second blank marker', () => {
+    const editor = editorWithCaret('1. first')
+
+    expect(handleNumberedListKey(editor, 'Enter')).toBe(true)
+    expect(composerPlainText(editor)).toBe('1. first\n2. ')
+    expect(caretOffsetInEditor(editor)).toBe('1. first\n2. '.length)
+
+    expect(handleNumberedListKey(editor, 'Enter')).toBe(true)
+    expect(composerPlainText(editor)).toBe('1. first\n\n')
+    expect(caretOffsetInEditor(editor)).toBe('1. first\n\n'.length)
+
+    editor.remove()
+  })
+
+  it('clears a blank marker with Backspace', () => {
+    const editor = editorWithCaret('1. first\n2. ')
+
+    expect(handleNumberedListKey(editor, 'Backspace')).toBe(true)
+    expect(composerPlainText(editor)).toBe('1. first\n')
+    expect(caretOffsetInEditor(editor)).toBe('1. first\n'.length)
+
+    editor.remove()
+  })
+
+  it('keeps one paragraph gap when the blank marker precedes text', () => {
+    const editor = editorWithCaret('1. first\n2. \nnext', '1. first\n2. '.length)
+
+    expect(handleNumberedListKey(editor, 'Enter')).toBe(true)
+    expect(composerPlainText(editor)).toBe('1. first\n\nnext')
+    expect(caretOffsetInEditor(editor)).toBe('1. first\n\n'.length)
+
+    editor.remove()
+  })
+
+  it('converts a blank marker into an indented sub-bullet with Tab', () => {
+    const editor = editorWithCaret('1. first\n2. ')
+
+    expect(handleNumberedListKey(editor, 'Tab')).toBe(true)
+    expect(composerPlainText(editor)).toBe('1. first\n   - ')
+    expect(caretOffsetInEditor(editor)).toBe('1. first\n   - '.length)
+
+    editor.remove()
+  })
+
+  it('leaves non-terminal numbered lines alone', () => {
+    const editor = editorWithCaret('1. first')
+    placeCaretAtOffset(editor, 3)
+
+    expect(handleNumberedListKey(editor, 'Enter')).toBe(false)
+    expect(composerPlainText(editor)).toBe('1. first')
 
     editor.remove()
   })

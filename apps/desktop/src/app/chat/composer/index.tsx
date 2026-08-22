@@ -66,9 +66,11 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
+  handleNumberedListKey,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  type NumberedListKey
 } from './rich-editor'
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
@@ -746,6 +748,25 @@ export function ChatBar({
 
         return
       }
+    }
+
+    const plainKey = !event.metaKey && !event.ctrlKey && !event.altKey
+    const numberedListKey: NumberedListKey | null =
+      event.key === 'Enter' && event.shiftKey
+        ? 'Enter'
+        : !event.shiftKey && (event.key === 'Backspace' || event.key === 'Tab')
+          ? (event.key as NumberedListKey)
+          : null
+
+    if (
+      plainKey &&
+      numberedListKey &&
+      withUndoPoint(() => handleNumberedListKey(event.currentTarget, numberedListKey))
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in

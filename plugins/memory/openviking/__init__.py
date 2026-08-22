@@ -75,7 +75,17 @@ _OPENVIKING_ENV_KEYS = (
     "OPENVIKING_ACCOUNT",
     "OPENVIKING_USER",
     "OPENVIKING_AGENT",
+    "OPENVIKING_MEMORY_POLICY",
 )
+# Default memory policy: None means no explicit policy is sent, so the
+# OpenViking server uses its built-in default extraction (all 6 memory
+# types: profile, preferences, entities, events, cases, patterns). Set
+# ``memory.openviking.memory_policy`` in config.yaml (or the
+# ``OPENVIKING_MEMORY_POLICY`` env var) to a JSON object to restrict which
+# memory types are extracted, e.g.
+# {"self": {"enabled": true}, "peer": {"enabled": true},
+#  "memory_types": ["profile", "preferences", "entities"],
+#  "working_memory": {"enabled": true}}
 _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
@@ -1158,6 +1168,35 @@ def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict
     }
 
 
+def _resolve_memory_policy(provider_config: Optional[dict] = None) -> Optional[dict]:
+    """Resolve the server-side ``memory_policy`` for session creation.
+
+    Precedence: ``OPENVIKING_MEMORY_POLICY`` env var, then
+    ``memory.openviking.memory_policy`` in config.yaml. The value may be a
+    JSON object string or an inline dict (YAML). Returns ``None`` (default)
+    when unset, in which case no policy is sent and the OpenViking server
+    uses its built-in default extraction policy.
+    """
+    raw = _env_value("OPENVIKING_MEMORY_POLICY")
+    if raw is None:
+        provider_config = dict(provider_config or {})
+        raw = provider_config.get("memory_policy")
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid OPENVIKING_MEMORY_POLICY JSON, ignoring: %r", raw[:200]
+            )
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _env_writes_from_connection_values(values: dict) -> dict:
     writes = {}
     mapping = {
@@ -2230,6 +2269,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def __init__(self):
         self._client: Optional[_VikingClient] = None
+        self._memory_policy: Optional[dict] = None
         self._endpoint = ""
         self._api_key = ""
         self._account = ""
@@ -2344,6 +2384,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 ),
                 "default": "hermes",
                 "env_var": "OPENVIKING_AGENT",
+            },
+            {
+                "key": "memory_policy",
+                "description": (
+                    "Server-side memory_policy applied at session creation "
+                    "(JSON object). Restricts which memory types OpenViking "
+                    "extracts, e.g. "
+                    '{"memory_types": ["profile", "preferences", "entities"]}. '
+                    "Empty/omitted uses the server default (all 6 types)."
+                ),
+                "env_var": "OPENVIKING_MEMORY_POLICY",
             },
             {
                 "key": "recall_limit",
@@ -2740,6 +2791,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._account = settings["account"]
         self._user = settings["user"]
         self._agent = settings["agent"]
+        self._memory_policy = _resolve_memory_policy(_load_hermes_openviking_config())
         # Baseline established — subsequent accesses may refresh from env
         # (#21130). Set here (not at the end of initialize) so an exception in
         # the connection attempt below — swallowed by MemoryManager's guard —
@@ -2799,11 +2851,67 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = (
                 self._endpoint, self._api_key, self._account, self._user, self._agent,
             )
+            self._apply_memory_policy(self._session_id)
+            if not hasattr(self, '_policy_applied_sessions'):
+                self._policy_applied_sessions = set()
+            self._policy_applied_sessions.add(self._session_id)
             self._recover_pending_sessions()
 
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
+
+    # ------------------------------------------------------------------
+    # Memory policy: restrict server-side extraction to high-value types.
+    # Only profile, preferences, entities, patterns are kept.
+    # events and cases are disabled (they produce noisy short-term memories).
+    # See: openviking/session/memory_policy.py
+    #
+    # Configure via ``memory.openviking.memory_policy`` in config.yaml or the
+    # ``OPENVIKING_MEMORY_POLICY`` env var (JSON object). When unset (None),
+    # no policy is sent and the server uses its built-in default extraction
+    # (all 6 memory types).
+    # ------------------------------------------------------------------
+
+    def _apply_memory_policy(self, session_id: str) -> None:
+        """Create the session with a restricted memory_policy if configured.
+
+        OpenViking's memory_policy is set at session creation time and cannot
+        be changed at commit. Without a policy, the server uses the default
+        policy (all 6 categories: profile, preferences, entities, events,
+        cases, patterns), which over-extracts low-value memories from every
+        conversation. Configured policies typically keep 3-4 high-value types,
+        cutting off events (one-off actions) and cases (incident logs) that
+        pollute long-term memory.
+        """
+        policy = self._memory_policy
+        if not policy:
+            return
+        sid = str(session_id or "").strip()
+        if not sid or not self._client:
+            return
+        try:
+            self._client.post(
+                "/api/v1/sessions",
+                {
+                    "session_id": sid,
+                    "memory_policy": policy,
+                },
+            )
+            logger.info(
+                "OpenViking session %s created with memory_policy: %s",
+                sid,
+                policy.get("memory_types", policy),
+            )
+        except Exception as e:
+            # Session may already exist (e.g. on /resume). Try PUT to update
+            # the policy, or just log and continue - the server will use the
+            # existing session's policy.
+            logger.debug(
+                "OpenViking session create with memory_policy failed (%s); "
+                "session may already exist",
+                e,
+            )
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Return the active client, rebuilding it if the resolved config changed.
@@ -2907,6 +3015,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._client = client
             self._conn_snapshot = settings_key
             self._failed_refresh = None
+            # Apply memory_policy to the current session on (re)connection.
+            # This covers the case where initialize() ran before the server
+            # was reachable - the policy is applied as soon as the client
+            # connects.
+            sid = getattr(self, "_session_id", "")
+            if sid and sid not in self._policy_applied_sessions:
+                self._apply_memory_policy(sid)
+                self._policy_applied_sessions.add(sid)
             return self._client
         self._failed_refresh = (settings_key, time.monotonic())
         if health_state == "responded":
@@ -4510,6 +4626,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not self._ensure_client():
             return
 
+        # Ensure the session exists with our restricted memory_policy BEFORE
+        # sending any messages (which would auto-create the session without it).
+        effective_sid = str(session_id or self._session_id or "").strip()
+        if effective_sid and effective_sid not in getattr(self, "_policy_applied_sessions", set()):
+            self._apply_memory_policy(effective_sid)
+            self._policy_applied_sessions.add(effective_sid)
+
         user_content = _derive_openviking_user_text(user_content)
         if not user_content:
             return
@@ -4770,6 +4893,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Drain + commit the OLD session off the command thread.
         if old_session_id:
             self._finalize_session_async(old_session_id, old_turn_count, context="on switch")
+
+        # Apply memory_policy to the NEW session so extraction is restricted.
+        self._apply_memory_policy(new_id)
+        self._policy_applied_sessions.add(new_id)
 
         logger.debug(
             "OpenViking on_session_switch: old=%s new=%s parent=%s reset=%s",

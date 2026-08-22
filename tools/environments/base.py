@@ -501,6 +501,10 @@ class _ThreadedProcessHandle:
         return self._returncode
 
 
+# Supported adapter for SDK backends that execute through blocking client calls.
+ThreadedProcessHandle = _ThreadedProcessHandle
+
+
 # ---------------------------------------------------------------------------
 # CWD marker for remote backends
 # ---------------------------------------------------------------------------

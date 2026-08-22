@@ -1161,6 +1161,7 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    terminal_backends_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
     # True for a bundled platform plugin recorded as a deferred (not-yet-
@@ -1700,6 +1701,65 @@ class PluginContext:
             )
 
     # -- tool registration --------------------------------------------------
+
+    @_serialized_replacement
+    def register_terminal_backend(self, definition: Any) -> Optional[PluginRegistration]:
+        """Register one standalone terminal-backend implementation.
+
+        Hermes keeps backend selection and lifecycle ownership. The plugin
+        supplies only an immutable definition and an environment factory.
+        """
+        from tools.environments.registry import (
+            TerminalBackendDefinition,
+            terminal_backend_registry,
+        )
+
+        if not isinstance(definition, TerminalBackendDefinition):
+            logger.warning(
+                "Plugin '%s' tried to register a terminal backend that is not "
+                "a TerminalBackendDefinition. Ignoring.",
+                self.manifest.name,
+            )
+            return None
+
+        plugin_id = self.manifest.key or self.manifest.name
+        previous = terminal_backend_registry.get(definition.name)
+        previous_owner = terminal_backend_registry.owner(definition.name)
+        terminal_backend_registry.register(definition, owner=plugin_id)
+        hosted = terminal_backend_registry.get(definition.name)
+        self._manager._plugin_terminal_backend_names.setdefault(plugin_id, set()).add(
+            definition.name
+        )
+
+        def _restore(replacement: Any) -> bool:
+            current = terminal_backend_registry.get(definition.name)
+            if current is not hosted:
+                return False
+            terminal_backend_registry.unregister(definition.name, owner=plugin_id)
+            names = self._manager._plugin_terminal_backend_names.get(plugin_id)
+            if names is not None:
+                names.discard(definition.name)
+                if not names:
+                    self._manager._plugin_terminal_backend_names.pop(plugin_id, None)
+            if replacement is not None:
+                owner = previous_owner or plugin_id
+                terminal_backend_registry.register(replacement, owner=owner)
+            return True
+
+        handle = self._track_replacement(
+            "terminal_backend",
+            definition.name,
+            slot=("terminal_backend", definition.name),
+            current=hosted,
+            previous=previous,
+            restore=_restore,
+        )
+        logger.debug(
+            "Plugin %s registered terminal backend: %s",
+            plugin_id,
+            definition.name,
+        )
+        return handle
 
     @_serialized_replacement
     def register_tool(
@@ -3405,6 +3465,7 @@ class PluginManager:
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_terminal_backend_names: Dict[str, Set[str]] = {}
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -3680,6 +3741,7 @@ class PluginManager:
             # plugins can't leak parsers/send handlers into the next
             # discovery pass.
             from gateway.platform_registry import platform_registry
+            from tools.environments.registry import terminal_backend_registry
 
             for platform_name in tuple(self._plugin_platform_names):
                 platform_registry.unregister(platform_name)
@@ -3716,12 +3778,22 @@ class PluginManager:
                                 tool_name,
                                 exc,
                             )
+            ledger_backend_names = {
+                registration.key
+                for registration in registrations
+                if registration.kind == "terminal_backend"
+            }
+            for owner, names in list(self._plugin_terminal_backend_names.items()):
+                for name in tuple(names):
+                    if name not in ledger_backend_names:
+                        terminal_backend_registry.unregister(name, owner=owner)
             self._ownership_ledger.clear()
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
+            self._plugin_terminal_backend_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
@@ -3784,10 +3856,24 @@ class PluginManager:
                 # The ledger owns teardown.  Clearing manager-local containers by
                 # itself leaves process-global tools/platforms/providers installed.
                 self.unload()
+            from tools.environments.registry import terminal_backend_registry
+
+            if force:
+                # Terminal backends are process-global; another manager may have
+                # registered one that this instance's ledger cannot see.
+                terminal_backend_registry.unregister_plugin_backends()
+                self._plugin_terminal_backend_names.clear()
             if env_var_enabled("HERMES_SAFE_MODE"):
+                terminal_backend_registry.unregister_plugin_backends()
+                self._plugin_terminal_backend_names.clear()
                 logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
                 self._discovered = True
                 return
+            backend_snapshot = terminal_backend_registry.snapshot()
+            backend_tracking_snapshot = {
+                owner: set(names)
+                for owner, names in self._plugin_terminal_backend_names.items()
+            }
             # Set the flag up front as a re-entrancy guard (a plugin's register()
             # can transitively trigger discovery again), but reset it if the sweep
             # raises so a failed scan is NOT cached as "discovered with an empty
@@ -3809,6 +3895,8 @@ class PluginManager:
                     # tracking #64178 — salvaged from PR #64188).
                     self._re_register_shell_hooks_after_force()
             except BaseException:
+                terminal_backend_registry.restore(backend_snapshot)
+                self._plugin_terminal_backend_names = backend_tracking_snapshot
                 self._discovered = False
                 raise
 
@@ -4773,6 +4861,8 @@ class PluginManager:
             return
 
         from tools.registry import registry as _registry
+        from tools.environments.registry import terminal_backend_registry
+
         registration_start = len(self._registration_order)
         plugin_key = manifest.key or manifest.name
         _module_name = self._policy_module_name(manifest)
@@ -4861,6 +4951,9 @@ class PluginManager:
                     for registration in registrations
                     if registration.kind == "command"
                 ]
+                loaded.terminal_backends_registered = list(
+                    terminal_backend_registry.names_for_owner(plugin_key)
+                )
                 loaded.enabled = True
                 logger.debug(
                     "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",

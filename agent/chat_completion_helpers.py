@@ -709,8 +709,12 @@ def _codex_wait_notice_recovery(
 # stale kill, reset only when a call actually completes (or when the
 # provider is swapped — switch_model / try_activate_fallback /
 # restore_primary_runtime — since the streak measured the OLD provider).
-# Past the give-up threshold, calls abort immediately with an actionable
-# error instead of re-waiting out the stale timeout.
+# Past the give-up threshold, calls abort immediately instead of re-waiting
+# out the stale timeout. One half-open probe per cooldown lets a recovered
+# provider close the breaker without hammering one that remains unhealthy.
+
+_STALE_CIRCUIT_RECOVERY_COOLDOWN_S = 60.0
+_STALE_CIRCUIT_STATE_LOCK = threading.Lock()
 
 def _stale_streak(agent) -> int:
     try:
@@ -721,14 +725,21 @@ def _stale_streak(agent) -> int:
 
 def _bump_stale_streak(agent) -> None:
     try:
-        agent._consecutive_stale_streams = _stale_streak(agent) + 1
+        with _STALE_CIRCUIT_STATE_LOCK:
+            streak = _stale_streak(agent) + 1
+            agent._consecutive_stale_streams = streak
+            giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
+            if giveup > 0 and streak >= giveup:
+                agent._stale_circuit_opened_at = time.monotonic()
     except Exception:
         pass
 
 
 def _reset_stale_streak(agent) -> None:
     try:
-        agent._consecutive_stale_streams = 0
+        with _STALE_CIRCUIT_STATE_LOCK:
+            agent._consecutive_stale_streams = 0
+            agent._stale_circuit_opened_at = None
     except Exception:
         pass
 
@@ -807,16 +818,43 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
 
 
 def _check_stale_giveup(agent) -> None:
-    """Raise immediately when the consecutive-stale streak is past the
-    give-up threshold — no network attempt, no stale-timeout wait."""
+    """Fail fast while open, allowing one recovery probe per cooldown."""
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
-    _streak = _stale_streak(agent)
-    if _giveup > 0 and _streak >= _giveup:
+    if _giveup <= 0:
+        return
+    with _STALE_CIRCUIT_STATE_LOCK:
+        _streak = _stale_streak(agent)
+        if _streak < _giveup:
+            return
+        now = time.monotonic()
+        try:
+            opened_at = float(agent._stale_circuit_opened_at)
+        except (AttributeError, TypeError, ValueError):
+            opened_at = now
+            agent._stale_circuit_opened_at = now
+
+        elapsed = now - opened_at
+        if elapsed >= _STALE_CIRCUIT_RECOVERY_COOLDOWN_S:
+            # Claim this window before dispatch so concurrent calls cannot
+            # all become probes. A stale probe refreshes the timestamp in
+            # _bump_stale_streak; a successful one clears it in reset.
+            agent._stale_circuit_opened_at = now
+            logger.warning(
+                "Stale-call circuit breaker entering half-open state after "
+                "%.0fs; probing provider recovery.",
+                elapsed,
+            )
+            return
+
+        retry_after = max(
+            1,
+            math.ceil(_STALE_CIRCUIT_RECOVERY_COOLDOWN_S - elapsed),
+        )
         raise RuntimeError(
             "Provider has been unresponsive (no response received) for "
             f"{_streak} consecutive stale attempts — aborting this call to "
-            "avoid an indefinite stall. Switch models or start a new "
-            "session, then retry."
+            "avoid an indefinite stall. Switch models, start a new session, "
+            f"or retry after {retry_after}s for an automatic recovery probe."
         )
 
 

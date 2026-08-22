@@ -136,7 +136,7 @@ def hash_password(password: str) -> str:
     )
 
 
-def _verify_password(password: str, encoded: str) -> bool:
+def verify_password(password: str, encoded: str) -> bool:
     """Constant-time scrypt verify. False on any malformed hash string."""
     try:
         scheme, n_s, r_s, p_s, salt_b64, dk_b64 = encoded.split("$")
@@ -160,6 +160,11 @@ def _verify_password(password: str, encoded: str) -> bool:
     except (ValueError, MemoryError):
         return False
     return hmac.compare_digest(actual, expected)
+
+
+# Backward-compatible private alias for existing plugin tests and internal
+# callers. New callers should use the public helper above.
+_verify_password = verify_password
 
 
 # A fixed dummy hash used to spend ~equal time when the username is
@@ -253,7 +258,7 @@ class BasicAuthProvider(DashboardAuthProvider):
             username.encode("utf-8"), self._username.encode("utf-8")
         )
         target_hash = self._password_hash if username_ok else _DUMMY_HASH
-        password_ok = _verify_password(password, target_hash)
+        password_ok = verify_password(password, target_hash)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")
         return self._mint_session(self._username)

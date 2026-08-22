@@ -24715,8 +24715,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # init on the loop thread before the first read.
                 await self._warm_goals_session_db("loop wakeup")
 
+                # Run list_active_loops() in an executor to avoid blocking the event loop.
+                # list_active_loops() calls list_meta_prefix() which acquires self._lock,
+                # and that lock is also held by writers doing BEGIN IMMEDIATE and periodic
+                # FTS5-merge/WAL-checkpoint work. A slow write holding the lock while the
+                # watcher blocks the entire event loop on the same lock froze it for 90+
+                # seconds until the liveness watchdog force-exited. Moving this off the
+                # loop thread prevents the freeze.
+                loop = asyncio.get_event_loop()
+                active_loops = await loop.run_in_executor(None, list_active_loops)
+
                 now = time.time()
-                for sid, state in list_active_loops():
+                for sid, state in active_loops:
                     if state.awaiting_response or now < state.next_due_at:
                         continue
                     route = state.route or {}

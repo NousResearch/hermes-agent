@@ -301,6 +301,22 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "fix the flaky auth test in login"
         assert db.get_session_title_source("sess-1") == "derived"
 
+    def test_attachment_reference_line_does_not_become_instant_title(self, tmp_path):
+        """Desktop attachment metadata must yield to the user's instruction."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="desktop")
+
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(
+                db,
+                "sess-1",
+                "@file:`C:\\Users\\alice\\AppData\\Local\\hermes\\attachments\\report.pdf`\n\nsummarize the quarterly results",
+                [],
+            )
+
+        assert db.get_session_title("sess-1") == "summarize the quarterly results"
+        assert db.get_session_title_source("sess-1") == "derived"
+
     def test_skips_machine_authored_opening_messages(self, tmp_path):
         """A compaction handoff is not a user request and must not title."""
         db = SessionDB(tmp_path / "state.db")

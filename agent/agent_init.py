@@ -2915,6 +2915,10 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    # Per-delegation usage ledger (see reset_session_state in run_agent.py):
+    # appended by tools/delegate_tool._finalize_child_results, surfaced via
+    # the `delegations` block in turn results and `hermes -z --usage-file`.
+    agent.session_delegation_usage = []
     
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.

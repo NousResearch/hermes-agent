@@ -13584,6 +13584,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
 
+        # ── Per-delegation usage (delegate_task children this session) ──
+        _delegations = getattr(agent, "session_delegation_usage", None) or []
+        if _delegations:
+            print(f"  {'─' * 40}")
+            print(f"  Delegations:      {len(_delegations)}")
+            for d in _delegations[-10:]:
+                _goal = (d.get("goal") or "").strip().replace("\n", " ")
+                if len(_goal) > 44:
+                    _goal = _goal[:41] + "..."
+                _in = d.get("input_tokens", 0) or 0
+                _out = d.get("output_tokens", 0) or 0
+                _cost = d.get("cost_usd", 0.0) or 0.0
+                _cost_str = f" ${_cost:.4f}" if _cost else ""
+                print(
+                    f"    • {_goal or '(no goal)'} — "
+                    f"{_in:,} in / {_out:,} out{_cost_str}"
+                )
+            if len(_delegations) > 10:
+                print(f"    … and {len(_delegations) - 10} earlier")
+
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.
         provider = getattr(agent, "provider", None) or getattr(self, "provider", None)

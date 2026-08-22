@@ -190,6 +190,12 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             # a config-matching bug silently dropped flex -> 2.3x billing).
             "service_tier": result.get("service_tier"),
         }
+        # Per-delegation usage attribution (one entry per delegate_task
+        # child: model, tokens, api_calls, cost).  Present only when the run
+        # actually delegated — mirrors the turn result's `delegations` block.
+        # Inspired by Copilot CLI 1.0.81 per-agent usage metrics.
+        if result.get("delegations"):
+            report["delegations"] = result["delegations"]
         if failure is not None:
             report["failure"] = failure
         out = Path(path).expanduser()

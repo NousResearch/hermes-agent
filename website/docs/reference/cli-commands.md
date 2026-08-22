@@ -174,7 +174,7 @@ Same agent, same tools, same skills — just strips every interactive / cosmetic
 
 #### `--usage-file` — JSON usage report for pipelines
 
-`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, and `completed` / `failed` flags. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
+`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, and `completed` / `failed` flags. When the run used `delegate_task`, the report also carries a `delegations` array — one entry per subagent with its `goal`, `role`, `model`, `status`, `api_calls`, `input_tokens` / `output_tokens`, `cost_usd`, and `duration_seconds` — so pipelines can attribute spend per subagent instead of only seeing the parent-session rollup. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
 
 ```bash
 hermes -z "summarize this repo" --usage-file /tmp/usage.json

@@ -3445,6 +3445,48 @@ def _finalize_child_results(
                     children_cost_total += float(child_cost)
             except (TypeError, ValueError):
                 pass
+            # Per-delegation usage ledger for the parent session.  Surfaced
+            # via the turn result's `delegations` block and `hermes -z
+            # --usage-file` so pipelines can attribute spend per subagent
+            # (inspired by Copilot CLI 1.0.81 per-agent usage metrics in
+            # --usage-output-file).  Best-effort: never let accounting break
+            # the delegation result itself.
+            try:
+                if parent_agent is not None:
+                    ledger = getattr(
+                        parent_agent, "session_delegation_usage", None
+                    )
+                    if ledger is None:
+                        ledger = []
+                        parent_agent.session_delegation_usage = ledger
+                    _tokens = entry.get("tokens") or {}
+                    task_index = entry.get("task_index", -1)
+                    goal = ""
+                    if (
+                        isinstance(task_index, int)
+                        and 0 <= task_index < len(task_list)
+                    ):
+                        goal = str(task_list[task_index].get("goal", "") or "")
+                    ledger.append(
+                        {
+                            "task_index": task_index,
+                            "goal": goal[:200],
+                            "role": child_role,
+                            "model": entry.get("model"),
+                            "status": entry.get("status"),
+                            "api_calls": entry.get("api_calls", 0),
+                            "input_tokens": _tokens.get("input", 0),
+                            "output_tokens": _tokens.get("output", 0),
+                            "cost_usd": entry.get("cost_usd", 0.0),
+                            "cost_status": entry.get("cost_status", "unknown"),
+                            "duration_seconds": entry.get("duration_seconds"),
+                            "child_session_id": getattr(
+                                child_by_index.get(task_index), "session_id", None
+                            ),
+                        }
+                    )
+            except Exception:
+                logger.debug("delegation usage ledger append failed", exc_info=True)
             if invoke_hook is None:
                 continue
             try:

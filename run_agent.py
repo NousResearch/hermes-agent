@@ -788,6 +788,14 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        # Per-delegation usage ledger: one entry per completed delegate_task
+        # child (model, tokens, api_calls, cost) appended by
+        # tools/delegate_tool._finalize_child_results.  Powers the
+        # `delegations` block in turn results and `hermes -z --usage-file`
+        # so pipelines can attribute spend per subagent, not just the
+        # parent-session rollup.  Inspired by Copilot CLI 1.0.81's
+        # per-agent usage metrics in --usage-output-file.
+        self.session_delegation_usage: list = []
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0

@@ -726,6 +726,13 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    # Per-delegation usage attribution (delegate_task children this session).
+    # Only present when at least one delegation completed — keeps legacy
+    # result shapes byte-identical for delegation-free runs.  Consumed by
+    # `hermes -z --usage-file` and available to any run_conversation caller.
+    _delegation_usage = getattr(agent, "session_delegation_usage", None)
+    if _delegation_usage:
+        result["delegations"] = list(_delegation_usage)
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True + an explanation in

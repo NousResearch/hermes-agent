@@ -285,6 +285,27 @@ RUN cd web && npm run build && \
 # write so the build steps below don't need chmod u+w dances.
 COPY --link --chmod=a+rX,go-w . .
 
+# Build the CJK FTS5 tokenizer into the immutable application tree.  Keep the
+# artifact outside HERMES_HOME so the /opt/data runtime volume cannot mask it.
+# Compiling here (rather than copying a host binary) makes each buildx target
+# produce an extension for its own architecture.
+RUN install -d -m 0755 /opt/hermes/lib && \
+    gcc -shared -fPIC -O2 -Wall -Wextra \
+        -Inative/fts5_cjk/vendor \
+        native/fts5_cjk/fts5_cjk.c \
+        -o /opt/hermes/lib/libfts5_cjk.so && \
+    chmod 0644 /opt/hermes/lib/libfts5_cjk.so && \
+    /opt/hermes/.venv/bin/python -c "import sqlite3, sys; \
+path = '/opt/hermes/lib/libfts5_cjk.so'; \
+db = sqlite3.connect(':memory:'); \
+db.enable_load_extension(True); \
+db.load_extension(path); \
+db.enable_load_extension(False); \
+db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='cjk_unicode61')\"); \
+db.execute(\"INSERT INTO docs VALUES ('웅기가 말했다')\"); \
+sys.exit('CJK FTS5 tokenizer self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH '웅기'\").fetchone()[0] != 1 else None; \
+db.close()"
+
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
@@ -376,6 +397,7 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # check. (A separate launcher hardening is tracked independently.)
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
+ENV HERMES_FTS5_CJK_SO=/opt/hermes/lib/libfts5_cjk.so
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # The published image seals /opt/hermes (root-owned, read-only) so a runtime

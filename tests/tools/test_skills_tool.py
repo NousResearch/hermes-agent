@@ -221,13 +221,20 @@ class TestFindAllSkills:
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):
         no_desc = tmp_path / "no-desc"
         no_desc.mkdir()
+        # The directory name is the canonical skill identifier (#81839); no
+        # frontmatter `name:` is needed (and none is provided here), so the
+        # walker falls back to the directory name verbatim.
         (no_desc / "SKILL.md").write_text(
-            "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n"
+            "---\n---\n\n# Heading\n\nFirst paragraph.\n"
         )
         long_dir = tmp_path / "long-desc"
         long_dir.mkdir()
+        # When the frontmatter `name:` is set, it MUST match the directory
+        # name — the directory is the on-disk source of truth that disable
+        # lists, file paths, and shell completion all index by. A
+        # mismatch would silently bypass disable checks (#81839).
         (long_dir / "SKILL.md").write_text(
-            f"---\nname: long\ndescription: {'x' * (MAX_DESCRIPTION_LENGTH + 100)}\n---\n\nBody.\n"
+            f"---\nname: long-desc\ndescription: {'x' * (MAX_DESCRIPTION_LENGTH + 100)}\n---\n\nBody.\n"
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -235,7 +242,7 @@ class TestFindAllSkills:
 
         # If no description in frontmatter, the first non-header line is used.
         assert skills["no-desc"]["description"] == "First paragraph."
-        assert len(skills["long"]["description"]) <= MAX_DESCRIPTION_LENGTH
+        assert len(skills["long-desc"]["description"]) <= MAX_DESCRIPTION_LENGTH
 
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
@@ -302,7 +309,7 @@ class TestSkillsList:
 
 
 class TestSkillView:
-    def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
+    def test_view_resolves_by_dir_name_only_not_frontmatter_name(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
@@ -310,8 +317,11 @@ class TestSkillView:
                 frontmatter_extra="metadata:\n  hermes:\n    tags: [fine-tuning, llm]\n",
             )
             # The on-disk directory ("alias-dir") differs from the skill's
-            # frontmatter name ("real-skill-name"). skills_list() exposes the
-            # frontmatter name, so skill_view(name) must resolve it too.
+            # frontmatter name ("real-skill-name"). The directory name is the
+            # canonical identifier (#81839): the listing and the web API
+            # (`_find_skill`) only index by it, so skill_view must resolve
+            # the directory name and reject the frontmatter name — accepting
+            # it here would resolve names the web API 404s on.
             alias_dir = tmp_path / "alias-dir"
             alias_dir.mkdir(parents=True, exist_ok=True)
             (alias_dir / "SKILL.md").write_text(
@@ -323,7 +333,8 @@ class TestSkillView:
                 "Step 1: Do the thing.\n"
             )
             by_dir = json.loads(skill_view("my-skill"))
-            by_name = json.loads(skill_view("real-skill-name"))
+            by_alias = json.loads(skill_view("alias-dir"))
+            by_frontmatter = json.loads(skill_view("real-skill-name"))
 
         assert by_dir["success"] is True
         assert by_dir["name"] == "my-skill"
@@ -331,8 +342,12 @@ class TestSkillView:
         assert "fine-tuning" in by_dir["tags"]
         assert "llm" in by_dir["tags"]
 
-        assert by_name["success"] is True
-        assert "Step 1" in by_name["content"]
+        assert by_alias["success"] is True
+        assert by_alias["name"] == "real-skill-name"
+        assert "Step 1" in by_alias["content"]
+
+        assert by_frontmatter["success"] is False
+        assert by_frontmatter["error"] == "Skill 'real-skill-name' not found."
 
     def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
         from tools.skills_tool import _skill_view_with_bump
@@ -393,6 +408,37 @@ class TestSkillView:
             _make_skill(tmp_path, "active-skill")
             allowed = json.loads(skill_view("active-skill"))
         assert allowed["success"] is True
+
+    def test_disabled_check_uses_directory_name_not_frontmatter_name(self, tmp_path):
+        # #81839: the disabled set keys on the directory name, so the disable
+        # gate in skill_view must check the directory name too. A skill whose
+        # frontmatter ``name:`` differs from its directory name must still be
+        # blocked when the *directory* name is disabled — resolving the
+        # frontmatter name here would let it slip past the gate.
+        alias_dir = tmp_path / "alias-dir"
+        alias_dir.mkdir(parents=True, exist_ok=True)
+        (alias_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: real-skill-name\n"
+            "description: A skill whose directory name differs from its name.\n"
+            "---\n\n"
+            "# real-skill-name\n\n"
+            "Step 1: Do the thing.\n"
+        )
+        disabled_names = {"alias-dir"}
+
+        def _fake_disabled(name, platform=None):
+            return name in disabled_names
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._is_skill_disabled", side_effect=_fake_disabled),
+        ):
+            blocked = json.loads(skill_view("alias-dir"))
+        assert blocked["success"] is False
+        assert "disabled" in blocked["error"].lower()
+        # The error names the directory, not the frontmatter name.
+        assert "alias-dir" in blocked["error"]
 
     def test_view_finds_skill_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"

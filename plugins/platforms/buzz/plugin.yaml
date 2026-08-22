@@ -49,6 +49,10 @@ optional_env:
     description: "Seconds between inbound poll sweeps (default: 4)"
     prompt: "Poll interval seconds"
     password: false
+  - name: BUZZ_THREAD_SESSIONS
+    description: "Isolate group reply chains into concurrent Hermes sessions (true by default)"
+    prompt: "Enable reply-chain sessions? (true/false)"
+    password: false
   - name: BUZZ_CLI_PATH
     description: "Path to the buzz CLI binary (default: 'buzz' on PATH, then ~/bin/buzz)"
     prompt: "buzz CLI path (or empty)"

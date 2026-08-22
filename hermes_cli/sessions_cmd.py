@@ -327,25 +327,24 @@ def cmd_sessions(args, sessions_parser=None):
     _exclude = None if _source else ["tool"]
 
     if action == "list":
+        from hermes_cli.session_filters import build_prune_filters
         from hermes_state import workspace_key as _ws_key
 
-        sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
-        )
-
-        # Workspace filter: match a session by its workspace key (git repo
-        # root, else cwd) — path substring or exact basename.
         _ws_filter = (getattr(args, "workspace", None) or "").strip()
-        if _ws_filter:
-            _needle = _ws_filter.lower()
+        try:
+            _time_filters = build_prune_filters(args)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 2
 
-            def _in_workspace(s):
-                key = (_ws_key(s) or "").lower()
-                return bool(key) and (
-                    _needle in key or _needle == os.path.basename(key.rstrip("/\\"))
-                )
-
-            sessions = [s for s in sessions if _in_workspace(s)]
+        sessions = db.list_sessions_rich(
+            source=args.source,
+            exclude_sources=_exclude,
+            limit=args.limit,
+            started_after=_time_filters["started_after"],
+            started_before=_time_filters["started_before"],
+            workspace_query=_ws_filter or None,
+        )
 
         if not sessions:
             print("No sessions found.")

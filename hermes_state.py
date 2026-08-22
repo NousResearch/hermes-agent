@@ -9276,6 +9276,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        started_after: float = None,
+        started_before: float = None,
+        workspace_query: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -9330,6 +9333,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
+
+        ``started_after`` is an inclusive lower bound on the surfaced logical
+        session's original start time; ``started_before`` is an exclusive upper
+        bound. Both filters are applied before LIMIT/OFFSET.
+
+        ``workspace_query`` case-insensitively matches a substring of the
+        session's workspace key (git repository root, falling back to cwd).
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -9371,6 +9381,75 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)
             params.extend(clause_params)
+        if started_after is not None:
+            where_clauses.append("s.started_at >= ?")
+            params.append(started_after)
+        if started_before is not None:
+            where_clauses.append("s.started_at < ?")
+            params.append(started_before)
+        workspace_needle = (workspace_query or "").strip().lower()
+        if workspace_needle:
+            workspace_needle = _escape_like(workspace_needle)
+            workspace_value_sql = (
+                "COALESCE(NULLIF(TRIM(s.git_repo_root), ''), "
+                "NULLIF(TRIM(s.cwd), ''))"
+            )
+            if project_compression_tips and not include_children:
+                # Match the same logical row that compression projection below
+                # surfaces. The recursive walk mirrors get_compression_tip(): at
+                # each level it selects one canonical continuation, rather than
+                # admitting any sibling in the compression subtree.
+                workspace_value_sql = f"""
+                    (
+                        WITH RECURSIVE selected_tip(cur_id, depth, path) AS (
+                            SELECT s.id, 0, ',' || s.id || ','
+                            UNION ALL
+                            SELECT child.id, tip.depth + 1,
+                                   tip.path || child.id || ','
+                            FROM selected_tip tip
+                            JOIN sessions parent ON parent.id = tip.cur_id
+                            JOIN sessions child ON child.id = (
+                                SELECT candidate.id
+                                FROM sessions candidate
+                                WHERE candidate.parent_session_id = parent.id
+                                  AND parent.end_reason = 'compression'
+                                  AND json_extract(
+                                      COALESCE(candidate.model_config, '{{}}'),
+                                      '$._branched_from'
+                                  ) IS NULL
+                                  AND json_extract(
+                                      COALESCE(candidate.model_config, '{{}}'),
+                                      '$._delegate_from'
+                                  ) IS NULL
+                                  AND COALESCE(candidate.source, '') != 'tool'
+                                ORDER BY
+                                  CASE
+                                    WHEN candidate.end_reason = 'compression' THEN 0
+                                    WHEN candidate.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                  END,
+                                  {_sql_session_last_active("candidate")} DESC,
+                                  candidate.started_at DESC,
+                                  candidate.id DESC
+                                LIMIT 1
+                            )
+                            WHERE tip.depth < 100
+                              AND INSTR(tip.path, ',' || child.id || ',') = 0
+                        )
+                        SELECT COALESCE(
+                                   NULLIF(TRIM(logical_tip.git_repo_root), ''),
+                                   NULLIF(TRIM(logical_tip.cwd), '')
+                               )
+                        FROM selected_tip
+                        JOIN sessions logical_tip ON logical_tip.id = selected_tip.cur_id
+                        ORDER BY selected_tip.depth DESC
+                        LIMIT 1
+                    )
+                """
+            where_clauses.append(
+                f"LOWER({workspace_value_sql}) LIKE ? ESCAPE '\\'"
+            )
+            params.append(f"%{workspace_needle}%")
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)

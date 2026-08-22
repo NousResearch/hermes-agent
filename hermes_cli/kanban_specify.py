@@ -6,7 +6,7 @@ the auxiliary LLM to produce:
 
   * A tightened title (optional — only replaces if the model proposes a
     materially different one)
-  * A concrete body: goal, proposed approach, acceptance criteria
+  * A concrete body: outcome, verification, constraints, stop/ask conditions
 
 and then flips the task ``triage -> todo`` via
 ``kanban_db.specify_triage_task``. The dispatcher promotes it to
@@ -65,11 +65,11 @@ Output a single JSON object with exactly two keys:
 The body MUST include these sections, each prefixed with a bold markdown
 heading, in this order:
 
-  **Goal** — one sentence, user-facing outcome.
-  **Approach** — 2-5 bullets on how a worker should tackle it.
-  **Acceptance criteria** — checklist of concrete, verifiable conditions.
-  **Out of scope** — short list of things NOT to touch (omit if nothing
-      obvious; never invent scope creep).
+  **Outcome** — the observable result the worker must produce.
+  **Verification** — concrete checks or evidence that prove completion.
+  **Constraints** — scope and side-effect limits; write "None" if absent.
+  **Stop/ask** — conditions requiring human or parent input; write "None"
+      if absent.
 
 Rules:
   - Keep the tightened title close in meaning to the original idea — do

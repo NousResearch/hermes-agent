@@ -3566,7 +3566,7 @@
 
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
     // idea in the Triage column into a concrete spec (title + body with
-    // goal, approach, acceptance criteria) and promotes it to todo.
+    // outcome, verification, constraints, stop/ask) and promotes it to todo.
     // Not a PATCH: runs through a dedicated POST endpoint because the
     // LLM call can take tens of seconds, and its outcome is richer than
     // a status flip (may update title AND body AND emit an audit

@@ -1508,8 +1508,20 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
+    from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+    primary_runtime = agent._primary_runtime or {}
+    primary_provider = (primary_runtime.get("provider") or "").strip().lower()
+    primary_key = primary_runtime.get("api_key")
+    manager = get_cooldown_manager()
+    if (
+        getattr(agent, "_rate_limited_until", 0) > time.monotonic()
+        or manager.is_cooling(primary_provider)
+        or manager.is_cooling(
+            build_cooldown_key(primary_provider, primary_key, "rate_limit")
+        )
+    ):
+        return False  # primary still on cooldown, stay on fallback
 
     # ── Reset-aware gate ──
     # The 60s ``_rate_limited_until`` cooldown covers transient rate limits,
@@ -1750,7 +1762,6 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0  # reset exponential backoff counter
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves

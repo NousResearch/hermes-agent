@@ -2444,24 +2444,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            # Exponential backoff: keep upstream's 60s first-hit cooldown and
-            # escalate on CONSECUTIVE rate-limits: 60s → 2m → 4m → 8m → ... →
-            # 4h cap. The first 429 must NOT bench the primary for half an
-            # hour — fast primary restore is the common case; escalation only
-            # punishes providers that keep 429ing.
-            # Counter is reset by restore_primary_runtime on successful restore.
-            backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-            agent._rate_limit_backoff_count = backoff_count + 1
-            backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-            agent._rate_limited_until = time.monotonic() + backoff_seconds
-            logging.info(
-                "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)",
-                backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1,
+            from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+            active_key = getattr(agent, "api_key", None)
+            if active_key is None:
+                active_key = getattr(agent, "_api_key", None)
+            reason_text = reason.value if hasattr(reason, "value") else str(reason)
+            cooldown_key = build_cooldown_key(current_provider, active_key, reason_text)
+            cooldown_seconds = get_cooldown_manager().mark_failure(
+                cooldown_key,
+                "billing" if reason == FailoverReason.billing else "rate_limit",
             )
+            # Retain the process-local timestamp for legacy callers/tests;
+            # restore decisions use the durable manager above.
+            agent._rate_limited_until = time.monotonic() + cooldown_seconds
     if agent._fallback_index >= len(agent._fallback_chain):
-        # Chain exhausted.  If we actually walked a non-empty chain and the
-        # failure was NOT a rate-limit/billing event (those already armed
-        # their own 60s cooldown above), arm a short cooldown so the next
+        # If a non-rate-limit chain exhausts, arm a short cooldown so the next
         # turn's restore_primary_runtime stays gated instead of resetting
         # _fallback_index=0 and re-marshaling the whole context across every
         # provider again.  Guards the cross-turn replay storm in #24996.
@@ -2469,11 +2467,24 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             len(agent._fallback_chain) > 0
             and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
-            _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
-            agent._rate_limited_until = max(
-                _existing_cooldown,
-                time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
-            )
+            from agent.cooldown_manager import build_cooldown_key, get_cooldown_manager
+
+            primary_runtime = agent._primary_runtime or {}
+            # The live key belongs to the final fallback by now, and the
+            # primary snapshot may itself be stale after pool rotation.
+            primary_provider = (primary_runtime.get("provider") or "").strip().lower()
+            # Exhaustion is independent of any one credential. A credential
+            # pool can rotate between this failure and next-turn restoration,
+            # so a provider gate remains durable while a snapshot fingerprint
+            # can become stale.
+            cooldown_key = build_cooldown_key(primary_provider, None, "rate_limit")
+            manager = get_cooldown_manager()
+            if not manager.is_cooling(cooldown_key):
+                manager.mark_failure(
+                    cooldown_key,
+                    "rate_limit",
+                    cooldown_seconds=_FALLBACK_EXHAUSTED_COOLDOWN_S,
+                )
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1

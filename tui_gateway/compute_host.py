@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from agent.interrupt_compat import request_hard_interrupt
+from tui_gateway.prompt_dispatch_hooks import normalize_required_prompt_handler
 
 
 def now_ns() -> int:
@@ -531,9 +532,13 @@ class ComputeHost:
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
+        required_prompt_handler = normalize_required_prompt_handler(
+            frame.get("required_prompt_handler")
+        )
         session = server._sessions.get(sid)
         if session is not None:
             session["transport"] = self._transport
+            session["required_prompt_handler"] = required_prompt_handler
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
             if frame.get("cwd"):
@@ -604,6 +609,7 @@ class ComputeHost:
                     cwd=str(frame.get("cwd") or "") or None,
                     session_db=session_db,
                     source=frame.get("source"),
+                    required_prompt_handler=required_prompt_handler,
                 )
             finally:
                 reset_transport(token)
@@ -632,10 +638,12 @@ class ComputeHost:
                 "tool_started_at": {},
                 "model_override": frame.get("model_override"),
                 "source": server._sanitize_client_source(frame.get("source")),
+                "required_prompt_handler": required_prompt_handler,
                 "transport": self._transport,
             }
         session = server._sessions[sid]
         session["transport"] = self._transport
+        session["required_prompt_handler"] = required_prompt_handler
         session["profile_home"] = profile_home or session.get("profile_home")
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])

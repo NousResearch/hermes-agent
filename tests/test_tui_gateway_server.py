@@ -325,6 +325,17 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         server._sessions.pop("iso-sid", None)
 
 
+def test_compute_host_turn_frame_carries_normalized_required_handler():
+    session = _session(
+        required_prompt_handler="hoppe_ocr_approval",
+        attached_images=["/tmp/protected.png"],
+    )
+
+    frame = server._compute_host_turn_frame("rid", "sid", session, "inspect")
+
+    assert frame["required_prompt_handler"] == "hoppe_ocr_approval"
+
+
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
     class _Supervisor:
         def submit_turn(self, _frame, *, on_complete=None):

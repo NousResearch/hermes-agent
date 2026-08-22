@@ -1,10 +1,12 @@
 import io
 import json
+import multiprocessing
 import os
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,133 @@ from tui_gateway.host_supervisor import (
     HostSupervisor,
     append_log_record,
 )
+
+
+def _isolated_ocr_probe(frame: dict, result_queue) -> None:
+    """Run the real prompt worker in a clean spawned child process."""
+    from tui_gateway import server as child_server
+    from tui_gateway.compute_host import ComputeHost as ChildComputeHost
+
+    agent_runs = []
+    persisted = []
+    events = []
+
+    class _DB:
+        def append_messages_batch(self, session_id, messages, **_kwargs):
+            persisted.append((session_id, list(messages)))
+            return len(messages)
+
+    class _Agent:
+        session_id = "stored-ios"
+        _session_db = _DB()
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, *_args, **_kwargs):
+            agent_runs.append(True)
+            return {"final_response": "agent-ran", "messages": []}
+
+    fake_server = SimpleNamespace(
+        _sessions={},
+        _make_agent=lambda *_args, **_kwargs: _Agent(),
+        _transfer_db_to_agent=lambda *_args: False,
+        _load_show_reasoning=lambda: False,
+        _load_tool_progress_mode=lambda: "all",
+        _sanitize_client_source=lambda value: value,
+    )
+
+    def _init_session(sid, key, agent, history, **kwargs):
+        fake_server._sessions[sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": list(history),
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "inflight_turn": None,
+            "running": True,
+            "attached_images": [],
+            "image_counter": 0,
+            "cwd": frame.get("cwd") or os.getcwd(),
+            "cols": 80,
+            "slash_worker": None,
+            "show_reasoning": False,
+            "tool_progress_mode": "all",
+            "source": frame.get("source") or "ios",
+            "transport": None,
+            "required_prompt_handler": kwargs.get("required_prompt_handler"),
+        }
+
+    fake_server._init_session = _init_session
+    host = ChildComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    try:
+        child_session = host._ensure_server_session(fake_server, frame)
+        child_server._sessions = {frame["sid"]: child_session}
+        child_server._emit = (
+            lambda name, sid, payload=None: events.append((name, sid, payload))
+        )
+        child_server._wire_callbacks = lambda _sid: None
+        child_server._apply_pending_model_switch = lambda *_args: None
+        child_server._sync_agent_model_with_config = lambda *_args: None
+        child_server._sync_bot_capabilities = lambda *_args: None
+        child_server._session_cwd = lambda _session: frame.get("cwd") or os.getcwd()
+        child_server._register_session_cwd = lambda _session: None
+        child_server._emit_settled_session_info = lambda *_args: None
+        child_server.record_turn_start = lambda *_args, **_kwargs: None
+        child_server._retire_turn_marker = lambda *_args: None
+        child_server.render_message = lambda *_args: None
+
+        child_server._run_prompt_submit(
+            frame["request_id"],
+            frame["sid"],
+            child_session,
+            frame["text"],
+            image_paths=list(frame.get("attached_images") or []),
+        )
+        child_session["_run_thread"].join(timeout=5)
+
+        cleared = host._ensure_server_session(
+            fake_server, {**frame, "required_prompt_handler": None}
+        )
+        clear_decision = child_server.invoke_pre_prompt_dispatch(
+            session_id=frame["sid"],
+            session_key=frame["session_key"],
+            source=frame["source"],
+            text="cleared",
+            attached_images=frame["attached_images"],
+            required_prompt_handler=cleared.get("required_prompt_handler"),
+        )
+        if clear_decision.action == "allow":
+            cleared["agent"].run_conversation("cleared")
+        cleared_handler = cleared.get("required_prompt_handler")
+
+        reasserted = host._ensure_server_session(fake_server, frame)
+        reassert_decision = child_server.invoke_pre_prompt_dispatch(
+            session_id=frame["sid"],
+            session_key=frame["session_key"],
+            source=frame["source"],
+            text="reasserted",
+            attached_images=frame["attached_images"],
+            required_prompt_handler=reasserted.get("required_prompt_handler"),
+        )
+        if reassert_decision.action == "allow":
+            reasserted["agent"].run_conversation("reasserted")
+
+        result_queue.put(
+            {
+                "initial_handler": frame.get("required_prompt_handler"),
+                "cleared_handler": cleared_handler,
+                "reasserted_handler": reasserted.get("required_prompt_handler"),
+                "clear_action": clear_decision.action,
+                "reassert_action": reassert_decision.action,
+                "agent_runs": len(agent_runs),
+                "history": child_session.get("history"),
+                "persisted": persisted,
+                "event_types": [event[0] for event in events],
+            }
+        )
+    finally:
+        host.close()
 
 
 def _json_lines(out: io.StringIO) -> list[dict]:
@@ -155,6 +284,123 @@ def _record_finalize(monkeypatch, events: list[str], *sids: str) -> None:
 def _register_turn(host: ComputeHost, fn, sid: str = "s1") -> None:
     """Submit a turn exactly the way ``_handle_turn_start`` does."""
     host._track_turn_future(host._executor.submit(fn), sid)
+
+
+def test_compute_host_refreshes_and_clears_handler_on_existing_child_session():
+    child_session = {
+        "required_prompt_handler": None,
+        "history_lock": threading.Lock(),
+    }
+    fake_server = SimpleNamespace(_sessions={"ios-ui": child_session})
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    try:
+        first = host._ensure_server_session(
+            fake_server,
+            {
+                "sid": "ios-ui",
+                "required_prompt_handler": "hoppe_ocr_approval",
+            },
+        )
+        assert first["required_prompt_handler"] == "hoppe_ocr_approval"
+
+        second = host._ensure_server_session(
+            fake_server,
+            {"sid": "ios-ui", "required_prompt_handler": None},
+        )
+        assert second["required_prompt_handler"] is None
+    finally:
+        host.close()
+
+
+def test_isolated_required_image_is_blocked_before_agent_execution(tmp_path):
+    """The serialized turn must retain fail-closed OCR policy in the child."""
+    image_path = tmp_path / "protected.png"
+    image_path.write_bytes(b"image")
+    parent_session = {
+        "session_key": "stored-ios",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "attached_images": [str(image_path)],
+        "cols": 80,
+        "cwd": str(tmp_path),
+        "source": "ios",
+        "required_prompt_handler": "hoppe_ocr_approval",
+    }
+    frame = server._compute_host_turn_frame(
+        "isolated-image", "ios-ui", parent_session, "Bitte prüfen"
+    )
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(target=_isolated_ocr_probe, args=(frame, result_queue))
+    process.start()
+    process.join(timeout=15)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        pytest.fail("isolated OCR probe timed out")
+
+    assert process.exitcode == 0
+    result = result_queue.get(timeout=2)
+    assert result["initial_handler"] == "hoppe_ocr_approval"
+    assert result["cleared_handler"] is None
+    assert result["reasserted_handler"] == "hoppe_ocr_approval"
+    assert result["clear_action"] == "allow"
+    assert result["reassert_action"] == "block"
+    assert result["agent_runs"] == 1
+    assert result["history"][0]["role"] == "user"
+    assert result["history"][1]["role"] == "assistant"
+    assert result["persisted"]
+    assert result["event_types"] == [
+        "message.start",
+        "message.delta",
+        "message.complete",
+    ]
+
+
+@pytest.mark.parametrize("init_fails", [False, True], ids=["normal-init", "fallback"])
+def test_compute_host_new_child_session_retains_required_handler(init_fails):
+    init_calls = []
+    fake_server = SimpleNamespace(
+        _sessions={},
+        _make_agent=lambda *_args, **_kwargs: SimpleNamespace(),
+        _transfer_db_to_agent=lambda *_args: False,
+        _load_show_reasoning=lambda: False,
+        _load_tool_progress_mode=lambda: "all",
+        _sanitize_client_source=lambda value: value,
+    )
+
+    def init_session(sid, key, agent, history, **kwargs):
+        init_calls.append(kwargs)
+        if init_fails:
+            raise RuntimeError("force fallback")
+        fake_server._sessions[sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "required_prompt_handler": kwargs.get("required_prompt_handler"),
+        }
+
+    fake_server._init_session = init_session
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    try:
+        session = host._ensure_server_session(
+            fake_server,
+            {
+                "sid": "ios-ui",
+                "session_key": "stored-ios",
+                "required_prompt_handler": "hoppe_ocr_approval",
+                "attached_images": ["/tmp/protected.png"],
+                "source": "ios",
+            },
+        )
+    finally:
+        host.close()
+
+    assert session["required_prompt_handler"] == "hoppe_ocr_approval"
+    if not init_fails:
+        assert init_calls[0]["required_prompt_handler"] == "hoppe_ocr_approval"
 
 
 def test_shutdown_drains_in_flight_turn_before_finalizing_sessions(monkeypatch):

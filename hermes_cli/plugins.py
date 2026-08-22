@@ -231,6 +231,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # TUI/Desktop turn gate. Runs on the turn worker after attached-image
+    # snapshotting and before provider-specific image routing or agent dispatch.
+    # Plugins return allow/respond directives without receiving private gateway
+    # or session objects.
+    "pre_prompt_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

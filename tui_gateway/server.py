@@ -39,6 +39,10 @@ from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
+from tui_gateway.prompt_dispatch_hooks import (
+    invoke_pre_prompt_dispatch,
+    normalize_required_prompt_handler,
+)
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -1794,6 +1798,9 @@ def _compute_host_turn_frame(
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
+        "required_prompt_handler": normalize_required_prompt_handler(
+            session.get("required_prompt_handler")
+        ),
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
     }
@@ -7233,6 +7240,7 @@ def _init_session(
     session_db=None,
     source: str | None = None,
     profile_home: str | None = None,
+    required_prompt_handler: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -7260,6 +7268,7 @@ def _init_session(
             # launch profile. SessionBranch copies the parent's value so the
             # child stays on the same state.db.
             "profile_home": profile_home,
+            "required_prompt_handler": required_prompt_handler,
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -8631,6 +8640,7 @@ def _deferred_session_record(
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
+    required_prompt_handler: str | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
@@ -8658,6 +8668,7 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "required_prompt_handler": required_prompt_handler,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -9007,6 +9018,7 @@ def _live_session_payload(
         "message_count": len(history),
         "messages": [] if omit_messages else _history_to_messages(history),
         "messages_omitted": omit_messages,
+        "required_prompt_handler": session.get("required_prompt_handler"),
         "running": running,
         "turn_started_at": turn_started_at,
         "session_id": sid,
@@ -10709,6 +10721,67 @@ def _start_usage_ticker(
     return stop, thread
 
 
+def _complete_prompt_dispatch_response(
+    sid: str,
+    session: dict,
+    agent,
+    *,
+    user_text: Any,
+    images: list[str],
+    response_text: str,
+    history: list[dict],
+    history_version: int,
+    marker_key: str,
+    display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> dict:
+    """Persist and emit a plugin-owned response without invoking the agent."""
+
+    clean_user_text = user_text if isinstance(user_text, str) else str(user_text)
+    persisted_user = _build_persist_message_with_image_refs(clean_user_text, images)
+    user_entry: dict[str, Any] = {"role": "user", "content": persisted_user}
+    if display_kind:
+        user_entry["display_kind"] = display_kind
+        if display_metadata:
+            user_entry["display_metadata"] = display_metadata
+    assistant_entry = {"role": "assistant", "content": response_text}
+    messages = [user_entry, assistant_entry]
+
+    db = getattr(agent, "_session_db", None)
+    if db is not None:
+        db.append_messages_batch(session["session_key"], messages)
+    else:
+        with _session_db(session) as scoped_db:
+            if scoped_db is None:
+                raise RuntimeError("prompt dispatch response persistence unavailable")
+            scoped_db.append_messages_batch(session["session_key"], messages)
+
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != history_version:
+            raise RuntimeError("history changed during prompt dispatch")
+        session["history"] = [*history, *messages]
+        session["history_version"] = history_version + 1
+        _clear_inflight_turn(session)
+
+    if response_text:
+        _emit("message.delta", sid, {"text": response_text})
+    payload = {
+        "text": response_text,
+        "usage": _get_usage(agent),
+        "status": "complete",
+    }
+    rendered = render_message(response_text, session.get("cols", 80))
+    if rendered:
+        payload["rendered"] = rendered
+    _retire_turn_marker(session, marker_key)
+    _emit("message.complete", sid, payload)
+    return {
+        "final_response": response_text,
+        "messages": session["history"],
+        "prompt_dispatch_response": True,
+    }
+
+
 def _run_prompt_submit(
     rid,
     sid: str,
@@ -10848,6 +10921,29 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 history = list(session["history"])
                 history_version = int(session.get("history_version", 0))
+            dispatch_decision = invoke_pre_prompt_dispatch(
+                session_id=sid,
+                session_key=session.get("session_key") or sid,
+                source=_session_source(session),
+                text=text,
+                attached_images=images,
+                required_prompt_handler=session.get("required_prompt_handler"),
+            )
+            if dispatch_decision.action in {"respond", "block"}:
+                result = _complete_prompt_dispatch_response(
+                    sid,
+                    session,
+                    agent,
+                    user_text=text,
+                    images=images,
+                    response_text=dispatch_decision.text,
+                    history=history,
+                    history_version=history_version,
+                    marker_key=marker_key,
+                    display_kind=display_kind,
+                    display_metadata=display_metadata,
+                )
+                return
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)

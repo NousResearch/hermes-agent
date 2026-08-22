@@ -462,6 +462,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_prompt_dispatch` | Directive/control | TUI/Desktop turn worker after attached-image snapshotting and before image routing or agent dispatch; first valid scoped `respond` wins, while a client-required image handler fails closed without a matching `allow` or `respond`. Python plugins only. | `session_id`, `session_key`, `surface`, `source`, `text`, `attached_images`, `required_prompt_handler` | Raw user text and local image paths; no server, session, gateway, or agent objects. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
@@ -1221,6 +1222,63 @@ def buffer_or_rewrite(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
 ```
+
+---
+
+### `pre_prompt_dispatch`
+
+Fires once on the TUI/Desktop turn worker after Hermes atomically snapshots
+and clears `attached_images`, but before provider-specific image routing or
+`agent.run_conversation`. The RPC reader is therefore not blocked by plugin
+work. This hook is intended for deterministic prompt gates that must complete
+before an agent sees the turn.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    session_id,
+    session_key,
+    surface,
+    source,
+    text,
+    attached_images,
+    required_prompt_handler,
+    **kwargs,
+):
+```
+
+`attached_images` is an immutable tuple of local paths. `surface` is `"tui"`;
+`source` retains the session origin such as `"ios"`, `"desktop"`, or `"tui"`.
+No live server, session, gateway, transport, or agent object is exposed.
+
+Callbacks may return `None`, an explicit allow directive, or a response:
+
+```python
+return {
+    "action": "respond",
+    "handler": "example_gate",
+    "text": "The protected intake completed.",
+    "reason": "intake_complete",
+}
+```
+
+| Return | Effect |
+|--------|--------|
+| `None` | Decline this turn. |
+| `{"action": "allow", "handler": "example_gate"}` | Permit normal agent dispatch. A client-required image turn accepts this only from the exact required handler. |
+| `{"action": "respond", "handler": "example_gate", "text": "..."}` | Persist and deliver the text through normal TUI history/events without calling the agent. `text` must be non-empty. |
+
+All callbacks run with isolated failures. Results are resolved in registration
+order. Optional turns use the first valid response; a handlerless `allow`
+cannot hide a later response consumer. When an image turn declares
+`required_prompt_handler`, only an exact handler match is actionable. If no
+matching directive remains after callback failures and validation, Hermes
+returns a local safe error and never calls the agent.
+
+`required_prompt_handler` is session-scoped and must be reasserted by a client
+on `session.create` and `session.resume`; Hermes does not persist it to the
+conversation database.
 
 ---
 

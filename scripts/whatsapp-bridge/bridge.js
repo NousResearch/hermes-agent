@@ -458,6 +458,9 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      // A healthy connection clears the backoff so the next unrelated drop
+      // reconnects promptly instead of inheriting an outage's delay.
+      scheduleReconnect.reset();
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,

@@ -209,7 +209,8 @@ VALID_HOOKS: set[str] = {
 }
 
 # Hooks the shell-hook bridge cannot safely carry: unsupported directives and
-# the in-process memory result object must not cross a subprocess boundary.
+# immutable memory observation results must not cross a subprocess boundary.
+# VALID_HOOKS doubles as the shell-hook allow-list, so these are refused loudly.
 SHELL_UNSUPPORTED_HOOKS: set[str] = {
     "transform_api_error_classification",
     "memory_prefetch",

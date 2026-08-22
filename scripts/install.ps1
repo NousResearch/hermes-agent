@@ -2078,8 +2078,54 @@ function Install-Repository {
                     }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
+                    # `git stash push` can exit nonzero for two very different
+                    # reasons, so an exit-code check alone can't tell them apart
+                    # -- probe refs/stash before and after (mirrors the `hermes
+                    # update` Python path's `_stash_local_changes_if_needed`):
+                    #   1. The stash entry WAS created, but cleanup of swept
+                    #      untracked files failed (e.g. a permission-denied
+                    #      directory). The changes are safe; only the working
+                    #      tree cleanup needs finishing, so `reset --hard HEAD`
+                    #      does that (safe -- everything dirty is in the stash).
+                    #   2. No stash entry was created at all -- the changes were
+                    #      never saved. This is the failure this repair targets:
+                    #      stop immediately, before fetch/checkout ever runs.
+                    $prevStashRef = git -c windows.appendAtomically=false rev-parse --verify refs/stash 2>$null
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
-                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                    $stashExit = $LASTEXITCODE
+                    $newStashRef = git -c windows.appendAtomically=false rev-parse --verify refs/stash 2>$null
+                    $stashCreated = ($LASTEXITCODE -eq 0) -and $newStashRef -and ($newStashRef -ne $prevStashRef)
+
+                    if ($stashExit -eq 0) {
+                        $autostashRef = "stash@{0}"
+                    } elseif ($stashCreated) {
+                        Write-Warn "Some untracked files could not be removed from the working tree (permission denied)."
+                        Write-Warn "They were still saved to the stash and were left in place -- the update will continue."
+                        git -c windows.appendAtomically=false reset --hard HEAD 2>$null | Out-Null
+                        $autostashRef = "stash@{0}"
+                    } else {
+                        # Nothing was saved and the working tree/index are
+                        # exactly as they were -- safe to stop here. Throwing a
+                        # STASH-specific message (instead of falling through
+                        # into fetch) means the driver's "reason" field names
+                        # the command that actually failed, rather than
+                        # blaming the next thing that happens to also fail
+                        # once the repo is already left dirty.
+                        throw "git stash failed (exit $stashExit)"
+                    }
+                }
+                # Mirrors install.sh (#32384): a bare `git fetch origin` pulls
+                # every ref, and this repo carries thousands of auto-generated
+                # branches -- on a non-single-branch checkout that can turn a
+                # routine update into a multi-minute download, and a stale/
+                # rewritten branch among them can make the remote respond with
+                # "did not send all necessary objects". Scoping the remote to
+                # just $Branch first avoids both. Best-effort: if it fails we
+                # still attempt the branch-scoped fetch below rather than
+                # aborting on what is purely a bandwidth/robustness optimization.
+                git -c windows.appendAtomically=false remote set-branches origin $Branch 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "Could not scope origin to '$Branch' (exit $LASTEXITCODE); continuing with a normal fetch."
                 }
                 git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }

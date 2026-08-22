@@ -169,6 +169,119 @@ class TestSendWithRetryFallback:
 
 
 # ---------------------------------------------------------------------------
+# _send_with_retry — ambiguous delivery (#64238)
+# ---------------------------------------------------------------------------
+
+class TestSendWithRetryAmbiguousDelivery:
+    """``SendResult.ambiguous_delivery`` must veto every re-send.
+
+    ``retryable=False`` alone is NOT enough: ``_send_with_retry`` computes
+    ``is_network = result.retryable or self._is_retryable_error(error_str)``
+    and ``_RETRYABLE_ERROR_PATTERNS`` contains both ``"network"`` and
+    ``"connectionreset"``, so an adapter that knows the payload may already be
+    on the wire cannot veto the re-send through ``retryable`` at all — the OR
+    discards its answer.  ``ambiguous_delivery`` is the explicit signal the
+    base layer honors unconditionally.
+    """
+
+    AMBIGUOUS_ERROR = "NetworkError: connection reset by peer"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_delivery_sends_exactly_once(self):
+        """The whole point: one send() call, no retries, no fallback, no notice."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error=self.AMBIGUOUS_ERROR,
+                ambiguous_delivery=True,
+            ),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+        mock_sleep.assert_not_called()
+        # The failure is surfaced verbatim — not replaced by a fallback result.
+        assert result.error == self.AMBIGUOUS_ERROR
+
+    @pytest.mark.asyncio
+    async def test_retryable_false_alone_does_not_stop_the_resend(self):
+        """Control case pinning WHY the new flag is needed.
+
+        With the identical error string and ``retryable=False`` but no
+        ``ambiguous_delivery``, ``_is_retryable_error`` matches "network" /
+        "connectionreset" and the base layer re-sends anyway: 1 initial + 2
+        retries + 1 delivery-failure notice = 4 sends.  If this ever drops to
+        1, the flag has become redundant and the extra field can go.
+        """
+        adapter = _StubAdapter()
+        err = SendResult(success=False, error=self.AMBIGUOUS_ERROR, retryable=False)
+        adapter._send_results = [err, err, err, SendResult(success=True)]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        assert len(adapter._send_calls) == 4
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_delivery_on_a_retry_stops_immediately(self):
+        """Sibling site: the in-loop check must return, not break.
+
+        Breaking out of the retry loop falls through to the plain-text
+        fallback, which is itself a send — so an ambiguous result observed on
+        a retry has to return straight away.
+        """
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="httpx.ConnectError: connection refused"),
+            SendResult(
+                success=False,
+                error=self.AMBIGUOUS_ERROR,
+                ambiguous_delivery=True,
+            ),
+            SendResult(success=True, message_id="should_not_be_reached"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        # 1 initial + 1 retry, then stop. No second retry, no plain-text
+        # fallback, no delivery-failure notice.
+        assert len(adapter._send_calls) == 2
+        assert result.error == self.AMBIGUOUS_ERROR
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_delivery_skips_plain_text_fallback(self):
+        """A formatting-shaped error string does not re-enable the fallback."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="Bad Request: can't parse entities",
+                ambiguous_delivery=True,
+            ),
+            SendResult(success=True, message_id="should_not_be_reached"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "**bold**", max_retries=2, base_delay=0)
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_default_is_false_so_existing_adapters_are_unaffected(self):
+        """The new field defaults off — adapters that don't set it keep retrying."""
+        assert SendResult(success=False, error="boom").ambiguous_delivery is False
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="httpx.ConnectError: connection refused"),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert result.success
+        assert len(adapter._send_calls) == 2
+
+
+# ---------------------------------------------------------------------------
 # _send_with_retry — retry_after honor
 # ---------------------------------------------------------------------------
 

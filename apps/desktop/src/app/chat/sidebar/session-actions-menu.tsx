@@ -28,10 +28,12 @@ import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
+import { desktopGit } from '@/lib/desktop-git'
 import { exportSession } from '@/lib/session-export'
+import type { HermesGitWorktree } from '@/global'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -179,6 +181,120 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
       ))}
     </>
   )
+}
+
+// The worktree list inside the session menu's "Move to branch" submenu. Its own
+// component so only an OPEN submenu probes git (same reasoning as
+// MoveToProjectItems). Re-homes the session into another worktree of its repo —
+// the fix for a chat created on the wrong branch. The current worktree (the one
+// holding the session's cwd) is disabled: there is nothing to move into. A
+// session with no recorded repo root, or a repo with only this checkout, gets
+// an explanatory disabled row.
+function MoveToBranchItems({ kit, sessionId }: { kit: MenuKit; sessionId: string }) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const [worktrees, setWorktrees] = useState<HermesGitWorktree[] | null>(null)
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const repoRoot = (session?.git_repo_root || '').trim()
+
+  useEffect(() => {
+    if (!repoRoot) {
+      return
+    }
+
+    const git = desktopGit()
+
+    if (!git?.worktreeList) {
+      setWorktrees([])
+
+      return
+    }
+
+    let cancelled = false
+
+    void git
+      .worktreeList(repoRoot)
+      .then(list => {
+        if (!cancelled) {
+          setWorktrees(list)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWorktrees([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [repoRoot])
+
+  if (!repoRoot || worktrees !== null && worktrees.length === 0) {
+    return <kit.Item disabled>{p.moveNoBranches}</kit.Item>
+  }
+
+  if (worktrees === null) {
+    return <kit.Item disabled>{p.moveToBranch}</kit.Item>
+  }
+
+  const cwd = (session?.cwd || '').trim().toLowerCase()
+  const targets = worktrees.filter(w => (w.path || '').trim().toLowerCase() !== cwd)
+
+  if (targets.length === 0) {
+    return <kit.Item disabled>{p.moveNoBranches}</kit.Item>
+  }
+
+  return (
+    <>
+      {targets.map(wt => (
+        <kit.Item
+          key={wt.path}
+          onSelect={() => {
+            triggerHaptic('selection')
+            moveSessionToWorktree(sessionId, wt)
+              .then(() =>
+                notify({
+                  durationMs: 2_000,
+                  kind: 'success',
+                  message: p.movedToBranch(wt.branch || wt.path)
+                })
+              )
+              .catch(err => notifyError(err, p.moveBranchFailed))
+          }}
+        >
+          {wt.branch || wt.path}
+        </kit.Item>
+      ))}
+    </>
+  )
+}
+
+// Re-home a stored session into another worktree of its own repo — the branch
+// sibling of moveSessionToProject. The backend replaces cwd + git identity (so
+// the tree's grouping follows) and re-anchors any live agent bound to the row;
+// here we mirror the move into the `$sessions` cache so both the flat list and
+// the grouped tree reflect it before the next authoritative refresh.
+async function moveSessionToWorktree(sessionId: string, target: HermesGitWorktree): Promise<void> {
+  const gateway = activeGateway()
+
+  if (!gateway) {
+    throw new Error('Hermes gateway is not connected')
+  }
+
+  await gateway.request<{ branch?: null | string; cwd?: string }>('session.cwd.set', {
+    cwd: target.path,
+    session_id: sessionId
+  })
+
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId)
+        ? { ...s, cwd: target.path, git_branch: target.branch ?? null, git_repo_root: s.git_repo_root ?? null }
+        : s
+    )
+  )
+  void refreshProjectTree()
 }
 
 function useSessionActions({
@@ -488,6 +604,15 @@ function useSessionActions({
         </kit.SubTrigger>
         <kit.SubContent>
           <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+        </kit.SubContent>
+      </kit.Sub>
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="git-branch" size="0.875rem" />
+          <span>{t.sidebar.projects.moveToBranch}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <MoveToBranchItems kit={kit} sessionId={sessionId} />
         </kit.SubContent>
       </kit.Sub>
       {tabItems.length > 0 && (

@@ -1101,6 +1101,26 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     if stored_platform and current_platform and stored_platform != current_platform:
         return False
 
+    stored_project_id = line_value("Project-Local-ID")
+    stored_project_manifest = line_value("Project-Local-Manifest")
+    if not stored_project_id and not stored_project_manifest:
+        return True
+
+    # Project identity is captured when the agent is built. Re-resolving it
+    # here from a process-global working directory can make concurrent
+    # sessions accept a prompt built for another project.
+    project_state = getattr(agent, "project_local_state", None)
+    current_project_id = (
+        project_state.canonical_id if project_state is not None else ""
+    )
+    current_project_manifest = (
+        project_state.manifest_hash if project_state is not None else ""
+    )
+    if stored_project_id != current_project_id:
+        return False
+    if stored_project_manifest != current_project_manifest:
+        return False
+
     return True
 
 

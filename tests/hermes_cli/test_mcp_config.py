@@ -53,6 +53,7 @@ def _make_args(**kwargs):
         "preset": None,
         "env": None,
         "mcp_action": None,
+        "scope": "global",
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -64,7 +65,7 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -161,7 +162,7 @@ class TestMcpRemove:
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
-        token_file.write_text("{}")
+        token_file.write_text("{}", encoding="utf-8")
 
         from hermes_cli.mcp_config import cmd_mcp_remove
 
@@ -654,6 +655,36 @@ class TestConfigHelpers:
         assert "mysvr" in servers
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
 
+    def test_save_mcp_server_to_target_path(self, tmp_path):
+        from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+
+        project_config = tmp_path / "repo" / ".hermes" / "config.yaml"
+        assert _save_mcp_server(
+            "project",
+            {"command": "node"},
+            config_path=project_config,
+        )
+
+        assert _get_mcp_servers(config_path=project_config)["project"]["command"] == "node"
+        assert "project" not in _get_mcp_servers()
+
+    def test_remove_mcp_server(self, tmp_path):
+        from hermes_cli.mcp_config import (
+            _get_mcp_servers,
+            _remove_mcp_server,
+            _save_mcp_server,
+        )
+
+        _save_mcp_server("s1", {"command": "test"})
+        _save_mcp_server("s2", {"command": "test2"})
+        assert _remove_mcp_server("s1") is True
+        assert "s1" not in _get_mcp_servers()
+        assert "s2" in _get_mcp_servers()
+
+    def test_remove_nonexistent(self, tmp_path):
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        assert _remove_mcp_server("ghost") is False
 
     def test_env_key_for_server(self):
         from hermes_cli.mcp_config import _env_key_for_server
@@ -766,7 +797,9 @@ class TestMcpLogin:
         def mock_probe(name, cfg, connect_timeout=30):
             seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            (token_dir / "realserver.json").write_text(
+                '{"access_token": "x"}', encoding="utf-8"
+            )
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(

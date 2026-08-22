@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -198,6 +199,63 @@ class TestLoadMCPConfig:
         assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
         assert "agent_plugin" not in server
 
+    def test_project_only_discovery_scopes_same_named_servers_per_project(
+        self, tmp_path, monkeypatch
+    ):
+        """Project MCP discovery registers each trusted project independently."""
+        from agent.project_local import trust_project_mcp
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        states = []
+        for project_name in ("first", "second"):
+            repo = tmp_path / project_name
+            config_path = repo / ".hermes" / "config.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                "mcp_servers:\n  shared:\n    command: node\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "init"], cwd=str(repo), check=True, capture_output=True
+            )
+            state = trust_project_mcp(repo)
+            assert state is not None and state.mcp.trusted
+            states.append(state)
+
+        registrations = []
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+        monkeypatch.setattr(
+            mcp_tool, "_filter_suspicious_mcp_servers", lambda servers: servers
+        )
+        monkeypatch.setattr(
+            mcp_tool, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE
+        )
+        monkeypatch.setattr(
+            mcp_tool,
+            "register_mcp_servers",
+            lambda servers: registrations.append(servers) or [],
+        )
+
+        with patch("hermes_cli.config.load_config", return_value={}):
+            for state in states:
+                mcp_tool.discover_mcp_tools(project_state=state)
+
+        assert len(registrations) == 2
+        server_names = [next(iter(servers)) for servers in registrations]
+        assert server_names[0] != server_names[1]
+        assert all(name.startswith("project-") and name.endswith("-shared") for name in server_names)
+
+        from tools.registry import registry
+
+        project_toolsets = [f"mcp-{name}" for name in server_names]
+        monkeypatch.setattr(
+            registry, "get_registered_toolset_names", lambda: project_toolsets
+        )
+        hidden_from_first = mcp_tool.project_mcp_toolsets(states[0])
+        assert project_toolsets[0] not in hidden_from_first
+        assert project_toolsets[1] in hidden_from_first
+        assert "mcp-shared" in hidden_from_first
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):

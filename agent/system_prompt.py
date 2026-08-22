@@ -891,6 +891,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nProvider: {agent.provider}"
     if agent.platform:
         timestamp_line += f"\nPlatform: {agent.platform}"
+    _project_local = getattr(agent, "project_local_state", None)
+    if _project_local is not None:
+        timestamp_line += f"\nProject-Local-ID: {_project_local.canonical_id}"
+        timestamp_line += f"\nProject-Local-Manifest: {_project_local.manifest_hash}"
     volatile_parts.append(timestamp_line)
 
     return {

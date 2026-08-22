@@ -583,6 +583,7 @@ def init_agent(
     run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
+    project_local_state=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
@@ -677,6 +678,16 @@ def init_agent(
     # flag is the explicit single-switch off for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
+    agent._credential_pool = credential_pool
+    if project_local_state is None:
+        try:
+            from agent.project_local import resolve_project_local_state
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            project_local_state = resolve_project_local_state(resolve_agent_cwd())
+        except Exception:
+            project_local_state = None
+    agent.project_local_state = project_local_state
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1569,6 +1580,34 @@ def init_agent(
         discover_plugins()
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
+
+    # Project-local MCP registration is process-wide, but the project state is
+    # captured on this agent. Register the captured project's trusted servers
+    # before taking the tool snapshot and hide every other project's dynamic
+    # MCP toolset from this session.
+    project_mcp_disabled: set[str] = set()
+    if project_local_state is not None and getattr(project_local_state, "mcp", None):
+        try:
+            from tools.mcp_tool import discover_mcp_tools, project_mcp_toolsets
+
+            if project_local_state.mcp.trusted:
+                discover_mcp_tools(project_state=project_local_state)
+            project_mcp_disabled = project_mcp_toolsets(project_local_state)
+        except Exception:
+            logger.debug("Project-local MCP setup failed", exc_info=True)
+    elif "tools.mcp_tool" in sys.modules:
+        try:
+            from tools.mcp_tool import project_mcp_toolsets
+
+            project_mcp_disabled = project_mcp_toolsets()
+        except Exception:
+            logger.debug("Project-local MCP isolation check failed", exc_info=True)
+
+    if project_mcp_disabled:
+        disabled_toolsets = list(dict.fromkeys([
+            *(disabled_toolsets or []), *sorted(project_mcp_disabled),
+        ]))
+        agent.disabled_toolsets = disabled_toolsets
 
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell

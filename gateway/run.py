@@ -5535,6 +5535,22 @@ class TurnRunner:
         _skip_context = _plat_gw_cfg.get("skip_context_files")
         skip_context_files = bool(_skip_context) if _skip_context is not None else False
 
+        # Resolve project-local state once for this session's agent.  MCP
+        # registration consumes this captured value; it must not inspect the
+        # process-global terminal cwd after concurrent gateway sessions begin.
+        _project_state = None
+        _cache_keys = self._runner._extract_cache_busting_config(ctx.user_config)
+        try:
+            from agent.project_local import resolve_project_local_state
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            _project_state = resolve_project_local_state(resolve_agent_cwd())
+            if _project_state is not None:
+                _cache_keys["project_local.canonical_id"] = _project_state.canonical_id
+                _cache_keys["project_local.manifest_hash"] = _project_state.manifest_hash
+        except Exception:
+            logger.debug("Failed to capture project-local state for gateway turn", exc_info=True)
+
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
         # schemas for prompt cache hits.
@@ -5543,7 +5559,7 @@ class TurnRunner:
             turn_route["runtime"],
             ctx.enabled_toolsets,
             combined_ephemeral,
-            cache_keys=self._runner._extract_cache_busting_config(ctx.user_config),
+            cache_keys=_cache_keys,
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
@@ -5770,6 +5786,7 @@ class TurnRunner:
                 provider_require_parameters=pr.get("require_parameters", False),
                 provider_data_collection=pr.get("data_collection"),
                 session_id=ctx.session_id,
+                project_local_state=_project_state,
                 platform=platform_key,
                 user_id=ctx.source.user_id,
                 user_id_alt=ctx.source.user_id_alt,

@@ -99,6 +99,7 @@ import contextvars
 import concurrent.futures
 import errno
 import fnmatch
+import hashlib
 import inspect
 import json
 import logging
@@ -5490,7 +5491,47 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+def _project_mcp_server_name(canonical_id: str, server_name: str) -> str:
+    """Return an unambiguous registry identity for a project-local server."""
+    project_digest = hashlib.sha256(canonical_id.encode("utf-8")).hexdigest()[:16]
+    return f"project-{project_digest}-{server_name}"
+
+
+def project_mcp_toolsets(project_state: Any = None) -> set[str]:
+    """Return project-MCP toolsets that must be hidden from *project_state*.
+
+    MCP registration is process-wide, while an agent's schema snapshot is
+    session-scoped.  Toolset filtering keeps registrations from another
+    project's session out of this agent's snapshot.
+    """
+    try:
+        from tools.registry import registry
+
+        registered = {
+            name
+            for name in registry.get_registered_toolset_names()
+            if name.startswith("mcp-project-")
+        }
+    except Exception:
+        registered = set()
+
+    allowed: set[str] = set()
+    if (
+        project_state is not None
+        and getattr(project_state, "mcp", None)
+        and project_state.mcp.trusted
+    ):
+        canonical_id = getattr(project_state, "canonical_id", "")
+        for server_name in getattr(project_state.mcp, "servers", ()):
+            allowed.add(
+                f"mcp-{_project_mcp_server_name(canonical_id, str(server_name))}"
+            )
+        # Project definitions override global definitions with the same name.
+        registered.update(f"mcp-{name}" for name in project_state.mcp.servers)
+    return registered - allowed
+
+
+def _load_mcp_config(project_state: Any = None) -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
@@ -5509,7 +5550,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             return {}
         config = load_config()
         servers = config.get("mcp_servers")
-        if not isinstance(servers, dict):
+        if not servers or not isinstance(servers, dict):
             servers = {}
         # Ensure .env vars are available for interpolation
         try:
@@ -5517,6 +5558,23 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
+        try:
+            from agent.project_local import trusted_project_mcp_servers
+
+            project_servers = trusted_project_mcp_servers(project_state=project_state)
+            if project_servers and project_state is not None:
+                servers = dict(servers)
+                # A project definition replaces a same-named global definition
+                # for this session, but receives a project-qualified registry
+                # identity so another project's identically named connection
+                # cannot be reused.
+                for name, project_config in project_servers.items():
+                    servers.pop(name, None)
+                    servers[_project_mcp_server_name(project_state.canonical_id, name)] = (
+                        project_config
+                    )
+        except Exception as exc:
+            logger.debug("Failed to load trusted project MCP config: %s", exc)
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
             interpolated = _interpolate_env_vars(cfg)
@@ -7435,7 +7493,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(project_state: Any = None) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -7447,7 +7505,15 @@ def discover_mcp_tools() -> List[str]:
     Returns:
         List of all registered MCP tool names.
     """
-    servers = _load_mcp_config()
+    # Preserve the long-standing no-argument loader call for ordinary MCP
+    # discovery. Besides avoiding needless keyword passing, this keeps
+    # integrations that replace the loader with a no-argument callable
+    # compatible; project-aware callers explicitly provide their state.
+    servers = (
+        _load_mcp_config(project_state=project_state)
+        if project_state is not None
+        else _load_mcp_config()
+    )
     if not servers:
         logger.debug("No MCP servers configured")
         return []

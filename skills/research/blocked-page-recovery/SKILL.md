@@ -5,6 +5,11 @@ version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+credential_destinations:
+  # The only credential this skill touches, and the only host it may ever
+  # reach with it (#91569). Skills Guard downgrades the secret-read findings
+  # ONLY while every host in the reading scope stays inside this list.
+  JINA_API_KEY: [r.jina.ai]
 metadata:
   hermes:
     tags: [Research, Archives, Wayback, Paywall, WAF, Fallback]

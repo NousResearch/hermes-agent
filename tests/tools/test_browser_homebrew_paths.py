@@ -344,9 +344,11 @@ class TestRunBrowserCommandPathConstruction:
 
         assert captured_cmd is not None
         assert captured_cmd[0] == browser_path
-        assert captured_cmd[1:5] == [
+        assert captured_cmd[1:7] == [
             "--session",
             "test-session",
+            "--profile",
+            str(tmp_path / "agent-browser-test-session" / "agent-browser-chrome-test-session"),
             "--json",
             "navigate",
         ]
@@ -404,7 +406,14 @@ class TestRunBrowserCommandPathConstruction:
             "/opt/hermes/node/bin/npx", "--ignore-scripts", "--prefer-offline", "-y",
             AGENT_BROWSER_NPX_SPEC,
         ]
-        assert captured_cmd[5:9] == ["--session", "test-session", "--json", "navigate"]
+        assert captured_cmd[5:11] == [
+            "--session",
+            "test-session",
+            "--profile",
+            str(tmp_path / "agent-browser-test-session" / "agent-browser-chrome-test-session"),
+            "--json",
+            "navigate",
+        ]
 
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""

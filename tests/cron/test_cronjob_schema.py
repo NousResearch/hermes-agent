@@ -19,3 +19,15 @@ def test_cronjob_schema_action_description_flags_create_requirements():
     assert "REQUIRED" in action_desc
 
 
+def test_cronjob_schema_keeps_relative_requests_relative():
+    """The model contract must not ask the LLM to perform clock arithmetic."""
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    schedule_desc = CRONJOB_SCHEMA["parameters"]["properties"]["schedule"][
+        "description"
+    ]
+
+    assert "one-shot" in schedule_desc
+    assert "normalize the delay to '2m'" in schedule_desc
+    assert "do not calculate" in schedule_desc.lower()
+    assert "explicit 'every 30m'" in schedule_desc

@@ -1715,7 +1715,16 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": (
+                    "REQUIRED for action=create. For a relative request such as "
+                    "'in two minutes', normalize the delay to '2m'; do not calculate "
+                    "an absolute wall-clock time. '30m' means one-shot in 30 minutes; "
+                    "only an explicit 'every 30m' recurs. Other "
+                    "formats: '0 9 * * *' (daily at 9am) or "
+                    "'2026-06-01T09:00:00' (absolute one-shot in the configured "
+                    "Hermes timezone when no offset is supplied). You MUST include "
+                    "this field when action=create."
+                ),
             },
             "name": {
                 "type": "string",

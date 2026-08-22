@@ -1961,6 +1961,19 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Devin CLI delegate backend (tools/devin_delegate.py). Shells out to
+        # the local `devin` binary in non-interactive `-p` mode as a peer to
+        # delegate_task. Opt-in: the delegate_to_devin tool is gated by a
+        # check_fn (enabled + devin on $PATH) and has zero schema footprint
+        # unless turned on here. Devin runs its own full agent loop and
+        # returns a finished answer, so this is for self-contained subtasks.
+        "devin": {
+            "enabled": False,            # opt-in gate for the delegate_to_devin tool
+            "model": "",                 # optional Devin model short name (opus/swe/codex/...); empty = Devin default
+            "permission_mode": "accept-edits",  # auto|accept-edits|smart|dangerous — accept-edits is the safe default; dangerous requires explicit opt-in
+            "timeout_seconds": 1800,     # per-call wall-clock cap (floor 60, model override clamped to this)
+            "max_result_chars": 20000,   # truncate Devin stdout above this in the returned summary
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

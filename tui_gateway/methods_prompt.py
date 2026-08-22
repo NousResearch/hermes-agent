@@ -576,19 +576,74 @@ def _(rid, params: dict) -> dict:
                     else _load_durable_truncation_history(session, sid)
                 )
                 if has_stamped_user or durable_history is None or durable_history:
-                    logger.warning(
-                        "prompt.submit: REFUSED ordinal-only truncation of durable "
-                        "session %s (ordinal=%d); truncate_before_row_id required",
-                        sid,
-                        client_ordinal,
+                    # Before refusing outright, try a best-effort durable
+                    # row-id resolution: older clients never learn the durable
+                    # row ids on resume (the ChatMessage[] bubbles carry no
+                    # rowId), so every Restore/rewind degrades to an
+                    # ordinal-only request and hits this 4004 wall — even
+                    # though the durable transcript is perfectly addressable
+                    # by row id. Translate the client ordinal into a durable
+                    # row_id (when the durable count lines up) and re-enter
+                    # the row-id resolution path, which is safe: a mismatch
+                    # refuses with 4018 instead of guessing.
+                    #
+                    # When has_stamped_user is True, durable_history is not
+                    # loaded (empty list sentinel above) — we still try the
+                    # in-memory stamps by index, which is the same
+                    # content-verified path as the row-id-first branch.
+                    durable_user_indices = _history_user_indices(
+                        durable_history if durable_history else history
                     )
-                    return _err(
-                        rid,
-                        4004,
-                        "ordinal-only truncation is unsafe for durable session history; "
-                        "include truncate_before_row_id",
-                    )
-                ordinal = segment_ordinal
+                    resolved_row_id = None
+                    if 0 <= segment_ordinal < len(durable_user_indices):
+                        d_idx = durable_user_indices[segment_ordinal]
+                        resolved_row_id = _message_row_id(
+                            (durable_history if durable_history else history)[d_idx]
+                        )
+                    if resolved_row_id is not None:
+                        found_match = _resolve_truncate_row_id(
+                            session, history, resolved_row_id
+                        )
+                        if found_match is not None:
+                            msg_ordinal, _ = found_match
+                            ordinal, err = _reconcile_client_ordinal(
+                                rid, sid, client_ordinal, msg_ordinal,
+                                "truncate_before_row_id", resolved_row_id,
+                                prefix_user_count=prefix_user_count,
+                            )
+                            if err is None:
+                                # Resolved through the durable row-id path —
+                                # continue below the same way the
+                                # row-id-first branch does.
+                                logger.info(
+                                    "prompt.submit: healed ordinal-only truncation "
+                                    "of durable session %s to row_id=%d (ordinal=%d)",
+                                    sid, resolved_row_id, client_ordinal,
+                                )
+                            else:
+                                return err
+                        else:
+                            return _err(
+                                rid,
+                                4018,
+                                "target user message is no longer in session history",
+                                data=_stale_target_data(),
+                            )
+                    else:
+                        logger.warning(
+                            "prompt.submit: REFUSED ordinal-only truncation of durable "
+                            "session %s (ordinal=%d); truncate_before_row_id required",
+                            sid,
+                            client_ordinal,
+                        )
+                        return _err(
+                            rid,
+                            4004,
+                            "ordinal-only truncation is unsafe for durable session history; "
+                            "include truncate_before_row_id",
+                        )
+                else:
+                    ordinal = segment_ordinal
 
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative

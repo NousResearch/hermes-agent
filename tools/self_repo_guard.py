@@ -14,6 +14,9 @@ from tools.approval import (
     _deobfuscate_shell_word_for_detection,
     _iter_shell_command_starts,
     _read_shell_word,
+    _replace_simple_command_substitutions,
+    _scan_backtick_end,
+    _scan_dollar_paren_end,
 )
 
 
@@ -89,6 +92,21 @@ _KNOWN_GIT_BUILTINS = frozenset({
 })
 _SHELL_EXECUTABLES = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=(.*)", re.DOTALL)
+_WINDOWS_PATH_TOKEN_RE = re.compile(r"(?:^|=)(?:[A-Za-z]:[\\/]|\\\\)")
+_DYNAMIC_SHELL_PATH_MARKER = "\uf8ff"
+
+
+def _has_dynamic_shell_path(value: str) -> bool:
+    return bool(
+        "$" in value
+        or "`" in value
+        or any(char in value for char in "*?[")
+        or re.search(r"(?:^|[\"'])~(?:/|$)", value)
+    )
+
+
+def _strip_dynamic_shell_marker(value: str) -> str:
+    return value.replace(_DYNAMIC_SHELL_PATH_MARKER, "")
 _SUDO_OPTIONS_WITH_ARG = frozenset({
     "-C",
     "--chdir",
@@ -150,7 +168,29 @@ def get_running_source_root() -> Path | None:
 
 
 def _resolve(path_str: str, base: Path) -> Path:
-    path = Path(os.path.expanduser(path_str))
+    # This guard parses commands before Git Bash executes them.  On Windows,
+    # mirror the two shell spellings that pathlib does not understand:
+    # Git Bash expands ``~`` from HOME (Python's ntpath.expanduser uses
+    # USERPROFILE), and an MSYS drive path such as ``/c/Users/...`` targets
+    # the native ``C:/Users/...`` drive.  Keep other rooted paths unchanged;
+    # their MSYS mount mapping is not safely inferable here.
+    expanded = path_str
+    if os.name == "nt" and (expanded == "~" or expanded.startswith("~/")):
+        home = os.environ.get("HOME")
+        if home:
+            expanded = f"{home}{expanded[1:]}"
+        else:
+            expanded = os.path.expanduser(expanded)
+    else:
+        expanded = os.path.expanduser(expanded)
+
+    if os.name == "nt":
+        msys_drive = re.fullmatch(r"/([A-Za-z])(?:/(.*))?", expanded, re.DOTALL)
+        if msys_drive:
+            suffix = msys_drive.group(2) or ""
+            expanded = f"{msys_drive.group(1).upper()}:/{suffix}"
+
+    path = Path(expanded)
     if not path.is_absolute():
         path = base / path
     try:
@@ -170,6 +210,132 @@ def _executable_name(value: str) -> str:
     return Path(value.replace("\\", "/")).name.removesuffix(".exe").lower()
 
 
+def _literal_shell_output(
+    script: str, depth: int = 0
+) -> tuple[str, bool] | None:
+    """Evaluate a bounded literal echo/printf script without executing it."""
+    if depth > 8:
+        return None
+    masked, replacements, has_windows_path, _ = (
+        _replace_literal_windows_path_substitutions(script, depth=depth)
+    )
+    if any(marker in masked for marker in ("$(", "${", "`")):
+        return None
+    try:
+        tokens = shlex.split(masked, posix=True)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        for placeholder, replacement in replacements.items():
+            token = token.replace(placeholder, replacement)
+        tokens[index] = token
+    if not tokens:
+        return None
+    executable = _executable_name(tokens[0])
+    value: str | None = None
+    if executable == "printf":
+        if len(tokens) == 2 and "%" not in tokens[1]:
+            value = tokens[1]
+        elif len(tokens) == 3 and tokens[1] == "%s":
+            value = tokens[2]
+    elif executable == "echo" and len(tokens) == 2:
+        value = tokens[1]
+    if value is None or _has_dynamic_shell_path(value):
+        return None
+    return value, bool(
+        has_windows_path or _WINDOWS_PATH_TOKEN_RE.match(value)
+    )
+
+
+def _replace_literal_windows_path_substitutions(
+    word: str, depth: int = 0,
+) -> tuple[str, dict[str, str], bool, bool]:
+    """Mask executable path substitutions and protected quoted literals."""
+    chars: list[str] = []
+    replacements: dict[str, str] = {}
+    index = 0
+    in_single_quote = False
+    in_double_quote = False
+    has_verified_path = False
+    has_protected_literal = False
+
+    def next_placeholder() -> str:
+        codepoint = 0xE000
+        while chr(codepoint) in word or chr(codepoint) in replacements:
+            codepoint += 1
+        return chr(codepoint)
+
+    def protect(value: str) -> None:
+        placeholder = next_placeholder()
+        replacements[placeholder] = value
+        chars.append(placeholder)
+
+    while index < len(word):
+        char = word[index]
+        if char == "\\" and not in_single_quote and index + 1 < len(word):
+            if word[index + 1] in {"$", "`"}:
+                protect(word[index + 1])
+                has_protected_literal = True
+                index += 2
+                continue
+            chars.extend(word[index : index + 2])
+            index += 2
+            continue
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            chars.append(char)
+            index += 1
+            continue
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            chars.append(char)
+            index += 1
+            continue
+        if in_single_quote and char == "$":
+            protect(char)
+            has_protected_literal = True
+            index += 1
+            continue
+        if word.startswith("$(", index):
+            end = _scan_dollar_paren_end(word, index)
+            if end is not None:
+                if in_single_quote:
+                    protect(word[index:end])
+                    has_protected_literal = True
+                    index = end
+                    continue
+                result = _literal_shell_output(word[index + 2 : end - 1], depth + 1)
+                if result is not None:
+                    replacement, replacement_has_path = result
+                    protect(replacement)
+                    has_verified_path |= replacement_has_path
+                    index = end
+                    continue
+        if char == "`":
+            end = _scan_backtick_end(word, index)
+            if end is not None:
+                if in_single_quote:
+                    protect(word[index:end])
+                    has_protected_literal = True
+                    index = end
+                    continue
+                result = _literal_shell_output(word[index + 1 : end - 1], depth + 1)
+                if result is not None:
+                    replacement, replacement_has_path = result
+                    protect(replacement)
+                    has_verified_path |= replacement_has_path
+                    index = end
+                    continue
+        chars.append(char)
+        index += 1
+    return (
+        "".join(chars),
+        replacements,
+        has_verified_path,
+        has_protected_literal,
+    )
+
+
 def _shell_words_at(command: str, start: int) -> list[str]:
     words: list[str] = []
     cursor = start
@@ -179,7 +345,61 @@ def _shell_words_at(command: str, start: int) -> list[str]:
             break
         if words and "\n" in command[cursor:word_start]:
             break
-        words.append(_deobfuscate_shell_word_for_detection(raw_word))
+        decoded = None
+        replacements: dict[str, str] = {}
+        has_verified_path = False
+        has_protected_literal = False
+        if os.name == "nt":
+            (
+                literal_word,
+                replacements,
+                has_verified_path,
+                has_protected_literal,
+            ) = _replace_literal_windows_path_substitutions(raw_word)
+        else:
+            literal_word = raw_word
+        has_dynamic_path = _has_dynamic_shell_path(literal_word)
+        literal_word = _replace_simple_command_substitutions(literal_word)
+        if os.name == "nt" and not any(
+            marker in literal_word for marker in ("$(", "${", "`")
+        ):
+            # The generic detector intentionally deobfuscates twice.  That is
+            # useful for command spellings, but a quoted native path loses its
+            # quotes on pass one and then loses literal backslashes on pass
+            # two.  Prefer shlex's quote-correct value only for an actual
+            # Windows path token; leave every other word on the established
+            # deobfuscation path.
+            try:
+                shell_values = shlex.split(literal_word, posix=True)
+            except ValueError:
+                shell_values = []
+            if len(shell_values) == 1:
+                candidate = shell_values[0]
+                for placeholder, replacement in replacements.items():
+                    candidate = candidate.replace(placeholder, replacement)
+                is_quoted_relative_windows_path = (
+                    len(raw_word) >= 2
+                    and raw_word[0] in {"'", '"'}
+                    and raw_word[-1] == raw_word[0]
+                    and "\\" in candidate
+                )
+                if has_verified_path or (
+                    not has_protected_literal
+                    and (
+                        _WINDOWS_PATH_TOKEN_RE.search(candidate)
+                        or is_quoted_relative_windows_path
+                    )
+                ):
+                    decoded = candidate
+        if decoded is None:
+            fallback_word = literal_word if has_protected_literal else raw_word
+            decoded = _deobfuscate_shell_word_for_detection(fallback_word)
+            if has_protected_literal:
+                for placeholder, replacement in replacements.items():
+                    decoded = decoded.replace(placeholder, replacement)
+        if has_dynamic_path:
+            decoded += _DYNAMIC_SHELL_PATH_MARKER
+        words.append(decoded)
         cursor = word_end
     return words
 
@@ -457,9 +677,10 @@ def _git_target_and_subcommand(
     args: list[str],
     current_dir: Path,
     env: dict[str, str],
-) -> tuple[Path, str | None, list[str], dict[str, str]]:
+) -> tuple[Path, str | None, list[str], dict[str, str], bool]:
     target = current_dir
     work_tree: str | None = None
+    has_dynamic_target = False
     aliases: dict[str, str] = {}
     index = 0
 
@@ -469,11 +690,15 @@ def _git_target_and_subcommand(
             index += 1
             break
         if arg == "-C" and index + 1 < len(args):
-            target = _resolve(args[index + 1], target)
+            value = args[index + 1]
+            has_dynamic_target |= _DYNAMIC_SHELL_PATH_MARKER in value
+            target = _resolve(_strip_dynamic_shell_marker(value), target)
             index += 2
             continue
         if arg.startswith("-C") and len(arg) > 2:
-            target = _resolve(arg[2:], target)
+            value = arg[2:]
+            has_dynamic_target |= _DYNAMIC_SHELL_PATH_MARKER in value
+            target = _resolve(_strip_dynamic_shell_marker(value), target)
             index += 1
             continue
         if arg in {"--work-tree", "--git-dir", "--namespace", "--exec-path"}:
@@ -504,9 +729,10 @@ def _git_target_and_subcommand(
 
     explicit_work_tree = work_tree or env.get("GIT_WORK_TREE")
     if explicit_work_tree:
-        target = _resolve(explicit_work_tree, target)
+        has_dynamic_target = _DYNAMIC_SHELL_PATH_MARKER in explicit_work_tree
+        target = _resolve(_strip_dynamic_shell_marker(explicit_work_tree), target)
     subcommand = args[index].lower() if index < len(args) else None
-    return target, subcommand, args[index + 1 :], aliases
+    return target, subcommand, args[index + 1 :], aliases, has_dynamic_target
 
 
 def _mutates_worktree(subcommand: str, args: list[str]) -> bool:
@@ -559,7 +785,10 @@ def _inspect_git_worktree(args: list[str], cwd: Path, root: Path) -> str | None:
     target_index = _next_positional(args, action_index + 1)
     if target_index >= len(args):
         return None
-    if _resolve(args[target_index], cwd) == root:
+    target = args[target_index]
+    if _DYNAMIC_SHELL_PATH_MARKER in target:
+        return f"git worktree {action}"
+    if _resolve(_strip_dynamic_shell_marker(target), cwd) == root:
         return f"git worktree {action}"
     return None
 
@@ -587,14 +816,18 @@ def _inspect_git(
     root: Path,
     depth: int,
 ) -> str | None:
-    target, subcommand, sub_args, inline_aliases = _git_target_and_subcommand(
+    target, subcommand, sub_args, inline_aliases, has_dynamic_target = (
+        _git_target_and_subcommand(
         args, current_dir, env
+        )
     )
     if subcommand is None:
         return None
     # `worktree` names its victim as an argument, so the cwd check does not apply.
     if subcommand == "worktree":
         return _inspect_git_worktree(sub_args, target, root)
+    if has_dynamic_target and _mutates_worktree(subcommand, sub_args):
+        return f"git {subcommand}"
     if not _is_within(target, root):
         return None
     if _mutates_worktree(subcommand, sub_args):

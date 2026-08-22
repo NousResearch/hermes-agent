@@ -1,5 +1,7 @@
 """Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
 
+import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -22,6 +24,17 @@ def repo(tmp_path):
 
 def _detect(command, cwd, root):
     return detect_self_repo_git_mutation(command, str(cwd), source_root=root)
+
+
+def _shell_path(path: Path) -> str:
+    """Render a native path as one shell-safe command argument."""
+    return shlex.quote(path.as_posix())
+
+
+def _msys_path(path: Path) -> str:
+    """Render a resolved Windows path using Git Bash's drive-root spelling."""
+    resolved = path.resolve()
+    return f"/{resolved.drive[0].lower()}{resolved.as_posix()[2:]}"
 
 
 class TestBlocksMutationsInSourceRepo:
@@ -55,11 +68,11 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_dash_c_targeting_repo_from_outside(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {repo} checkout pr-51020", tmp_path, repo)
+        hit, _ = _detect(f"git -C {_shell_path(repo)} checkout pr-51020", tmp_path, repo)
         assert hit is True
 
     def test_cd_into_repo_then_checkout(self, repo, tmp_path):
-        hit, _ = _detect(f"cd {repo} && git checkout pr-51020", tmp_path, repo)
+        hit, _ = _detect(f"cd {_shell_path(repo)} && git checkout pr-51020", tmp_path, repo)
         assert hit is True
 
     def test_relative_cd_into_repo(self, repo):
@@ -105,12 +118,18 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_explicit_work_tree_targeting_repo(self, repo, tmp_path):
-        command = f"git --git-dir={repo / '.git'} --work-tree={repo} checkout main"
+        command = (
+            f"git --git-dir={_shell_path(repo / '.git')} "
+            f"--work-tree={_shell_path(repo)} checkout main"
+        )
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
     def test_git_environment_targeting_repo(self, repo, tmp_path):
-        command = f"GIT_DIR={repo / '.git'} GIT_WORK_TREE={repo} git checkout main"
+        command = (
+            f"GIT_DIR={_shell_path(repo / '.git')} "
+            f"GIT_WORK_TREE={_shell_path(repo)} git checkout main"
+        )
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
@@ -149,6 +168,7 @@ class TestBlocksMutationsInSourceRepo:
 
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
+        monkeypatch.setenv("USERPROFILE", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
         assert hit is True
 
@@ -192,11 +212,11 @@ class TestAllowsSafeCommands:
         assert hit is False
 
     def test_dash_c_redirects_out_of_repo(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {tmp_path} checkout main", repo, repo)
+        hit, _ = _detect(f"git -C {_shell_path(tmp_path)} checkout main", repo, repo)
         assert hit is False
 
     def test_cd_out_of_repo_then_checkout(self, repo, tmp_path):
-        hit, _ = _detect(f"cd {tmp_path} && git checkout main", repo, repo)
+        hit, _ = _detect(f"cd {_shell_path(tmp_path)} && git checkout main", repo, repo)
         assert hit is False
 
     def test_mentioning_repo_path_without_targeting_it(self, repo, tmp_path):
@@ -282,16 +302,25 @@ class TestWorktreeTargetingSourceRoot:
 
     @pytest.mark.parametrize("action", ["remove", "remove -f", "remove --force"])
     def test_blocks_absolute_target_from_outside(self, repo, tmp_path, action):
-        hit, _ = _detect(f"git worktree {action} {repo}", tmp_path, repo)
+        hit, _ = _detect(
+            f"git worktree {action} {_shell_path(repo)}", tmp_path, repo
+        )
         assert hit is True
 
     def test_blocks_move_of_root_from_outside(self, repo, tmp_path):
-        command = f"git worktree move {repo} {tmp_path / 'moved'}"
+        command = (
+            f"git worktree move {_shell_path(repo)} "
+            f"{_shell_path(tmp_path / 'moved')}"
+        )
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
     def test_blocks_dash_c_worktree_remove(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {tmp_path} worktree remove {repo}", tmp_path, repo)
+        hit, _ = _detect(
+            f"git -C {_shell_path(tmp_path)} worktree remove {_shell_path(repo)}",
+            tmp_path,
+            repo,
+        )
         assert hit is True
 
     def test_blocks_parent_relative_target_from_subdirectory(self, repo):
@@ -325,6 +354,219 @@ class TestWorktreeTargetingSourceRoot:
     def test_incomplete_worktree_command_is_not_blocked(self, repo, sub):
         hit, _ = _detect(f"git worktree {sub}".strip(), repo, repo)
         assert hit is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Git Bash drive paths are Windows-only")
+class TestWindowsMsysPathResolution:
+    def test_dash_c_targeting_repo(self, repo, tmp_path):
+        command = f"git -C {_shell_path(Path(_msys_path(repo)))} checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_cd_targeting_repo(self, repo, tmp_path):
+        command = f"cd {_shell_path(Path(_msys_path(repo)))} && git checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dash_c_targeting_repo_with_spaces(self, tmp_path):
+        repo = tmp_path / "hermes agent"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        repo = repo.resolve()
+        command = f"git -C {_shell_path(Path(_msys_path(repo)))} checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dash_c_redirecting_outside_repo(self, repo, tmp_path):
+        command = f"git -C {_shell_path(Path(_msys_path(tmp_path)))} checkout main"
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
+    def test_worktree_remove_targeting_repo(self, repo, tmp_path):
+        command = f"git worktree remove {_shell_path(Path(_msys_path(repo)))}"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_tilde_uses_git_bash_home(self, repo, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(repo.parent))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "different-profile"))
+        hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
+        assert hit is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native backslash paths are Windows-only")
+class TestWindowsQuotedNativePathResolution:
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_dash_c_targeting_repo(self, repo, tmp_path, quote):
+        command = f"git -C {quote}{repo}{quote} checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dash_c_echo_literal_substitution_targeting_repo(self, repo, tmp_path):
+        # Git Bash executes POSIX substitutions on Windows before launching Git.
+        command = f'git -C "$(echo {repo.as_posix()})" checkout main'
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dash_c_more_than_eight_nested_echo_substitutions(self, repo, tmp_path):
+        # Nine levels cross the production evaluator's ``depth > 8`` cap and
+        # must therefore fail closed for a mutating Git subcommand.
+        substitution = f"'{repo.as_posix()}'"
+        for _ in range(9):
+            substitution = f"$(echo {substitution})"
+        command = f'git -C "{substitution}" checkout main'
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_explicit_work_tree_targeting_repo(self, repo, tmp_path):
+        command = f"git --work-tree='{repo}' checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_environment_work_tree_targeting_repo(self, repo, tmp_path):
+        command = f"GIT_WORK_TREE='{repo}' git checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize("style", ["printf", "printf-format", "backtick"])
+    def test_dash_c_literal_command_substitution_targeting_repo(
+        self, repo, tmp_path, style
+    ):
+        if style == "printf":
+            substitution = f"$(printf '{repo}')"
+        elif style == "printf-format":
+            substitution = f"$(printf '%s' '{repo}')"
+        else:
+            substitution = f"`printf '{repo}'`"
+        command = f'git -C "{substitution}" checkout main'
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_literal_command_substitution_preserves_unc_path(self):
+        import tools.self_repo_guard as mod
+
+        command = r'''git -C "$(printf '\\server\share\repo')" checkout main'''
+        assert mod._shell_words_at(command, 0)[2] == r"\\server\share\repo"
+
+    def test_literal_command_substitution_avoids_placeholder_collision(self):
+        import tools.self_repo_guard as mod
+
+        command = (
+            r'''git -C "__HERMES_WINDOWS_PATH_0__'''
+            r'''$(printf 'C:\repo')" checkout main'''
+        )
+        assert mod._shell_words_at(command, 0)[2] == (
+            r"__HERMES_WINDOWS_PATH_0__C:\repo"
+        )
+
+    def test_literal_command_substitution_avoids_private_sentinel_collision(self):
+        import tools.self_repo_guard as mod
+
+        literal_sentinel = "\ue000"
+        command = f'''git -C "{literal_sentinel}$(printf 'C:\\repo')" checkout main'''
+        assert mod._shell_words_at(command, 0)[2] == (
+            f"{literal_sentinel}C:\\repo"
+        )
+
+    @pytest.mark.parametrize(
+        "substitution",
+        [
+            '$(printf "{path}")',
+            '`printf "{path}"`',
+        ],
+    )
+    def test_single_quoted_substitution_remains_literal(
+        self, repo, tmp_path, substitution
+    ):
+        literal = substitution.format(path=repo.as_posix())
+        command = f"git -C '{literal}' checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is False
+
+    def test_double_quoted_substitution_is_evaluated(self, repo, tmp_path):
+        command = f'''git -C "$(printf '{repo}')" checkout main'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            '''git -C "$(printf '{path}')$(printf '')" checkout main''',
+            '''git -C "$(printf "$(printf '{path}')")" checkout main''',
+            '''git -C "$(printf '{path}')`printf ''`" checkout main''',
+        ],
+    )
+    def test_composed_literal_substitution_targets_repo(
+        self, repo, tmp_path, command_template
+    ):
+        command = command_template.format(path=repo)
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "literal",
+        [
+            r'''\$(printf '{path}')''',
+            r'''\`printf '{path}'\`''',
+        ],
+    )
+    def test_escaped_substitution_remains_literal(self, repo, tmp_path, literal):
+        command = f'''git -C "{literal.format(path=repo.as_posix())}" checkout main'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize("variable", ["HOME", "PWD"])
+    def test_dynamic_parameter_targeting_repo_fails_closed(
+        self, repo, tmp_path, monkeypatch, variable
+    ):
+        monkeypatch.setenv(variable, str(repo))
+        command = f'''git -C "$(printf "${variable}")" checkout main'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dynamic_environment_work_tree_fails_closed(
+        self, repo, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(repo))
+        command = '''GIT_WORK_TREE="$HOME" git checkout main'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dynamic_worktree_victim_fails_closed(
+        self, repo, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(repo))
+        command = '''git worktree remove "$HOME"'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_dynamic_parameter_read_only_git_is_allowed(
+        self, repo, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(repo))
+        command = '''git -C "$(printf "$HOME")" status'''
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is False
+
+    def test_single_quoted_parameter_remains_literal(self, repo, tmp_path):
+        command = "git -C '$HOME' checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is False
+
+    def test_unquoted_backslashes_follow_shell_escape_semantics(self, repo, tmp_path):
+        hit, _ = _detect(f"git -C {repo} checkout main", tmp_path, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_quoted_relative_native_path_targeting_repo(
+        self, repo, tmp_path, quote
+    ):
+        nested = repo / "nested"
+        nested.mkdir()
+        relative = f"{repo.name}\\nested"
+        command = f"git -C {quote}{relative}{quote} checkout main"
+        hit, _ = _detect(command, repo.parent, repo)
+        assert hit is True
 
 
 class TestSourceRootResolution:
@@ -374,8 +616,9 @@ class TestBlockMessageGuidance:
         assert "tmpfs" in msg
         assert "Delete the clone" in msg
 
-    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", "/custom/hermes-home")
+    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "custom-hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
-        assert "/custom/hermes-home/scratch" in msg
+        assert str(hermes_home / "scratch") in msg

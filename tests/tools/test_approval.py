@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import os
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -99,14 +100,20 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
-    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(
+        self, tmp_path
+    ):
+        real_temp = tmp_path / "real-temp"
+        real_temp.mkdir()
+        with mock_patch("tempfile.gettempdir", return_value=str(real_temp)):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
-                    False,
-                    None,
-                    None,
-                )
+                artifact = real_temp / f"{prefix}example.py"
+                for spelling in (artifact.as_posix(), shlex.quote(str(artifact))):
+                    assert detect_dangerous_command(f"rm -f {spelling}") == (
+                        False,
+                        None,
+                        None,
+                    )
 
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"
@@ -116,12 +123,16 @@ class TestDetectDangerousRm:
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
-            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
-                False,
-                None,
-                None,
-            )
+            linked = linked_temp / basename
+            canonical = real_temp / basename
+            for spelling in (linked.as_posix(), shlex.quote(str(linked))):
+                assert detect_dangerous_command(f"rm -f {spelling}")[0] is True
+            for spelling in (canonical.as_posix(), shlex.quote(str(canonical))):
+                assert detect_dangerous_command(f"rm -f {spelling}") == (
+                    False,
+                    None,
+                    None,
+                )
 
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
         commands = (
@@ -141,6 +152,22 @@ class TestDetectDangerousRm:
                 assert is_dangerous is True, command
                 assert key is not None, command
                 assert "delete" in desc.lower(), command
+
+    def test_shell_safe_windows_verifier_broader_deletions_are_dangerous(
+        self, tmp_path
+    ):
+        real_temp = tmp_path / "real-temp"
+        real_temp.mkdir()
+        artifact = (real_temp / "hermes-verify-example.py").as_posix()
+        commands = (
+            f"rm -rf {artifact}",
+            f"rm -f {artifact} {(real_temp / 'other.py').as_posix()}",
+            f"rm -f {(real_temp / 'hermes-verify-*.py').as_posix()}",
+            f"rm -f {artifact}; touch pwned",
+        )
+        with mock_patch("tempfile.gettempdir", return_value=str(real_temp)):
+            for command in commands:
+                assert detect_dangerous_command(command)[0] is True, command
 
 
 class TestWindowsShellDestructiveCommands:

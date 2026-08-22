@@ -2297,25 +2297,48 @@ def _command_detection_variants(command: str):
         yield variant
 
 
-def _is_verification_artifact_cleanup(command: str) -> bool:
-    """Return whether *command* only removes one Hermes ad-hoc temp script."""
+def _path_spelling_key(path: str) -> str:
+    """Normalize only platform separator and case, not path components."""
+    if os.altsep:
+        path = path.replace(os.altsep, os.sep)
+    return os.path.normcase(path)
+
+
+def _verification_artifact_cleanup_status(command: str) -> str | None:
+    """Classify a narrowly shaped Hermes ad-hoc temp-script cleanup."""
     try:
         argv = shlex.split(command, posix=True)
     except ValueError:
-        return False
-    if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
-        return False
+        return None
+    if not argv or argv[0] != "rm":
+        return None
+
+    verifier_operands = [
+        value
+        for value in argv[1:]
+        if os.path.basename(value).startswith(("hermes-verify-", "hermes-ad-hoc-"))
+    ]
+    if not verifier_operands:
+        return None
+    if len(argv) != 3 or argv[1] != "-f":
+        return "dangerous"
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
-        return False
+    if re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is None:
+        return "dangerous"
+
+    temp_dir = os.path.realpath(tempfile.gettempdir())
+    expected = os.path.join(temp_dir, basename)
+    if not os.path.isabs(operand):
+        return "dangerous"
+    if _path_spelling_key(operand) != _path_spelling_key(expected):
+        return "dangerous"
 
     target = os.path.realpath(operand)
-    if os.path.dirname(target) != temp_dir:
-        return False
-    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+    if _path_spelling_key(os.path.dirname(target)) != _path_spelling_key(temp_dir):
+        return "dangerous"
+    return "safe"
 
 
 def detect_dangerous_command(command: str) -> tuple:
@@ -2326,8 +2349,12 @@ def detect_dangerous_command(command: str) -> tuple:
     """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
-    if _is_verification_artifact_cleanup(command):
+    cleanup_status = _verification_artifact_cleanup_status(command)
+    if cleanup_status == "safe":
         return (False, None, None)
+    if cleanup_status == "dangerous":
+        description = "delete noncanonical verification artifact path"
+        return (True, description, description)
 
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()

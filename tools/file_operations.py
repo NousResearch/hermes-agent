@@ -364,7 +364,7 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, output_mode: str = "content") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
     ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
@@ -383,6 +383,13 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     error) from a partial failure (some files matched, one was unreadable →
     keep the matches). It also means error text can never be mis-parsed as a
     match, a latent bug that predates the exit-code fix.
+
+    In ``files_only`` mode the shape regex's second alternative
+    (``^[^\\s:][^\\s]*$``) rejects any path containing whitespace, silently
+    dropping results for directories like ``"Obsidian Vault"`` (issue #91698).
+    In that mode ``rg -l`` / ``grep -l`` emit one bare path per line with no
+    line-number suffix, so we classify every non-diagnostic-prefixed line as
+    a path — spaces included.
     """
     diagnostics: list[str] = []
     payload: list[str] = []
@@ -398,6 +405,17 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         stripped = line.lstrip()
         if stripped.startswith("rg: ") or stripped.startswith("grep: "):
             diagnostics.append(line)
+            continue
+        if output_mode == "files_only":
+            # In files_only mode every non-diagnostic line is a path.
+            # rg's regex-parse-error block emits indented caret lines and a
+            # trailing "error: ..." line without the tool prefix; those start
+            # with whitespace or "error:" and are not valid paths, so filter
+            # them out.
+            if stripped.startswith("error:") or line != line.lstrip():
+                diagnostics.append(line)
+            else:
+                payload.append(line)
             continue
         # Otherwise classify by output shape. rg's regex-parse-error block
         # also emits an indented caret line and a trailing "error: ..." line
@@ -3182,7 +3200,7 @@ class ShellFileOperations(FileOperations):
         # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
         # are interleaved with match output. Split them out: diagnostics must
         # not be parsed as matches, and on a hard error they ARE the message.
-        diagnostics, payload = _split_tool_diagnostics(stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout, output_mode=output_mode)
 
         # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
         # even on partial errors (e.g. one unreadable file in a tree that
@@ -3330,7 +3348,7 @@ class ShellFileOperations(FileOperations):
         # ("grep: <file>: <error>") are interleaved with matches. Split them
         # out so they're never parsed as matches and so a hard error has a
         # clean message.
-        diagnostics, payload = _split_tool_diagnostics(stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout, output_mode=output_mode)
 
         # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
         # returns 2 on partial errors (e.g. an unreadable file) even when

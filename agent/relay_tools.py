@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
-import inspect
 import json
 import logging
 from collections.abc import Callable
 from typing import Any
 
-from agent import relay_runtime
+from agent import relay_await, relay_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +124,9 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 
 def _run_awaitable(value: Any) -> Any:
-    if not inspect.isawaitable(value):
-        return value
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(value)
-    raise RuntimeError(
-        "Synchronous Hermes Relay tool execution cannot run on an active event-loop thread"
+    return relay_await.run_awaitable(
+        value,
+        on_loop_error=(
+            "Synchronous Hermes Relay tool execution cannot run on an active event-loop thread"
+        ),
     )

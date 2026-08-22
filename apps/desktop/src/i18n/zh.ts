@@ -2327,6 +2327,7 @@ export const zh: Translations = {
       moveFailed: '无法移动会话',
       moveNoFolder: '该项目没有可移入的文件夹',
       moveNoProjects: '没有其他项目',
+      moveCreateNew: '新建项目…',
       reveal: '在文件夹中显示',
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',

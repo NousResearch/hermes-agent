@@ -2251,6 +2251,47 @@ def _profile_runtime_scope(profile_home: "Path"):
         reset_hermes_home_override(home_token)
 
 
+def _profile_terminal_cwd(profile_home: "Path") -> Optional[str]:
+    """Read an explicit ``terminal.cwd`` from one profile's config.
+
+    The multiplexed gateway's process environment belongs to its launch
+    profile, so it cannot represent another routed profile's cwd.  Keep this
+    read side-effect free and return ``None`` for placeholders so the existing
+    process-level fallback remains intact.
+    """
+    try:
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+
+        config_path = Path(profile_home) / "config.yaml"
+        if not config_path.exists():
+            return None
+        config = read_user_config_raw(config_path)
+        try:
+            from hermes_cli import managed_scope
+
+            config = managed_scope.apply_managed_overlay(config)
+        except Exception:
+            pass
+        config = _expand_env_vars(config)
+        terminal = config.get("terminal", {}) if isinstance(config, dict) else {}
+        if not isinstance(terminal, dict):
+            return None
+        raw = str(terminal.get("cwd") or "").strip()
+        if not raw or raw in CWD_PLACEHOLDERS:
+            return None
+        backend = str(terminal.get("backend") or "local").strip().lower()
+        if not _is_ssh_remote_tilde_cwd(backend, raw):
+            raw = os.path.expanduser(raw)
+        return raw
+    except Exception:
+        logger.debug(
+            "Failed to resolve profile terminal cwd from %s",
+            profile_home,
+            exc_info=True,
+        )
+        return None
+
+
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 
@@ -24432,6 +24473,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _session_cwd = ""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            from tools.terminal_tool import get_session_cwd, record_session_cwd
+
+            # Preserve this session's live `cd` state across turns.  Only a
+            # session without a record is seeded from its routed profile.
+            _session_cwd = get_session_cwd(context.session_key) or ""
+            if not _session_cwd:
+                profile_home = self._resolve_profile_home_for_source(context.source)
+                _session_cwd = _profile_terminal_cwd(profile_home) or ""
+                if _session_cwd:
+                    record_session_cwd(context.session_key, _session_cwd)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -24447,6 +24500,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=_session_cwd,
             async_delivery=_async_delivery,
             cron_session="",
         )

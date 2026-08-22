@@ -8,6 +8,7 @@ import path as a package) and exercises the provider behaviour + the
 
 from __future__ import annotations
 
+import base64
 import secrets
 from unittest.mock import MagicMock
 
@@ -219,3 +220,84 @@ class TestRegister:
         p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is not None
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated signing-secret persistence (restart survival)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistedAutoSecret:
+    """When no secret is configured, the plugin should auto-generate one and
+    persist it to $HERMES_HOME/dashboard-auth/basic-secret so a dashboard
+    restart (or multiple workers sharing one home) reuses the same signing
+    key and sessions survive. Explicit secret must still win."""
+
+    def _patch_home(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            basic_plugin,
+            "_persisted_secret_path",
+            lambda: str(tmp_path / "basic-secret"),
+        )
+        return tmp_path / "basic-secret"
+
+    def test_auto_secret_is_stable_across_restarts(self, basic, monkeypatch, tmp_path):
+        secret_path = self._patch_home(monkeypatch, tmp_path)
+        # No explicit secret anywhere.
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        s1 = basic._resolve_secret({})
+        # Simulate a restart: a fresh call (same persisted file) returns the same key.
+        s2 = basic._resolve_secret({})
+        assert s1 == s2
+        assert len(s1) >= 16
+        # The persisted file exists and matches.
+        assert secret_path.read_bytes() == s1
+
+    def test_auto_secret_lets_sessions_survive_restart(
+        self, basic, monkeypatch, tmp_path
+    ):
+        self._patch_home(monkeypatch, tmp_path)
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
+
+        # First "boot": auto-generates + persists, registers provider.
+        ctx1 = MagicMock()
+        basic.register(ctx1)
+        p1 = ctx1.register_dashboard_auth_provider.call_args.args[0]
+        s = p1.complete_password_login(username="admin", password="hunter2")
+
+        # Second "boot" after a restart: same persisted secret → accepts the
+        # token minted before the restart.
+        ctx2 = MagicMock()
+        basic.register(ctx2)
+        p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
+        assert p2.verify_session(access_token=s.access_token) is not None
+
+    def test_explicit_secret_wins_over_persisted(
+        self, basic, monkeypatch, tmp_path
+    ):
+        secret_path = self._patch_home(monkeypatch, tmp_path)
+        # Pre-seed a persisted secret that MUST NOT be used.
+        secret_path.write_bytes(b"persisted-should-lose")
+        explicit = base64.b64encode(secrets.token_bytes(32)).decode()
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", explicit)
+        assert basic._resolve_secret({}) == base64.b64decode(explicit)
+
+    def test_unresolvable_home_falls_back_to_random(
+        self, basic, monkeypatch
+    ):
+        # When the persisted path is unavailable, fall back to a fresh random
+        # per-process secret (old behaviour) — never raises.
+        monkeypatch.setattr(basic, "_persisted_secret_path", lambda: None)
+        assert len(basic._resolve_secret({})) >= 16
+
+    def test_missing_env_and_config_uses_persisted(
+        self, basic, monkeypatch, tmp_path
+    ):
+        secret_path = self._patch_home(monkeypatch, tmp_path)
+        # Config section empty, env cleared (autouse fixture already cleared
+        # HERMES_DASHBOARD_BASIC_AUTH_SECRET). Must use/seed the persisted key.
+        s = basic._resolve_secret({})
+        assert s == secret_path.read_bytes()

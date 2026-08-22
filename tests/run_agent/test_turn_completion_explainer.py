@@ -154,6 +154,17 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
+def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "replaced"
+    )
+    lower = out.lower()
+    assert "replaced" in lower
+    assert "doctor --fix" in lower or "in-place" in lower
+    assert "free some space" not in lower
+    assert "full disk" not in lower
+
+
 def test_explanation_persistence_unknown_cause_is_neutral():
     """None/'unknown' cause must not claim disk-full — point at diagnostics."""
     for cause in (None, "unknown"):
@@ -305,6 +316,7 @@ def test_persistence_error_causes_tuple_matches_classifier():
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
+        "FATAL: state.db was replaced underneath the gateway",
         "database or disk is full",
         "something else entirely",
         None,

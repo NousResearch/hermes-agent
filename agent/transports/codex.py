@@ -389,7 +389,7 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
         from agent.codex_responses_adapter import _responses_tools
-        return _responses_tools(tools)
+        return _responses_tools(self.project_tools(tools))
 
     def build_kwargs(
         self,
@@ -515,7 +515,7 @@ class ResponsesApiTransport(ProviderTransport):
             _supported = codex_supported_efforts(model)
         reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
-        response_tools = _responses_tools(tools)
+        response_tools = self.convert_tools(tools)
 
         # xAI server-side web search vs Hermes web providers.
         #

@@ -26,6 +26,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **Anthropic (native)** | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (the model's own credential — Anthropic-served models only) | ✔ | ✔ | Paid (per-search charge + tokens) |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
@@ -37,6 +38,8 @@ A fresh install with **no web credentials at all** gets working `web_search` and
 :::
 
 **Choosing free vs paid explicitly:** in `hermes tools`, Exa, Parallel, and Keenable each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins that vendor's anonymous endpoint (even if you later add a key); picking Paid pins the keyed path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise the keyless ring).
+
+**Anthropic (native) runs inside the model request:** selecting `anthropic` maps `web_search` and `web_extract` onto Anthropic's server-side `web_search` and `web_fetch` tools. They execute inside the Messages API call, reuse the same Anthropic credential as the model, and return source citations in Claude's response — and they only ever execute there. There is no client-side fallback, no other transport carries them, and compatible third-party Anthropic endpoints are not assumed to host them. Hermes therefore counts `anthropic` as usable only while the model is served by Anthropic itself: when every web capability routes to `anthropic` on a model served elsewhere, the `web` toolset reports as unconfigured rather than advertising tools no request can carry. `hermes tools` keeps listing Anthropic as your stored selection — the picker never overrides a choice you made — but marks the row **not usable on the current model**. The keyless free tier does not cover that gap — an explicit `web.backend` outranks it — so web stays off until you select a backend the active model can reach. If another backend keeps `web` enabled while `anthropic` stays selected for just one capability, that tool remains callable and reports that it cannot run locally (nothing is dispatched, so the one-shot keyless rescue has nothing to rescue). See [Anthropic (native)](#anthropic-native) for setup.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -280,6 +283,21 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### Anthropic (native) {#anthropic-native}
+
+Choose **Anthropic Web Search & Fetch** in `hermes tools`, or configure it directly:
+
+```yaml
+web:
+  backend: anthropic
+```
+
+No additional credential is required when `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) was already configured for the model, but the model itself must be served by Anthropic's own API — the key alone does not enable this backend elsewhere. Search uses `web_search_20250305`; fetch uses `web_fetch_20250910` with citations enabled. Both are capped at five uses per model request, and fetched page text is capped at roughly 25 000 tokens so a single large page cannot fill the context window — note that Anthropic applies this limit to text only, not to binary content such as PDFs. Anthropic web search has a per-search charge in addition to normal token usage.
+
+**No `[TRUNCATED]` footers here:** `web.extract_char_limit` and the head+tail window described [above](#how-web_extract-handles-long-pages) bound results that pass through Hermes, and the native fetch never does — it runs inside the Messages API request, so the ~25 000-token server-side cap is what bounds it instead.
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
@@ -336,7 +354,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | anthropic | xai
 ```
 
 ### Per-capability configuration
@@ -377,6 +395,8 @@ If no backend has **ever** been selected (no `web.backend` / per-capability key 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
+
+Anthropic's native web tools are **not** in the auto-detection chain either, for the same reason plus a stronger one: `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` is a model credential that says nothing about which endpoint serves the model, and the tools only run on Anthropic's own endpoint. An Anthropic-only install with no web selection is therefore served by the keyless ring like any other credential-free install. Opt in explicitly with `web.backend: "anthropic"`.
 
 ---
 
@@ -437,6 +457,8 @@ Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docke
 ### `web_extract` returns truncated content with a `[TRUNCATED]` footer
 
 That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call.
+
+Neither knob has any effect on the [Anthropic (native)](#anthropic-native) backend — its fetch is bounded server-side and never produces a `[TRUNCATED]` footer.
 
 ---
 

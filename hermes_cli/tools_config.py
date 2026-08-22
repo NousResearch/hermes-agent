@@ -498,6 +498,22 @@ TOOL_CATEGORIES = {
         #   - "Firecrawl Self-Hosted" — points firecrawl at a private
         #     Docker instance via FIRECRAWL_API_URL only.
         # See PR #25182 for the migration rationale.
+        #
+        # ...plus one deliberate exception, listed LAST:
+        #   - "Anthropic Web Search & Fetch" — a real backend that cannot be
+        #     a plugin row, because it is not a WebSearchProvider at all: it
+        #     binds `web_search`/`web_extract` onto Anthropic's server-side
+        #     tools, which run inside the Messages API request rather than
+        #     through any client-side dispatch, so there is nothing for
+        #     _plugin_web_search_providers() to enumerate. It stays at the end
+        #     of this list so it is not index 0 — _detect_active_provider_index
+        #     falls back to the first row, and an opt-in paid backend that only
+        #     works on Anthropic-served models must never be the pre-selected
+        #     default. The docs table (website/docs/user-guide/features/
+        #     web-search.md) orders it second-to-last, immediately before xAI;
+        #     the picker cannot match that exactly, since every plugin row is
+        #     appended after this whole block, but last-of-the-hardcoded-rows
+        #     is the closest the static/injected split allows.
         "providers": [
             {
                 "name": "Nous Subscription",
@@ -517,6 +533,13 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
+            },
+            {
+                "name": "Anthropic Web Search & Fetch",
+                "badge": "native",
+                "tag": "Uses the Anthropic key already configured for the model",
+                "web_backend": "anthropic",
+                "env_vars": [],
             },
         ],
     },
@@ -3777,7 +3800,13 @@ def _configure_tool_category(
                     sub_marker = "  ★ Included with your Nous subscription"
                 else:
                     sub_marker = "  ★ via Nous Portal (login on select)"
-            provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
+            # A row can be the stored selection and still be inert on this
+            # model (see _provider_unusable_note) — say so instead of showing
+            # a bare "[active]".
+            unusable = _provider_unusable_note(p)
+            provider_choices.append(
+                f"{p['name']}{badge}{tag}{configured}{unusable}{sub_marker}"
+            )
 
         # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
@@ -3986,6 +4015,40 @@ def _is_provider_active(
             and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
+
+
+def _provider_unusable_note(provider: dict) -> str:
+    """Picker marker for a row the current setup cannot actually run, else ``""``.
+
+    ``_is_provider_active`` answers one question — "is this row the stored
+    selection?" — and for the Anthropic web row the honest answer stays yes
+    even when nothing can execute it. Anthropic's ``web_search``/``web_fetch``
+    are not a credential and have no client-side provider to fall back to:
+    they run inside the Anthropic Messages API request, so the row is usable
+    only while the configured model is served by Anthropic itself. On any
+    other model the binding is stripped before the request goes out and the
+    ``web`` toolset reports unconfigured, so rendering the row as a plain
+    ``[active]`` would tell the user the opposite of what is happening.
+
+    Returned as a marker appended to the menu label (same shape as the Nous
+    ``★`` marker) rather than folded into ``_is_provider_active``, which also
+    drives the default cursor and the GUI's current-provider lookup — those
+    must keep pointing at the stored selection.
+
+    The endpoint test comes from ``tools.web_tools`` so the picker, doctor and
+    the tool gate all answer from one predicate.
+    """
+    if provider.get("web_backend") != "anthropic":
+        return ""
+    try:
+        from tools.web_tools import _anthropic_native_endpoint_selected
+
+        if _anthropic_native_endpoint_selected():
+            return ""
+    except Exception:
+        # An annotation must never be the thing that breaks the picker.
+        return ""
+    return "  ⚠ Not usable on the current model — needs an Anthropic-served model"
 
 
 def _detect_active_provider_index(
@@ -5086,7 +5149,8 @@ def _configure_tool_category_for_reconfig(
                     configured = ""
                 else:
                     configured = " [configured]"
-            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
+            unusable = _provider_unusable_note(p)
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}{unusable}")
 
         default_idx = _detect_active_provider_index(
             providers,

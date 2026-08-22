@@ -1,4 +1,4 @@
-"""Hermes-tools-as-MCP server for the codex_app_server runtime.
+"""Hermes-tools-as-MCP server for Codex and Copilot ACP runtimes.
 
 When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
@@ -38,8 +38,8 @@ What we DO NOT expose:
                                            comment on EXPOSED_TOOLS below.
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
-Spawned by: CodexAppServerSession.ensure_started() when the runtime is
-            active and config opts in.
+Spawned by: CodexAppServerSession.ensure_started(), or by the Copilot ACP
+            client with a per-turn allowlist and schemas.
 """
 
 from __future__ import annotations
@@ -52,6 +52,9 @@ import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_TOOLS_ENV = "HERMES_TOOLS_MCP_ALLOWED"
+TOOL_SCHEMAS_ENV = "HERMES_TOOLS_MCP_SCHEMAS"
 
 # JSON Schema type -> Python type mapping for signature generation
 _JSON_TO_PY = {
@@ -150,6 +153,65 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_link",
 )
 
+# Copilot ACP disables duplicate built-in tools when this bridge is active, so
+# the ordinary Hermes file/process tools must also be available through the
+# turn-scoped MCP server. Keep EXPOSED_TOOLS unchanged for the Codex runtime,
+# where Codex's native sandboxed equivalents remain preferable.
+COPILOT_EXPOSED_TOOLS: tuple[str, ...] = EXPOSED_TOOLS + (
+    "terminal",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "process",
+)
+
+
+def _configured_exposed_tools() -> tuple[str, ...]:
+    """Return the caller-scoped tool subset, preserving the legacy default."""
+    raw = os.getenv(ALLOWED_TOOLS_ENV)
+    if raw is None:
+        return EXPOSED_TOOLS
+    try:
+        requested = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(requested, list):
+        return ()
+    allowed = {name for name in requested if isinstance(name, str)}
+    available = (
+        COPILOT_EXPOSED_TOOLS
+        if os.getenv(TOOL_SCHEMAS_ENV) is not None
+        else EXPOSED_TOOLS
+    )
+    return tuple(name for name in available if name in allowed)
+
+
+def _configured_tool_specs(
+    configured_tools: tuple[str, ...],
+) -> dict[str, dict[str, Any]] | None:
+    """Load caller-supplied schemas, or signal the legacy discovery path."""
+    raw = os.getenv(TOOL_SCHEMAS_ENV)
+    if raw is None:
+        return None
+    try:
+        supplied = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(supplied, dict):
+        return {}
+
+    specs: dict[str, dict[str, Any]] = {}
+    for name in configured_tools:
+        spec = supplied.get(name)
+        if not isinstance(spec, dict) or spec.get("name") != name:
+            continue
+        parameters = spec.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        specs[name] = spec
+    return specs
+
 
 def _build_server() -> Any:
     """Create the MCP server with Hermes tools attached. Lazy imports
@@ -164,12 +226,6 @@ def _build_server() -> Any:
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
         ) from exc
 
-    # Discover Hermes tools so dispatch works.
-    from model_tools import (
-        get_tool_definitions,
-        handle_function_call,
-    )
-
     mcp = MCPServer(
         "hermes-tools",
         instructions=(
@@ -181,17 +237,22 @@ def _build_server() -> Any:
         ),
     )
 
-    # Pull authoritative Hermes tool schemas for the ones we expose, so
-    # MCP clients see the same parameter docs Hermes gives the model.
-    all_defs = {
-        td["function"]["name"]: td["function"]
-        for td in (get_tool_definitions(quiet_mode=True) or [])
-        if isinstance(td, dict) and td.get("type") == "function"
-    }
+    configured_tools = _configured_exposed_tools()
+    all_defs = _configured_tool_specs(configured_tools)
+    if all_defs is None:
+        # Legacy Codex app-server path: no turn-scoped schemas were supplied,
+        # so discover the authoritative Hermes registry as before.
+        from model_tools import get_tool_definitions
+
+        all_defs = {
+            td["function"]["name"]: td["function"]
+            for td in (get_tool_definitions(quiet_mode=True) or [])
+            if isinstance(td, dict) and td.get("type") == "function"
+        }
 
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
+    for name in configured_tools:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
@@ -216,6 +277,17 @@ def _build_server() -> Any:
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
+                    if tool_name == "skills_list":
+                        from tools.skills_tool import skills_list
+
+                        return skills_list(**args)
+                    if tool_name == "skill_view":
+                        from tools.skills_tool import skill_view
+
+                        return skill_view(**args)
+
+                    from model_tools import handle_function_call
+
                     return handle_function_call(tool_name, args or {})
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
@@ -245,7 +317,7 @@ def _build_server() -> Any:
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(configured_tools),
     )
     return mcp
 

@@ -9,6 +9,7 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import json
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -106,6 +107,62 @@ class TestModuleSurface:
             f"these tools must NOT be exposed via the codex callback "
             f"because codex has built-in equivalents: {leaked}"
         )
+
+    def test_allowed_tools_env_filters_exposed_tools(self, monkeypatch):
+        from agent.transports import hermes_tools_mcp_server as m
+
+        monkeypatch.setenv(
+            "HERMES_TOOLS_MCP_ALLOWED",
+            json.dumps(["skills_list", "terminal", "not_registered"]),
+        )
+
+        assert m._configured_exposed_tools() == ("skills_list",)
+
+    def test_turn_scoped_schema_mode_can_expose_hermes_terminal(self, monkeypatch):
+        from agent.transports import hermes_tools_mcp_server as m
+
+        monkeypatch.setenv(
+            "HERMES_TOOLS_MCP_ALLOWED",
+            json.dumps(["skills_list", "terminal"]),
+        )
+        monkeypatch.setenv("HERMES_TOOLS_MCP_SCHEMAS", "{}")
+
+        assert m._configured_exposed_tools() == ("skills_list", "terminal")
+
+    def test_missing_allowed_tools_env_preserves_existing_codex_contract(
+        self, monkeypatch
+    ):
+        from agent.transports import hermes_tools_mcp_server as m
+
+        monkeypatch.delenv("HERMES_TOOLS_MCP_ALLOWED", raising=False)
+
+        assert m._configured_exposed_tools() == m.EXPOSED_TOOLS
+
+    def test_supplied_schemas_are_filtered_to_configured_tools(self, monkeypatch):
+        from agent.transports import hermes_tools_mcp_server as m
+
+        monkeypatch.setenv(
+            "HERMES_TOOLS_MCP_SCHEMAS",
+            json.dumps(
+                {
+                    "skills_list": {
+                        "name": "skills_list",
+                        "description": "List skills",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                    "terminal": {
+                        "name": "terminal",
+                        "description": "Must not leak",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ),
+        )
+
+        specs = m._configured_tool_specs(("skills_list",))
+
+        assert specs is not None
+        assert set(specs) == {"skills_list"}
 
 
 

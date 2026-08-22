@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import (
+    CopilotACPClient,
+    _copilot_args_for_hermes_mcp,
+    _copilot_mcp_cli_config,
+    _hermes_tools_mcp_bridge,
+)
 
 
 class _FakeProcess:
@@ -21,8 +26,6 @@ class _FakeProcess:
 class CopilotACPClientSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = CopilotACPClient(acp_cwd="/tmp")
-
-
 
     def test_stream_true_preserves_tool_call_deltas(self) -> None:
         tool_response = (
@@ -54,6 +57,169 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         )
         self.assertEqual(chunks[1].choices, [])
 
+    def test_hermes_tools_mcp_bridge_exposes_only_requested_safe_tools(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": name, "description": "", "parameters": {}},
+            }
+            for name in ("skills_list", "web_search", "terminal", "unknown_tool")
+        ]
+
+        servers, native_tool_names = _hermes_tools_mcp_bridge(tools)
+
+        self.assertEqual(
+            native_tool_names,
+            {"skills_list", "terminal", "web_search"},
+        )
+        self.assertEqual(len(servers), 1)
+        server = servers[0]
+        self.assertEqual(server["name"], "hermes-tools")
+        self.assertEqual(
+            server["args"],
+            ["-m", "agent.transports.hermes_tools_mcp_server"],
+        )
+        env = {item["name"]: item["value"] for item in server["env"]}
+        self.assertEqual(
+            json.loads(env["HERMES_TOOLS_MCP_ALLOWED"]),
+            ["skills_list", "terminal", "web_search"],
+        )
+        schemas = json.loads(env["HERMES_TOOLS_MCP_SCHEMAS"])
+        self.assertEqual(set(schemas), {"skills_list", "terminal", "web_search"})
+
+    def test_hermes_mcp_disables_copilot_bash_by_default(self) -> None:
+        servers, _ = _hermes_tools_mcp_bridge(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "skills_list",
+                        "description": "List skills",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+        )
+
+        effective = _copilot_args_for_hermes_mcp(
+            ["--acp", "--stdio"],
+            mcp_servers=servers,
+        )
+
+        self.assertEqual(effective[:3], ["--acp", "--stdio", "--excluded-tools"])
+        self.assertIn("bash", effective)
+        self.assertNotIn("apply_patch", effective)
+        config_index = effective.index("--additional-mcp-config") + 1
+        config = json.loads(effective[config_index])
+        self.assertEqual(
+            config["mcpServers"]["hermes-tools"]["tools"],
+            ["*"],
+        )
+        self.assertIn(
+            "HERMES_TOOLS_MCP_ALLOWED",
+            config["mcpServers"]["hermes-tools"]["env"],
+        )
+
+    def test_explicit_copilot_tool_filter_is_preserved(self) -> None:
+        args = ["--acp", "--stdio", "--excluded-tools", "shell"]
+
+        servers, _ = _hermes_tools_mcp_bridge(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "skills_list",
+                        "description": "List skills",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+        )
+
+        effective = _copilot_args_for_hermes_mcp(args, mcp_servers=servers)
+
+        self.assertEqual(effective[: len(args)], args)
+        self.assertEqual(effective.count("--excluded-tools"), 1)
+        self.assertIn("--additional-mcp-config", effective)
+
+    def test_invalid_mcp_entries_do_not_change_copilot_args(self) -> None:
+        args = ["--acp", "--stdio"]
+
+        self.assertIsNone(_copilot_mcp_cli_config([{"name": "broken"}]))
+        self.assertEqual(
+            _copilot_args_for_hermes_mcp(
+                args,
+                mcp_servers=[{"name": "broken"}],
+            ),
+            args,
+        )
+
+    def test_copilot_tool_filter_notice_is_not_returned_to_user(self) -> None:
+        notice = "Info: Disabled tools: bash, create, edit, glob, grep, view"
+        with patch.object(
+            self.client,
+            "_run_prompt",
+            return_value=(notice + "Hermes has 260 skills.", ""),
+        ):
+            completion = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "count skills"}],
+            )
+
+        self.assertEqual(
+            completion.choices[0].message.content,
+            "Hermes has 260 skills.",
+        )
+
+    def test_hermes_tools_mcp_bridge_is_absent_without_matching_tools(self) -> None:
+        servers, native_tool_names = _hermes_tools_mcp_bridge(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_task",
+                        "description": "",
+                        "parameters": {},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(servers, [])
+        self.assertEqual(native_tool_names, set())
+
+    def test_native_mcp_tools_are_not_duplicated_as_xml_tool_specs(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills_list",
+                    "description": "List Hermes skills",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        with patch.object(
+            self.client,
+            "_run_prompt",
+            return_value=("260 skills", ""),
+        ) as run_prompt:
+            self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "count skills"}],
+                tools=tools,
+            )
+
+        prompt_text = run_prompt.call_args.args[0]
+        self.assertIn("skills_list", prompt_text)
+        self.assertIn("MUST use it", prompt_text)
+        self.assertIn("authoritative", prompt_text)
+        self.assertNotIn('"name": "skills_list"', prompt_text)
+        self.assertEqual(
+            run_prompt.call_args.kwargs["mcp_servers"][0]["name"],
+            "hermes-tools",
+        )
 
     def _dispatch(self, message: dict, *, cwd: str) -> dict:
         process = _FakeProcess()
@@ -69,7 +235,156 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertTrue(payload)
         return json.loads(payload)
 
+    def test_execute_permission_uses_hermes_guard_and_selects_allow_once(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "session/request_permission",
+            "params": {
+                "toolCall": {
+                    "kind": "execute",
+                    "title": "Read project metadata",
+                    "rawInput": {"command": "head -n 1 pyproject.toml"},
+                },
+                "options": [
+                    {"optionId": "allow_once", "kind": "allow_once"},
+                    {"optionId": "allow_always", "kind": "allow_always"},
+                    {"optionId": "reject_once", "kind": "reject_once"},
+                ],
+            },
+        }
 
+        with patch(
+            "tools.terminal_tool._check_all_guards",
+            return_value={"approved": True, "message": None},
+        ) as guard:
+            response = self._dispatch(request, cwd="/tmp")
+
+        guard.assert_called_once_with("head -n 1 pyproject.toml", "local")
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "selected", "optionId": "allow_once"},
+        )
+
+    def test_execute_permission_denies_when_hermes_guard_blocks(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "session/request_permission",
+            "params": {
+                "toolCall": {
+                    "kind": "execute",
+                    "rawInput": {"command": "rm -rf /"},
+                },
+                "options": [
+                    {"optionId": "allow_once", "kind": "allow_once"},
+                    {"optionId": "reject_once", "kind": "reject_once"},
+                ],
+            },
+        }
+
+        with patch(
+            "tools.terminal_tool._check_all_guards",
+            return_value={"approved": False, "message": "hardline block"},
+        ):
+            response = self._dispatch(request, cwd="/tmp")
+
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "cancelled"},
+        )
+
+    def test_execute_permission_never_upgrades_to_allow_always(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "session/request_permission",
+            "params": {
+                "toolCall": {
+                    "kind": "execute",
+                    "rawInput": {"command": "head -n 1 pyproject.toml"},
+                },
+                "options": [
+                    {"optionId": "allow_always", "kind": "allow_always"},
+                    {"optionId": "reject_once", "kind": "reject_once"},
+                ],
+            },
+        }
+
+        with patch(
+            "tools.terminal_tool._check_all_guards",
+            return_value={"approved": True, "message": None},
+        ):
+            response = self._dispatch(request, cwd="/tmp")
+
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "cancelled"},
+        )
+
+    def test_permission_without_execute_command_fails_closed(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "session/request_permission",
+            "params": {
+                "toolCall": {"kind": "edit", "rawInput": {"path": "note.md"}},
+                "options": [
+                    {"optionId": "allow_once", "kind": "allow_once"},
+                ],
+            },
+        }
+
+        with patch("tools.terminal_tool._check_all_guards") as guard:
+            response = self._dispatch(request, cwd="/tmp")
+
+        guard.assert_not_called()
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "cancelled"},
+        )
+
+    def test_permission_guard_exception_fails_closed(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "session/request_permission",
+            "params": {
+                "toolCall": {
+                    "kind": "execute",
+                    "rawInput": {"command": "head -n 1 pyproject.toml"},
+                },
+                "options": [
+                    {"optionId": "allow_once", "kind": "allow_once"},
+                ],
+            },
+        }
+
+        with patch(
+            "tools.terminal_tool._check_all_guards",
+            side_effect=RuntimeError("guard unavailable"),
+        ):
+            response = self._dispatch(request, cwd="/tmp")
+
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "cancelled"},
+        )
+
+    def test_permission_with_malformed_params_fails_closed(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "session/request_permission",
+            "params": ["not", "an", "object"],
+        }
+
+        response = self._dispatch(request, cwd="/tmp")
+
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "cancelled"},
+        )
 
     def test_read_text_file_redacts_sensitive_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

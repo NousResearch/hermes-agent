@@ -3962,6 +3962,63 @@ class GatewaySlashCommandsMixin:
 
         return _apply_fast_selection(args, persist=persist_global)
 
+    async def _handle_temperature_command(self, event: MessageEvent) -> str:
+        """Handle /temperature — view or set LLM sampling temperature.
+
+        Session-scoped by default; ``--global`` persists model.temperature
+        to config.yaml (parity with /model, /reasoning, and /fast).
+        """
+        from gateway.run import _load_gateway_config
+
+        raw_args = event.get_command_args().strip()
+        # Reuse the /reasoning arg parser: strips --global (any position),
+        # normalizes unicode dashes.
+        args, persist_global = self._parse_reasoning_command_args(raw_args)
+        session_key = self._session_key_for_source(event.source)
+
+        if not args:
+            # Show current state
+            current = self._resolve_session_temperature(session_key=session_key)
+            if current is not None:
+                return f"Current temperature: **{current}** (session override)"
+            user_config = _load_gateway_config()
+            cfg_temp = None
+            if isinstance(user_config, dict):
+                model_cfg = user_config.get("model") or {}
+                if isinstance(model_cfg, dict):
+                    cfg_temp = model_cfg.get("temperature")
+            if cfg_temp is not None:
+                return f"Current temperature: **{cfg_temp}** (config default)"
+            return "Current temperature: **default (unset)** — provider default applies"
+
+        if args == "reset":
+            self._set_session_temperature_override(session_key, None)
+            self._evict_cached_agent(session_key)
+            return "Temperature override cleared — back to the global default."
+
+        try:
+            new_temp = float(args)
+            if not (0.0 <= new_temp <= 2.0):
+                raise ValueError()
+        except (ValueError, IndexError):
+            return "❌ Temperature must be a number between 0.0 and 2.0."
+
+        if persist_global:
+            if self._save_gateway_config_key("model.temperature", new_temp):
+                # Global write supersedes any session override.
+                self._set_session_temperature_override(session_key, None)
+                self._evict_cached_agent(session_key)
+                return f"Generation temperature set to **{new_temp}** (saved to config)."
+            # Config write failed — fall back to a session override so the
+            # user's choice still applies (mirrors /reasoning --global).
+            self._set_session_temperature_override(session_key, new_temp)
+            self._evict_cached_agent(session_key)
+            return f"Generation temperature set to **{new_temp}** (session only; config save failed)."
+
+        self._set_session_temperature_override(session_key, new_temp)
+        self._evict_cached_agent(session_key)
+        return f"Generation temperature set to **{new_temp}** (this session — use --global to persist)."
+
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
         from gateway.slash_access import policy_for_source

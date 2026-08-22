@@ -12107,6 +12107,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_approvals_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "temperature":
+            self._handle_temperature_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":

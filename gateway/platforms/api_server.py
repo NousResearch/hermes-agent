@@ -403,6 +403,28 @@ def _request_service_tier(model_options: Any) -> Any:
     return _REQUEST_OPTION_MISSING
 
 
+def _request_generation_params(model_options: Any) -> Optional[Dict[str, Any]]:
+    """Translate model_options.generation into request_overrides.
+
+    Mirrors _request_reasoning_config / _request_service_tier. The stack's
+    chat-service sends a ``generation`` sub-object with sampling parameters
+    (temperature, top_p, max_tokens) and an optional ``extra_body`` dict for
+    provider-specific fields (e.g. num_ctx). Returns None when absent so
+    callers can distinguish "not provided" from "explicitly cleared".
+    """
+    if not isinstance(model_options, dict):
+        return None
+    generation = model_options.get("generation")
+    if not isinstance(generation, dict) or not generation:
+        return None
+
+    overrides: Dict[str, Any] = {}
+    for key in ("temperature", "top_p", "max_tokens", "extra_body"):
+        if key in generation:
+            overrides[key] = generation[key]
+    return overrides or None
+
+
 def _apply_runtime_agent_overrides(
     runtime_kwargs: Dict[str, Any], overrides: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -2863,6 +2885,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
+        request_generation_params = _request_generation_params(model_options)
 
         request_model = _clean_request_string(requested_model)
         request_provider = _clean_request_string(requested_provider)
@@ -3103,6 +3126,25 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if request_generation_params:
+            # max_tokens must NOT ride through request_overrides: the
+            # transports merge request_overrides into the final API kwargs
+            # AFTER max_tokens resolution, so a raw "max_tokens" key would
+            # clobber the provider-correct key (max_tokens vs
+            # max_completion_tokens) chosen by max_tokens_param_fn — and the
+            # codex transport applies overrides before its max_tokens
+            # handling, silently dropping it there. Route it through the
+            # dedicated AIAgent(max_tokens=...) kwarg instead, which flows
+            # through the provider-aware path on every transport.
+            _gen_overrides = dict(request_generation_params)
+            _gen_max_tokens = _gen_overrides.pop("max_tokens", None)
+            if _gen_max_tokens is not None:
+                agent_kwargs["max_tokens"] = _gen_max_tokens
+            if _gen_overrides:
+                agent_kwargs["request_overrides"] = {
+                    **dict(agent_kwargs.get("request_overrides") or {}),
+                    **_gen_overrides,
+                }
 
         agent = AIAgent(**agent_kwargs)
         agent._hermes_api_runtime = {

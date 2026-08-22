@@ -97,6 +97,8 @@ class ConversationState:
     one_turn_restore: Optional[Dict[str, Any]] = None
     # /reasoning per-session override.
     reasoning_override: Optional[Dict[str, Any]] = None
+    # /temperature per-session override (float, or None = provider default).
+    temperature_override: Optional[float] = None
     # /fast per-session override: "priority" or None; _UNSET_TIER = absent.
     service_tier_override: Any = _UNSET_TIER
     # Last successfully-resolved non-empty model (#35314 recovery).
@@ -120,6 +122,7 @@ class ConversationState:
         self.model_override = None
         self.one_turn_restore = None
         self.reasoning_override = None
+        self.temperature_override = None
         self.service_tier_override = _UNSET_TIER
         self.last_resolved_model = ""
         self.queued_events = []
@@ -380,6 +383,9 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     ),
     "_session_reasoning_overrides": _FieldSpec(
         "conversation", "reasoning_override", lambda: None, _present_not_none
+    ),
+    "_session_temperature_overrides": _FieldSpec(
+        "conversation", "temperature_override", lambda: None, _present_not_none
     ),
     "_session_service_tier_overrides": _FieldSpec(
         "conversation", "service_tier_override", lambda: _UNSET_TIER, _present_not_unset

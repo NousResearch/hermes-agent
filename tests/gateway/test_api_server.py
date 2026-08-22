@@ -35,6 +35,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _request_generation_params,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -113,6 +114,49 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") == "resp_1"
         store.delete("resp_1")
         assert store.get_conversation("chat-a") is None
+
+
+# ---------------------------------------------------------------------------
+# _request_generation_params
+# ---------------------------------------------------------------------------
+
+
+class TestRequestGenerationParams:
+    def test_returns_none_when_model_options_missing(self):
+        assert _request_generation_params(None) is None
+        assert _request_generation_params("not-a-dict") is None
+
+    def test_returns_none_when_generation_absent(self):
+        assert _request_generation_params({"reasoning": {"enabled": True}}) is None
+
+    def test_returns_none_when_generation_empty(self):
+        assert _request_generation_params({"generation": {}}) is None
+
+    def test_extracts_sampling_params(self):
+        out = _request_generation_params(
+            {"generation": {"temperature": 0.66, "top_p": 0.9, "max_tokens": 3994}}
+        )
+        assert out == {"temperature": 0.66, "top_p": 0.9, "max_tokens": 3994}
+
+    def test_passes_extra_body_through(self):
+        out = _request_generation_params(
+            {"generation": {"extra_body": {"num_ctx": 32768, "repeat_penalty": 1.1}}}
+        )
+        assert out == {"extra_body": {"num_ctx": 32768, "repeat_penalty": 1.1}}
+
+    def test_ignores_unknown_keys(self):
+        out = _request_generation_params(
+            {"generation": {"temperature": 0.5, "bogus": "x"}}
+        )
+        assert out == {"temperature": 0.5}
+
+    def test_returns_none_when_only_unknown_keys(self):
+        assert _request_generation_params({"generation": {"bogus": "x"}}) is None
+
+    def test_preserves_explicit_none_values(self):
+        """An explicit null should be forwarded (caller intent), not dropped."""
+        out = _request_generation_params({"generation": {"temperature": None}})
+        assert out == {"temperature": None}
 
 
 # ---------------------------------------------------------------------------

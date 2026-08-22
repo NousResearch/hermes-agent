@@ -60,7 +60,10 @@ class TestGatewayTurnRoutePool:
         from gateway.run import GatewayRunner
 
         fake_pool = MagicMock(name="FakePool")
-        runner = SimpleNamespace(_service_tier=None)
+        runner = SimpleNamespace(
+            _service_tier=None,
+            _resolve_session_temperature=MagicMock(return_value=None),
+        )
         runtime_kwargs = {
             "api_key": "***",
             "base_url": None,

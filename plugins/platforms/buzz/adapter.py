@@ -344,6 +344,39 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _event_thread_root(event: dict) -> str:
+    """Return the id of the thread an event replies into ("" when top-level).
+
+    Buzz delivers thread structure as NIP-10 ``e`` tags, which the relay
+    already puts on every reply:
+
+        [["h", <channel>], ["e", <root>, "", "root"], ["e", <parent>, "", "reply"]]
+
+    A ``root`` marker names the thread directly. Deprecated positional tags
+    (no marker) list the root first. A lone ``reply`` marker means the event
+    answers the root itself, so that id IS the root.
+    """
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return ""
+    positional = ""
+    reply = ""
+    for tag in tags:
+        if not isinstance(tag, (list, tuple)) or len(tag) < 2 or tag[0] != "e":
+            continue
+        target = str(tag[1] or "")
+        if not target:
+            continue
+        marker = str(tag[3] or "") if len(tag) > 3 else ""
+        if marker == "root":
+            return target
+        if marker == "reply":
+            reply = reply or target
+        elif not marker:
+            positional = positional or target
+    return positional or reply
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -391,6 +424,23 @@ class BuzzAdapter(BasePlatformAdapter):
         else:
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
+        # Whether the mention requirement also applies inside a thread this
+        # agent already takes part in. Defaults to True — identical behavior
+        # to before this setting existed. Set False to keep talking in an
+        # ongoing thread without re-addressing the agent every turn, while
+        # the channel top level stays mention-gated. Mirrors the Discord
+        # adapter's thread_require_mention. Only meaningful while
+        # require_mention is True. Env (BUZZ_THREAD_REQUIRE_MENTION)
+        # overrides config.yaml.
+        _trm_raw = os.getenv("BUZZ_THREAD_REQUIRE_MENTION")
+        if _trm_raw is None:
+            _trm_cfg = extra.get("thread_require_mention", True)
+        else:
+            _trm_cfg = _trm_raw
+        self.thread_require_mention = str(_trm_cfg).strip().lower() not in (
+            "false", "0", "no", "off"
+        )
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -628,6 +678,7 @@ class BuzzAdapter(BasePlatformAdapter):
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
             self._mark_seen(str(chat_id), str(event_id))
+            self._note_sent_message(chat_id, str(event_id), str(reply_target or ""))
         return SendResult(
             success=bool(data.get("accepted", True)),
             message_id=str(event_id) if event_id else None,
@@ -693,6 +744,7 @@ class BuzzAdapter(BasePlatformAdapter):
             event_id = data.get("event_id")
             if event_id:
                 self._mark_seen(str(chat_id), str(event_id))
+                self._note_sent_message(chat_id, str(event_id), str(reply_to or ""))
             return SendResult(
                 success=bool(data.get("accepted", True)),
                 message_id=str(event_id) if event_id else None,
@@ -943,6 +995,9 @@ class BuzzAdapter(BasePlatformAdapter):
             # leaked in via ``channels list`` latches to chat_type="dm" here,
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
+            # History also rebuilds thread participation, so a restart does
+            # not silently re-gate threads the agent was already talking in.
+            self._track_thread(state, event)
         self._trim_seen(state)
 
     async def _discover_dms(self, *, seed: bool) -> None:
@@ -1021,6 +1076,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not content.strip():
             return
 
+        # Track thread membership before self-echo suppression: our own
+        # echoed messages are how thread participation is re-learned after a
+        # restart, and they never reach the code below.
+        self._track_thread(state, event)
+
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
             return
@@ -1032,8 +1092,19 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # DMs always dispatch. Inside a thread the agent already takes part
+        # in, thread_require_mention=False waives the mention requirement,
+        # mirroring the Discord adapter's in_bot_thread bypass; the channel
+        # top level stays gated.
+        in_agent_thread = not self.thread_require_mention and self._in_agent_thread(
+            state, event
+        )
+        if (
+            not is_dm
+            and self.require_mention
+            and not in_agent_thread
+            and not self._is_mentioned(content)
+        ):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1210,6 +1281,73 @@ class BuzzAdapter(BasePlatformAdapter):
             state["seen"][event_id] = None
             self._trim_seen(state)
 
+    # ── Thread participation (thread_require_mention) ─────────────────────
+    #
+    # Two bounded per-channel maps, both keyed by event id: ``thread_roots``
+    # resolves any event to the root of its thread, ``agent_threads`` holds
+    # the roots this agent has spoken in. Both are rebuilt from the history
+    # ``_seed_channel`` replays, so participation survives a restart.
+
+    @staticmethod
+    def _remember_root(state: dict, event_id: str, root: str) -> None:
+        roots = state.setdefault("thread_roots", OrderedDict())
+        roots[str(event_id)] = str(root)
+        roots.move_to_end(str(event_id))
+        while len(roots) > _SEEN_CAP:
+            roots.popitem(last=False)
+
+    @staticmethod
+    def _join_thread(state: dict, root: str) -> None:
+        """Record that this agent takes part in the thread rooted at ``root``."""
+        if not root:
+            return
+        threads = state.setdefault("agent_threads", OrderedDict())
+        threads[str(root)] = None
+        threads.move_to_end(str(root))
+        while len(threads) > _SEEN_CAP:
+            threads.popitem(last=False)
+
+    @staticmethod
+    def _thread_root_of(state: dict, event_id: str) -> str:
+        """Resolve an event id to its thread root (itself when unknown)."""
+        return str(state.get("thread_roots", {}).get(str(event_id), event_id))
+
+    def _track_thread(self, state: dict, event: dict) -> None:
+        """Note which thread an inbound chat event belongs to.
+
+        Called for every chat event on both transports, including our own
+        echoes — those are what re-establish participation after a restart.
+        """
+        if int(event.get("kind") or 0) != _CHAT_KIND:
+            return
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return
+        root = _event_thread_root(event) or event_id
+        self._remember_root(state, event_id, root)
+        if str(event.get("pubkey") or "").lower() == self._self_pubkey:
+            self._join_thread(state, root)
+
+    def _note_sent_message(self, chat_id: str, event_id: str, reply_target: str) -> None:
+        """Join the thread an outgoing message lands in.
+
+        A reply joins the thread of whatever it answers; a fresh top-level
+        message becomes the root of the thread that replies to it will open.
+        """
+        state = self._channel_state.get(str(chat_id))
+        if state is None:
+            return
+        root = self._thread_root_of(state, reply_target) if reply_target else str(event_id)
+        self._remember_root(state, event_id, root)
+        self._join_thread(state, root)
+
+    def _in_agent_thread(self, state: dict, event: dict) -> bool:
+        """True when the event replies into a thread this agent takes part in."""
+        target = _event_thread_root(event)
+        if not target:
+            return False
+        return self._thread_root_of(state, target) in state.get("agent_threads", {})
+
     async def _dispatch_message(
         self,
         text: str,
@@ -1316,6 +1454,10 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    if "thread_require_mention" in extra and not os.getenv("BUZZ_THREAD_REQUIRE_MENTION"):
+        os.environ["BUZZ_THREAD_REQUIRE_MENTION"] = str(
+            extra["thread_require_mention"]
+        ).lower()
     return None
 
 

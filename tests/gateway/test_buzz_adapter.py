@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -42,6 +43,8 @@ _ENV_VARS = (
     "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
     "BUZZ_ALLOW_ALL_USERS",
+    "BUZZ_REQUIRE_MENTION",
+    "BUZZ_THREAD_REQUIRE_MENTION",
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
@@ -538,3 +541,227 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+
+
+# ── Thread-scoped mention gating (thread_require_mention) ────────────────
+#
+# A thread the agent takes part in is rooted at a message it wrote or
+# replied to. With thread_require_mention=False those threads stop needing
+# an address on every turn, while the channel top level stays gated.
+
+
+def _thread_event(event_id, *, content, root=None, parent=None,
+                  pubkey=OTHER_PUBKEY, created_at=1000):
+    """Chat event with NIP-10 markers exactly as the relay delivers them."""
+    tags = [["h", CHANNEL]]
+    if root:
+        tags.append(["e", root, "", "root"])
+    if parent:
+        tags.append(["e", parent, "", "reply"])
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "content": content,
+        "created_at": created_at,
+        "kind": 9,
+        "tags": tags,
+    }
+
+
+class TestEventThreadRoot:
+    """The tag reading that everything below rests on."""
+
+    def test_root_marker_wins_over_reply_marker(self):
+        event = _thread_event("e1", content="x", root="rootid", parent="parentid")
+        assert _buzz_mod._event_thread_root(event) == "rootid"
+
+    def test_lone_reply_marker_is_the_root(self):
+        """A reply to the thread's first message names only that message."""
+        event = _thread_event("e1", content="x", parent="rootid")
+        assert _buzz_mod._event_thread_root(event) == "rootid"
+
+    def test_deprecated_positional_tags_list_root_first(self):
+        event = {"id": "e1", "pubkey": OTHER_PUBKEY, "content": "x", "kind": 9,
+                 "created_at": 1, "tags": [["h", CHANNEL], ["e", "rootid"], ["e", "parentid"]]}
+        assert _buzz_mod._event_thread_root(event) == "rootid"
+
+    def test_top_level_message_has_no_thread(self):
+        assert _buzz_mod._event_thread_root(_thread_event("e1", content="x")) == ""
+
+    def test_malformed_tags_are_ignored(self):
+        for tags in (None, "nope", [["e"], ["e", ""], "junk", 42]):
+            assert _buzz_mod._event_thread_root({"tags": tags}) == ""
+
+
+class TestThreadRequireMentionConfig:
+
+    def test_defaults_to_true(self):
+        assert _make_adapter().thread_require_mention is True
+
+    def test_config_extra_disables_it(self):
+        assert _make_adapter({"thread_require_mention": False}).thread_require_mention is False
+
+    def test_env_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_THREAD_REQUIRE_MENTION", "false")
+        assert _make_adapter({"thread_require_mention": True}).thread_require_mention is False
+
+    def test_yaml_config_bridges_to_env(self, monkeypatch):
+        # Empty, not unset: the bridge treats it as unowned (falsy) and still
+        # writes, while monkeypatch owns the var and unsets it afterwards —
+        # _apply_yaml_config writes straight to os.environ.
+        monkeypatch.setenv("BUZZ_THREAD_REQUIRE_MENTION", "")
+        _buzz_mod._apply_yaml_config({}, {"extra": {"thread_require_mention": False}})
+        assert os.environ["BUZZ_THREAD_REQUIRE_MENTION"] == "false"
+
+    def test_yaml_config_does_not_override_explicit_env(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_THREAD_REQUIRE_MENTION", "false")
+        _buzz_mod._apply_yaml_config({}, {"extra": {"thread_require_mention": True}})
+        assert os.environ["BUZZ_THREAD_REQUIRE_MENTION"] == "false"
+
+
+class TestThreadMentionGating:
+
+    def _adapter(self, extra=None):
+        a = _make_adapter(extra)
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        return a
+
+    async def _poll_with(self, adapter, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        await adapter._poll_channel(CHANNEL)
+
+    async def _agent_sends(self, adapter, event_id, *, reply_to=None):
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": event_id, "message": ""})
+        adapter._run_cli = cli
+        result = await adapter.send(CHANNEL, "on it", reply_to=reply_to)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_stays_gated_by_default(self):
+        """Default true: nothing changes for anyone who does not opt in."""
+        adapter = self._adapter()
+        await self._agent_sends(adapter, "agent1")
+        await self._poll_with(
+            adapter, _thread_event("r1", content="and one more thing", root="agent1"),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_reply_to_the_agents_own_message_dispatches(self):
+        """The core case: someone replies to what the agent posted."""
+        adapter = self._adapter({"thread_require_mention": False})
+        await self._agent_sends(adapter, "agent1")
+        await self._poll_with(
+            adapter, _thread_event("r1", content="and one more thing", root="agent1"),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["r1"]
+
+    @pytest.mark.asyncio
+    async def test_agents_reply_joins_a_humans_thread(self):
+        """The agent answering inside someone else's thread joins it, so the
+        follow-up needs no further address."""
+        adapter = self._adapter({"thread_require_mention": False})
+        await self._poll_with(
+            adapter, _thread_event("h1", content="@Chip take a look", created_at=10),
+        )
+        await self._agent_sends(adapter, "agent1", reply_to="h1")
+        await self._poll_with(
+            adapter,
+            _thread_event("h2", content="thanks, and what about the rest?",
+                          root="h1", parent="agent1", created_at=20),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["h1", "h2"]
+
+    @pytest.mark.asyncio
+    async def test_channel_top_level_stays_gated(self):
+        """Waiving mentions in threads must not open the channel itself."""
+        adapter = self._adapter({"thread_require_mention": False})
+        await self._agent_sends(adapter, "agent1")
+        await self._poll_with(adapter, _thread_event("t1", content="unrelated chatter"))
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_foreign_thread_stays_gated(self):
+        """Two humans talking in their own thread are not the agent's cue."""
+        adapter = self._adapter({"thread_require_mention": False})
+        await self._poll_with(
+            adapter, _thread_event("r1", content="what do you think?", root="their-root"),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_allowlist_still_applies_inside_the_thread(self):
+        """Waiving the mention changes HOW to phrase a message, never WHO
+        may send one."""
+        adapter = self._adapter({"thread_require_mention": False})
+        adapter._allowed_pubkeys = {"b" * 64}
+        await self._agent_sends(adapter, "agent1")
+        await self._poll_with(
+            adapter, _thread_event("r1", content="do the thing", root="agent1"),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_still_strips_a_leading_mention(self):
+        adapter = self._adapter({"thread_require_mention": False})
+        await self._agent_sends(adapter, "agent1")
+        await self._poll_with(
+            adapter, _thread_event("r1", content="@Chip /whoami", root="agent1"),
+        )
+        assert [d["text"] for d in adapter._dispatched] == ["/whoami"]
+
+    @pytest.mark.asyncio
+    async def test_free_listening_install_is_unaffected(self):
+        """require_mention=false dispatches everything, threaded or not —
+        this setting only ever relaxes the gate, never tightens it."""
+        adapter = self._adapter({"require_mention": False})
+        await self._poll_with(
+            adapter,
+            _thread_event("t1", content="starting a thread", created_at=10),
+            _thread_event("r1", content="the follow-up", root="t1", created_at=11),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["t1", "r1"]
+
+    @pytest.mark.asyncio
+    async def test_participation_survives_a_restart(self):
+        """A fresh process re-learns its threads from channel history, so a
+        gateway restart does not silently re-gate an ongoing conversation."""
+        adapter = self._adapter({"thread_require_mention": False})
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _thread_event("h1", content="@Chip take a look", created_at=10),
+            _thread_event("agent1", content="on it", root="h1",
+                          pubkey=SELF_PUBKEY, created_at=11),
+        ])
+        adapter._run_cli = cli
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+        assert adapter._dispatched == []  # history never dispatches
+
+        await self._poll_with(
+            adapter,
+            _thread_event("h2", content="one more question", root="h1", created_at=20),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["h2"]
+
+    @pytest.mark.asyncio
+    async def test_thread_bookkeeping_is_bounded(self):
+        """Both maps are capped like the seen-id set, so a busy channel
+        cannot grow them without bound."""
+        adapter = self._adapter({"thread_require_mention": False})
+        state = adapter._channel_state[CHANNEL]
+        for i in range(_buzz_mod._SEEN_CAP + 50):
+            adapter._track_thread(
+                state, _thread_event(f"e{i}", content="x", pubkey=SELF_PUBKEY),
+            )
+        assert len(state["thread_roots"]) == _buzz_mod._SEEN_CAP
+        assert len(state["agent_threads"]) == _buzz_mod._SEEN_CAP

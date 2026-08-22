@@ -80,6 +80,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        thread_require_mention: true      # set false to keep answering inside threads the agent is already part of, without re-addressing it
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 
@@ -90,6 +91,7 @@ gateway:
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+- `thread_require_mention: true` — a reply inside a thread the agent is part of still has to address it, exactly as before this setting existed.
 
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 
@@ -99,6 +101,7 @@ gateway:
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
 - Direct messages always reach the agent, no mention needed.
+- With `thread_require_mention: false` a **thread the agent takes part in** — one rooted at a message it wrote or replied to — no longer needs the address on every turn, while the channel top level stays gated. Participation is rebuilt from channel history on startup, so it survives a gateway restart. The allow-list is unaffected: waiving the mention requirement changes *how* someone has to phrase a message, never *who* may send one.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 
 ## Access control

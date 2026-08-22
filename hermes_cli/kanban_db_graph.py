@@ -115,7 +115,7 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, priority, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
@@ -196,14 +196,31 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    # Children inherit the ROOT's priority. Dispatch is strictly
+    # highest-priority-first with a per-profile in-flight cap, so a child
+    # emitted at the column default (0) queues behind every hand-created
+    # card on a board whose live band sits in the 90s and never visibly
+    # moves. That is not starvation of one card: every auto-decomposed
+    # subtree lands below the floor, which is what makes autonomous
+    # orchestration look like it never fires. A child dict may still
+    # override with its own 'priority'.
+    child_priority = child.get("priority")
+    try:
+        child_priority = (
+            int(child_priority) if child_priority is not None
+            else (root_row["priority"] or 0)
+        )
+    except (TypeError, ValueError):
+        child_priority = root_row["priority"] or 0
     conn.execute(
         "INSERT INTO tasks "
-        "(id, title, body, assignee, status, workspace_kind, "
+        "(id, title, body, assignee, status, priority, workspace_kind, "
         " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
-            _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
+            _canonical_assignee(child.get("assignee")), child_priority,
+            child_ws_kind, child_ws_path,
             root_row["tenant"], now, (author or "decomposer"),
         ),
     )

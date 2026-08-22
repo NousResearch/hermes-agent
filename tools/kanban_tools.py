@@ -76,8 +76,62 @@ def _check_kanban_mode() -> bool:
     return _visible(to_env_worker=True)
 
 
+def _configured_orchestrator_profile() -> str:
+    """``kanban.orchestrator_profile`` as a normalized name, or ""."""
+    try:
+        cfg = load_config()
+        kcfg = cfg.get("kanban") or {}
+        if not isinstance(kcfg, dict):
+            return ""
+        return (kcfg.get("orchestrator_profile") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_orchestrator_worker() -> bool:
+    """True when THIS dispatched worker run is the board's orchestrator.
+
+    The dispatcher exports ``HERMES_PROFILE`` for the assignee it spawns
+    (see kanban_db._worker_env). A worker run of
+    ``kanban.orchestrator_profile`` is the board-health agent: its whole
+    job is to sweep the board, so denying it ``kanban_list`` leaves it
+    able to read only the ids handed to it and forces it to route a
+    read-only inventory card to another profile just to see the board.
+    That is the autonomy gap. Any OTHER profile's worker stays scoped to
+    its own card, which is the behavior this gate was written for.
+
+    This elevation is the ONLY path that hands a dispatched worker
+    board-wide mutation authority (``kanban_unblock``), so it must fail
+    CLOSED: when the canonical dispatcher-ownership verdict from
+    ``agent.delegation_context`` cannot be obtained, we refuse rather than
+    fall back to "HERMES_PROFILE + HERMES_KANBAN_TASK is enough". Process
+    env is not an authority proof (#79657); only the ContextVar is.
+    """
+    orchestrator = _configured_orchestrator_profile()
+    if not orchestrator:
+        return False
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip().lower()
+    if not profile or profile != orchestrator:
+        return False
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+    # Fail closed, unlike _is_dispatcher_owned_worker()'s permissive default.
+    return _delegation_ctx("is_dispatcher_owned_worker_context", False)
+
+
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
+    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers.
+
+    The one exception is a dispatched worker run of the configured
+    ``kanban.orchestrator_profile``: that profile IS the board-routing
+    surface, and it must carry the same kanban_* tools as its interactive
+    session or autonomous board sweeps cannot enumerate the board at all.
+    That elevation is fail-closed (see ``_is_orchestrator_worker``).
+    """
+    if _is_delegated_child_context():
+        return False
+    if _is_orchestrator_worker():
+        return True
     return _visible(to_env_worker=False)
 
 
@@ -188,8 +242,15 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
-    a stale registration or test harness routing a worker here anyway."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    a stale registration or test harness routing a worker here anyway.
+
+    Mirrors ``_check_kanban_orchestrator_mode``: a worker run of the
+    configured ``kanban.orchestrator_profile`` is the board-routing surface
+    and is allowed through, otherwise the schema fix would be defeated at
+    call time. That exception is fail-closed (``_is_orchestrator_worker``)."""
+    if os.environ.get("HERMES_KANBAN_TASK") and (
+        _is_delegated_child_context() or not _is_orchestrator_worker()
+    ):
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "

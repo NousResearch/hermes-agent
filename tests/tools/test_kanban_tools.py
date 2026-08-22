@@ -41,6 +41,133 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Orchestrator worker gate (kanban_list on a dispatched orchestrator run)
+# ---------------------------------------------------------------------------
+
+def _orchestrator_gate_env(monkeypatch, tmp_path, *, profile, orchestrator):
+    """Write a config pinning kanban.orchestrator_profile and simulate a
+    dispatcher-spawned worker run of ``profile``."""
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"kanban:\n  orchestrator_profile: {orchestrator}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", profile)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_gate_probe")
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "_is_delegated_child_context", lambda: False)
+    monkeypatch.setattr(kt, "_is_dispatcher_owned_worker", lambda: True)
+    return kt
+
+
+def test_orchestrator_worker_run_keeps_board_routing_tools(monkeypatch, tmp_path):
+    """Regression: a dispatched worker run of kanban.orchestrator_profile
+    got a NARROWER toolset than the same profile's interactive session -
+    no kanban_list - so the card meant to sweep the board could only read
+    the ids handed to it and had to route a read-only inventory card to
+    another profile just to enumerate the board.
+    """
+    kt = _orchestrator_gate_env(
+        monkeypatch, tmp_path, profile="orchestrator", orchestrator="orchestrator"
+    )
+    assert kt._check_kanban_orchestrator_mode() is True
+    # The belt-and-suspenders runtime guard must agree with the schema
+    # gate, or the tool is registered and then refuses at call time.
+    assert kt._require_orchestrator_tool("kanban_list") is None
+
+
+def test_non_orchestrator_worker_run_stays_task_scoped(monkeypatch, tmp_path):
+    """Every OTHER profile's worker keeps the original narrow surface:
+    close your own card, do not enumerate or unblock the board."""
+    kt = _orchestrator_gate_env(
+        monkeypatch, tmp_path, profile="builder", orchestrator="orchestrator"
+    )
+    assert kt._check_kanban_orchestrator_mode() is False
+    with pytest.raises(kt._Reject) as excinfo:
+        kt._require_orchestrator_tool("kanban_list")
+    assert "orchestrator-only" in str(excinfo.value)
+
+
+def test_worker_run_stays_task_scoped_when_no_orchestrator_configured(
+    monkeypatch, tmp_path
+):
+    """With kanban.orchestrator_profile unset, no worker is the board
+    agent - the gate must not fall open for everyone."""
+    kt = _orchestrator_gate_env(
+        monkeypatch, tmp_path, profile="orchestrator", orchestrator=""
+    )
+    assert kt._check_kanban_orchestrator_mode() is False
+    with pytest.raises(kt._Reject):
+        kt._require_orchestrator_tool("kanban_list")
+
+
+def test_delegated_child_never_gets_board_tools(monkeypatch, tmp_path):
+    """A delegate_task child runs in its parent's process, so inherited
+    HERMES_* env is not proof of ownership - it stays denied even when
+    the parent IS the orchestrator."""
+    kt = _orchestrator_gate_env(
+        monkeypatch, tmp_path, profile="orchestrator", orchestrator="orchestrator"
+    )
+    monkeypatch.setattr(kt, "_is_delegated_child_context", lambda: True)
+    assert kt._check_kanban_orchestrator_mode() is False
+    with pytest.raises(kt._Reject):
+        kt._require_orchestrator_tool("kanban_unblock")
+
+
+def test_orchestrator_elevation_fails_closed_when_ownership_unprovable(
+    monkeypatch, tmp_path
+):
+    """Regression for the fail-open authority hole.
+
+    ``_is_dispatcher_owned_worker()`` defaults PERMISSIVE (True) when
+    ``agent.delegation_context`` cannot be imported or raises. The
+    orchestrator elevation is the ONLY path that hands a dispatched
+    worker board-WIDE mutation authority (kanban_unblock), so it must
+    consult the canonical predicate itself and refuse when no verdict is
+    available - process env (HERMES_PROFILE + HERMES_KANBAN_TASK) is not
+    an authority proof (#79657).
+
+    Production path: the helper is NOT monkeypatched here; the real
+    import target is made to raise.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  orchestrator_profile: orchestrator\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_gate_probe")
+
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "_is_delegated_child_context", lambda: False)
+
+    from agent import delegation_context
+
+    def _boom():
+        raise RuntimeError("delegation context probe unavailable")
+
+    monkeypatch.setattr(
+        delegation_context, "is_dispatcher_owned_worker_context", _boom
+    )
+
+    # The legacy wrapper still fails open by design (broad compatibility).
+    assert kt._is_dispatcher_owned_worker() is True
+    # The elevation does NOT inherit that permissiveness.
+    assert kt._is_orchestrator_worker() is False
+    assert kt._check_kanban_orchestrator_mode() is False
+    with pytest.raises(kt._Reject) as excinfo:
+        kt._require_orchestrator_tool("kanban_unblock")
+    assert "orchestrator-only" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------
 

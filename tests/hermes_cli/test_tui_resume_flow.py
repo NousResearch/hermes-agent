@@ -37,6 +37,91 @@ def main_mod(monkeypatch):
     return mod
 
 
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [("--ignore-rules", True), ("--safe-mode", True), (None, False)],
+)
+def test_termux_fast_cli_launch_forwards_oneshot_isolation(
+    monkeypatch, main_mod, flag, expected
+):
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello"] + ([flag] if flag else []),
+    )
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda _args: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_run_and_exit_oneshot",
+        lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}),
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert captured["prompt"] == "hello"
+    assert captured["ignore_rules"] is expected
+
+
+def test_oneshot_parser_registers_isolation_flags():
+    """--ignore-rules / --safe-mode must be real parser flags, not just
+    getattr fallbacks, so the oneshot dispatch can never silently no-op."""
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _, _ = build_top_level_parser()
+    for flag, attr in (("--ignore-rules", "ignore_rules"), ("--safe-mode", "safe_mode")):
+        parsed = parser.parse_args(["-z", "hello", flag])
+        assert getattr(parsed, attr) is True
+
+
+@pytest.mark.parametrize(
+    ("ignore_rules", "env", "expected"),
+    [
+        (False, {}, False),
+        (True, {}, True),
+        (False, {"HERMES_IGNORE_RULES": "1"}, True),
+        (False, {"HERMES_SAFE_MODE": "1"}, True),
+        (False, {"HERMES_IGNORE_RULES": "0"}, False),
+        (True, {"HERMES_SAFE_MODE": "0"}, True),
+        (False, {"HERMES_IGNORE_RULES": "0", "HERMES_SAFE_MODE": "0"}, False),
+    ],
+)
+def test_effective_ignore_rules_helper(monkeypatch, ignore_rules, env, expected):
+    from hermes_cli.oneshot import _effective_ignore_rules
+
+    monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+    monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert _effective_ignore_rules(ignore_rules) is expected
+
+
+def test_run_and_exit_oneshot_forwards_isolation(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._run_and_exit_oneshot("hello", ignore_rules=True)
+
+    assert exc.value.code == 0
+    assert captured["prompt"] == "hello"
+    assert captured["ignore_rules"] is True
+
+
 
 
 
@@ -148,10 +233,33 @@ def _stub_plugin_discovery(monkeypatch):
 
 
 
-def test_oneshot_wires_session_db_for_recall(monkeypatch):
+@pytest.mark.parametrize("env_name", ["HERMES_IGNORE_RULES", "HERMES_SAFE_MODE"])
+def test_run_oneshot_passes_ignore_rules_env(monkeypatch, capsys, env_name):
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured = {}
+    monkeypatch.setenv(env_name, "1")
+    monkeypatch.setattr(
+        oneshot_mod,
+        "_run_agent",
+        lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs})
+        or ("ok", {"final_response": "ok"}),
+    )
+
+    assert oneshot_mod.run_oneshot("hello") == 0
+
+    assert captured["prompt"] == "hello"
+    assert captured["ignore_rules"] is True
+    assert capsys.readouterr().out == "ok\n"
+
+
+@pytest.mark.parametrize("ignore_rules", [False, True])
+def test_oneshot_wires_session_db_for_recall(monkeypatch, ignore_rules):
     """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
     from hermes_cli.oneshot import _run_agent
 
+    monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+    monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
     captured = {}
     sentinel_db = object()
 
@@ -208,11 +316,13 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    text, result = _run_agent("recall this")
+    text, result = _run_agent("recall this", ignore_rules=ignore_rules)
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
+    assert captured["skip_context_files"] is ignore_rules
+    assert captured["skip_memory"] is ignore_rules
     assert captured["prompt"] == "recall this"
 
 
@@ -282,7 +392,3 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
-
-
-

@@ -700,6 +700,39 @@ class TestMatrixMarkdownToHtml:
         result = self.adapter._markdown_to_html("Hello world")
         assert "Hello world" in result
 
+    def test_multiple_paragraphs_remain_well_formed(self):
+        result = self.adapter._markdown_to_html("First paragraph.\n\nSecond paragraph.")
+
+        assert result == "<p>First paragraph.</p>\n<p>Second paragraph.</p>"
+
+    def test_plain_text_payload_omits_unnecessary_formatted_body(self):
+        payload = self.adapter._build_text_message_content("Hello world")
+
+        assert payload == {"msgtype": "m.text", "body": "Hello world"}
+
+    def test_details_and_summary_html_is_preserved(self):
+        source = "<details><summary>More</summary><p>Body</p></details>"
+
+        result = self.adapter._markdown_to_html(source)
+        payload = self.adapter._build_text_message_content(source)
+
+        assert result == source
+        assert payload["format"] == "org.matrix.custom.html"
+        assert payload["formatted_body"] == source
+
+    def test_raw_html_is_sanitized_end_to_end(self):
+        result = self.adapter._markdown_to_html(
+            '<details open onclick="boom"><summary>More</summary>'
+            '<a href="javascript:alert(1)">link</a>'
+            '<script>alert("unsafe")</script>'
+            '<img src="mxc://example.org/media-id" onerror="boom">'
+            "</details>"
+        )
+
+        assert result == (
+            "<details><summary>More</summary><a>link</a>"
+            '<img src="mxc://example.org/media-id"></details>'
+        )
 
     def test_matrix_markdown_preserves_table_structure(self):
         table = "\n".join(
@@ -718,6 +751,184 @@ class TestMatrixMarkdownToHtml:
         assert "<tbody>" in result
         assert "<th>Item</th>" in result
         assert "<td>Apples</td>" in result
+
+
+# ---------------------------------------------------------------------------
+# Matrix HTML sanitizer conformance
+# ---------------------------------------------------------------------------
+
+class TestMatrixHtmlSanitizerConformance:
+    def sanitize(self, html: str) -> str:
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        return _sanitize_matrix_html(html)
+
+    def test_current_spec_tags_are_preserved(self):
+        html = (
+            "<details><summary>More</summary><div><u>under</u>"
+            "<sup>up</sup><sub>down</sub><span>inline</span></div></details>"
+            "<table><caption>Title</caption><tbody><tr><td>cell</td></tr>"
+            "</tbody></table><img src=\"mxc://example.org/media-id\" alt=\"image\">"
+        )
+
+        result = self.sanitize(html)
+
+        for tag in (
+            "caption",
+            "details",
+            "div",
+            "img",
+            "span",
+            "sub",
+            "summary",
+            "sup",
+            "u",
+        ):
+            assert f"<{tag}" in result
+
+    def test_unsafe_tags_are_removed(self):
+        result = self.sanitize(
+            "<font color=\"red\">legacy</font>"
+            "<script>alert(1)</script><style>body{display:none}</style>"
+        )
+
+        assert result == "legacy"
+
+    def test_compatibility_markup_is_preserved(self):
+        result = self.sanitize(
+            '<strike>old</strike>'
+            '<a href="matrix:roomid/example:example.org">room</a>'
+        )
+
+        assert result == (
+            '<s>old</s><a href="matrix:roomid/example:example.org">room</a>'
+        )
+
+    def test_mx_reply_tag_and_content_are_removed(self):
+        result = self.sanitize(
+            "<mx-reply><blockquote>old reply</blockquote></mx-reply>"
+            "<p>new message</p>"
+        )
+
+        assert result == "<p>new message</p>"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "ftp://example.org/file",
+            "http://example.org",
+            "https://example.org",
+            "magnet:?xt=urn:btih:abc",
+            "mailto:user@example.org",
+        ],
+    )
+    def test_spec_link_schemes_are_preserved(self, url):
+        result = self.sanitize(f'<a href="{url}" target="_blank">link</a>')
+
+        assert f'href="{url}"' in result
+        assert 'target="_blank"' in result
+
+    @pytest.mark.parametrize(
+        "url",
+        ["/relative", "javascript:alert(1)", "data:text/html,boom"],
+    )
+    def test_non_spec_link_schemes_are_removed(self, url):
+        result = self.sanitize(f'<a href="{url}">link</a>')
+
+        assert result == "<a>link</a>"
+
+    def test_spec_attributes_are_filtered_by_tag_and_value(self):
+        result = self.sanitize(
+            '<span data-mx-bg-color="#A1b2C3" data-mx-color="red" '
+            'data-mx-spoiler="reason" data-mx-maths="x&lt;y" style="color:red">'
+            '<code class="language-python unsafe language-rust">code</code></span>'
+            '<div data-mx-maths="x^2" class="unsafe">math</div>'
+            '<ol start="-3" onclick="boom"><li>item</li></ol>'
+        )
+
+        assert 'data-mx-bg-color="#A1b2C3"' in result
+        assert "data-mx-color" not in result
+        assert 'data-mx-spoiler="reason"' in result
+        assert 'data-mx-maths="x&lt;y"' in result
+        assert 'class="language-python language-rust"' in result
+        assert '<div data-mx-maths="x^2">' in result
+        assert '<ol start="-3">' in result
+        assert "style=" not in result
+        assert "onclick=" not in result
+
+    def test_image_requires_mxc_source_and_filters_attributes(self):
+        safe = self.sanitize(
+            '<img src="mxc://example.org/media-id" width="640" height="480" '
+            'alt="preview" title="Preview" onerror="boom">'
+        )
+        unsafe = self.sanitize(
+            '<img src="https://example.org/image.png" width="wide" alt="preview">'
+            '<img src="mxc://example.org/../secret" alt="traversal">'
+        )
+
+        assert safe == (
+            '<img src="mxc://example.org/media-id" width="640" height="480" '
+            'alt="preview" title="Preview">'
+        )
+        assert unsafe == '<img alt="preview"><img alt="traversal">'
+
+    @pytest.mark.parametrize(
+        ("url", "allowed"),
+        [
+            ("mxc://example.org:8448/media-id", True),
+            ("mxc://[2001:db8::1]:8448/media_id", True),
+            ("mxc://not a server/id", False),
+            ("mxc://user@example.org/id", False),
+            ("mxc://example.org:99999/id", False),
+            ("mxc://[not-ipv6]/id", False),
+        ],
+    )
+    def test_image_mxc_authority_validation(self, url, allowed):
+        expected = f'<img src="{url}">' if allowed else "<img>"
+        assert self.sanitize(f'<img src="{url}">') == expected
+
+    def test_nesting_is_limited_to_100_levels(self):
+        result = self.sanitize("<div>" * 101 + "content" + "</div>" * 101)
+
+        assert result.count("<div>") == 100
+        assert result.count("</div>") == 100
+        assert "content" in result
+
+
+class TestMatrixStandaloneRendering:
+    @pytest.mark.asyncio
+    async def test_standalone_delivery_uses_shared_matrix_renderer(self):
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        rendered = "<details><summary>More</summary><p>Body</p></details>"
+        config = types.SimpleNamespace(
+            token="token",
+            extra={"homeserver": "https://matrix.example.org"},
+        )
+
+        with (
+            patch.object(
+                matrix_mod.MatrixAdapter,
+                "_markdown_to_html",
+                return_value=rendered,
+            ) as render,
+            patch("aiohttp.ClientSession") as client_session,
+        ):
+            session = client_session.return_value.__aenter__.return_value
+            session.put = MagicMock()
+            response = session.put.return_value.__aenter__.return_value
+            response.status = 200
+            response.json = AsyncMock(return_value={"event_id": "$event"})
+            result = await matrix_mod._standalone_send(
+                config,
+                "!room:example.org",
+                "<details>message</details>",
+            )
+
+        assert result["success"] is True
+        render.assert_called_once_with("<details>message</details>")
+        payload = session.put.call_args.kwargs["json"]
+        assert payload["formatted_body"] == rendered
 
 
 # ---------------------------------------------------------------------------
@@ -1519,7 +1730,7 @@ class TestMatrixDiagnostics:
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         output_path = tmp_path / "matrix-recovery-key.txt"
-        output_path.write_text("existing\n")
+        output_path.write_text("existing\n", encoding="utf-8")
         monkeypatch.delenv("MATRIX_RECOVERY_KEY", raising=False)
         monkeypatch.setenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", str(output_path))
         config = PlatformConfig(

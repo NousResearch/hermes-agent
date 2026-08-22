@@ -83,6 +83,12 @@ _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 
+# Returned by the offloaded file readers below to mean "the file is not there",
+# which a plain ``None`` cannot express: ``desktop.json`` may legitimately hold
+# the document ``null``, and that is an existing-but-empty overlay rather than
+# an absent one.
+_MISSING = object()
+
 
 # Bounded cache lifetime for the expensive sidebar scan. Short enough that the
 # UI never shows meaningfully stale data, long enough to coalesce the desktop's
@@ -908,15 +914,23 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
-    try:
-        active = profiles_mod.get_active_profile() or "default"
-    except Exception:
-        active = "default"
-    try:
-        current = profiles_mod.get_active_profile_name() or "default"
-    except Exception:
-        current = "default"
-    return {"active": active, "current": current}
+
+    def _run():
+        # Both reads touch the filesystem: get_active_profile() reads the
+        # active_profile state file and get_active_profile_name() resolves
+        # HERMES_HOME against the profiles root. Batched into one hop so the
+        # sidebar's polling costs a single executor round-trip, not two.
+        try:
+            active = profiles_mod.get_active_profile() or "default"
+        except Exception:
+            active = "default"
+        try:
+            current = profiles_mod.get_active_profile_name() or "default"
+        except Exception:
+            current = "default"
+        return {"active": active, "current": current}
+
+    return await asyncio.get_running_loop().run_in_executor(None, _run)
 
 
 @router.post("/api/profiles/active")
@@ -927,8 +941,14 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     it changes which profile subsequent CLI commands and gateways use.
     """
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.set_active_profile(body.name)
+
     try:
-        profiles_mod.set_active_profile(body.name)
+        # set_active_profile() stats the target profile, creates the state
+        # directory and writes active_profile through a temp file + replace.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1001,8 +1021,16 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.rename_profile(name, body.new_name)
+
     try:
-        path = profiles_mod.rename_profile(name, body.new_name)
+        # rename_profile() stops a running gateway through the same 10-second
+        # _stop_gateway_process() poll that delete does, then renames the
+        # profile directory, rewrites the Honcho host blocks and regenerates
+        # the wrapper script.
+        path = await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:
@@ -1037,8 +1065,18 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.delete_profile(name, yes=True)
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        # delete_profile() stops a running gateway by polling its PID once
+        # every 500 ms for up to 10 s (profiles._stop_gateway_process) and
+        # then rmtree()s the profile directory. Deleting a profile whose
+        # gateway is up — which this path announces as "⚠ Gateway is running
+        # — it will be stopped" — therefore parks the loop for a full ten
+        # seconds, and the desktop's WebSocket ready-probe gives up at ten.
+        path = await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1052,18 +1090,28 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    if soul_path.exists():
-        try:
-            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
-    return {"content": "", "exists": False}
+
+    def _run():
+        # Probe and read in the same hop: two round-trips would also widen the
+        # window between the existence check and the read.
+        if not soul_path.exists():
+            return _MISSING
+        return soul_path.read_text(encoding="utf-8")
+
+    try:
+        content = await asyncio.get_running_loop().run_in_executor(None, _run)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+    if content is _MISSING:
+        return {"content": "", "exists": False}
+    return {"content": content, "exists": True}
 
 
 @router.put("/api/profiles/{name}/soul")
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    try:
+
+    def _run():
         from utils import atomic_write_text
 
         # PUT replaces the whole persona document from the dashboard editor.
@@ -1083,6 +1131,12 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         atomic_write_text(
             soul_path, body.content, preserve_mode=True, create_mode=0o644
         )
+
+    try:
+        # atomic_write_text() writes a temp file, fsyncs it and replaces the
+        # original — three syscalls that block for as long as the filesystem
+        # takes to durably commit the persona document.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
@@ -1100,12 +1154,18 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
-    try:
+
+    def _run():
         profiles_mod.write_profile_meta(
             profile_dir,
             description=text,
             description_auto=False,
         )
+
+    try:
+        # write_profile_meta() reads profile.yaml, merges the new keys and
+        # writes the document back out.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/description failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1142,10 +1202,21 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     ``ok: false`` with a reason rather than an HTTP error so the UI can
     surface it inline and let the operator fix config and retry.
     """
+    # Resolution stays on the loop: it is a name check plus one stat, and it
+    # owns the 400/404 mapping that the ``except Exception`` below would
+    # otherwise flatten into a 500.
     _resolve_profile_dir(name)
-    try:
+
+    def _run():
         from hermes_cli import profile_describer
-        outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+        return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+
+    try:
+        # describe_profile() is a plain def that reaches auxiliary_client's
+        # call_llm() — a synchronous provider round-trip with a 60 s ceiling,
+        # six times the desktop's WebSocket disconnect threshold. Held on the
+        # loop it stalls every other dashboard request for that whole window.
+        outcome = await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1253,10 +1324,19 @@ async def get_profile_desktop_overlay(name: str):
     """The desktop appearance/interface overlay bundled with an imported
     profile (``desktop.json`` at the profile root), or ``exists: false``."""
     overlay_path = _resolve_profile_dir(name) / "desktop.json"
-    if not overlay_path.is_file():
-        return {"exists": False, "desktop": None}
-    try:
+
+    def _run():
+        if not overlay_path.is_file():
+            return _MISSING
         import json as _json
-        return {"exists": True, "desktop": _json.loads(overlay_path.read_text(encoding="utf-8"))}
+        return _json.loads(overlay_path.read_text(encoding="utf-8"))
+
+    try:
+        overlay = await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")
+    # _MISSING rather than None: an overlay file holding the document ``null``
+    # exists, and must not be reported as absent.
+    if overlay is _MISSING:
+        return {"exists": False, "desktop": None}
+    return {"exists": True, "desktop": overlay}

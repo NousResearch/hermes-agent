@@ -15,6 +15,7 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
+  <a href="README.id.md"><img src="https://img.shields.io/badge/Lang-Bahasa%20Indonesia-yellow?style=for-the-badge" alt="Bahasa Indonesia"></a>
 </p>
 
 **Agen AI dengan penyempurnaan diri yang dibangun oleh [Nous Research](https://nousresearch.com).** Ini satu-satunya agen dengan loop pembelajaran bawaan — ia membuat skill dari pengalaman, menyempurnakan skill tersebut saat digunakan, mendorong dirinya sendiri untuk menyimpan pengetahuan, mencari percakapan lamanya sendiri, dan membangun pemahaman yang semakin mendalam tentang siapa Anda dari sesi ke sesi. Jalankan di VPS $5, cluster GPU, atau infrastruktur serverless yang hampir tidak berbiaya saat idle. Tidak terikat pada laptop Anda — ajak bicara lewat Telegram sementara ia bekerja di VM cloud.

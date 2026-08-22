@@ -98,6 +98,12 @@ If you previously set `GEMINI_BASE_URL` to the `/openai` URL, remove it or chang
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
+Host-root base URLs are normalized automatically: if the URL doesn't end with
+an API version segment (`v1beta`, `v1alpha`, `v1`, ...), Hermes appends
+`/v1beta` for you. Setting `GEMINI_BASE_URL=https://generativelanguage.googleapis.com`
+or pointing at a proxy root like `http://localhost:4000/gemini` works the same
+as spelling out the `/v1beta` suffix.
+
 ## Available Models
 
 The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:

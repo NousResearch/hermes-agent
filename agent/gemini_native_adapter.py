@@ -85,6 +85,38 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     return version is not None and version >= 3
 
 
+_API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
+
+
+def normalize_gemini_base_url(base_url: Optional[str]) -> str:
+    """Normalize a Gemini native base URL to include the API version segment.
+
+    Google's own ``google-genai`` client (and our ``GEMINI_BASE_URL`` docs
+    historically) treat the base URL as a host root and append the API
+    version themselves, while our native adapter expects the version segment
+    to already be part of the URL (the default is ``.../v1beta``). A
+    host-root value like ``https://generativelanguage.googleapis.com`` or a
+    proxy root like ``http://localhost:4000/gemini`` therefore produced
+    requests to ``{base}/models/{model}:generateContent`` with no version
+    segment — a guaranteed 404.
+
+    Preserve both semantics: append ``/v1beta`` unless the URL already ends
+    with an API version segment (``v1``, ``v1beta``, ``v1alpha``, ...).
+    Trailing slashes are stripped first; an ``/openai`` suffix (the
+    OpenAI-compat endpoint) is left untouched — that URL shape never reaches
+    the native adapter. Empty/None input returns ``DEFAULT_GEMINI_BASE_URL``.
+
+    Ported from cline/cline#13329 (same bug class in their ai-sdk migration).
+    """
+    trimmed = str(base_url or "").strip().rstrip("/")
+    if not trimmed:
+        return DEFAULT_GEMINI_BASE_URL
+    last_segment = trimmed.rsplit("/", 1)[-1]
+    if last_segment.lower() == "openai" or _API_VERSION_SEGMENT.match(last_segment):
+        return trimmed
+    return f"{trimmed}/v1beta"
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -119,6 +151,7 @@ def probe_gemini_tier(
         normalized_base = DEFAULT_GEMINI_BASE_URL
     if normalized_base.lower().endswith("/openai"):
         normalized_base = normalized_base[: -len("/openai")]
+    normalized_base = normalize_gemini_base_url(normalized_base)
 
     url = f"{normalized_base}/models/{model}:generateContent"
     payload = {
@@ -1066,7 +1099,9 @@ class GeminiNativeClient:
         normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/")
         if normalized_base.endswith("/openai"):
             normalized_base = normalized_base[: -len("/openai")]
-        self.base_url = normalized_base
+        # Host-root URLs (no trailing /v1beta etc.) would 404 on
+        # {base}/models/{model}:generateContent — append the version segment.
+        self.base_url = normalize_gemini_base_url(normalized_base)
         self._default_headers = dict(default_headers or {})
         self.chat = _GeminiChatNamespace(self)
         self.is_closed = False

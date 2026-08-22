@@ -457,3 +457,83 @@ class TestGemini3ToolCallIds:
         result = translate_gemini_response(resp, model="gemini-2.5-flash")
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
+
+
+class TestNormalizeGeminiBaseUrl:
+    """Host-root base URLs must gain the API version segment (port of
+    cline/cline#13329): ``{base}/models/{model}:generateContent`` 404s
+    without it."""
+
+    def test_empty_returns_default(self):
+        from agent.gemini_native_adapter import (
+            DEFAULT_GEMINI_BASE_URL,
+            normalize_gemini_base_url,
+        )
+
+        assert normalize_gemini_base_url(None) == DEFAULT_GEMINI_BASE_URL
+        assert normalize_gemini_base_url("") == DEFAULT_GEMINI_BASE_URL
+        assert normalize_gemini_base_url("   ") == DEFAULT_GEMINI_BASE_URL
+
+    def test_appends_v1beta_to_host_root(self):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+
+        assert normalize_gemini_base_url("https://generativelanguage.googleapis.com") == \
+            "https://generativelanguage.googleapis.com/v1beta"
+        assert normalize_gemini_base_url("http://localhost:4000/gemini") == \
+            "http://localhost:4000/gemini/v1beta"
+
+    def test_strips_trailing_slashes_before_appending(self):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+
+        assert normalize_gemini_base_url("https://proxy.example/gemini///") == \
+            "https://proxy.example/gemini/v1beta"
+
+    def test_keeps_existing_version_segment(self):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+
+        assert normalize_gemini_base_url("https://generativelanguage.googleapis.com/v1beta") == \
+            "https://generativelanguage.googleapis.com/v1beta"
+        assert normalize_gemini_base_url("https://proxy.example/gemini/v1alpha/") == \
+            "https://proxy.example/gemini/v1alpha"
+        assert normalize_gemini_base_url("https://proxy.example/v1") == \
+            "https://proxy.example/v1"
+
+    def test_leaves_openai_compat_suffix_alone(self):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+
+        assert normalize_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        ) == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    def test_client_normalizes_host_root_base_url(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        injected = SimpleNamespace(close=lambda: None)
+        client = GeminiNativeClient(
+            api_key="AIza-test",
+            base_url="https://generativelanguage.googleapis.com",
+            http_client=injected,
+        )
+        assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+    def test_client_keeps_versioned_base_url(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        injected = SimpleNamespace(close=lambda: None)
+        client = GeminiNativeClient(
+            api_key="AIza-test",
+            base_url="http://localhost:8900/gemini/v1beta",
+            http_client=injected,
+        )
+        assert client.base_url == "http://localhost:8900/gemini/v1beta"
+
+    def test_client_openai_suffix_still_strips_then_normalizes(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        injected = SimpleNamespace(close=lambda: None)
+        client = GeminiNativeClient(
+            api_key="AIza-test",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            http_client=injected,
+        )
+        assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"

@@ -3505,6 +3505,9 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     # Startup-watchdog progress lease: repair (raw backup copy + surgery +
     # VACUUM) is I/O-bound — near-zero CPU on a multi-GB file — which the
     # watchdog's CPU fallback would misread as a parked deadlock (OOF-298).
+    # Single lease is deliberate (clamped to _MAX_LEASE_S=900): honest worst
+    # case is up to the lease duration of zombie time on a wedged repair,
+    # accepted over per-chunk renewal complexity in the repair loop.
     report_startup_progress(900.0, phase="state_db_repair")
 
     db_path = Path(db_path)

@@ -125,6 +125,53 @@ class TestContracts:
                     offenders.append(name)
         assert offenders == []
 
+    def test_all_documented_entry_points_arm_the_watchdog(self):
+        """Every documented arm site must actually call arm_startup_watchdog,
+        so a future entry point can't silently ship unwatched. This is a
+        structural contract: the arm sites are the whole point of the
+        pre-loop coverage, and they're spread across four files."""
+        import ast
+        import inspect
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        arm_sites = {
+            # (file, reason) — each must contain an arm_startup_watchdog call
+            "hermes_cli/main.py": "argv fast-path (standard `hermes gateway run`)",
+            "hermes_cli/gateway.py": "run_gateway() config-bridge re-arm",
+            "gateway/run.py": "gateway.run.main() backstop arm",
+            "cli.py": "legacy `--gateway` entry point",
+        }
+        for rel, reason in arm_sites.items():
+            path = repo_root / rel
+            assert path.exists(), f"arm site file missing: {rel} ({reason})"
+            source = path.read_text()
+            tree = ast.parse(source)
+            # Collect both direct calls and aliased imports (main.py uses
+            # `from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw`
+            # then calls `_arm_sw()` to keep the fast-path import-light).
+            aliases = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "hermes_startup_watchdog":
+                    for alias in node.names:
+                        if alias.name == "arm_startup_watchdog":
+                            aliases.add(alias.asname or "arm_startup_watchdog")
+            calls = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = (
+                        fn.id
+                        if isinstance(fn, ast.Name)
+                        else fn.attr
+                        if isinstance(fn, ast.Attribute)
+                        else None
+                    )
+                    if name in aliases or name == "arm_startup_watchdog":
+                        calls.append(node.lineno)
+            assert calls, f"{rel} has no arm_startup_watchdog call ({reason})"
+
+
 
 class TestConfigResolution:
     def test_default_timeout(self):

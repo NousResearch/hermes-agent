@@ -433,6 +433,18 @@ cron:
   wrap_response: false
 ```
 
+To keep wrapping enabled but customize the full message, set `cron.wrap_template`.
+The supported placeholders are `{task_name}`, `{job_id}`, and `{content}`:
+
+```yaml
+cron:
+  wrap_response: true
+  wrap_template: "[{task_name}:{job_id}]\n{content}"
+```
+
+An invalid template falls back to the built-in wrapper. `wrap_response: false`
+always delivers raw content and takes precedence over `wrap_template`.
+
 ### Continuable jobs (reply to a cron delivery)
 
 By default a cron delivery is fire-and-forget: the message is sent, but it does

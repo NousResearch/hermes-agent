@@ -325,6 +325,18 @@ cron:
   wrap_response: false
 ```
 
+若要保留包装但自定义完整消息，可设置 `cron.wrap_template`。支持的占位符为
+`{task_name}`、`{job_id}` 和 `{content}`：
+
+```yaml
+cron:
+  wrap_response: true
+  wrap_template: "[{task_name}:{job_id}]\n{content}"
+```
+
+无效模板会回退到内置包装。`wrap_response: false` 始终投递原始内容，
+其优先级高于 `wrap_template`。
+
 ### 可继续任务（回复 cron 投递）
 
 默认情况下，cron 投递是「发完即忘」的：消息发送出去，但不会进入聊天的对话历史，

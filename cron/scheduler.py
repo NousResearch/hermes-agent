@@ -2896,23 +2896,39 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    wrap_template = None
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        wrap_template = cron_cfg.get("wrap_template")
     except Exception:
         pass
 
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
+        default_template = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
+        delivery_content = default_template
+        if wrap_template is not None:
+            try:
+                delivery_content = wrap_template.format(
+                    task_name=task_name,
+                    job_id=job_id,
+                    content=content,
+                )
+            except (AttributeError, IndexError, KeyError, ValueError) as exc:
+                logger.warning(
+                    "Invalid cron.wrap_template; using the default response wrapper: %s",
+                    exc,
+                )
     else:
         delivery_content = content
 

@@ -376,6 +376,115 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_delivery_uses_custom_wrap_template(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={
+                    "cron": {
+                        "wrap_response": True,
+                        "wrap_template": "[{task_name}:{job_id}]\n{content}",
+                    }
+                },
+            ),
+        ):
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Custom output.",
+            )
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "[daily-report:test-job]\nCustom output."
+
+    def test_invalid_positional_wrap_template_falls_back_and_delivers(self, caplog):
+        """Positional format fields must not abort the delivery path."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_template": "{0}: {content}"}},
+            ),
+        ):
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Fallback output.",
+            )
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "Fallback output." in sent_content
+        assert "Invalid cron.wrap_template" in caplog.text
+
+    def test_wrap_response_false_takes_precedence_over_configured_template(self):
+        """Disabling wrapping must deliver raw content even when a template exists."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={
+                    "cron": {
+                        "wrap_response": False,
+                        "wrap_template": "wrapped: {content}",
+                    }
+                },
+            ),
+        ):
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Raw output.",
+            )
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "Raw output."
+
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""

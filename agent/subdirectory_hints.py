@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import shlex
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
@@ -36,6 +37,11 @@ _HINT_FILENAMES = [
 
 # Maximum chars per hint file to prevent context bloat
 _MAX_HINT_CHARS = 8_000
+
+# Hard cap on how long a single hint-file open/read may block the tool path.
+# Evicted FileProvider placeholders (iCloud Drive, etc.) hang forever on
+# open/read; a short timeout treats them as missing so the gateway stays live.
+_HINT_READ_TIMEOUT_SECONDS = 2.0
 
 # Tool argument keys that typically contain file paths
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
@@ -59,6 +65,23 @@ _EXCLUDED_DIR_NAMES = frozenset({
     "vendor", "third_party",
 })
 
+# Directory names that sit directly under a `Library` path component and mark
+# a FileProvider-backed subtree. Mirrors cron/lifecycle_guard.py so iCloud
+# Drive (`Mobile Documents`) and third-party providers under `CloudStorage`
+# (Dropbox / OneDrive / Google Drive / Box) are refused before open.
+_CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
+
+# Broader refuse-list substrings from the 2026-08-18 gateway wedge
+# (task 20260818_092117_51a51a54): bare Path.read_text hung 53+ min on an
+# iCloud-backed AGENTS.md. Match anywhere in the path string.
+_CLOUD_PATH_REFUSE_SUBSTRINGS = (
+    "Mobile Documents",
+    "iCloud",
+    ".icloud",
+    "com.apple.fileprovider",
+    "CloudStorage",
+)
+
 
 def _is_ancestor_or_same(a: Path, b: Path) -> bool:
     """Check if *a* is the same as or an ancestor of *b* (parent directory check)."""
@@ -67,6 +90,72 @@ def _is_ancestor_or_same(a: Path, b: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _is_cloud_backed_path(path: Path) -> bool:
+    """True when *path* is under a macOS FileProvider / iCloud subtree.
+
+    Opening an evicted placeholder can block indefinitely. Refuse from path
+    metadata alone — never open, stat, or resolve into the cloud tree first.
+    """
+    parts = path.parts
+    if any(
+        parts[index - 1] == "Library" and part in _CLOUD_PLACEHOLDER_MARKERS
+        for index, part in enumerate(parts)
+        if index
+    ):
+        return True
+    path_str = str(path)
+    return any(marker in path_str for marker in _CLOUD_PATH_REFUSE_SUBSTRINGS)
+
+
+def _read_hint_text(path: Path) -> Optional[str]:
+    """Bounded UTF-8 read of a hint file. Returns None on refuse/timeout/error.
+
+    Never uses bare ``Path.read_text``: iCloud / FileProvider placeholders
+    hang forever on open (gateway wedge 2026-08-18). Preflight refuse + a
+    short timeout treat the file as missing so the tool call path stays live.
+    """
+    if _is_cloud_backed_path(path):
+        logger.debug("Skipping iCloud/FileProvider-backed hint file: %s", path)
+        return None
+
+    box: Dict[str, Any] = {"content": None, "error": None}
+
+    def _do_read() -> None:
+        try:
+            # Explicit open/read (not Path.read_text) so the blocking call is
+            # confined to this daemon worker and can be abandoned on timeout.
+            with open(path, "r", encoding="utf-8") as fh:
+                box["content"] = fh.read().strip()
+        except BaseException as exc:  # noqa: BLE001 — marshalled back to caller
+            box["error"] = exc
+
+    thread = threading.Thread(
+        target=_do_read,
+        name="subdirectory-hint-read",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=_HINT_READ_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        logger.warning(
+            "Timed out reading hint file after %.1fs (treating as missing): %s",
+            _HINT_READ_TIMEOUT_SECONDS,
+            path,
+        )
+        return None
+
+    err = box["error"]
+    if err is not None:
+        if isinstance(err, (OSError, UnicodeDecodeError)):
+            logger.debug("Could not read %s: %s", path, err)
+            return None
+        # Unexpected errors should still surface in tests / logs as debug and
+        # behave like a missing hint — never wedge the tool path.
+        logger.debug("Could not read %s: %s", path, err)
+        return None
+    return box["content"]
 
 
 class SubdirectoryHintTracker:
@@ -102,12 +191,20 @@ class SubdirectoryHintTracker:
         """
         for filename in _HINT_FILENAMES:
             candidate = self.working_dir / filename
+            # Refuse cloud paths before is_file()/open — both can hang on
+            # FileProvider placeholders (same class of wedge as the load path).
+            if _is_cloud_backed_path(candidate):
+                logger.debug(
+                    "Skipping iCloud/FileProvider-backed CWD hint seed: %s",
+                    candidate,
+                )
+                continue
             try:
                 if not candidate.is_file():
                     continue
-                content = candidate.read_text(encoding="utf-8").strip()
-            except (OSError, UnicodeDecodeError):
+            except OSError:
                 continue
+            content = _read_hint_text(candidate)
             if content:
                 self._loaded_digests.add(
                     hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -279,13 +376,20 @@ class SubdirectoryHintTracker:
         found_hints = []
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
+            # Preflight refuse before is_file()/open — FileProvider paths hang.
+            if _is_cloud_backed_path(hint_path):
+                logger.debug(
+                    "Skipping iCloud/FileProvider-backed hint file: %s",
+                    hint_path,
+                )
+                continue
             try:
                 if not hint_path.is_file():
                     continue
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
+                content = _read_hint_text(hint_path)
                 if not content:
                     continue
                 # Skip content we've already injected. The same AGENTS.md is

@@ -297,3 +297,142 @@ class TestExcludedDirectories:
         assert result is not None
         assert "Personal backend override" in result
         assert "Committed backend rules" not in result
+
+
+class TestCloudBackedPathRefuse:
+    """iCloud / FileProvider paths must never be opened (gateway wedge 2026-08-18)."""
+
+    def test_is_cloud_backed_mobile_documents(self):
+        from agent.subdirectory_hints import _is_cloud_backed_path
+
+        p = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "AGENTS.md"
+        assert _is_cloud_backed_path(p) is True
+
+    def test_is_cloud_backed_cloudstorage(self):
+        from agent.subdirectory_hints import _is_cloud_backed_path
+
+        p = Path.home() / "Library" / "CloudStorage" / "Dropbox" / "AGENTS.md"
+        assert _is_cloud_backed_path(p) is True
+
+    def test_is_cloud_backed_substring_icloud(self):
+        from agent.subdirectory_hints import _is_cloud_backed_path
+
+        assert _is_cloud_backed_path(Path("/Users/x/iCloudDrive/proj/AGENTS.md")) is True
+        assert _is_cloud_backed_path(Path("/tmp/foo.icloud")) is True
+        assert _is_cloud_backed_path(Path("/tmp/com.apple.fileprovider/x")) is True
+
+    def test_local_path_not_refused(self, tmp_path):
+        from agent.subdirectory_hints import _is_cloud_backed_path
+
+        assert _is_cloud_backed_path(tmp_path / "AGENTS.md") is False
+
+    def test_load_skips_icloud_named_path_without_open(self, tmp_path):
+        """Even inside working_dir, cloud-shaped names are refused preflight."""
+        from agent.subdirectory_hints import _read_hint_text
+
+        # Synthetic path string containing refuse markers — never open.
+        cloudish = Path("/Users/test/Library/Mobile Documents/com~apple~CloudDocs/AGENTS.md")
+        assert _read_hint_text(cloudish) is None
+
+    def test_seed_skips_cloud_cwd_hint(self):
+        """Startup digest seed must not open a cloud-backed CWD hint file."""
+        from agent import subdirectory_hints as mod
+
+        calls = {"open": 0}
+        real_open = open
+
+        def counting_open(*args, **kwargs):
+            calls["open"] += 1
+            return real_open(*args, **kwargs)
+
+        cloud_root = Path(
+            "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/proj"
+        )
+        tracker = object.__new__(mod.SubdirectoryHintTracker)
+        tracker.working_dir = cloud_root
+        tracker._loaded_dirs = {cloud_root}
+        tracker._loaded_digests = set()
+        with patch("builtins.open", side_effect=counting_open):
+            tracker._seed_working_dir_digest()
+        assert calls["open"] == 0
+        assert tracker._loaded_digests == set()
+
+
+class TestBoundedHintRead:
+    """Slow/hanging hint files must not wedge the tool path."""
+
+    def test_normal_local_file_still_loads(self, tmp_path):
+        sub = tmp_path / "backend"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Backend rules safe")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(sub / "f.py")}
+        )
+        assert result is not None
+        assert "Backend rules safe" in result
+
+    def test_fifo_read_times_out_fast(self, tmp_path):
+        """A FIFO with no writer hangs bare read_text forever — must return fast."""
+        import os
+        import time
+
+        from agent.subdirectory_hints import (
+            _HINT_READ_TIMEOUT_SECONDS,
+            _read_hint_text,
+        )
+
+        fifo = tmp_path / "AGENTS.md"
+        os.mkfifo(fifo)
+
+        started = time.monotonic()
+        content = _read_hint_text(fifo)
+        elapsed = time.monotonic() - started
+
+        assert content is None
+        # Allow generous slack over the 2s cap, but nowhere near a wedge.
+        assert elapsed < _HINT_READ_TIMEOUT_SECONDS + 2.0
+
+    def test_load_hints_survives_slow_file(self, tmp_path):
+        """_load_hints_for_directory must hit bounded read and return fast.
+
+        FIFOs make Path.is_file() False, so they never reach _read_hint_text.
+        Hang open() on a real regular file to exercise the load-path timeout.
+
+        Important: pass a *resolved* directory. On macOS tmp paths often live
+        under /var -> /private/var; SubdirectoryHintTracker resolves working_dir,
+        and an unresolved subdir fails is_relative_to and returns before open.
+        """
+        import time
+
+        from agent.subdirectory_hints import _HINT_READ_TIMEOUT_SECONDS
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        # Use a path under the tracker's resolved working_dir, not raw tmp_path.
+        sub = tracker.working_dir / "slowdir"
+        sub.mkdir()
+        hint = sub / "AGENTS.md"
+        # Real regular file so path construction is normal; open is mocked hang.
+        hint.write_text("should never be returned if open hangs")
+
+        open_calls = {"n": 0}
+
+        def hanging_open(*_args, **_kwargs):
+            open_calls["n"] += 1
+            time.sleep(30)
+            raise AssertionError("open should have been abandoned on timeout")
+
+        started = time.monotonic()
+        with patch("builtins.open", side_effect=hanging_open):
+            result = tracker._load_hints_for_directory(sub)
+        elapsed = time.monotonic() - started
+
+        assert result is None
+        assert open_calls["n"] >= 1  # load path actually reached bounded open/read
+        # Must actually wait near the timeout (proves we reached _read_hint_text),
+        # but nowhere near a multi-minute wedge.
+        # macOS default APFS is case-insensitive, so AGENTS.md and agents.md are
+        # the same inode and the load loop may pay the timeout twice (~4s).
+        assert elapsed >= _HINT_READ_TIMEOUT_SECONDS - 0.5
+        assert elapsed < (_HINT_READ_TIMEOUT_SECONDS * 2) + 2.0

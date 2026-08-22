@@ -30,7 +30,7 @@ _skill_commands_home: Optional[str] = None
 # outside this lock.
 _publish_lock = threading.Lock()
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
-_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+_SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # ---------------------------------------------------------------------------
@@ -491,8 +491,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 break
                     seen_names.add(name)
                     # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
+                    # non-word chars (e.g. +, /) while preserving
+                    # Unicode letters (CJK, Cyrillic, etc.).
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')

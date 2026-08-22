@@ -14,7 +14,6 @@ import sys
 import tempfile
 import threading
 import time
-import unicodedata
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -23,20 +22,6 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
-
-
-def _is_command_boundary_char(ch: str) -> bool:
-    return ch.isspace() or unicodedata.category(ch) in {"Cc", "Cf"}
-
-
-def _strip_command_boundary_chars(text: str) -> str:
-    start = 0
-    end = len(text)
-    while start < end and _is_command_boundary_char(text[start]):
-        start += 1
-    while end > start and _is_command_boundary_char(text[end - 1]):
-        end -= 1
-    return text[start:end]
 
 
 def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
@@ -445,7 +430,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, looks_like_slash_command
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home

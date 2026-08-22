@@ -1330,6 +1330,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     reply_to_is_own_message=True,
                     raw_message=event,
                     timestamp=timestamp,
+                    synthetic=True,
                 )
             )
             return

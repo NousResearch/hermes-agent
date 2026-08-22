@@ -21,6 +21,7 @@ import urllib.request
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -946,6 +947,33 @@ def _send_body(text, ctx="", extra_params=None):
     if extra_params:
         params.update(extra_params)
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
+
+
+def test_local_a2a_task_event_is_synthetic(monkeypatch):
+    """A locally dispatched remote-agent task retains auth but skips routing."""
+    from plugins.platforms.a2a.adapter import A2AAdapter
+    from gateway.config import PlatformConfig
+
+    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    adapter._loop = object()
+    adapter._message_handler = object()
+    adapter.handle_message = MagicMock()
+    monkeypatch.setattr(
+        "plugins.platforms.a2a.adapter.asyncio.run_coroutine_threadsafe",
+        MagicMock(),
+    )
+
+    terminal, pending = adapter._prepare_task(
+        {"message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx")},
+        "remote-peer",
+    )
+
+    assert terminal is None
+    assert pending is not None
+    event = adapter.handle_message.call_args.args[0]
+    assert event.synthetic is True
+    assert event.internal is False
+    adapter._pop_pending(event.message_id)
 
 
 @pytest.mark.integration

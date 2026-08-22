@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
+from cli import _SyntheticInputMessage
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
@@ -48,8 +49,25 @@ def test_cli_running_injection_keeps_existing_interrupt_behaviour():
     manager._cli_ref = cli
 
     assert context.inject_message("status", "system") is True
-    assert cli._interrupt_queue.get_nowait() == "[system] status"
+    queued = cli._interrupt_queue.get_nowait()
+    assert queued == "[system] status"
+    assert isinstance(queued, _SyntheticInputMessage)
     assert cli._pending_input.empty()
+
+
+def test_cli_idle_non_user_injection_is_synthetic():
+    context, manager = _context()
+    cli = SimpleNamespace(
+        _agent_running=False,
+        _pending_input=SimpleQueue(),
+        _interrupt_queue=SimpleQueue(),
+    )
+    manager._cli_ref = cli
+
+    assert context.inject_message("status", "system") is True
+    queued = cli._pending_input.get_nowait()
+    assert queued == "[system] status"
+    assert isinstance(queued, _SyntheticInputMessage)
 
 
 def test_gateway_injection_requires_session_key(tmp_path, monkeypatch):

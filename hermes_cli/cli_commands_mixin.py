@@ -2114,7 +2114,9 @@ class CLICommandsMixin:
         else:
             print("\n⚡ Learning a skill from this conversation...")
         if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
+            from cli import _SyntheticInputMessage
+
+            self._pending_input.put(_SyntheticInputMessage(msg))
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
@@ -2140,7 +2142,9 @@ class CLICommandsMixin:
         else:
             print("\n⚡ Generating AGENTS.md from a project scan...")
         if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
+            from cli import _SyntheticInputMessage
+
+            self._pending_input.put(_SyntheticInputMessage(msg))
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /init needs an active chat session to run.")
 
@@ -2545,16 +2549,20 @@ class CLICommandsMixin:
             # Inject context message so the model knows this slash command
             # intentionally makes the dev/debug CDP browser available for use.
             if hasattr(self, '_pending_input'):
+                from cli import _SyntheticInputMessage
+
                 self._pending_input.put(
-                    "[System note: The user invoked /browser connect and connected your browser tools to "
-                    "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
-                    "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
-                    "control that CDP browser. The command itself is a signal that using browser tools for "
-                    "their current browser-related request is expected; do not wait for separate permission "
-                    "just because CDP is connected. This is typically a Hermes-managed isolated debug "
-                    "profile, not the user's main everyday browser. It is still user-visible and may contain "
-                    "pages, logged-in sessions, or cookies in that debug profile, so avoid destructive actions, "
-                    "closing tabs, or navigating away unless the user's task calls for it.]"
+                    _SyntheticInputMessage(
+                        "[System note: The user invoked /browser connect and connected your browser tools to "
+                        "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
+                        "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+                        "control that CDP browser. The command itself is a signal that using browser tools for "
+                        "their current browser-related request is expected; do not wait for separate permission "
+                        "just because CDP is connected. This is typically a Hermes-managed isolated debug "
+                        "profile, not the user's main everyday browser. It is still user-visible and may contain "
+                        "pages, logged-in sessions, or cookies in that debug profile, so avoid destructive actions, "
+                        "closing tabs, or navigating away unless the user's task calls for it.]"
+                    )
                 )
 
         elif sub == "disconnect":
@@ -2572,9 +2580,13 @@ class CLICommandsMixin:
                 print()
 
                 if hasattr(self, '_pending_input'):
+                    from cli import _SyntheticInputMessage
+
                     self._pending_input.put(
-                        "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
-                        "Browser tools are back to default mode (headless local browser or cloud provider).]"
+                        _SyntheticInputMessage(
+                            "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
+                            "Browser tools are back to default mode (headless local browser or cloud provider).]"
+                        )
                     )
             else:
                 print()

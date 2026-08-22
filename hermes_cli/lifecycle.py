@@ -37,6 +37,52 @@ def has_hook(hook_name: str) -> bool:
     return plugins.has_hook(hook_name)
 
 
+def route_pre_user_input(
+    *,
+    surface: str,
+    text: Any,
+    session_key: str,
+    platform: str,
+    goal_active: bool,
+    has_attachments: bool,
+) -> tuple[Any, str | None]:
+    """Apply the first valid ``pre_user_input_route`` rewrite, fail-open."""
+    if (
+        goal_active
+        or has_attachments
+        or not isinstance(text, str)
+        or not text.strip()
+        or text.lstrip().startswith("/")
+    ):
+        return text, None
+    try:
+        results = invoke_hook(
+            "pre_user_input_route",
+            surface=surface,
+            text=text,
+            session_key=session_key,
+            platform=platform,
+            goal_active=goal_active,
+            has_attachments=has_attachments,
+        )
+    except Exception:
+        logger.warning("pre_user_input_route invocation failed", exc_info=True)
+        return text, None
+
+    if not isinstance(results, list):
+        return text, None
+
+    for result in results:
+        if not isinstance(result, dict) or result.get("action") != "rewrite":
+            continue
+        rewritten = result.get("text")
+        if not isinstance(rewritten, str) or not rewritten.strip():
+            continue
+        notice = result.get("notice")
+        return rewritten, notice if isinstance(notice, str) else None
+    return text, None
+
+
 def finalize_session(**kwargs: Any) -> List[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
     try:

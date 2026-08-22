@@ -2387,6 +2387,11 @@ class MessageEvent:
     # Proactive plugin events set this to False so untrusted payload text
     # remains conversational input.
     allow_gateway_control: bool = True
+
+    # Generated text that remains attributable to a real sender and must
+    # therefore pass normal gateway authorization, but must not be offered to
+    # user-input routing plugins.
+    synthetic: bool = False
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

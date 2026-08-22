@@ -42,5 +42,5 @@ async def test_retry_returns_response_not_none(gateway):
     result = await gateway._handle_retry_command(event)
     assert result is not None, "/retry must not return None"
     assert result == expected_response
-
+    assert gateway._handle_message.await_args.args[0].synthetic is True
 

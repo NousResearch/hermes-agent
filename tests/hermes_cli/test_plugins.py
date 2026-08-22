@@ -782,6 +782,50 @@ class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
 
+    def test_discovered_narrow_input_route_hook_is_additive_and_fails_open(
+        self, tmp_path, monkeypatch
+    ):
+        """Native hooks with frozen signatures receive only declared payload keys."""
+        from hermes_cli import lifecycle
+
+        home = tmp_path / "hermes_test"
+        _make_plugin_dir(
+            home / "plugins",
+            "frozen_input_router",
+            register_body=(
+                "def route(text):\n"
+                "        if text == 'rewrite this':\n"
+                "            return {'action': 'rewrite', 'text': '/goal routed'}\n"
+                "        return {'action': 'rewrite', 'text': ''}\n"
+                "    ctx.register_hook('pre_user_input_route', route)"
+            ),
+            home=home,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        manager = PluginManager()
+        manager.discover_and_load()
+        assert manager.has_hook("pre_user_input_route") is True
+
+        monkeypatch.setattr(lifecycle, "invoke_hook", manager.invoke_hook)
+        assert lifecycle.route_pre_user_input(
+            surface="gateway",
+            text="rewrite this",
+            session_key="s1",
+            platform="webhook",
+            goal_active=False,
+            has_attachments=False,
+        ) == ("/goal routed", None)
+        assert lifecycle.route_pre_user_input(
+            surface="cli",
+            text="keep this",
+            session_key="s2",
+            platform="cli",
+            goal_active=False,
+            has_attachments=False,
+        ) == ("keep this", None)
+
+
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""

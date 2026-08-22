@@ -3043,6 +3043,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id,
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
+            synthetic=True,
         )
         logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
         await self._handle_message_with_guards(synthetic_event)
@@ -3106,6 +3107,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=token or str(uuid.uuid4()),
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
+            synthetic=True,
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)

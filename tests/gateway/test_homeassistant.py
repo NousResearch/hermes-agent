@@ -201,6 +201,7 @@ class TestEventFilteringPipeline:
         assert "heat" in msg_event.text
         assert msg_event.source.platform == Platform.HOMEASSISTANT
         assert msg_event.source.chat_id == "ha_events"
+        assert msg_event.synthetic is True
 
 
 # ---------------------------------------------------------------------------
@@ -317,4 +318,3 @@ class TestWsUrlConstruction:
         adapter = HomeAssistantAdapter(config)
         ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         assert ws_url == "ws://ha:8123"
-

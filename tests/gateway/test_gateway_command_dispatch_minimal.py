@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -126,6 +127,53 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["source"] == _make_source()
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_authorized_idle_input_rewrite_enters_command_dispatch():
+    runner, _adapter = _make_runner()
+    captured = {}
+
+    async def fake_handle_message_with_agent(event, _source, _key, _generation):
+        captured["text"] = event.text
+        return {"final_response": "", "messages": []}
+
+    runner._handle_message_with_agent = fake_handle_message_with_agent
+    runner._route_pre_user_input = AsyncMock(
+        side_effect=lambda event: dataclasses.replace(event, text="/queue rewritten")
+    )
+    event = _make_event("plain user input")
+    event.internal = False
+
+    await runner._handle_message(event)
+
+    runner._route_pre_user_input.assert_awaited_once_with(event)
+    assert captured["text"] == "rewritten"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_or_internal_input_never_reaches_input_router():
+    runner, _adapter = _make_runner()
+    runner._route_pre_user_input = AsyncMock()
+    runner._handle_message_with_agent = AsyncMock(
+        return_value={"final_response": "", "messages": []}
+    )
+    runner._is_user_authorized = lambda _source: False
+    runner._get_unauthorized_dm_behavior = lambda *_args, **_kwargs: "ignore"
+    event = _make_event("plain user input")
+    event.internal = False
+
+    assert await runner._handle_message(event) is None
+    runner._route_pre_user_input.assert_not_awaited()
+
+    runner._is_user_authorized = lambda _source: True
+    internal = _make_event("internal generated text")
+    assert await runner._handle_message(internal) == {"final_response": "", "messages": []}
+    runner._route_pre_user_input.assert_not_awaited()
+
+    synthetic = _make_event("authorized generated text")
+    synthetic.internal = False
+    synthetic.synthetic = True
+    assert await runner._handle_message(synthetic) == {"final_response": "", "messages": []}
+    runner._route_pre_user_input.assert_not_awaited()
     assert runner._running_agents == {}
-
-

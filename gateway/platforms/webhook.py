@@ -941,6 +941,7 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            synthetic=True,
         )
 
         logger.info(

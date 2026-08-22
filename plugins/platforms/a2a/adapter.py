@@ -772,6 +772,7 @@ class A2AAdapter(BasePlatformAdapter):
                 user_name=peer,
             ),
             message_id=task_id,
+            synthetic=True,
         )
 
         try:

@@ -546,6 +546,24 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         adapter._handle_message_with_guards.assert_not_awaited()
 
+    def test_reaction_event_is_marked_synthetic_but_keeps_sender_context(self):
+        adapter = self._build_reaction_adapter(msg_sender_id="cli_self_app")
+        event = SimpleNamespace(
+            message_id="om_bot_msg",
+            user_id=SimpleNamespace(open_id="ou_human", user_id=None, union_id=None),
+            reaction_type=SimpleNamespace(emoji_type="THUMBSUP"),
+        )
+
+        asyncio.run(
+            adapter._handle_reaction_event(
+                "im.message.reaction.created_v1", SimpleNamespace(event=event),
+            )
+        )
+
+        routed = adapter._handle_message_with_guards.await_args.args[0]
+        assert routed.synthetic is True
+        assert routed.source.user_id == "u_human"
+
 
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig
@@ -2465,5 +2483,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

@@ -9098,6 +9098,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
+    def _goal_active_for_input_route(self, session_id: str) -> Optional[bool]:
+        """Return goal state for input routing, or ``None`` when unknown."""
+        if not session_id:
+            return None
+        try:
+            from hermes_cli.goals import GoalManager
+            return bool(GoalManager(session_id=session_id).is_active())
+        except Exception as exc:
+            logger.debug("pre-user-input goal check failed: %s", exc)
+            return None
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -16159,10 +16170,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return self._is_user_authorized(source)
         return check
 
+    async def _route_pre_user_input(self, event: MessageEvent) -> MessageEvent:
+        """Run the synchronous input-route hook off the gateway event loop."""
+        from hermes_cli.lifecycle import has_hook, route_pre_user_input
 
+        if not await asyncio.to_thread(has_hook, "pre_user_input_route"):
+            return event
 
+        source = event.source
+        entry = await self.async_session_store.get_or_create_session(source)
+        session_id = str(getattr(entry, "session_id", "") or "")
+        goal_active = await asyncio.to_thread(
+            self._goal_active_for_input_route, session_id,
+        )
+        if goal_active is not False:
+            return event
 
-
+        text, notice = await asyncio.to_thread(
+            route_pre_user_input,
+            surface="gateway",
+            text=event.text,
+            session_key=self._session_key_for_source(source),
+            platform=source.platform.value if source.platform else "",
+            goal_active=goal_active,
+            has_attachments=False,
+        )
+        if notice:
+            await self._deliver_platform_notice(source, notice)
+        return dataclasses.replace(event, text=text) if text != event.text else event
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -17428,6 +17463,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
             return None
+
+        # Route only real, attachment-free user text after authorization and
+        # every pending/running control guard. The synchronous plugin API runs
+        # off-loop; a rewrite can intentionally enter slash dispatch below.
+        if (
+            not is_internal
+            and not event.synthetic
+            and not getattr(source, "is_bot", False)
+            and event.message_type == MessageType.TEXT
+            and not event.media_urls
+            and not event.media_types
+            and isinstance(event.text, str)
+            and event.text.strip()
+            and not event.text.lstrip().startswith("/")
+        ):
+            try:
+                event = await self._route_pre_user_input(event)
+            except Exception:
+                logger.warning("pre_user_input_route failed", exc_info=True)
 
         # Check for commands
         command = event.get_command()
@@ -21596,6 +21650,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=source,
                             message_id=None,
                             channel_prompt=None,
+                            internal=True,
                         )
                         self._enqueue_fifo(quick_key, hb_event, adapter)
                     except Exception as exc:
@@ -21771,6 +21826,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:

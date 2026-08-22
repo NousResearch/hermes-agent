@@ -208,5 +208,6 @@ async def handle_meeting_invited_event(adapter: Any, data: Any) -> None:
         message_type=MessageType.TEXT,
         source=source,
         raw_message=data,
+        synthetic=True,
     )
     await adapter._handle_message_with_guards(event)

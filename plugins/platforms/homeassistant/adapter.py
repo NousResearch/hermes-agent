@@ -339,6 +339,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             source=source,
             message_id=f"ha_{entity_id}_{int(now)}",
             timestamp=datetime.now(),
+            synthetic=True,
         )
 
         await self.handle_message(msg_event)

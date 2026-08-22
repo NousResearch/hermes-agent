@@ -910,6 +910,127 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_windows_symlink_privilege() -> None:
+    """Doctor check: can this process create symlinks without elevation?
+
+    Windows requires Developer Mode (or an elevated process) to create
+    symlinks without SeCreateSymbolicLinkPrivilege; the failure surfaces as
+    OSError winerror 1314 deep inside whatever staged a symlinked fixture,
+    not as a message that points at the actual remedy.
+    """
+    import tempfile
+
+    probe_dir = Path(tempfile.gettempdir())
+    target = probe_dir / f"hermes-doctor-symlink-target-{os.getpid()}"
+    link = probe_dir / f"hermes-doctor-symlink-probe-{os.getpid()}"
+    try:
+        target.touch()
+        try:
+            os.symlink(target, link)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                check_warn(
+                    "Symlink creation requires elevation",
+                    "(enable Developer Mode: Settings > Privacy & security > "
+                    "For developers, or run this shell elevated)",
+                )
+            else:
+                check_warn("Symlink creation failed", str(exc))
+        else:
+            check_ok("Symlink creation")
+    finally:
+        link.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+
+
+def _check_windows_git_credential_prompt() -> None:
+    """Doctor check: will a spawned git hang waiting for a credential prompt?
+
+    Daemon-like contexts (gateway, cron jobs) spawn git non-interactively; an
+    interactive credential helper with GIT_TERMINAL_PROMPT unset can hang
+    forever instead of failing fast.
+    """
+    if _safe_which("git") is None:
+        return
+    if os.environ.get("GIT_TERMINAL_PROMPT") == "0":
+        check_ok("Git non-interactive prompts disabled (GIT_TERMINAL_PROMPT=0)")
+        return
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "credential.helper"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        helper = result.stdout.strip()
+    except Exception:
+        helper = ""
+    if helper and "manager" not in helper.lower():
+        check_info(f"Git credential helper: {helper} (GIT_TERMINAL_PROMPT unset)")
+        return
+    check_warn(
+        "Git may hang waiting for a credential prompt in non-interactive contexts",
+        "(set GIT_TERMINAL_PROMPT=0 and configure a non-interactive helper, e.g. "
+        "'git config --global credential.helper cache', for gateway/background use)",
+    )
+
+
+def _check_windows_bash_toolchain() -> None:
+    """Doctor check: is the Git Bash the terminal tool spawns actually available?"""
+    try:
+        from tools.environments.local import _find_bash
+        bash_path = _find_bash()
+    except Exception as exc:
+        check_warn("Git Bash not found", str(exc))
+        return
+    check_ok(f"Git Bash found ({bash_path})")
+
+
+def _check_windows_long_paths() -> None:
+    """Doctor check: is NTFS long path support enabled?
+
+    Deep checkouts (node_modules-depth trees) risk exceeding MAX_PATH when
+    this is off; the registry key is the only place that's recorded.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\FileSystem",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError:
+        value = 0
+    if value:
+        check_ok("Windows long path support enabled")
+    else:
+        check_warn(
+            "Windows long path support disabled",
+            "(deep checkouts risk exceeding MAX_PATH; enable with "
+            "'reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
+            "/v LongPathsEnabled /t REG_DWORD /d 1 /f' elevated, then reboot)",
+        )
+
+
+def _check_windows_environment() -> None:
+    """Windows-only preflight checks; silently skipped on other platforms.
+
+    Each of these turns into a confusing downstream failure report (a test
+    suite dying mid-run, a hung background git fetch, a broken tool path)
+    when it isn't caught here at setup time.
+    """
+    if sys.platform != "win32":
+        return
+    _section("Windows Environment")
+    _check_windows_symlink_privilege()
+    _check_windows_git_credential_prompt()
+    _check_windows_bash_toolchain()
+    _check_windows_long_paths()
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -1981,6 +2102,7 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
+    _check_windows_environment()
 
     if sys.platform != "win32":
         _section("Command Installation")

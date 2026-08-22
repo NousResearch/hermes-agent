@@ -128,9 +128,12 @@ class ModelAssignment(BaseModel):
     scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
     """
     scope: str
-    provider: str
-    model: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
     task: str = ""
+    # Optional per-auxiliary-task reasoning override. An explicit null clears
+    # only that task's override; an omitted field leaves it unchanged.
+    reasoning_effort: Optional[str] = None
     # Optional OpenAI-compatible endpoint URL. Honored for custom/local
     # providers on the main slot AND on auxiliary slots — lets the GUI wire a
     # self-hosted endpoint (vLLM, llama.cpp, Ollama, …) that needs no API key.

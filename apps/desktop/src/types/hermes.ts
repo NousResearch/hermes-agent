@@ -1257,6 +1257,8 @@ export interface AuxiliaryTaskAssignment {
   base_url: string
   model: string
   provider: string
+  /** Null/absent means inherit the profile's agent.reasoning_effort. */
+  reasoning_effort?: string | null
   task: string
 }
 
@@ -1311,8 +1313,10 @@ export interface ModelAssignmentRequest {
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string
-  model: string
-  provider: string
+  model?: string
+  provider?: string
+  /** Per-auxiliary-task override; null removes only that task override. */
+  reasoning_effort?: string | null
   scope: 'main' | 'auxiliary'
   task?: string
 }

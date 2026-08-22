@@ -205,7 +205,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+
+  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string; reasoningEffort: string }>({
+    model: '',
+    provider: '',
+    reasoningEffort: '__inherit__'
+  })
+
   // Aux slots reported stale by the backend immediately after a main-model
   // switch (provider differs from the new main). Cleared on next switch/reset.
   const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
@@ -722,6 +728,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
           {
             model: auxDraft.model,
             provider: auxDraft.provider,
+            reasoning_effort: auxDraft.reasoningEffort === '__inherit__' ? null : auxDraft.reasoningEffort,
             scope: 'auxiliary',
             task,
             ...endpointForProvider(auxDraft.provider)
@@ -747,7 +754,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
         current?.provider && current.provider !== 'auto' ? current.provider : (mainModel?.provider ?? '')
 
       const initialModel = current?.model || mainModel?.model || ''
-      setAuxDraft({ provider: initialProvider, model: initialModel })
+      const initialReasoningEffort = current?.reasoning_effort ?? '__inherit__'
+      setAuxDraft({ provider: initialProvider, model: initialModel, reasoningEffort: initialReasoningEffort })
       setEditingAuxTask(task)
     },
     [auxiliary, mainModel]
@@ -968,47 +976,76 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
                   }
                   below={
                     isEditing && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                          value={auxDraft.provider}
-                        >
-                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.provider} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map(provider => (
-                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                          value={auxDraft.model}
-                        >
-                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.model} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          disabled={!auxDraft.provider || !auxDraft.model || applying}
-                          onClick={() => void applyAuxiliaryDraft(meta.key)}
-                          size="sm"
-                        >
-                          {applying ? m.applying : t.common.apply}
-                        </Button>
-                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                          {t.common.cancel}
-                        </Button>
+                      <div className="mt-2 grid gap-2 pt-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                            value={auxDraft.provider}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} provider`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue placeholder={m.provider} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {providerOptions.map(provider => (
+                                <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                  {provider.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                            value={auxDraft.model}
+                          >
+                            <SelectTrigger aria-label={`${copy.label} model`} className={cn('min-w-48', CONTROL_TEXT)}>
+                              <SelectValue placeholder={m.model} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                                <SelectItem key={model} value={model}>
+                                  {model}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="text-muted-foreground">{m.reasoning}</span>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                            value={auxDraft.reasoningEffort}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} reasoning effort`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__inherit__">{m.autoUseMain}</SelectItem>
+                              {REASONING_EFFORT_VALUES.map(value => (
+                                <SelectItem key={value} value={value}>
+                                  {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            disabled={!auxDraft.provider || !auxDraft.model || applying}
+                            onClick={() => void applyAuxiliaryDraft(meta.key)}
+                            size="sm"
+                          >
+                            {applying ? m.applying : t.common.apply}
+                          </Button>
+                          <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                            {t.common.cancel}
+                          </Button>
+                        </div>
                       </div>
                     )
                   }

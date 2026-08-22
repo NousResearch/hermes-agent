@@ -7149,6 +7149,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
                 "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""),
                 "base_url": str(slot_cfg.get("base_url", "") or ""),
+                "reasoning_effort": slot_cfg.get("reasoning_effort") or None,
             })
 
         model_cfg = cfg.get("model", {})
@@ -7272,6 +7273,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     task = (body.task or "").strip().lower()
     base_url = (body.base_url or "").strip()
     api_key = (body.api_key or "").strip()
+    reasoning_effort_set = "reasoning_effort" in getattr(body, "model_fields_set", set())
 
     if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
@@ -7308,7 +7310,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         def _apply_assignment():
             with _profile_scope(body.profile or profile):
                 return _apply_model_assignment_sync(
-                    scope, provider, model, task, base_url, api_key
+                    scope,
+                    provider,
+                    model,
+                    task,
+                    base_url,
+                    api_key,
+                    body.reasoning_effort,
+                    reasoning_effort_set,
                 )
 
         return await asyncio.to_thread(_apply_assignment)
@@ -7320,7 +7329,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
 
 
 def _apply_model_assignment_sync(
-    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
+    scope: str,
+    provider: str,
+    model: str,
+    task: str,
+    base_url: str,
+    api_key: str = "",
+    reasoning_effort: Optional[str] = None,
+    reasoning_effort_set: bool = False,
 ):
     """Synchronous body of POST /api/model/set.
 
@@ -7456,6 +7472,23 @@ def _apply_model_assignment_sync(
     if not isinstance(aux, dict):
         aux = {}
 
+    normalized_reasoning_effort = None
+    if reasoning_effort_set and reasoning_effort is not None:
+        from hermes_constants import parse_reasoning_effort
+
+        parsed_reasoning = parse_reasoning_effort(reasoning_effort)
+        if parsed_reasoning is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "reasoning_effort must be one of: none, minimal, low, medium, "
+                    "high, xhigh, max, ultra"
+                ),
+            )
+        normalized_reasoning_effort = (
+            "none" if not parsed_reasoning.get("enabled", True) else parsed_reasoning["effort"]
+        )
+
     if task == "__reset__":
         # Reset every slot to provider="auto", model="" — keeps other fields intact.
         for slot in _AUX_TASK_SLOTS:
@@ -7471,8 +7504,13 @@ def _apply_model_assignment_sync(
         save_config(cfg)
         return {"ok": True, "scope": "auxiliary", "reset": True}
 
-    if not provider:
+    if not provider and not reasoning_effort_set:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
+    if reasoning_effort_set and not task:
+        raise HTTPException(
+            status_code=400,
+            detail="task required when setting auxiliary reasoning_effort",
+        )
 
     targets = [task] if task else list(_AUX_TASK_SLOTS)
     for slot in targets:
@@ -7481,25 +7519,31 @@ def _apply_model_assignment_sync(
         slot_cfg = aux.get(slot)
         if not isinstance(slot_cfg, dict):
             slot_cfg = {}
-        prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
-        new_provider = provider.strip().lower()
-        slot_cfg["provider"] = provider
-        slot_cfg["model"] = model
-        if base_url:
-            # Sibling of the main-slot endpoint handling (#65254): an aux
-            # assignment for a custom/local endpoint must carry its own
-            # base_url, or the slot silently rebinds to whatever
-            # model.base_url happens to hold — and breaks entirely once the
-            # main slot switches away and clears it. The auxiliary resolver
-            # already reads auxiliary.<task>.base_url/api_key
-            # (_resolve_task_provider_model), so persisting them here is
-            # what actually wires the endpoint in.
-            slot_cfg["base_url"] = base_url
-            if api_key:
-                slot_cfg["api_key"] = api_key
-        elif new_provider != prev_provider and new_provider != "custom":
-            slot_cfg.pop("base_url", None)
-            clear_model_endpoint_credentials(slot_cfg)
+        if provider:
+            prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+            new_provider = provider.strip().lower()
+            slot_cfg["provider"] = provider
+            slot_cfg["model"] = model
+            if base_url:
+                # Sibling of the main-slot endpoint (#65254): an aux
+                # assignment for a custom/local endpoint must carry its own
+                # base_url, or the slot silently rebinds to whatever
+                # model.base_url happens to hold — and breaks entirely once the
+                # main slot switches away and clears it. The auxiliary resolver
+                # already reads auxiliary.<task>.base_url/api_key
+                # (_resolve_task_provider_model), so persisting them here is
+                # what actually wires the endpoint in.
+                slot_cfg["base_url"] = base_url
+                if api_key:
+                    slot_cfg["api_key"] = api_key
+            elif new_provider != prev_provider and new_provider != "custom":
+                slot_cfg.pop("base_url", None)
+                clear_model_endpoint_credentials(slot_cfg)
+        if reasoning_effort_set:
+            if reasoning_effort is None:
+                slot_cfg.pop("reasoning_effort", None)
+            else:
+                slot_cfg["reasoning_effort"] = normalized_reasoning_effort
         aux[slot] = slot_cfg
 
     cfg["auxiliary"] = aux
@@ -7510,6 +7554,7 @@ def _apply_model_assignment_sync(
         "tasks": targets,
         "provider": provider,
         "model": model,
+        **({"reasoning_effort": normalized_reasoning_effort} if reasoning_effort_set else {}),
     }
 
 

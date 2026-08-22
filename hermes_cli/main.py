@@ -2304,7 +2304,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `npm install --no-fund --no-audit --progress=false`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr,
@@ -2431,7 +2431,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             # npm `omit=dev` config would silently skip them and the TUI
             # build would fail. See _run_npm_install_deterministic.
             "--include=dev",
-            "--silent",
+            # No --silent: engine-strict EBADENGINE must reach stderr so the
+            # repair below (and the failure preview) can see it. Quietness
+            # comes from capture_output + CI=1; --silent used to exit 1 with
+            # empty stdout/stderr and skip managed-Node auto-repair (#78826).
             "--no-fund",
             "--no-audit",
             "--progress=false",

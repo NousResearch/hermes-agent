@@ -65,12 +65,17 @@ def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
     bundled_entry.write_text("// bundled TUI")
     monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled_entry)
 
-    def which(name: str) -> str | None:
+    import hermes_constants
+
+    def fake_find(name: str) -> str | None:
         if name == "node":
             return "/usr/bin/node"
-        raise AssertionError(f"unexpected shutil.which({name!r}) call — bundled path must not need npm/git")
+        raise AssertionError(
+            f"unexpected find_node_executable({name!r}) — "
+            "bundled path must not need npm/git"
+        )
 
-    monkeypatch.setattr(main_mod.shutil, "which", which)
+    monkeypatch.setattr(hermes_constants, "find_node_executable", fake_find)
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("bundled TUI path must not spawn any subprocess (no npm install/build, no git restore)")
@@ -159,7 +164,14 @@ def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+
+    import hermes_constants
+
+    monkeypatch.setattr(
+        hermes_constants, "find_node_executable", lambda name: f"/bin/{name}"
+    )
     calls = []
 
     def fake_run(*args, **kwargs):
@@ -182,3 +194,114 @@ def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     assert "ESBUILD_BINARY_PATH" not in calls[0][1]["env"]
     assert calls[1][0][0][1:] == ["run", "build"]
     assert "ESBUILD_BINARY_PATH" not in calls[1][1]["env"]
+    # --silent used to suppress EBADENGINE and skip managed-Node repair (#78826)
+    assert "--silent" not in install_cmd
+
+
+def test_make_tui_argv_preserves_install_error_preview(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """Failed TUI install must surface the last lines of npm stderr.
+
+    Quietness comes from capture_output + CI=1, not ``--silent`` — dropping
+    ``--silent`` is what makes this preview (and engine detection) possible.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "package-lock.json").write_text("{}")
+    _touch_tui_entry(tui_dir)
+    _touch_ink(tui_dir)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_QUIET", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+
+    import hermes_constants
+
+    monkeypatch.setattr(
+        hermes_constants, "find_node_executable", lambda name: f"/bin/{name}"
+    )
+
+    def fake_run(cmd, **kwargs):
+        _assert_utf8_replace_capture(kwargs)
+        if list(cmd[:2]) == ["/bin/npm", "install"]:
+            return types.SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="npm error code EUSAGE\nlockfile is out of sync\n",
+            )
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exited:
+        main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert exited.value.code == 1
+    out = capsys.readouterr().out
+    assert "npm install failed." in out
+    assert "lockfile is out of sync" in out
+
+
+def test_make_tui_argv_repairs_opaque_npm_engine_failure(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """TUI install failure with empty output still triggers engine repair.
+
+    Regression for #78826: even if stderr is empty (historical --silent),
+    maybe_repair_npm_engine must be consulted and a successful repair must
+    retry the install with the returned npm.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "package-lock.json").write_text("{}")
+    _touch_tui_entry(tui_dir)
+    _touch_ink(tui_dir)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_QUIET", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: None)
+
+    import hermes_constants
+
+    monkeypatch.setattr(
+        hermes_constants, "find_node_executable", lambda name: f"/bin/{name}"
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if list(cmd[:2]) == ["/bin/npm", "install"]:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    import hermes_cli.npm_engine as npm_engine
+
+    repair_calls = []
+
+    def fake_repair(npm, output, *, quiet=False):
+        repair_calls.append((npm, output))
+        return "/managed/npm"
+
+    monkeypatch.setattr(npm_engine, "maybe_repair_npm_engine", fake_repair)
+
+    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert repair_calls, "opaque install failure must consult maybe_repair_npm_engine"
+    assert repair_calls[0][0] == "/bin/npm"
+    assert any(c[:2] == ["/managed/npm", "install"] for c in calls), (
+        f"repair must retry install with managed npm, got: {calls}"
+    )
+    assert argv == ["/bin/node", "--expose-gc", str(tui_dir / "dist" / "entry.js")]
+    assert cwd == tui_dir

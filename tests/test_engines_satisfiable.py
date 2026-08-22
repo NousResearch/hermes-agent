@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.npm_engine import npm_satisfies_range as _satisfies_range
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # npm releases bundled with a Node major, newest-per-major. Not a catalog
@@ -39,51 +41,6 @@ _STOCK_NPM_BY_NODE_MAJOR = {
 
 def _root_manifest() -> dict:
     return json.loads((REPO_ROOT / "package.json").read_text())
-
-
-def _parse_major_minor_patch(version: str) -> tuple[int, int, int]:
-    parts = version.split("-", 1)[0].split(".")
-    nums = [int(p) for p in parts[:3]]
-    while len(nums) < 3:
-        nums.append(0)
-    return nums[0], nums[1], nums[2]
-
-
-def _satisfies_clause(version: str, clause: str) -> bool:
-    """Evaluate one `>=x.y.z` / `<x.y.z` / `^x.y.z` comparator against *version*."""
-    clause = clause.strip()
-    if clause.startswith("^"):
-        bound = clause[1:].strip()
-        have = _parse_major_minor_patch(version)
-        want = _parse_major_minor_patch(bound)
-        # ^x.y.z allows >=x.y.z within the same major (x > 0).
-        return have[0] == want[0] and have >= want
-    for op in (">=", "<=", "<", ">", "="):
-        if clause.startswith(op):
-            bound = clause[len(op) :].strip()
-            break
-    else:
-        op, bound = "=", clause
-    have = _parse_major_minor_patch(version)
-    want = _parse_major_minor_patch(bound)
-    if op == ">=":
-        return have >= want
-    if op == "<=":
-        return have <= want
-    if op == "<":
-        return have < want
-    if op == ">":
-        return have > want
-    return have == want
-
-
-def _satisfies_range(version: str, spec: str) -> bool:
-    """Evaluate the `A || B` / space-joined-AND subset of semver we author."""
-    for alternative in spec.split("||"):
-        clauses = [c for c in alternative.strip().split() if c]
-        if clauses and all(_satisfies_clause(version, c) for c in clauses):
-            return True
-    return False
 
 
 class TestEnginesAreSatisfiable:

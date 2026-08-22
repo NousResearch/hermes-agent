@@ -8,10 +8,13 @@ pins an ``engines.npm`` range, so an npm outside that range aborts every
     npm error notsup Required: {"node":">=26.0.0","npm":">=12.0.0"}
     npm error notsup Actual:   {"npm":"10.9.8","node":"v22.23.1"}
 
-Rather than predicting the failure (which would mean a semver range matcher and
-an ``npm --version`` probe before work that usually succeeds), we react to it:
-npm states the required range in the error, so the recovery reads the
-constraint straight out of the output it just produced.
+Rather than predicting the failure (which would mean probing before work that
+usually succeeds), we react to a failed install. Preferred signal is npm's own
+error text — it states the required range. When that text is missing (notably
+``npm install --silent``, which exits 1 with empty stdout/stderr), we fall
+back to probing the active ``npm --version`` against the checkout's
+``engines.npm`` and treat a mismatch the same way. Lockfile / network / etc.
+failures with diagnostic text still leave the original error alone.
 
 Scope of the repair is deliberately narrow. Hermes only upgrades an npm that
 lives inside its **own** managed Node tree (``$HERMES_HOME/node``), installing
@@ -44,6 +47,7 @@ from hermes_constants import (
 __all__ = [
     "is_ebadengine",
     "required_npm_range",
+    "npm_satisfies_range",
     "managed_npm_prefix",
     "upgrade_managed_npm",
     "maybe_repair_npm_engine",
@@ -117,6 +121,71 @@ def actual_npm_version(output: str) -> str | None:
         if isinstance(parsed, dict) and parsed.get("npm"):
             return str(parsed["npm"]).strip()
     return None
+
+
+def _parse_major_minor_patch(version: str) -> tuple[int, int, int]:
+    parts = version.split("-", 1)[0].split(".")
+    nums = [int(p) for p in parts[:3]]
+    while len(nums) < 3:
+        nums.append(0)
+    return nums[0], nums[1], nums[2]
+
+
+def _satisfies_clause(version: str, clause: str) -> bool:
+    """Evaluate one ``>=x.y.z`` / ``<x.y.z`` / ``^x.y.z`` comparator."""
+    clause = clause.strip()
+    if not clause:
+        return False
+    if clause.startswith("^"):
+        bound = clause[1:].strip()
+        have = _parse_major_minor_patch(version)
+        want = _parse_major_minor_patch(bound)
+        # ^x.y.z allows >=x.y.z within the same major (x > 0).
+        return have[0] == want[0] and have >= want
+    for op in (">=", "<=", "<", ">", "="):
+        if clause.startswith(op):
+            bound = clause[len(op) :].strip()
+            break
+    else:
+        op, bound = "=", clause
+    have = _parse_major_minor_patch(version)
+    want = _parse_major_minor_patch(bound)
+    if op == ">=":
+        return have >= want
+    if op == "<=":
+        return have <= want
+    if op == "<":
+        return have < want
+    if op == ">":
+        return have > want
+    return have == want
+
+
+def npm_satisfies_range(version: str, spec: str) -> bool:
+    """Whether *version* satisfies an ``engines.npm``-style range.
+
+    Supports the subset Hermes authors: ``||`` alternatives, space-joined
+    AND clauses, and ``>=`` / ``<=`` / ``<`` / ``>`` / ``=`` / ``^``
+    comparators. This is the same matcher ``tests/test_engines_satisfiable.py``
+    uses against the root manifest — one implementation, not a second parser.
+    Returns ``False`` on empty/unparseable input rather than raising: a probe
+    that cannot decide must not trigger a repair.
+    """
+    if not version or not spec:
+        return False
+    try:
+        for alternative in spec.split("||"):
+            clauses = [c for c in alternative.strip().split() if c]
+            if clauses and all(_satisfies_clause(version, c) for c in clauses):
+                return True
+    except (TypeError, ValueError):
+        return False
+    return False
+
+
+def _is_opaque_install_output(output: str) -> bool:
+    """True when a failed install left no diagnostic text to parse."""
+    return not (output or "").strip()
 
 
 def _repo_npm_range() -> str | None:
@@ -323,14 +392,36 @@ def maybe_repair_npm_engine(
     a managed npm upgrade cannot fix, or a failed upgrade/bootstrap — leaving
     the original failure to stand.
 
+    Detection is two-legged: prefer parsing ``EBADENGINE`` / ``Unsupported
+    engine`` text from *output*; when that text is absent because the install
+    produced no diagnostics (empty/whitespace output), probe the active
+    ``npm --version`` against the checkout's ``engines.npm`` and repair only
+    on a mismatch. Callers still invoke this only after an install failure
+    (react-to-failure), never as a speculative pre-check. Non-engine failures
+    that still printed a diagnostic (lockfile, network, 404, …) are left
+    alone even if the active npm happens to be out of range.
+
     The returned value is truthy exactly when the caller should retry once,
     so ``if maybe_repair_npm_engine(...)`` call sites keep working; they just
     must run the retry with the returned path.
     """
-    if not npm or not is_ebadengine(output):
+    if not npm:
         return None
 
-    npm_range = required_npm_range(output)
+    if is_ebadengine(output):
+        npm_range = required_npm_range(output)
+        actual_hint = actual_npm_version(output)
+    elif _is_opaque_install_output(output):
+        repo_range = _repo_npm_range()
+        if not repo_range:
+            return None
+        actual_hint = _probe_version(npm)
+        if not actual_hint or npm_satisfies_range(actual_hint, repo_range):
+            return None
+        npm_range = repo_range
+    else:
+        return None
+
     prefix = managed_npm_prefix(npm)
 
     if prefix is not None:
@@ -350,5 +441,5 @@ def maybe_repair_npm_engine(
         return managed
 
     if not quiet and npm_range:
-        _print_manual_fix(npm, npm_range, actual_npm_version(output))
+        _print_manual_fix(npm, npm_range, actual_hint)
     return None

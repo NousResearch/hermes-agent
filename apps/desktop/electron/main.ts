@@ -212,12 +212,7 @@ import {
   parentWatchdogEnv
 } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
-import {
-  buildRegistryProfileRoutes,
-  localRouteFallbackProfiles,
-  registryGatewayWsUrl,
-  undialedSshRouteSeeds
-} from './plugin-profile-routes'
+import { buildRegistryProfileRoutes, localRouteFallbackProfiles, undialedSshRouteSeeds } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
@@ -256,6 +251,11 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import {
+  applyRemoteRequestHeaders,
+  createRegistryGatewayWsUrlHandler,
+  createRemoteWsHeaderStore
+} from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
@@ -1359,7 +1359,7 @@ let connectionConfigCacheMtime = null
 let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
-const remoteWsHeadersByUrl = new Map<string, Record<string, string>>()
+const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -8249,25 +8249,11 @@ function encryptIncomingRemoteHeaders(raw, existing, options: { allowPlainText?:
 }
 
 function rememberRemoteWsHeaders(wsUrl, headers = {}) {
-  if (!wsUrl || Object.keys(headers).length === 0) {
-    return
-  }
-
-  remoteWsHeadersByUrl.set(String(wsUrl), headers as Record<string, string>)
-
-  while (remoteWsHeadersByUrl.size > 100) {
-    const oldest = remoteWsHeadersByUrl.keys().next().value
-
-    if (!oldest) {
-      break
-    }
-
-    remoteWsHeadersByUrl.delete(oldest)
-  }
+  remoteWsHeaderStore.remember(wsUrl, headers)
 }
 
 function headersForRemoteRequest(requestUrl) {
-  const exactWsHeaders = remoteWsHeadersByUrl.get(String(requestUrl))
+  const exactWsHeaders = remoteWsHeaderStore.headersFor(requestUrl)
 
   if (exactWsHeaders && Object.keys(exactWsHeaders).length > 0) {
     return exactWsHeaders
@@ -8293,15 +8279,7 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = headersForRemoteRequest(details.url)
-
-    if (Object.keys(headers).length === 0) {
-      callback({})
-
-      return
-    }
-
-    callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
   })
 }
 
@@ -13022,25 +13000,15 @@ ipcMain.handle('hermes:agents:roster', async () => {
 
 // Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
 // hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
+const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
+  ensureBackend: ensureRegistryBackend,
+  mintTicket: mintGatewayWsTicket,
+  buildTicketUrl: buildGatewayWsUrlWithTicket,
+  rememberHeaders: rememberRemoteWsHeaders
+})
+
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
-  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
-
-  return gatewayWsUrlIpcResult(async () => {
-    const connection: any = await ensureRegistryBackend(connectionId, profile)
-
-    if (connection.authMode === 'oauth') {
-      const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
-      const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
-
-      rememberRemoteWsHeaders(wsUrl, connection.headers)
-
-      return registryGatewayWsUrl(connection, wsUrl)
-    }
-
-    rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
-
-    return registryGatewayWsUrl(connection, connection.wsUrl)
-  })
+  return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
 
 // Fan out `hermes update` to every eligible registered connection at once.

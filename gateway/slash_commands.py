@@ -6001,7 +6001,46 @@ class GatewaySlashCommandsMixin:
                     f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
-                if setsid_bin:
+                # Preferred: run the updater as a transient systemd user unit
+                # so it gets its OWN cgroup, outside the gateway's. setsid
+                # only detaches the session — the process stays in the
+                # gateway's cgroup, and a gateway restart (which `hermes
+                # update` itself triggers, and which external watchers such as
+                # code-skew heal may also issue) then SIGKILLs the updater
+                # mid-build (KillMode=mixed), stranding the update with no
+                # exit code. A transient unit survives gateway restarts.
+                # Probe the user manager first; fall back to setsid when
+                # systemd-run is missing or no user manager is reachable
+                # (e.g. the gateway runs as a root system service without a
+                # user session — the original reason setsid was chosen).
+                systemd_run = shutil.which("systemd-run")
+                _user_mgr_hint = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get(
+                    "DBUS_SESSION_BUS_ADDRESS"
+                )
+                _spawned = False
+                if systemd_run and _user_mgr_hint:
+                    _probe_unit = f"hermes-update-probe-{os.getpid()}"
+                    try:
+                        _probe = subprocess.run(
+                            [systemd_run, "--user", "--collect",
+                             f"--unit={_probe_unit}", "true"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5,
+                        )
+                        _probe_ok = _probe.returncode == 0
+                    except Exception:
+                        _probe_ok = False
+                    if _probe_ok:
+                        _unit = f"hermes-update-{os.getpid()}-{int(time.time())}"
+                        subprocess.Popen(
+                            [systemd_run, "--user", "--collect",
+                             f"--unit={_unit}", "bash", "-c", update_cmd],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        _spawned = True
+                if not _spawned and setsid_bin:
                     # Preferred: setsid creates a new session, fully detached
                     subprocess.Popen(
                         [setsid_bin, "bash", "-c", update_cmd],
@@ -6009,7 +6048,7 @@ class GatewaySlashCommandsMixin:
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                else:
+                elif not _spawned:
                     # Fallback: start_new_session=True calls os.setsid() in child
                     subprocess.Popen(
                         ["bash", "-c", update_cmd],

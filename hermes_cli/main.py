@@ -10938,30 +10938,52 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print live listening dashboard processes and return the count."""
+    """Print live listening dashboard/serve processes and return the count.
+
+    Both ``hermes dashboard`` and ``hermes serve`` run the same web server;
+    the stop path (``_find_stale_dashboard_pids`` →
+    ``_parse_dashboard_runtime``) already treats them as one process class,
+    so the status path must report both modes too — otherwise a detached
+    ``serve`` backend (what Desktop spawns) is invisible to ``--status``
+    while still being stopped by ``--stop`` (#81564).
+
+    A process launched with ``--port 0`` (auto-assigned port, the Desktop
+    SSH backend) has no real port in the cmdline, so the listening probe
+    cannot run; the process is still reported when alive so ``--status``
+    stays consistent with ``--stop``, which kills by PID.
+    """
     from gateway.status import _pid_exists
 
-    live: list[tuple[int, str]] = []
+    live: list[tuple[str, int, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if mode != "dashboard":
+        if not _pid_exists(pid):
             continue
-        if port <= 0 or not _pid_exists(pid):
+        # Auto-assigned ports (--port 0) can't be probed from the cmdline;
+        # the process is reported by PID alone.
+        if port <= 0:
+            live.append((mode, pid, command))
             continue
         if not _dashboard_listening(host, port):
             continue
-        live.append((pid, command))
+        live.append((mode, pid, command))
 
     if not live:
-        print("No hermes dashboard processes running.")
+        print("No hermes dashboard/serve processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard process(es) running:")
-    for pid, command in live:
-        print(f"    PID {pid}: {command}")
+    # Group by mode so dashboard vs serve backends are reported distinctly.
+    dashboards = [entry for entry in live if entry[0] == "dashboard"]
+    serves = [entry for entry in live if entry[0] == "serve"]
+    for label, entries in (("dashboard", dashboards), ("serve", serves)):
+        if not entries:
+            continue
+        print(f"{len(entries)} hermes {label} process(es) running:")
+        for _mode, pid, command in entries:
+            print(f"    PID {pid}: {command}")
     return len(live)
 
 

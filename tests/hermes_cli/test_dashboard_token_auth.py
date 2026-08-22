@@ -62,7 +62,14 @@ class _TokenProvider(_OAuthOnly):
     display_name = "Token Provider"
     supports_token = True
 
-    def __init__(self, *, secret: str = "good-secret", scopes=("drain",)):
+    def __init__(
+        self,
+        *,
+        secret: str = "good-secret",
+        scopes=("drain",),
+        name: str = "tok",
+    ):
+        self.name = name
         self._secret = secret
         self._scopes = tuple(scopes)
 
@@ -112,21 +119,38 @@ class _FakeURL:
 
 
 class _FakeClient:
-    host = "1.2.3.4"
+    def __init__(self, host="1.2.3.4"):
+        self.host = host
 
 
 class _FakeRequest:
     """Minimal Request stand-in for the seam (no real Starlette needed)."""
 
-    def __init__(self, path="/api/gateway/drain", headers=None):
+    def __init__(
+        self,
+        path="/api/gateway/drain",
+        headers=None,
+        *,
+        method="GET",
+        bound_host=None,
+        client_host="1.2.3.4",
+    ):
         self.url = _FakeURL(path)
         self.headers = headers or {}
-        self.client = _FakeClient()
+        self.method = method
+        self.client = _FakeClient(client_host)
 
         class _State:
             pass
 
         self.state = _State()
+
+        class _AppState:
+            pass
+
+        self.app = type("_App", (), {})()
+        self.app.state = _AppState()
+        self.app.state.bound_host = bound_host
 
 
 def _run(coro):
@@ -210,6 +234,24 @@ def test_authenticate_token_buggy_provider_does_not_crash():
     assert principal is not None and principal.provider == "tok"
 
 
+def test_scoped_auth_continues_after_same_secret_principal_without_scope():
+    register_provider(
+        _TokenProvider(secret="same", scopes=("drain",), name="first")
+    )
+    register_provider(
+        _TokenProvider(secret="same", scopes=("kanban.read",), name="second")
+    )
+    token_auth.register_token_route(
+        "/read", required_scope="kanban.read"
+    )
+    req = _FakeRequest(path="/read", headers={"authorization": "Bearer same"})
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 200
+    assert req.state.token_principal.provider == "second"
+
+
 # --------------------------------------------------------------------------
 # Middleware seam (route-agnostic)
 # --------------------------------------------------------------------------
@@ -235,3 +277,166 @@ def test_seam_rejects_wrong_token_401():
     assert resp.status_code == 401
 
 
+def test_legacy_route_registration_remains_method_agnostic_and_unscoped():
+    register_provider(_TokenProvider(secret="good", scopes=("anything",)))
+    token_auth.register_token_route("/legacy")
+    assert token_auth.is_token_route("/legacy")
+    assert token_auth.is_token_route("/legacy", "GET")
+    assert token_auth.is_token_route("/legacy", "POST")
+
+    req = _FakeRequest(
+        path="/legacy", method="PATCH", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_route_method_matching_falls_through_for_other_methods():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/read", methods=("get",))
+    assert token_auth.is_token_route("/read", "GET")
+    assert not token_auth.is_token_route("/read", "POST")
+
+    req = _FakeRequest(
+        path="/read", method="POST", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert not hasattr(req.state, "token_authenticated")
+
+
+def test_required_scope_allows_matching_principal():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban.read",)))
+    token_auth.register_token_route(
+        "/read", methods=("GET",), required_scope="kanban.read"
+    )
+    req = _FakeRequest(
+        path="/read", headers={"authorization": "Bearer good"}, bound_host="127.0.0.1"
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_missing_required_scope_returns_403_without_token_authentication(monkeypatch):
+    register_provider(_TokenProvider(secret="good", scopes=("drain",)))
+    token_auth.register_token_route(
+        "/read", methods=("GET",), required_scope="kanban.read"
+    )
+    events = []
+    monkeypatch.setattr(
+        token_auth,
+        "audit_log",
+        lambda event, **fields: events.append((event, fields)),
+    )
+    req = _FakeRequest(
+        path="/read", headers={"authorization": "Bearer good"}, bound_host="127.0.0.1"
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 403
+    assert getattr(req.state, "token_authenticated", False) is False
+    assert events[0][0].value == "token_auth_failure"
+    assert events[0][1]["reason"] == "missing_scope"
+
+
+def test_loopback_only_route_requires_known_loopback_bind():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban.read",)))
+    token_auth.register_token_route(
+        "/read", methods=("GET",), required_scope="kanban.read", loopback_only=True
+    )
+    for bound_host in (None, "10.0.0.7"):
+        req = _FakeRequest(
+            path="/read",
+            headers={"authorization": "Bearer good"},
+            bound_host=bound_host,
+            client_host="127.0.0.1",
+        )
+        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+        assert resp.status_code == 200
+        assert not hasattr(req.state, "token_authenticated")
+
+    req = _FakeRequest(
+        path="/read",
+        headers={"authorization": "Bearer good"},
+        bound_host="localhost",
+        client_host="::1",
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+@pytest.mark.parametrize("client_host", [None, "10.0.0.7", "not-an-ip"])
+def test_loopback_only_route_requires_known_loopback_peer_and_ignores_forwarded_for(
+    client_host,
+):
+    register_provider(_TokenProvider(secret="good", scopes=("kanban.read",)))
+    token_auth.register_token_route(
+        "/read", required_scope="kanban.read", loopback_only=True
+    )
+    req = _FakeRequest(
+        path="/read",
+        headers={
+            "authorization": "Bearer good",
+            "x-forwarded-for": "127.0.0.1",
+        },
+        bound_host="127.0.0.1",
+        client_host=client_host,
+    )
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 200
+    assert not hasattr(req.state, "token_authenticated")
+
+
+def test_token_route_can_fall_through_to_native_session_gate_without_bearer():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban.read",)))
+    token_auth.register_token_route(
+        "/read",
+        required_scope="kanban.read",
+        allow_session_fallback=True,
+    )
+    req = _FakeRequest(path="/read", headers={})
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 200
+    assert not hasattr(req.state, "token_authenticated")
+
+
+def test_token_route_session_fallback_does_not_accept_invalid_bearer():
+    register_provider(_TokenProvider(secret="good", scopes=("kanban.read",)))
+    token_auth.register_token_route(
+        "/read",
+        required_scope="kanban.read",
+        allow_session_fallback=True,
+    )
+    req = _FakeRequest(
+        path="/read", headers={"authorization": "Bearer wrong"}
+    )
+
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+
+    assert resp.status_code == 401
+
+
+def test_duplicate_identical_route_is_idempotent_but_conflict_fails_closed():
+    token_auth.register_token_route(
+        "/read", methods=("get",), required_scope="kanban.read", loopback_only=True
+    )
+    token_auth.register_token_route(
+        "/read", methods=("GET",), required_scope="kanban.read", loopback_only=True
+    )
+    with pytest.raises(ValueError, match="conflicting token route registration"):
+        token_auth.register_token_route(
+            "/read", methods=("POST",), required_scope="kanban.read", loopback_only=True
+        )
+
+
+def test_route_clearing_removes_method_rules():
+    token_auth.register_token_route("/read", methods=("GET",))
+    assert token_auth.is_token_route("/read")
+    token_auth.clear_token_routes()
+    assert not token_auth.is_token_route("/read")

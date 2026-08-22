@@ -134,6 +134,15 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# SQLite-expressie-indexen kunnen Python's Unicode-whitespace-semantiek niet
+# veilig persistent maken. Deze vaste ASCII-set is daarom het contract voor
+# zowel de Python-normalisatie als alle SQLite-canonicalisatie.
+_IDEMPOTENCY_KEY_WHITESPACE = " \t\n\r\v\f"
+_IDEMPOTENCY_KEY_SQL_EXPR = (
+    "TRIM(idempotency_key, char(9) || char(10) || char(11) || "
+    "char(12) || char(13) || ' ')"
+)
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
@@ -2528,6 +2537,69 @@ def init_db(
     return path
 
 
+def _dedupe_active_idempotency_keys(conn: sqlite3.Connection) -> None:
+    """Archive older active duplicates before creating the unique index.
+
+    Boards created before the race fix may already contain duplicate active
+    rows. Keep the row that the existing idempotency lookup resolves to and
+    retain every duplicate row and event; only its lifecycle status changes.
+    The ``archived`` event is durable migration evidence and mirrors the
+    normal archive lifecycle, including closing a leaked active run.
+    """
+    duplicate_keys = conn.execute(
+        f"SELECT {_IDEMPOTENCY_KEY_SQL_EXPR} AS canonical_key FROM tasks "
+        f"WHERE idempotency_key IS NOT NULL AND {_IDEMPOTENCY_KEY_SQL_EXPR} != '' "
+        "AND status != 'archived' "
+        f"GROUP BY {_IDEMPOTENCY_KEY_SQL_EXPR} HAVING COUNT(*) > 1"
+    ).fetchall()
+    if not duplicate_keys:
+        return
+
+    task_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    runs_exist = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_runs'"
+    ).fetchone() is not None
+    can_close_runs = "current_run_id" in task_columns and runs_exist
+
+    for key_row in duplicate_keys:
+        key = key_row["canonical_key"]
+        rows = conn.execute(
+            f"SELECT id FROM tasks WHERE {_IDEMPOTENCY_KEY_SQL_EXPR} = ? "
+            "AND status != 'archived' "
+            "ORDER BY created_at DESC, id DESC",
+            (key,),
+        ).fetchall()
+        for duplicate in rows[1:]:
+            task_id = duplicate["id"]
+            run_id = None
+            if can_close_runs:
+                run_id = _end_run(
+                    conn,
+                    task_id,
+                    outcome="reclaimed",
+                    status="reclaimed",
+                    summary="task archived during idempotency-key migration",
+                )
+            conn.execute(
+                "UPDATE tasks SET status = 'archived', "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status != 'archived'",
+                (task_id,),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "archived",
+                {
+                    "reason": "duplicate_idempotency_key_migration",
+                    "idempotency_key": key,
+                },
+                run_id=run_id,
+            )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -2688,9 +2760,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
-    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
 
@@ -2708,6 +2777,30 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # Adapted from upstream PR #57832: make the database, rather than the
+    # pre-check above, own the active-key invariant. Dirty boards are deduped
+    # and evidenced in the same write transaction before the index is rebuilt.
+    if "status" in cols:
+        # Legacy ALTER/UPDATE steps may have opened SQLite's implicit
+        # transaction already. A savepoint preserves the direct-helper
+        # contract in that case; without an outer transaction write_txn still
+        # provides the production BEGIN IMMEDIATE/COMMIT atomic boundary.
+        with write_txn(conn, allow_nested=True):
+            _dedupe_active_idempotency_keys(conn)
+            conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+            conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
+                f"ON tasks({_IDEMPOTENCY_KEY_SQL_EXPR}) "
+                f"WHERE idempotency_key IS NOT NULL AND {_IDEMPOTENCY_KEY_SQL_EXPR} != '' "
+                "AND status != 'archived'"
+            )
+    else:
+        # Keep synthetic/very old schemas without a task status column
+        # migratable; they have no active/archive lifecycle to constrain.
+        conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+        conn.execute(
+            f"CREATE INDEX idx_tasks_idempotency ON tasks({_IDEMPOTENCY_KEY_SQL_EXPR})"
+        )
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -2775,7 +2868,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
     if runs_exist:
-        with write_txn(conn):
+        with write_txn(conn, allow_nested=True):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
@@ -3155,6 +3248,13 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _canonical_idempotency_key(value: Optional[str]) -> Optional[str]:
+    """Normalize supported ASCII surrounding whitespace, preserving other text."""
+    if value is None:
+        return None
+    return str(value).strip(_IDEMPOTENCY_KEY_WHITESPACE) or None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3196,6 +3296,10 @@ def create_task(
     same key already exists, returns the existing task's id instead of
     creating a duplicate. Useful for retried webhooks / automation that
     should not double-write.
+
+    Surrounding key whitespace is limited to ASCII space, tab, LF, CR, VT,
+    and FF so the Python and persistent SQLite index semantics remain exact;
+    other whitespace is part of the key.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -3244,6 +3348,9 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    # Empty / whitespace-only keys mean "no idempotency". Store them as NULL
+    # so repeated keyless creates remain independent under the partial index.
+    idempotency_key = _canonical_idempotency_key(idempotency_key)
 
     # Inherit the board's scoped project when the caller didn't name one, so a
     # project-scoped board anchors every new task to that project's repo
@@ -3395,14 +3502,14 @@ def create_task(
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # and to avoid holding a write lock during the lookup. This is only a
+    # fast path: the UNIQUE partial index below closes the race between this
+    # SELECT and the INSERT.
     if idempotency_key:
         row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            f"SELECT id FROM tasks WHERE {_IDEMPOTENCY_KEY_SQL_EXPR} = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
         if row:
@@ -3556,10 +3663,32 @@ def create_task(
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            error_text = str(exc)
+            idempotency_conflict = (
+                "UNIQUE constraint failed: index 'idx_tasks_idempotency'"
+                in error_text
+            )
+            if idempotency_conflict:
+                # The UNIQUE partial index rejected this insert because a
+                # concurrent writer committed the same active key. The failed
+                # write transaction has rolled back, so this read sees the
+                # committed winner and preserves the create_task API.
+                winner = conn.execute(
+                    f"SELECT id FROM tasks WHERE {_IDEMPOTENCY_KEY_SQL_EXPR} = ? "
+                    "AND status != 'archived' "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if winner is not None:
+                    return winner["id"]
+            elif "UNIQUE constraint failed: tasks.id" not in error_text:
+                # Do not turn unrelated constraint failures into retries or
+                # incorrectly return an existing task for the same key.
+                raise
             if attempt == 1:
                 raise
-            # Retry with a fresh id.
+            # No matching key: this was a genuine task-id collision.
             continue
     raise RuntimeError("unreachable")
 
@@ -8274,9 +8403,16 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
+    if signal_fn is not None:
+        kill = signal_fn
+    elif hasattr(os, "kill"):
+        from hermes_cli import _subprocess_compat as subprocess_compat
+
+        def kill(target_pid, signum):
+            force = signum == getattr(signal, "SIGKILL", object())
+            subprocess_compat.terminate_process_tree(target_pid, force=force)
+    else:
+        kill = None
     if kill is None:
         return info
 
@@ -8469,9 +8605,16 @@ def enforce_max_runtime(
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
         killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
+        if signal_fn is not None:
+            kill = signal_fn
+        elif hasattr(os, "kill"):
+            from hermes_cli import _subprocess_compat as subprocess_compat
+
+            def kill(target_pid, signum):
+                force = signum == getattr(signal, "SIGKILL", object())
+                subprocess_compat.terminate_process_tree(target_pid, force=force)
+        else:
+            kill = None
         if kill is not None:
             try:
                 kill(pid, signal.SIGTERM)
@@ -10680,6 +10823,104 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+_WORKER_COMPLETION_MODE_ENV = "HERMES_KANBAN_WORKER_COMPLETION_MODE"
+_WORKER_COMPLETION_MODES = frozenset({"exit_code", "self_reported"})
+
+
+@dataclass(frozen=True)
+class WorkerCommandConfig:
+    command: tuple[str, ...]
+    completion_mode: str
+
+
+def _resolve_worker_config(
+    hermes_home: Optional[str],
+) -> Optional[WorkerCommandConfig]:
+    """Resolve a named profile's fixed ``worker.command`` argv.
+
+    The profile config is read directly so malformed YAML cannot be swallowed
+    by the normal config loader and silently fall back to a native agent.  A
+    command is deliberately profile-scoped and absolute-only: card content,
+    task fields, and the task workspace never participate in executable
+    selection.  The parsed list is passed literally; Hermes performs no shell,
+    environment-variable, or backslash expansion.
+    """
+    if not hermes_home:
+        return None
+    config_path = os.path.join(hermes_home, "config.yaml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            raw_text = config_file.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(
+            f"worker.command: profile config {config_path!r} is unreadable: {exc}"
+        ) from exc
+
+    from utils import fast_safe_load
+
+    try:
+        parsed = fast_safe_load(raw_text)
+    except Exception as exc:
+        raise RuntimeError(
+            f"worker.command: {config_path!r} does not parse as YAML; refusing "
+            "to fall back to the native agent"
+        ) from exc
+    if not isinstance(parsed, dict):
+        return None
+    worker_cfg = parsed.get("worker")
+    raw = worker_cfg.get("command") if isinstance(worker_cfg, dict) else None
+    if raw is None:
+        return None
+
+    home_real = os.path.realpath(hermes_home)
+    if os.path.basename(os.path.dirname(home_real)) != "profiles":
+        raise RuntimeError(
+            "worker.command must be declared in a named profile's config.yaml, "
+            "not the root config"
+        )
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or not all(isinstance(part, str) and part for part in raw)
+    ):
+        raise RuntimeError(
+            "worker.command must be a non-empty list of non-empty argv strings"
+        )
+    head = raw[0]
+    if not os.path.isabs(head):
+        raise RuntimeError(
+            "worker.command argv[0] must be an absolute executable path; "
+            f"relative or bare value {head!r} is not trusted"
+        )
+    if not os.path.isfile(head) or (
+        not _IS_WINDOWS and not os.access(head, os.X_OK)
+    ):
+        raise RuntimeError(
+            f"worker.command executable is missing or not executable: {head!r}"
+        )
+    completion_mode = worker_cfg.get("completion_mode", "exit_code")
+    if (
+        not isinstance(completion_mode, str)
+        or completion_mode not in _WORKER_COMPLETION_MODES
+    ):
+        raise RuntimeError(
+            "worker.completion_mode must be one of "
+            f"{sorted(_WORKER_COMPLETION_MODES)}"
+        )
+    return WorkerCommandConfig(
+        command=tuple(raw),
+        completion_mode=completion_mode,
+    )
+
+
+def _resolve_worker_command(hermes_home: Optional[str]) -> Optional[list[str]]:
+    """Back-compatible command-only view of the profile worker config."""
+    config = _resolve_worker_config(hermes_home)
+    return list(config.command) if config is not None else None
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -10725,6 +10966,7 @@ def _default_spawn(
     from. Workers cannot accidentally see other boards.
     """
     import subprocess
+    from hermes_cli import _subprocess_compat as subprocess_compat
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -10733,13 +10975,49 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    from hermes_cli.profiles import resolve_profile_env
+    try:
+        profile_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        profile_home = os.environ.get("HERMES_HOME") or None
+    worker_config = _resolve_worker_config(profile_home)
+    worker_command = list(worker_config.command) if worker_config is not None else None
+    direct_command = worker_config is not None
+
+    # Native Hermes workers retain the inherited environment from the existing
+    # spawn path. Only the arbitrary profile command/supervisor gets the
+    # credential-free subprocess policy and stale-Kanban scrub.
+    if direct_command:
+        from tools.environments.local import hermes_subprocess_env
+
+        env = hermes_subprocess_env(inherit_credentials=False)
+        # The trusted internal supervisor may import Hermes from this source
+        # checkout. It re-sanitizes its environment in _child_env() before
+        # launching the arbitrary profile command, so Hermes-owned PYTHONPATH
+        # still cannot reach that untrusted execution boundary.
+        repo_root = str(Path(__file__).resolve().parents[1])
+        pythonpath = (
+            env.get("PYTHONPATH", "").split(os.pathsep)
+            if "PYTHONPATH" in env
+            else []
+        )
+        if repo_root not in pythonpath:
+            pythonpath.insert(0, repo_root)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    else:
+        env = dict(os.environ)
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.
     from gateway.session_context import _VAR_MAP
     for key in _VAR_MAP:
         env.pop(key, None)
+    if direct_command:
+        # Do not let stale parent/dispatcher Kanban values reach an arbitrary
+        # profile command. Only the explicit bounded context below is passed.
+        for key in list(env):
+            if key.startswith("HERMES_KANBAN_"):
+                env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -10750,7 +11028,6 @@ def _default_spawn(
     # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
-    from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
     except FileNotFoundError:
@@ -10761,6 +11038,8 @@ def _default_spawn(
         pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
+    if direct_command:
+        env["HERMES_KANBAN_TASK_ID"] = task.id
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
@@ -10838,52 +11117,70 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        "--cli",
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    if task.skills:
-        for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too when the override names one, so the worker
-        # resolves the model against the intended backend instead of the
-        # profile's configured provider (mixing model X with provider Y is
-        # the classic mis-set that stalls a board).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
-    # Per-task thinking depth. Independent of the model override — a task can
-    # run the profile's own model at a different depth — so this is its own
-    # branch, not a nested one.
-    if task.reasoning_effort:
-        cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
+    if direct_command:
+        # Agent-only task controls intentionally do not cross into a fixed
+        # profile command. The card can select work, never executable argv.
+        ignored = [
+            name
+            for name, value in (
+                ("skills", task.skills),
+                ("model_override", task.model_override),
+                ("provider_override", task.provider_override),
+                ("reasoning_effort", task.reasoning_effort),
+                ("goal_mode", task.goal_mode),
+            )
+            if value
+        ]
+        if ignored:
+            _log.warning(
+                "kanban worker: task %s runs a direct command; agent-only "
+                "settings ignored: %s",
+                task.id,
+                ", ".join(ignored),
+            )
+        env["HERMES_KANBAN_WORKER_COMMAND"] = json.dumps(worker_command)
+        env[_WORKER_COMPLETION_MODE_ENV] = worker_config.completion_mode
+        cmd = [sys.executable, "-P", "-m", "hermes_cli.kanban_command_worker"]
+    else:
+        cmd = [
+            *_resolve_hermes_argv(),
+            "-p", profile_arg,
+            "--cli",
+            # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
+            # so they see that profile's shell-hook allowlist instead of the
+            # dispatcher's root allowlist. Pass --accept-hooks explicitly so
+            # profile-local worker sessions still register configured hooks.
+            "--accept-hooks",
+        ]
+        # Per-task force-loaded skills. Each name goes in its own
+        # `--skills X` pair rather than a single comma-joined arg: the CLI
+        # accepts both forms (action='append' + comma-split), but
+        # per-name pairs are easier to read in `ps` output and avoid any
+        # quoting ambiguity if a skill name ever contains unusual chars.
+        if task.skills:
+            for sk in task.skills:
+                if sk:
+                    cmd.extend(["--skills", sk])
+        if task.model_override:
+            cmd.extend(["-m", task.model_override])
+            # Pin the provider too when the override names one, so the worker
+            # resolves the model against the intended backend instead of the
+            # profile's configured provider (mixing model X with provider Y is
+            # the classic mis-set that stalls a board).
+            if task.provider_override:
+                cmd.extend(["--provider", task.provider_override])
+        # Per-task thinking depth. Independent of the model override — a task
+        # can run the profile's own model at a different depth, so this is its
+        # own branch, not a nested one.
+        if task.reasoning_effort:
+            cmd.extend(["--reasoning", task.reasoning_effort])
+        worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+        if worker_toolsets:
+            cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+        cmd.extend(["chat", "-q", prompt])
+        if task.goal_mode:
+            # Goal-mode workers must take the fully-quiet single-query path.
+            cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -10897,16 +11194,28 @@ def _default_spawn(
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
     try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-        )
+        if direct_command:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is host/profile config
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **subprocess_compat.windows_detach_popen_kwargs(),
+            )
+        else:
+            # Keep the native Hermes worker spawn behavior identical to main.
+            proc = subprocess.Popen(  # noqa: S603 -- native Hermes argv
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(

@@ -43,6 +43,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "terminate_process_tree",
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
@@ -441,6 +442,52 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
             )
         except Exception:
             pass
+
+
+def terminate_process_tree(pid: int, *, force: bool = False) -> None:
+    """Terminate a host-owned process and its descendants.
+
+    ``os.kill(pid, ...)`` only reaches the named process on Windows.  Kanban
+    workers are supervisors, so using it there would leave the arbitrary
+    command and its grandchildren running after a timeout or reclaim.  The
+    Windows ``taskkill /T`` primitive owns the whole tree; POSIX workers use
+    their private process group when they have one and fall back to the PID.
+    """
+    if not pid or pid <= 0:
+        return
+    if IS_WINDOWS:
+        argv = ["taskkill", "/T"]
+        if force:
+            argv.append("/F")
+        argv.extend(["/PID", str(int(pid))])
+        try:
+            subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except Exception:
+            pass
+        return
+
+    import signal
+
+    signum = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        pgid = os.getpgid(int(pid))
+        if pgid == int(pid):
+            os.killpg(pgid, signum)
+            return
+    except Exception:
+        pass
+    try:
+        os.kill(int(pid), signum)
+    except Exception:
+        pass
 
 
 def bounded_probe_run(

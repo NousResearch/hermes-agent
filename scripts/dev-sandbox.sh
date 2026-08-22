@@ -116,6 +116,12 @@ INSTALLER_PATH=""
 # expressible. --from-main is shorthand for refs/heads/main.
 INSTALL_REF=""
 UPSTREAM_URL="${HERMES_DEV_SANDBOX_UPSTREAM:-https://github.com/NousResearch/hermes-agent.git}"
+# How hard to try the upstream fetch when the remote fails transiently, and what
+# counts as transient. Overridable so the tests can drive the loop without
+# sleeping through it.
+FETCH_ATTEMPTS="${HERMES_DEV_SANDBOX_FETCH_ATTEMPTS:-3}"
+FETCH_RETRY_DELAY="${HERMES_DEV_SANDBOX_FETCH_DELAY:-15}"
+FETCH_TRANSIENT_RE="${HERMES_DEV_SANDBOX_FETCH_TRANSIENT_RE:-rate.?limit|error: *429|HTTP 429|could not resolve host|connection (timed out|reset|refused)|RPC failed|early EOF|the remote end hung up|operation timed out}"
 
 if [ "${1:-}" = install ]; then
   INSTALL_SHORTCUT=true
@@ -232,17 +238,42 @@ if [ -n "$INSTALL_REF" ]; then
   # Peel to ^{commit} in both cases: an annotated tag fetches as a tag OBJECT,
   # and using it directly fails later with "trying to write non-commit object
   # ... to branch 'refs/heads/main'".
-  if git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" "$INSTALL_REF" 2>/dev/null; then
-    UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse "FETCH_HEAD^{commit}")"
-  elif git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" refs/heads/main \
-    && UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse --verify -q "$INSTALL_REF^{commit}")"; then
-    :
-  else
+  #
+  # Both strategies can fail for a reason that has nothing to do with the ref:
+  # github.com rate-limits git, and this repository network is large enough that
+  # bursts reach CI (observed as HTTP 429 on some matrix legs and not others in
+  # the same run). Authenticating does not help -- actions/checkout draws 429s
+  # too and survives only because it retries -- so retry is the mitigation, and
+  # one 15s wait is what checkout needed to clear the same burst.
+  #
+  # Scoped to transient remote failures on purpose. Retrying every failure would
+  # sit here for 45s on a typo before printing the same "bad ref" message.
+  attempt=1
+  fetch_err=""
+  main_err=""
+  while :; do
+    fetch_err="$(git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" "$INSTALL_REF" 2>&1)" \
+      && UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse "FETCH_HEAD^{commit}")" \
+      && break
+    main_err="$(git -C "$UPSTREAM_REPO" fetch -q "$UPSTREAM_URL" refs/heads/main 2>&1)" \
+      && UPSTREAM_COMMIT="$(git -C "$UPSTREAM_REPO" rev-parse --verify -q "$INSTALL_REF^{commit}")" \
+      && break
+    if [ "$attempt" -lt "$FETCH_ATTEMPTS" ] \
+      && printf '%s\n%s' "$fetch_err" "$main_err" | grep -qiE "$FETCH_TRANSIENT_RE"; then
+      delay=$(( attempt * FETCH_RETRY_DELAY ))
+      echo "[sandbox] upstream fetch hit a transient remote error (attempt $attempt/$FETCH_ATTEMPTS); retrying in ${delay}s" >&2
+      sleep "$delay"
+      attempt=$(( attempt + 1 ))
+      continue
+    fi
     rm -rf -- "$UPSTREAM_REPO"
     echo "error: could not resolve upstream ref: $INSTALL_REF" >&2
+    # Print what git actually said. Discarding it is why a rate-limited leg
+    # looked like a bad ref for as long as it did.
+    printf '%s\n%s\n' "$fetch_err" "$main_err" | grep -v '^$' | sed 's/^/       /' >&2
     echo '       Use a branch (main), a tag (v2026.7.7), or a SHA reachable from main.' >&2
     exit 1
-  fi
+  done
 fi
 if [ ! -e "$SANDBOX_ROOT/root/repo/.sandbox-source" ]; then
   mkdir -p "$SANDBOX_ROOT/root/repo"

@@ -1231,10 +1231,17 @@ def get_model_capabilities(
     else:
         # Unknown model — derive sensible defaults. The override will
         # patch whichever fields it specifies; the rest stay at defaults
-        # that are safe for agentic use (tools on, vision/reasoning off).
+        # that are safe for agentic use (tools on, vision off). Reasoning
+        # defaults ON for the permissive-unknown stance: a no-catalog model
+        # with NO override resolves to None and every consumer already
+        # treats that as "unknown; don't restrict" (inventory documents
+        # reasoning=True as the safe default; OpenRouter capability parsing
+        # mirrors the same permissive stance). Definitive False here made
+        # any metadata-only override (e.g. just context_window) silently
+        # disable the effort dial for uncatalogued models (#91608).
         supports_tools = True
         supports_vision = False
-        supports_reasoning = False
+        supports_reasoning = True
         context_window = 200000
         max_output_tokens = 8192
         model_family = ""

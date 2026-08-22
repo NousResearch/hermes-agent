@@ -1068,6 +1068,30 @@ class TestModelOverrides:
         assert caps is not None
         assert caps.context_window != 1000
 
+    def test_caps_metadata_only_override_keeps_reasoning_available(self):
+        """Regression #91608: a metadata-only override (just context_window)
+        for an uncatalogued model must not disable the unrelated reasoning
+        capability — reasoning availability stays identical to the
+        no-override path (None → consumers' permissive default)."""
+        overrides = {
+            "zai": {
+                "glm-5.3": {"context_window": 131072},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("zai", "glm-5.3")
+        assert caps is not None
+        assert caps.context_window == 131072
+        # Unspecified capability stays permissive, not definitive False.
+        assert caps.supports_reasoning is True
+        # Explicit false still wins when the override declares it.
+        overrides["zai"]["glm-5.3"]["supports_reasoning"] = False
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps_off = get_model_capabilities("zai", "glm-5.3")
+        assert caps_off.supports_reasoning is False
+
     def test_caps_no_override_no_catalog_returns_none(self):
         with self._setup_overrides({}), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):

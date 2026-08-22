@@ -22566,6 +22566,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         resolve from that profile's secret scope. Mirrors the pattern in
         ``_run_agent``.
         """
+        # /background is itself a finite, fire-and-forget session. It can run
+        # long work, but once its agent turn returns the temporary session is
+        # closed and cannot receive a second, detached completion. Mark only
+        # this asyncio task's copied context as finite so delegate_task reuses
+        # its existing synchronous fallback: child agents still fan out in
+        # parallel, while their background parent waits for the combined result
+        # before replying. The originating live-chat context is unaffected.
+        from gateway.session_context import declare_stateless_channel
+
+        declare_stateless_channel()
+
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_background_task_inner(
                 prompt, source, task_id, event_message_id, media_urls, media_types,

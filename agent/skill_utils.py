@@ -1,8 +1,9 @@
 """Lightweight skill metadata utilities shared by prompt_builder and skills_tool.
 
 This module intentionally avoids importing the tool registry, CLI config, or any
-heavy dependency chain.  It is safe to import at module level without triggering
-tool registration or provider resolution.
+heavy dependency chain at module import time. Behavioral config reads load the
+canonical read-only CLI config lazily; importing this module alone does not
+trigger tool registration or provider resolution.
 """
 
 import ast
@@ -13,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -391,47 +392,16 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+def _load_skill_config() -> Dict[str, Any]:
+    """Return the canonical effective config for read-only skill consumers.
 
-
-def _raw_config_cache_clear() -> None:
-    """Test hook — drop the shared raw config cache."""
-    _RAW_CONFIG_CACHE.clear()
-
-
-def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with a shared mtime+size keyed cache.
-
-    This module intentionally avoids importing ``hermes_cli.config`` on the
-    skill prompt/build path. A tiny local cache gives the same repeated-read
-    win without pulling the heavier CLI config stack into startup.
+    Import lazily so importing skill metadata helpers remains lightweight. The
+    shared loader owns profile and managed signatures, environment expansion,
+    normalization, and the shared read-only warm-path cache.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return {}
-    try:
-        stat = config_path.stat()
-        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        cache_key = None
+    from hermes_cli.config import load_config_readonly
 
-    if cache_key is not None:
-        cached = _RAW_CONFIG_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
-
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-
-    if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
-    return parsed
+    return load_config_readonly()
 
 
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
@@ -445,10 +415,10 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
             platform is resolved (a globally-disabled skill stays disabled
             on every platform).
 
-    Reads the config file directly (no CLI config imports) to stay
-    lightweight.
+    Reads the canonical effective config lazily so administrator-disabled
+    skills cannot load and environment references match other config readers.
     """
-    parsed = _load_raw_config()
+    parsed = _load_skill_config()
     if not parsed:
         return set()
 
@@ -464,8 +434,12 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     )
     global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
-        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
-            resolved_platform
+        from hermes_cli.config import cfg_get
+
+        platform_disabled = cfg_get(
+            skills_cfg,
+            "platform_disabled",
+            resolved_platform,
         )
         if platform_disabled is not None:
             return global_disabled | _normalize_string_set(platform_disabled)
@@ -504,19 +478,69 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
-# (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
-# mtime_ns so a config.yaml edit mid-run is picked up automatically;
-# otherwise every call would re-read + re-YAML-parse the 15KB config,
-# which becomes the dominant cost of ``hermes`` startup when ~120 skills
-# each trigger a category lookup during banner construction (10+ seconds
-# of pure waste).
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+# Cache configured roots after environment expansion, path resolution, and the
+# initial availability check. The key contains the effective values and profile
+# home, so user, managed, env, and profile changes select the right entry. Both
+# configured ownership and discovered availability stay stable until an explicit
+# cache clear; otherwise a transient mount outage could change the system prompt
+# mid-conversation or make an externally-owned skill curator-writable. This
+# function is called once per skill during banner and tool-registry scans, so the
+# cache also avoids repeated resolve/stat syscalls on that hot path.
+_ExternalDirsCacheKey = Tuple[str, Tuple[str, ...]]
+_ExternalDirsCacheValue = Tuple[Tuple[Path, ...], Tuple[Path, ...]]
+_EXTERNAL_DIRS_CACHE: Dict[_ExternalDirsCacheKey, _ExternalDirsCacheValue] = {}
 
 
 def _external_dirs_cache_clear() -> None:
-    """Test hook — drop the in-process cache."""
+    """Test and reload hook — drop resolved external directory roots."""
     _EXTERNAL_DIRS_CACHE.clear()
-    _raw_config_cache_clear()
+
+
+def _external_skills_dirs(*, include_unavailable: bool) -> List[Path]:
+    """Return cached external roots with optional unavailable ownership roots."""
+    parsed = _load_skill_config()
+    from hermes_cli.config import cfg_get
+
+    raw_dirs = parse_config_string_list(cfg_get(parsed, "skills", "external_dirs"))
+
+    from hermes_constants import get_hermes_home
+
+    hermes_home = get_hermes_home()
+    # Environment references are already expanded by load_config_readonly().
+    # Expand ~ before deriving the path-cache key.
+    expanded_dirs = tuple(
+        os.path.expanduser(entry.strip()) for entry in raw_dirs if entry.strip()
+    )
+    cache_key = (str(hermes_home), expanded_dirs)
+    cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
+    if cached is not None:
+        configured, available = cached
+        return list(configured if include_unavailable else available)
+
+    local_skills = get_skills_dir().resolve()
+    seen: Set[Path] = set()
+    configured: List[Path] = []
+    available: List[Path] = []
+
+    for entry in expanded_dirs:
+        p = Path(entry)
+        # Resolve relative paths against HERMES_HOME, not cwd
+        if not p.is_absolute():
+            p = (hermes_home / p).resolve()
+        else:
+            p = p.resolve()
+        if p == local_skills or p in seen:
+            continue
+        seen.add(p)
+        configured.append(p)
+        if p.is_dir():
+            available.append(p)
+        else:
+            logger.debug("External skills dir does not exist, skipping: %s", p)
+
+    cached = (tuple(configured), tuple(available))
+    _EXTERNAL_DIRS_CACHE[cache_key] = cached
+    return list(configured if include_unavailable else available)
 
 
 def get_external_skills_dirs() -> List[Path]:
@@ -526,80 +550,12 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    Resolution and initial availability are cached in-process because this
+    function is called once per skill during banner and tool-registry scans.
+    Call :func:`_external_dirs_cache_clear` before an explicit rescan when a
+    mount's availability may have changed.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return []
-
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
-    try:
-        stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
-    except OSError:
-        cache_key = None  # type: ignore[assignment]
-
-    if cache_key is not None:
-        cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
-        if cached is not None:
-            # Return a copy so callers can't mutate the cached list.
-            return list(cached)
-
-    parsed = _load_raw_config()
-    if not parsed:
-        return []
-
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
-
-    from hermes_constants import get_hermes_home
-
-    hermes_home = get_hermes_home()
-    local_skills = get_skills_dir().resolve()
-    seen: Set[Path] = set()
-    result = []
-
-    for entry in raw_dirs:
-        entry = str(entry).strip()
-        if not entry:
-            continue
-        # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
-        p = Path(expanded)
-        # Resolve relative paths against HERMES_HOME, not cwd
-        if not p.is_absolute():
-            p = (hermes_home / p).resolve()
-        else:
-            p = p.resolve()
-        if p == local_skills:
-            continue
-        if p in seen:
-            continue
-        if p.is_dir():
-            seen.add(p)
-            result.append(p)
-        else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
-
-    if cache_key is not None:
-        _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-    return result
+    return _external_skills_dirs(include_unavailable=False)
 
 
 def get_all_skills_dirs() -> List[Path]:
@@ -698,7 +654,7 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
 
 def _project_trusted_dirs_from_config() -> Set[Path]:
     """Resolved set of trusted project roots from ``skills.trusted_project_dirs``."""
-    parsed = _load_raw_config()
+    parsed = _load_skill_config()
     if not parsed:
         return set()
     skills_cfg = parsed.get("skills")
@@ -755,7 +711,7 @@ def get_project_skills_dirs() -> List[Path]:
     discovery is disabled (``skills.project_discovery: false``), or the
     project root is not trusted.
     """
-    parsed = _load_raw_config()
+    parsed = _load_skill_config()
     skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
     if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
         return []
@@ -774,7 +730,7 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     ``hermes skills trust``. Returns None when there is nothing to notify
     about (no project, no skills, already trusted, or discovery disabled).
     """
-    parsed = _load_raw_config()
+    parsed = _load_skill_config()
     skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
     if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
         return None
@@ -973,7 +929,9 @@ def is_external_skill_path(path) -> bool:
     not each need to re-interpret the config.
     """
     candidate = _resolve_for_skill_ownership(path)
-    roots: List[Path] = list(get_external_skills_dirs())
+    # Ownership follows configuration, not current availability. A transiently
+    # unavailable external mount must never make its skills curator-writable.
+    roots: List[Path] = _external_skills_dirs(include_unavailable=True)
     # Trusted project-local dirs are repo-owned — same read-only boundary
     # for autonomous lifecycle maintenance as configured external dirs.
     try:
@@ -1139,7 +1097,7 @@ def resolve_skill_config_values(
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.
     """
-    config = _load_raw_config()
+    config = _load_skill_config()
 
     resolved: Dict[str, Any] = {}
     for var in config_vars:

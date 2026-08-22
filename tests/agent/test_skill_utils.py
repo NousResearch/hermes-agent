@@ -31,9 +31,10 @@ from agent.skill_utils import (
 
 
 
-def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch):
+def test_skill_config_helpers_share_canonical_config_cache(tmp_path, monkeypatch):
     """Repeated skill config helpers should parse config.yaml only once."""
     from agent import skill_utils
+    from hermes_cli import config as config_mod
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -54,17 +55,18 @@ skills:
         encoding="utf-8",
     )
     parse_count = 0
-    real_yaml_load = skill_utils.yaml_load
+    real_fast_safe_load = config_mod.fast_safe_load
 
-    def counting_yaml_load(text):
+    def counting_parse(text):
         nonlocal parse_count
         parse_count += 1
-        return real_yaml_load(text)
+        return real_fast_safe_load(text)
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     skill_utils._external_dirs_cache_clear()
-    getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
-    monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+    monkeypatch.setattr(config_mod, "fast_safe_load", counting_parse)
 
     assert get_disabled_skill_names() == {"hidden-skill"}
     assert get_external_skills_dirs() == [external.resolve()]
@@ -124,9 +126,9 @@ class TestDisabledSkillsJsonArrayString:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent import skill_utils
+        from hermes_cli import config as config_mod
 
-        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+        config_mod._LOAD_CONFIG_CACHE.clear()
 
         assert get_disabled_skill_names() == {"skill-a", "skill-b"}
 
@@ -140,9 +142,9 @@ class TestDisabledSkillsJsonArrayString:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent import skill_utils
+        from hermes_cli import config as config_mod
 
-        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+        config_mod._LOAD_CONFIG_CACHE.clear()
 
         assert get_disabled_skill_names() == {"hidden-skill"}
 
@@ -381,4 +383,3 @@ class TestBOMToleranceSiblingSites:
         fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
         assert fm is not None
         assert fm.get("name") == "bp"
-

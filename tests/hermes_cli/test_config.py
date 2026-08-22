@@ -76,6 +76,24 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_readonly_missing_config_is_cached_until_file_appears(self, tmp_path):
+        """Default-only reads share a cache that invalidates on file creation."""
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._LOAD_CONFIG_CACHE.clear()
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = cfg_mod.load_config_readonly()
+            second = cfg_mod.load_config_readonly()
+            (tmp_path / "config.yaml").write_text(
+                "skills:\n  disabled: [late-skill]\n",
+                encoding="utf-8",
+            )
+            after_creation = cfg_mod.load_config_readonly()
+
+        assert second is first
+        assert after_creation is not first
+        assert after_creation["skills"]["disabled"] == ["late-skill"]
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"
@@ -98,6 +116,124 @@ class TestLoadConfigParseFailure:
       * dedup on (path, mtime_ns, size) so concurrent loads don't spam
       * re-warn after the user edits the file (different mtime)
     """
+
+
+
+    def test_transient_read_failure_recovers_without_corrupt_backup(
+        self,
+        tmp_path,
+    ):
+        """A one-shot I/O failure must not poison the successful cache key."""
+        from hermes_cli import config as cfg_mod
+
+        config_path = tmp_path / "config.yaml"
+        external = tmp_path / "external"
+        external.mkdir()
+        config_path.write_text(
+            f"skills:\n  external_dirs:\n    - {external}\n",
+            encoding="utf-8",
+        )
+        cfg_mod._LOAD_CONFIG_CACHE.clear()
+        cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        cfg_mod._CONFIG_READ_WARNED.clear()
+        real_open = open
+        attempts = 0
+
+        def flaky_open(file, mode="r", *args, **kwargs):
+            nonlocal attempts
+            if Path(file) == config_path and "r" in mode and attempts == 0:
+                attempts += 1
+                raise OSError("transient read failure")
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=flaky_open):
+                first = cfg_mod.load_config_readonly()
+                second = cfg_mod.load_config_readonly()
+
+        assert first["skills"]["external_dirs"] == []
+        assert second["skills"]["external_dirs"] == [str(external)]
+        assert attempts == 1
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")) == []
+
+    def test_transient_stat_failure_recovers_without_caching_defaults(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A one-shot metadata I/O failure also retries on the next load."""
+        from hermes_cli import config as cfg_mod
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n  disabled: [stat-recovered]\n",
+            encoding="utf-8",
+        )
+        cfg_mod._LOAD_CONFIG_CACHE.clear()
+        cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+        cfg_mod._CONFIG_READ_WARNED.clear()
+        real_stat = Path.stat
+        attempts = 0
+
+        def flaky_stat(path, *args, **kwargs):
+            nonlocal attempts
+            if path == config_path and attempts == 0:
+                attempts += 1
+                raise OSError("transient stat failure")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", flaky_stat)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            first = cfg_mod.load_config_readonly()
+            second = cfg_mod.load_config_readonly()
+
+        assert first["skills"].get("disabled", []) == []
+        assert second["skills"]["disabled"] == ["stat-recovered"]
+        assert attempts == 1
+
+    def test_transient_managed_read_failure_recovers_without_cache_poisoning(
+        self,
+        tmp_path,
+    ):
+        """A one-shot managed I/O failure must retry before any cache hit."""
+        from hermes_cli import config as cfg_mod
+        from hermes_cli import managed_scope
+
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        managed_config = managed_dir / "config.yaml"
+        managed_config.write_text(
+            "skills:\n  disabled: [managed-skill]\n",
+            encoding="utf-8",
+        )
+        cfg_mod._LOAD_CONFIG_CACHE.clear()
+        cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+        managed_scope.invalidate_managed_cache()
+        real_open = open
+        attempts = 0
+
+        def flaky_open(file, mode="r", *args, **kwargs):
+            nonlocal attempts
+            if Path(file) == managed_config and "r" in mode and attempts == 0:
+                attempts += 1
+                raise OSError("transient managed read failure")
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path / "home"),
+                "HERMES_MANAGED_DIR": str(managed_dir),
+            },
+        ):
+            with patch("builtins.open", side_effect=flaky_open):
+                first = cfg_mod.load_config_readonly()
+                second = cfg_mod.load_config_readonly()
+
+        assert first["skills"].get("disabled", []) == []
+        assert second["skills"]["disabled"] == ["managed-skill"]
+        assert attempts == 1
 
 
 

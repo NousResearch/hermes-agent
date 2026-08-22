@@ -617,6 +617,9 @@ def reload_skills() -> Dict[str, Any]:
 
     # Rescan the skills dir. ``scan_skill_commands`` resets
     # ``_skill_commands = {}`` internally and repopulates it.
+    from agent.skill_utils import _external_dirs_cache_clear
+
+    _external_dirs_cache_clear()
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)

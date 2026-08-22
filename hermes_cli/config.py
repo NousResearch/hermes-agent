@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
+# Read failures are operational, not proof that YAML is corrupt. Deduplicate
+# their warning independently so a later genuine parse error for the same file
+# still gets its corruption-specific warning and backup.
+_CONFIG_READ_WARNED: set = set()
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -155,6 +159,43 @@ def _warn_config_parse_failure(
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _warn_config_read_failure(
+    config_path: Path,
+    exc: OSError,
+    *,
+    fallback: str = "defaults",
+) -> None:
+    """Surface a transient config read failure without classifying corruption."""
+    try:
+        st = config_path.stat()
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(config_path), 0, 0)
+    if key in _CONFIG_READ_WARNED:
+        return
+    _CONFIG_READ_WARNED.add(key)
+
+    if fallback == "last-known-good":
+        msg = (
+            f"Could not read {config_path}: {exc}. "
+            "Keeping the previously loaded config for this attempt; "
+            "the next load will retry."
+        )
+    else:
+        msg = (
+            f"Could not read {config_path}: {exc}. "
+            "Falling back to default config for this attempt; "
+            "the next load will retry."
+        )
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -3617,11 +3658,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         config_path = get_config_path()
         path_key = str(config_path)
 
+        user_stat_error: Optional[OSError] = None
         try:
             st = config_path.stat()
             user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
         except FileNotFoundError:
             user_sig = None
+        except OSError as e:
+            user_sig = None
+            user_stat_error = e
 
         # Managed scope: fold the managed config file's (mtime, size) into the
         # cache signature so editing /etc/hermes/config.yaml invalidates the
@@ -3636,19 +3681,22 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         except OSError:
             managed_sig = (0, 0)
 
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
-        if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
+        # Combined cache signature: user file + managed file. Zero pairs mean
+        # an absent source; caching that default-only state keeps repeated
+        # read-only consumers cheap, while a later file creation changes the
+        # signature and invalidates it normally.
+        cache_sig: Optional[Tuple[int, int, int, int]]
+        if user_stat_error is not None:
+            cache_sig = None
+        elif user_sig is not None:
+            cache_sig = (
                 user_sig[0],
                 user_sig[1],
                 managed_sig[0],
                 managed_sig[1],
             )
-        elif managed_sig != (0, 0):
-            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
         else:
-            cache_sig = None
+            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
         if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
@@ -3662,6 +3710,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        user_read_failed = user_stat_error is not None
+
+        if user_stat_error is not None:
+            lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+            _warn_config_read_failure(
+                config_path,
+                user_stat_error,
+                fallback="last-known-good" if lkg is not None else "defaults",
+            )
+            if lkg is not None:
+                lkg_copy = copy.deepcopy(lkg)
+                return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         if user_sig is not None:
             try:
@@ -3676,6 +3736,25 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+            except OSError as e:
+                # Operational read failures are not evidence of malformed YAML:
+                # do not create a corruption backup or cache fallback data under
+                # the valid file signature. The next call must retry the read.
+                user_read_failed = True
+                cache_sig = None
+                lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+                _warn_config_read_failure(
+                    config_path,
+                    e,
+                    fallback="last-known-good" if lkg is not None else "defaults",
+                )
+                if lkg is not None:
+                    from typing import cast as _cast
+
+                    lkg_copy: Dict[str, Any] = _cast(
+                        Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
+                    )
+                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
             except Exception as e:
                 # Last-known-good fallback (port of openai/codex#31188's
                 # invariant: a parse failure in a policy/config file must not
@@ -3724,7 +3803,22 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # against the process environment, never against user-config-defined refs.
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
-        managed_config = managed_scope.load_managed_config()
+        managed_read_failed = False
+        try:
+            managed_config = managed_scope.load_managed_config(fail_open=False)
+        except Exception:  # noqa: BLE001 — managed policy is a fail-open boundary
+            # Do not cache a user-only result under the managed file's valid
+            # signature. Preserve the prior effective policy when available;
+            # otherwise return the user/default config for this attempt and
+            # retry the managed read on the next call.
+            managed_read_failed = True
+            cache_sig = None
+            logger.warning("managed scope: failed to load config overlay", exc_info=True)
+            lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+            if lkg is not None:
+                lkg_copy = copy.deepcopy(lkg)
+                return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+            managed_config = {}
         if managed_config:
             # Normalize the managed overlay through the same canonicalization as
             # the user config BEFORE merging (parity with
@@ -3739,7 +3833,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 managed_normalized["model"] = {"default": managed_normalized["model"]}
             managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
-        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        if not user_read_failed and not managed_read_failed:
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
             # (deepcopy=True) callers can mutate freely without affecting the
@@ -3764,8 +3859,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # First-load result is a fresh dict (not aliased to the cache); safe
         # to return directly. For the deepcopy=True path this is the
         # canonical "freshly-built mutable result" the function has always
-        # returned. For the deepcopy=False path with no cache (e.g. config
-        # file missing), it's also fine — callers get an isolated object.
+        # returned. For the deepcopy=False path after an operational read
+        # failure, it's also fine — callers get an isolated fallback object.
         return expanded
 
 

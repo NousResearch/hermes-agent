@@ -15,6 +15,7 @@ is the single seam for adding macOS / Windows native locations later.
 
 Attribution: do not reference any third-party product by name in this file.
 """
+
 from __future__ import annotations
 
 import copy
@@ -78,13 +79,19 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+def _cached_read(
+    path: Path,
+    cache: Dict[str, tuple],
+    parse,
+    *,
+    fail_open: bool = True,
+):
     """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
 
-    Returns ``None`` when the file is absent or fails to parse (fail-open). A
-    parse failure is logged LOUDLY — the admin needs to know their policy isn't
-    being applied — but never raises, so a malformed managed file can't brick
-    startup.
+    Returns ``None`` when the file is absent. With ``fail_open=True``, read or
+    parse failures are logged LOUDLY and also return ``None`` so malformed
+    managed files cannot brick standalone callers. Canonical loaders can opt to
+    propagate the failure when they own a last-known-good fallback.
     """
     try:
         st = path.stat()
@@ -99,30 +106,56 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     try:
         with open(path, encoding="utf-8") as f:
             parsed = parse(f)
-    except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
+    except Exception as exc:  # noqa: BLE001 — managed config is a trust boundary
         logger.warning(
-            "managed scope: failed to parse %s: %s — IGNORING this managed file. "
-            "Admin policy from this file is NOT being applied. Fix and restart.",
+            "managed scope: failed to read or parse %s: %s — IGNORING this "
+            "managed file. Admin policy from this file is NOT being applied. "
+            "Fix the file; the next load will retry.",
             path,
             exc,
         )
+        if not fail_open:
+            raise
         return None
     with _CACHE_LOCK:
         cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
     return parsed
 
 
-def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+def _parse_managed_config(file_obj) -> dict:
+    """Parse and normalize managed config at its trust boundary."""
+    parsed = yaml.safe_load(file_obj) or {}
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "managed scope: config root must be a mapping; ignoring managed config"
+        )
+        return {}
+    if "skills" in parsed and not isinstance(parsed["skills"], dict):
+        logger.warning(
+            "managed scope: skills must be a mapping; ignoring managed skills policy"
+        )
+        parsed = dict(parsed)
+        parsed.pop("skills")
+    return parsed
+
+
+def load_managed_config(*, fail_open: bool = True) -> dict:
+    """Return parsed managed config, optionally propagating read/parse errors.
+
+    Standalone callers default to fail-open. The canonical config loader passes
+    ``fail_open=False`` so it can preserve last-known-good policy and avoid
+    caching a user-only result under the managed file's valid signature.
+    """
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
     parsed = _cached_read(
         managed_dir / "config.yaml",
         _CONFIG_CACHE,
-        lambda f: yaml.safe_load(f) or {},
+        _parse_managed_config,
+        fail_open=fail_open,
     )
-    return parsed if isinstance(parsed, dict) else {}
+    return parsed or {}
 
 
 def load_managed_env() -> Dict[str, str]:
@@ -159,7 +192,11 @@ def apply_managed_overlay(config: dict) -> dict:
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
-        from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
+        from hermes_cli.config import (
+            _deep_merge,
+            _expand_env_vars,
+            _normalize_root_model_keys,
+        )
 
         managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
         # A bare ``model: x/y`` string in the managed file must merge as

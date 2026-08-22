@@ -1,7 +1,7 @@
 """Tests for ``agent.skill_commands.reload_skills``.
 
 Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command).
-The helper rescans the skills directory and returns a diff of what changed.
+The helper revalidates and rescans the skills directories, then returns a diff.
 It does NOT invalidate the skills system-prompt cache — skills are invoked
 at runtime via ``/skill-name``, ``skills_list``, or ``skill_view`` and don't
 need to live in the system prompt.
@@ -109,3 +109,22 @@ class TestReloadSkillsHelper:
             "prompt cache snapshot should be preserved — skills don't live "
             "in the system prompt so there's no reason to invalidate it"
         )
+
+    def test_revalidates_external_directory_availability(self, hermes_home):
+        """An explicit reload discovers a configured mount that came online."""
+        from agent.skill_commands import reload_skills
+
+        external = hermes_home / "external"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external}\n",
+            encoding="utf-8",
+        )
+
+        first = reload_skills()
+        _write_skill(external, "mounted-later", "available after mount")
+        second = reload_skills()
+
+        assert first["total"] == 0
+        assert second["added"] == [
+            {"name": "mounted-later", "description": "available after mount"}
+        ]

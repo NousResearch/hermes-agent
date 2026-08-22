@@ -80,3 +80,11 @@ name.
   does not.
 - `--also-uncompacted` adds a control arm that answers from the full
   original transcript — the recall ceiling.
+- The scorecard carries a 95% paired-bootstrap interval per policy and, below the
+  table, which adjacent pairs the question bank can actually order. Every policy
+  answers the same questions, so the comparison is paired and the per-question
+  `scores` array the runner already writes is all it needs. At 15 questions one
+  answer is 6.7 recall points and the smallest detectable difference is around
+  26 pp — the four-transcript pooled numbers are solid, a single transcript's
+  ordering of two close policies is not. The report says which is which; see
+  `evals/_stats.py`.

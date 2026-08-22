@@ -300,7 +300,7 @@ jobs:
           pattern: linux-*
 
       - name: Upload Flatpak to Release
-        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/linux-flatpak/com.nousresearch.Hermes.flatpak
           name: Hermes Desktop Flatpak (Linux)
@@ -309,7 +309,7 @@ jobs:
             Install: `flatpak install --user com.nousresearch.Hermes.flatpak`
 
       - name: Upload Snap to Release
-        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/linux-snap/hermes-desktop_*.snap
           tag: ${{ env.RELEASE_TAG }}
@@ -319,7 +319,7 @@ jobs:
             Install: `snap install --dangerous hermes-desktop_*.snap`
 
       - name: Upload AppImage to Release
-        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.AppImage
           tag: ${{ env.RELEASE_TAG }}
@@ -329,7 +329,7 @@ jobs:
             Install: `chmod +x Hermes-*.AppImage && ./Hermes-*.AppImage`
 
       - name: Upload deb to Release
-        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.deb
           tag: ${{ env.RELEASE_TAG }}
@@ -339,7 +339,7 @@ jobs:
             Install: `sudo apt install ./Hermes_*.deb`
 
       - name: Upload rpm to Release
-        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/linux-packages-appimage-deb-rpm/*.rpm
           tag: ${{ env.RELEASE_TAG }}

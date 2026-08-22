@@ -3644,30 +3644,37 @@ def _same_volume(a: Path, b: Path) -> bool:
         return True
 
 
-def _launchd_log_dir() -> Path:
+def _launchd_log_dir(*, notify: bool = False) -> Path:
     """Where launchd StandardOut/ErrPath should live.
 
     Normally HERMES_HOME/logs; when HERMES_HOME resolves onto a different
     volume than the user's home (external-SSD symlink), launchd cannot open
     the log paths at spawn and fails with EX_CONFIG (#88267). Fall back to
     ~/Library/Logs/<label> so the service can start and Hermes' own logging
-    still lands somewhere the user can find.
+    still lands somewhere the user can find. ``notify=True`` (interactive
+    installs) prints the relocation so users know where the logs moved.
     """
     home = Path.home()
     log_dir = get_hermes_home() / "logs"
     if not _same_volume(log_dir, home):
         fallback = Path.home() / "Library" / "Logs" / get_launchd_label()
         fallback.mkdir(parents=True, exist_ok=True)
+        if notify:
+            print(
+                f"Note: HERMES_HOME is on a different volume than the boot "
+                f"disk — launchd gateway logs will go to {fallback} "
+                f"(not {log_dir})."
+            )
         return fallback
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
 
-def generate_launchd_plist() -> str:
+def generate_launchd_plist(*, notify: bool = False) -> str:
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
-    log_dir = _launchd_log_dir()
+    log_dir = _launchd_log_dir(notify=notify)
     label = get_launchd_label()
     # An external-volume HERMES_HOME (symlink to an SSD) must not pin
     # WorkingDirectory there: launchd fails the spawn with EX_CONFIG before
@@ -3919,7 +3926,7 @@ def launchd_install(force: bool = False):
         return
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    new_plist = generate_launchd_plist()
+    new_plist = generate_launchd_plist(notify=True)
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")

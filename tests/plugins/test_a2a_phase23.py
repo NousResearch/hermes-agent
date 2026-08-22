@@ -103,6 +103,55 @@ def _send_body(text, ctx="", method="message/send"):
 
 
 class TestStreamResponseFormat:
+    def test_blocking_reply_carries_text_and_hosted_image_filepart(self, monkeypatch):
+        adapter, base = _make_live_adapter(monkeypatch)
+        image_url = "https://files-cdn.x.ai/generated/hugin-raven.png"
+
+        async def fake_handle_message(event):
+            await adapter.send_message_with_files(
+                event.source.chat_id,
+                "Her er billedet.",
+                [],
+                file_urls=[image_url],
+                metadata={"notify": True},
+            )
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+
+        async def run():
+            assert await adapter.connect() is True
+            try:
+                response = await asyncio.to_thread(
+                    _post_json, base + "/", _send_body("lav et billede")
+                )
+                task = response["result"]
+                assert task["status"]["state"] == protocol.STATE_COMPLETED
+                expected_parts = [
+                    {"text": "Her er billedet.", "mediaType": "text/plain"},
+                    {
+                        "url": image_url,
+                        "filename": "hugin-raven.png",
+                        "mediaType": "image/png",
+                    },
+                ]
+                assert task["artifacts"][0]["parts"] == expected_parts
+
+                polled = await asyncio.to_thread(
+                    _post_json,
+                    base + "/",
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "2",
+                        "method": "tasks/get",
+                        "params": {"taskId": task["id"]},
+                    },
+                )
+                assert polled["result"]["artifacts"][0]["parts"] == expected_parts
+            finally:
+                await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_status_update_shape(self):
         ev = protocol.status_update("task-1", "ctx-1", protocol.STATE_WORKING)
         assert set(ev.keys()) == {"statusUpdate"}

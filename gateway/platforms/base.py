@@ -1953,6 +1953,18 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Image generators can return a hosted artifact and instruct delivery as
+# ``MEDIA:https://.../image.png``. Local-path MEDIA handling intentionally
+# rejects URLs, so keep this grammar separate and explicit. The receiver (or
+# platform adapter) remains responsible for bounded, SSRF-safe URI fetching.
+REMOTE_MEDIA_TAG_RE = re.compile(
+    r'''MEDIA:\s*(?P<url>https?://[^\s<>"'`]+)''',
+    re.IGNORECASE,
+)
+_REMOTE_MEDIA_IMAGE_EXTS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
+})
+
 # Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — both
 # extension-less files (Caddyfile, Dockerfile, Makefile) and files with an
 # unknown extension (.py, .log, .weirdext, ...) — are validated and delivered
@@ -4938,7 +4950,10 @@ class BasePlatformAdapter(ABC):
         # capturing the (escape-aware) string body up to the closing quote.
         for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
             seg = m.group(1)
-            if re.search(r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])', seg):
+            if re.search(
+                r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\]|https?://)', seg,
+                re.IGNORECASE,
+            ):
                 for i in range(m.start(1), m.end(1)):
                     if chars[i] != '\n':
                         chars[i] = ' '
@@ -5062,6 +5077,55 @@ class BasePlatformAdapter(ABC):
         return media, cleaned
 
     @staticmethod
+    def extract_remote_media_urls(content: str) -> Tuple[List[str], str]:
+        """Extract explicit hosted ``MEDIA:http(s)://`` attachment URLs.
+
+        Only URLs whose path ends in a normal deliverable extension are
+        consumed. Unknown URLs stay visible instead of disappearing. Query
+        strings are preserved because generated-image CDNs commonly sign URLs.
+        """
+        from urllib.parse import urlsplit
+        from tools.url_safety import is_safe_url
+
+        urls: List[str] = []
+        spans: List[Tuple[int, int]] = []
+        seen: set[str] = set()
+        masked = BasePlatformAdapter._mask_protected_spans(content)
+        masked = BasePlatformAdapter._mask_json_string_media(masked)
+        trailing = ".,;:!?)]}*_" + _MEDIA_CJK_TERMINATORS
+
+        for match in REMOTE_MEDIA_TAG_RE.finditer(masked):
+            raw_url = match.group("url")
+            url = raw_url.rstrip(trailing)
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                continue
+            if (
+                parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.netloc
+                or Path(parsed.path).suffix.lower() not in _REMOTE_MEDIA_IMAGE_EXTS
+                or not is_safe_url(url)
+            ):
+                continue
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+            spans.append((match.start(), match.start("url") + len(url)))
+
+        if not spans:
+            return [], content
+        chars = list(content)
+        for start, end in spans:
+            for index in range(start, end):
+                if chars[index] != "\n":
+                    chars[index] = " "
+        cleaned = "".join(chars)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return urls, cleaned
+
+    @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
         """Strip MEDIA: directives from streamed/display text.
 
@@ -5077,6 +5141,7 @@ class BasePlatformAdapter(ABC):
         ):
             return text
         cleaned = _strip_media_tag_directives(text)
+        _remote_urls, cleaned = BasePlatformAdapter.extract_remote_media_urls(cleaned)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.rstrip()
 
@@ -6386,8 +6451,18 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
+                # Extract hosted MEDIA:http(s) URLs separately from local MEDIA
+                # paths. Image generators commonly return this exact shape.
+                remote_media_urls, response = self.extract_remote_media_urls(response)
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
+                if remote_media_urls:
+                    seen_image_urls = {url for url, _alt in images}
+                    images.extend(
+                        (url, "") for url in remote_media_urls
+                        if url not in seen_image_urls
+                    )
                 # Strip any remaining internal directives from message body (fixes #1561).
                 # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
                 # with an unknown extension is intentionally left in the body for
@@ -6553,6 +6628,80 @@ class BasePlatformAdapter(ABC):
                             os.remove(_cleanup_path)
                         except OSError:
                             pass
+
+                # Send text + attachments as one protocol message when the live
+                # adapter exposes the optional atomic capability. Seed uses this
+                # to produce one A2A reply with TextPart + FileParts instead of a
+                # caption task followed by disconnected attachment tasks.
+                delivery_adapter = self._final_delivery_adapter(event.source)
+                atomic_file_sender = getattr(
+                    delivery_adapter, "send_message_with_files", None
+                )
+                if callable(atomic_file_sender):
+                    from typing import cast
+                    from urllib.parse import unquote as _unquote, urlsplit as _urlsplit
+
+                    atomic_file_sender = cast(
+                        Callable[..., Awaitable[SendResult]], atomic_file_sender
+                    )
+
+                    atomic_paths = [path for path, _is_voice in media_files]
+                    atomic_paths.extend(local_files)
+                    atomic_urls: List[str] = []
+                    remaining_images: List[Tuple[str, str]] = []
+                    try:
+                        atomic_params = inspect.signature(
+                            atomic_file_sender
+                        ).parameters.values()
+                        supports_file_urls = any(
+                            param.name == "file_urls"
+                            or param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in atomic_params
+                        )
+                    except (TypeError, ValueError):
+                        supports_file_urls = False
+
+                    for image_url, alt_text in images:
+                        if image_url.startswith("file://"):
+                            atomic_paths.append(_unquote(image_url[7:]))
+                        elif (
+                            supports_file_urls
+                            and _urlsplit(image_url).scheme.lower() in {"http", "https"}
+                        ):
+                            atomic_urls.append(image_url)
+                        else:
+                            remaining_images.append((image_url, alt_text))
+
+                    # Preserve order while collapsing the same attachment found
+                    # through more than one extractor.
+                    atomic_paths = list(dict.fromkeys(atomic_paths))
+                    atomic_urls = list(dict.fromkeys(atomic_urls))
+                    if atomic_paths or atomic_urls:
+                        logger.info(
+                            "[%s] Sending response with %d attachment(s) atomically to %s",
+                            delivery_adapter.name,
+                            len(atomic_paths) + len(atomic_urls),
+                            event.source.chat_id,
+                        )
+                        atomic_kwargs: Dict[str, Any] = {
+                            "chat_id": event.source.chat_id,
+                            "content": text_content,
+                            "file_paths": atomic_paths,
+                            "reply_to": _reply_anchor_for_event(event),
+                            "metadata": _final_thread_metadata,
+                        }
+                        if supports_file_urls:
+                            atomic_kwargs["file_urls"] = atomic_urls
+                        result = await atomic_file_sender(**atomic_kwargs)
+                        _record_delivery(result)
+
+                        # The atomic call owns both the caption and every source
+                        # it attempted, even on failure. Never emit a caption-only
+                        # fallback or retry the same attachment as a second task.
+                        text_content = ""
+                        media_files = []
+                        local_files = []
+                        images = remaining_images
 
                 # Send the text portion. A reconnect may have replaced this
                 # adapter while its in-flight handler was still producing a

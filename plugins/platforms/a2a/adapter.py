@@ -30,8 +30,10 @@ Bind safety: with no token configured, the server binds 127.0.0.1 only.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 import sqlite3
@@ -377,6 +379,7 @@ class A2AAdapter(BasePlatformAdapter):
         # requests sharing a context).
         self._pending: Dict[str, tuple[str, Future]] = {}
         self._pending_order: Dict[str, deque[str]] = {}
+        self._pending_output_parts: Dict[str, list[dict]] = {}
         self._pending_lock = threading.Lock()
 
         # Orphaned task watchdog
@@ -649,8 +652,9 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending_order.setdefault(context_id, deque()).append(task_id)
         return fut
 
-    def _pop_pending(self, task_id: str) -> None:
+    def _pop_pending(self, task_id: str) -> list[dict]:
         with self._pending_lock:
+            output_parts = self._pending_output_parts.pop(task_id, [])
             entry = self._pending.pop(task_id, None)
             if entry:
                 order = self._pending_order.get(entry[0])
@@ -661,6 +665,7 @@ class A2AAdapter(BasePlatformAdapter):
                         pass
                     if not order:
                         self._pending_order.pop(entry[0], None)
+            return output_parts
 
     def _resolve_task(self, task_id: str, state: str, text: str) -> bool:
         with self._pending_lock:
@@ -670,11 +675,19 @@ class A2AAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    def _resolve_oldest_for_context(self, context_id: str, state: str, text: str) -> bool:
+    def _resolve_oldest_for_context(
+        self,
+        context_id: str,
+        state: str,
+        text: str,
+        output_parts: Optional[list[dict]] = None,
+    ) -> bool:
         with self._pending_lock:
             for task_id in self._pending_order.get(context_id, ()):
                 entry = self._pending.get(task_id)
                 if entry and not entry[1].done():
+                    if output_parts:
+                        self._pending_output_parts[task_id] = output_parts
                     entry[1].set_result((state, text))
                     return True
         return False
@@ -893,15 +906,21 @@ class A2AAdapter(BasePlatformAdapter):
                     self._title_forward_session(profile, session_id, session_title)
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
-    def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
-        """Record the outcome of a dispatched task. Returns (state, reply) after
-        redaction and input-required detection."""
+    def _finalize_task(
+        self, pending: dict, state: str, reply: str
+    ) -> tuple[str, str, list[dict]]:
+        """Record a dispatched task outcome and return state, text, and Parts."""
         task_id = pending["task_id"]
         context_id = pending["context_id"]
         peer = pending["peer"]
-        self._pop_pending(task_id)
+        output_parts = self._pop_pending(task_id)
 
         reply = security.redact_outbound(reply or "")
+        if output_parts:
+            output_parts = [dict(part) for part in output_parts]
+            for part in output_parts:
+                if isinstance(part.get("text"), str):
+                    part["text"] = reply
 
         # The agent flags clarification requests with a leading marker; map
         # them to the A2A input-required state so the peer knows to answer.
@@ -921,9 +940,9 @@ class A2AAdapter(BasePlatformAdapter):
         else:
             protocol.metrics.tasks_failed += 1
 
-        self.tasks.complete(task_id, state, reply)
+        self.tasks.complete(task_id, state, reply, output_parts=output_parts)
         self._send_push_notification(task_id, context_id, reply, state)
-        return state, reply
+        return state, reply, output_parts
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
         """Block until the task's future resolves (or times out).
@@ -953,11 +972,13 @@ class A2AAdapter(BasePlatformAdapter):
         if terminal is not None:
             result = protocol.send_message_response(terminal) if v1_response else terminal
             return protocol.jsonrpc_result(req_id, result)
+        assert pending is not None
         state, reply = self._await_reply(pending)
-        state, reply = self._finalize_task(pending, state, reply)
+        state, reply, output_parts = self._finalize_task(pending, state, reply)
         task = protocol.build_task(
             pending["task_id"], pending["context_id"], state, reply,
             created_at=pending["created_iso"],
+            output_parts=output_parts,
         )
         result = protocol.send_message_response(task) if v1_response else task
         return protocol.jsonrpc_result(req_id, result)
@@ -979,15 +1000,25 @@ class A2AAdapter(BasePlatformAdapter):
         handler.wfile.write(chunk.encode("utf-8"))
         handler.wfile.flush()
 
-    def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str,
-                       req_id: Any = None) -> None:
+    def _emit_terminal(
+        self,
+        handler,
+        task_id: str,
+        context_id: str,
+        state: str,
+        reply: str,
+        req_id: Any = None,
+        output_parts: Optional[list[dict]] = None,
+    ) -> None:
         """Emit the final artifact/status events and close the stream (v1.0:
         closure signals terminal state, no ``final`` field).
 
         ``req_id`` is threaded into JSON-RPC-wrapped SSE frames per §9.4."""
-        if reply and state == protocol.STATE_COMPLETED:
+        if (reply or output_parts) and state == protocol.STATE_COMPLETED:
             self._sse_write(handler, protocol.sse_data(
-                protocol.artifact_update(task_id, context_id, reply), req_id))
+                protocol.artifact_update(
+                    task_id, context_id, reply, output_parts=output_parts
+                ), req_id))
             self._sse_write(handler, protocol.sse_data(
                 protocol.status_update(task_id, context_id, state), req_id))
         else:
@@ -1012,6 +1043,7 @@ class A2AAdapter(BasePlatformAdapter):
                 )
                 return
 
+            assert pending is not None
             task_id, context_id = pending["task_id"], pending["context_id"]
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(
                 protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])),
@@ -1021,8 +1053,16 @@ class A2AAdapter(BasePlatformAdapter):
 
             state, reply = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"))
-            state, reply = self._finalize_task(pending, state, reply)
-            self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
+            state, reply, output_parts = self._finalize_task(pending, state, reply)
+            self._emit_terminal(
+                handler,
+                task_id,
+                context_id,
+                state,
+                reply,
+                req_id=req_id,
+                output_parts=output_parts,
+            )
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: stream client disconnected")
 
@@ -1051,7 +1091,16 @@ class A2AAdapter(BasePlatformAdapter):
                         state, reply = rec["state"], rec.get("reply", "")
                         break
                     self._sse_write(handler, ": keepalive\n\n")
-            self._emit_terminal(handler, task_id, rec["context_id"], state, reply, req_id=req_id)
+            current = self.tasks.get(task_id, *self._scope_for_agent(agent)) or rec
+            self._emit_terminal(
+                handler,
+                task_id,
+                rec["context_id"],
+                state,
+                reply,
+                req_id=req_id,
+                output_parts=current.get("output_parts", []),
+            )
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: subscribe client disconnected")
 
@@ -1246,6 +1295,90 @@ class A2AAdapter(BasePlatformAdapter):
         if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
             # No waiter (e.g. a late chunk or out-of-band send) — drop it.
             logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_message_with_files(
+        self,
+        chat_id: str,
+        content: str,
+        file_paths: list[str],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        file_urls: Optional[list[str]] = None,
+    ) -> SendResult:
+        """Fulfil one pending task with a text Part plus A2A v1 FileParts."""
+        message_id = str(int(time.time() * 1000))
+        if not (metadata or {}).get("notify"):
+            logger.debug("A2A: ignoring non-final file send for context %s", chat_id)
+            return SendResult(success=True, message_id=message_id)
+
+        from tools.url_safety import is_safe_url
+
+        parts: list[dict] = []
+        if content:
+            parts.append(protocol.text_part(content))
+        for raw_path in file_paths:
+            path = self.validate_media_delivery_path(raw_path)
+            if not path:
+                return SendResult(
+                    success=False,
+                    error="A2A FilePart path is outside the media delivery policy",
+                )
+            try:
+                size = os.path.getsize(path)
+            except OSError as exc:
+                return SendResult(success=False, error=f"A2A FilePart unreadable: {exc}")
+            if size > 25 * 1024 * 1024:
+                return SendResult(
+                    success=False,
+                    error=f"A2A FilePart exceeds 25 MiB limit: {os.path.basename(path)}",
+                )
+            try:
+                with open(path, "rb") as handle:
+                    raw = base64.b64encode(handle.read()).decode("ascii")
+            except OSError as exc:
+                return SendResult(success=False, error=f"A2A FilePart unreadable: {exc}")
+            parts.append({
+                "raw": raw,
+                "filename": os.path.basename(path),
+                "mediaType": mimetypes.guess_type(path)[0] or "application/octet-stream",
+            })
+        for raw_url in file_urls or []:
+            try:
+                parsed = urllib.parse.urlsplit(raw_url)
+            except ValueError:
+                parsed = None
+            if (
+                parsed is None
+                or parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or not is_safe_url(raw_url)
+            ):
+                return SendResult(
+                    success=False,
+                    error="A2A FilePart URI must be an http(s) URL without userinfo",
+                )
+            filename = os.path.basename(urllib.parse.unquote(parsed.path)) or "attachment"
+            parts.append({
+                "url": raw_url,
+                "filename": filename,
+                "mediaType": mimetypes.guess_type(parsed.path)[0] or "application/octet-stream",
+            })
+
+        if not parts:
+            return SendResult(success=False, error="A2A reply contained no text or files")
+        if not self._resolve_oldest_for_context(
+            chat_id,
+            protocol.STATE_COMPLETED,
+            content or "",
+            output_parts=parts,
+        ):
+            logger.debug(
+                "A2A: send_message_with_files() for context %s had no pending waiter",
+                chat_id,
+            )
         return SendResult(success=True, message_id=message_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:

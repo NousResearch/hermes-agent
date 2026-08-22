@@ -371,6 +371,7 @@ def build_task(
     agent_text: str = "",
     *,
     created_at: str = "",
+    output_parts: Optional[list[dict]] = None,
 ) -> dict:
     """Build an A2A v1.0 Task object for a message/send result.
 
@@ -388,11 +389,11 @@ def build_task(
     }
     if agent_text:
         task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
-        if state == STATE_COMPLETED:
-            task["artifacts"] = [{
-                "artifactId": uuid.uuid4().hex,
-                "parts": [text_part(agent_text)],
-            }]
+    if state == STATE_COMPLETED and (output_parts or agent_text):
+        task["artifacts"] = [{
+            "artifactId": uuid.uuid4().hex,
+            "parts": copy.deepcopy(output_parts or [text_part(agent_text)]),
+        }]
     return task
 
 
@@ -408,7 +409,12 @@ def status_update(task_id: str, context_id: str, state: str, text: str = "") -> 
     return {"statusUpdate": {"taskId": task_id, "contextId": context_id, "status": status}}
 
 
-def artifact_update(task_id: str, context_id: str, text: str) -> dict:
+def artifact_update(
+    task_id: str,
+    context_id: str,
+    text: str = "",
+    output_parts: Optional[list[dict]] = None,
+) -> dict:
     """v1.0 StreamResponse with an artifactUpdate member."""
     return {
         "artifactUpdate": {
@@ -416,7 +422,7 @@ def artifact_update(task_id: str, context_id: str, text: str) -> dict:
             "contextId": context_id,
             "artifact": {
                 "artifactId": uuid.uuid4().hex,
-                "parts": [text_part(text)],
+                "parts": copy.deepcopy(output_parts or [text_part(text)]),
             },
         }
     }
@@ -607,6 +613,7 @@ class TaskStore:
             "tenant": tenant or "",
             "state": STATE_SUBMITTED,
             "reply": "",
+            "output_parts": [],
             "created_at": time.time(),
             "created_iso": now_iso(),
             "push_url": "",
@@ -687,7 +694,13 @@ class TaskStore:
                 return None
             return dict(rec)
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
+    def complete(
+        self,
+        task_id: str,
+        state: str,
+        reply: str = "",
+        output_parts: Optional[list[dict]] = None,
+    ) -> Optional[dict]:
         """Transition a task to a terminal state. Idempotent."""
         watchers: list[Future] = []
         with self._lock:
@@ -696,6 +709,7 @@ class TaskStore:
                 return None
             rec["state"] = state
             rec["reply"] = reply
+            rec["output_parts"] = copy.deepcopy(output_parts or [])
             rec["completed_at"] = time.time()
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
@@ -777,6 +791,7 @@ class TaskStore:
             rec["state"],
             rec.get("reply", ""),
             created_at=rec.get("created_iso", ""),
+            output_parts=rec.get("output_parts", []),
         )
         if not include_artifacts:
             task.pop("artifacts", None)

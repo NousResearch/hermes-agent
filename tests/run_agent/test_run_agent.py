@@ -383,6 +383,60 @@ class TestHasContentAfterThinkBlock:
 
 
 
+class TestHasNaturalResponseEnding:
+    """Refs #14572 — an emoji sign-off must not read as an unfinished reply.
+
+    ``_should_treat_stop_as_truncated`` calls this on Ollama-hosted GLM
+    replies, so a false negative reclassifies a complete response as
+    truncated and burns the continuation budget.
+    """
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            "✨",  # ✨ Dingbats
+            "✅",  # ✅ Dingbats
+            "⭐",  # ⭐ Misc Symbols & Pictographs Suppl.
+            "☀",  # ☀ Misc Symbols
+            "\U0001f389",  # 🎉 Misc Symbols & Pictographs
+            "\U0001f99e",  # 🦞
+        ],
+        ids=["sparkles", "check", "star", "sun", "party", "lobster"],
+    )
+    def test_emoji_sign_off_is_natural(self, agent, ending):
+        assert agent._has_natural_response_ending(f"All done {ending}") is True
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            "❤️",  # ❤️ variation selector 16
+            "\U0001f44d\U0001f3fd",  # 👍🏽 skin-tone modifier
+            "\U0001f468‍\U0001f4bb",  # 👨‍💻 ZWJ sequence
+            "\U0001f1f0\U0001f1f7",  # 🇰🇷 regional indicators
+        ],
+        ids=["variation-selector", "skin-tone", "zwj", "regional-indicator"],
+    )
+    def test_composed_emoji_sign_off_is_natural(self, agent, ending):
+        """The final codepoint is a modifier, not the pictograph itself."""
+        assert agent._has_natural_response_ending(f"Thanks {ending}") is True
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Finished.", "Done!", "Really?", "```\nx = 1\n```"],
+        ids=["period", "bang", "question", "code-fence"],
+    )
+    def test_existing_endings_still_natural(self, agent, text):
+        assert agent._has_natural_response_ending(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        ["and then we", "the value is 42", "", "   "],
+        ids=["mid-sentence", "trailing-digit", "empty", "whitespace"],
+    )
+    def test_unfinished_text_is_not_natural(self, agent, text):
+        assert agent._has_natural_response_ending(text) is False
+
+
 class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
@@ -4210,13 +4264,50 @@ class TestRunConversation:
             result["final_response"]
             == "Based on the search results, the best next step is to update the config."
         )
-
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
 
+    @pytest.mark.parametrize(
+        "sign_off",
+        ["✨", "✅"],
+        ids=["sparkles", "check"],
+    )
+    def test_ollama_glm_stop_with_emoji_sign_off_does_not_continue(self, agent, sign_off):
+        """Regression for #70131 — a complete Ollama/GLM post-tool `stop`
+        response ending in a Dingbats emoji (✨ U+2728 / ✅ U+2705) must not
+        be reclassified as truncated.  Before the Unicode-category fix,
+        ``_has_natural_response_ending`` returned False for these, so
+        ``_should_treat_stop_as_truncated`` injected a continuation prompt
+        and issued an extra API call for a response that was already whole.
+        """
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
 
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        complete_stop = _mock_response(
+            content=f"Done — the config is updated {sign_off}",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, complete_stop]
 
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == f"Done — the config is updated {sign_off}"
 
 
 

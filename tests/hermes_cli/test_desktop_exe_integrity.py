@@ -214,7 +214,8 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
     backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
     make_pe(backup_exe, PE_AMD64)  # valid old build
 
-    with patch("hermes_cli.main._windows_native_machine", return_value="AMD64"):
+    with patch("hermes_cli.main._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main._desktop_packaged_renderer_integrity_error", return_value=None):
         restored = cli_main._rollback_desktop_from_backup(exe)
 
     assert restored == exe
@@ -246,6 +247,7 @@ def test_gate_fails_clearly_without_backup(tmp_path, capsys):
     fake.write_bytes(b"<html>proxy error</html>" + b" " * 600)
 
     with patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._desktop_packaged_renderer_integrity_error", return_value=None), \
          patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
         verified, rolled_back = cli_main._ensure_desktop_exe_launchable(desktop_dir, exe)
 
@@ -304,6 +306,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
          patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
          patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
+         patch("hermes_cli.main._desktop_packaged_renderer_integrity_error", return_value=None), \
          patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
          patch("hermes_cli.main._windows_native_machine", return_value="AMD64"), \
          patch("hermes_cli.main.subprocess.run", return_value=pack_ok), \
@@ -317,5 +320,4 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     mock_stamp.assert_not_called()
     out = capsys.readouterr().out
     assert "integrity check" in out
-
 

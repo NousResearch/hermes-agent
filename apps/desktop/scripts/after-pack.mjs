@@ -1,8 +1,9 @@
 /**
  * after-pack.mjs — electron-builder afterPack hook.
  *
- * Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
- * rcedit (delegated to set-exe-identity.mjs). This runs for EVERY packed build
+ * Verifies that the ASAR index and unpacked renderer payload are one coherent
+ * artifact, then stamps the Hermes icon + identity onto the packed Windows
+ * Hermes.exe via rcedit. This runs for EVERY packed build
  * — first install, `hermes desktop`, the installer's --update rebuild, and a
  * dev's manual `npm run pack` — so the branded exe can never silently revert
  * to the stock "Electron" icon/name (the bug when the stamp lived only in
@@ -21,9 +22,21 @@
 
 import path from 'node:path'
 
+import { assertPackagedRendererIntegrity, packagedResourcesDir } from './packaged-renderer-integrity.mjs'
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
 export default async function afterPack(context) {
+  const resourcesDir = packagedResourcesDir(
+    context.appOutDir,
+    context.electronPlatformName,
+    context.packager?.appInfo?.productFilename
+  )
+  try {
+    assertPackagedRendererIntegrity(resourcesDir)
+  } catch (err) {
+    throw new Error(`[after-pack] packaged renderer integrity check failed: ${err.message}`)
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }

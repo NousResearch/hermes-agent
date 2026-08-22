@@ -6637,11 +6637,13 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     ``hermes update`` that pulled new source but hasn't built yet).
     """
     # If there's no build output at all, we definitely need to build
+    packaged_executable = None
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
             return True
 
     # A torn renderer bundle is stale no matter what the stamp says: the hash
@@ -6670,7 +6672,22 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         return True
 
     current_hash = _compute_desktop_content_hash(project_root)
-    return current_hash != saved_hash
+    if current_hash != saved_hash:
+        return True
+
+    if packaged_executable is not None:
+        integrity_error = _desktop_packaged_renderer_integrity_error(
+            project_root, packaged_executable
+        )
+        if integrity_error is not None:
+            logger.warning(
+                "Desktop content stamp matched, but the packaged renderer is "
+                "inconsistent; forcing rebuild: %s",
+                integrity_error,
+            )
+            return True
+
+    return False
 
 
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
@@ -6725,6 +6742,56 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _desktop_packaged_resources_dir(packaged_executable: Path) -> Path:
+    """Return the Electron resources directory beside ``packaged_executable``."""
+    if (
+        packaged_executable.parent.name == "MacOS"
+        and packaged_executable.parent.parent.name == "Contents"
+    ):
+        return packaged_executable.parent.parent / "Resources"
+    return packaged_executable.parent / "resources"
+
+
+def _desktop_packaged_renderer_integrity_error(
+    project_root: Path, packaged_executable: Path
+) -> Optional[str]:
+    """Return renderer package skew detected by the Node ASAR verifier."""
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    verifier = (
+        project_root
+        / "apps"
+        / "desktop"
+        / "scripts"
+        / "packaged-renderer-integrity.mjs"
+    )
+    if not verifier.is_file():
+        return f"renderer verifier is missing: {verifier}"
+
+    node = find_node_executable("node")
+    if not node:
+        return "Node.js is unavailable, so the packaged renderer cannot be verified"
+
+    resources_dir = _desktop_packaged_resources_dir(packaged_executable)
+    try:
+        result = subprocess.run(
+            [node, str(verifier), str(resources_dir)],
+            cwd=project_root,
+            env=with_hermes_node_path(),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"renderer verifier could not run: {exc}"
+    if result.returncode == 0:
+        return None
+
+    detail = (result.stderr or result.stdout or "unknown verifier failure").strip()
+    return detail[:2000]
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
@@ -7001,6 +7068,8 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
         return None
     if _desktop_exe_integrity_error(backup_exe) is not None:
         return None
+    if _desktop_packaged_renderer_integrity_error(PROJECT_ROOT, backup_exe) is not None:
+        return None
     corrupt_dir = unpacked.parent / (unpacked.name + ".corrupt")
     try:
         shutil.rmtree(corrupt_dir, ignore_errors=True)
@@ -7034,17 +7103,24 @@ def _ensure_desktop_exe_launchable(
     if packaged_executable is None or sys.platform != "win32":
         return packaged_executable, False
 
-    error = _desktop_exe_integrity_error(packaged_executable)
+    exe_error = _desktop_exe_integrity_error(packaged_executable)
+    renderer_error = None
+    if exe_error is None:
+        renderer_error = _desktop_packaged_renderer_integrity_error(
+            PROJECT_ROOT, packaged_executable
+        )
+    error = exe_error or renderer_error
     if error is None:
         return packaged_executable, False
 
-    print(f"✗ The built Hermes.exe failed its integrity check: {error}")
+    print(f"✗ The built desktop package failed its integrity check: {error}")
     print(f"    at: {packaged_executable}")
 
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
     # zip and the content stamp so the next rebuild is a genuine re-download +
     # re-stage rather than a replay of the same broken extraction.
-    _purge_electron_build_cache(desktop_dir)
+    if exe_error is not None:
+        _purge_electron_build_cache(desktop_dir)
     try:
         _desktop_stamp_path().unlink()
     except OSError:
@@ -7893,6 +7969,16 @@ def cmd_gui(args: argparse.Namespace):
             print("  Or drop --skip-build to package automatically.")
             sys.exit(1)
         else:
+            integrity_error = _desktop_packaged_renderer_integrity_error(
+                PROJECT_ROOT, packaged_executable
+            )
+            if integrity_error is not None:
+                print(
+                    "✗ --skip-build cannot use the packaged desktop app because "
+                    f"its renderer is inconsistent: {integrity_error}"
+                )
+                print("  Drop --skip-build to rebuild the package automatically.")
+                sys.exit(1)
             print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
     else:
         # Check the content-hash stamp before doing any build work.
@@ -7995,6 +8081,16 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
+                if not source_mode and sys.platform == "win32":
+                    failed_executable = _desktop_packaged_executable(desktop_dir)
+                    if failed_executable is not None:
+                        restored = _rollback_desktop_from_backup(failed_executable)
+                        if restored is not None:
+                            packaged_executable = restored
+                            print(
+                                "  ↩ Desktop build failed — restored the previous "
+                                "verified package from backup."
+                            )
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":

@@ -3,9 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { listPackage } from '@electron/asar'
 
 import PACKAGE_JSON from '../package.json' with { type: 'json' }
+import { assertPackagedRendererIntegrity } from './packaged-renderer-integrity.mjs'
 
 const MODE = process.argv[2] || 'help'
 const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -23,9 +23,7 @@ const APP = (() => {
     return {
       appPath,
       binary: path.join(appPath, 'Contents', 'MacOS', 'Hermes'),
-      resourcesPath: path.join(appPath, 'Contents', 'Resources'),
-      asarPath: path.join(appPath, 'Contents', 'Resources', 'app.asar'),
-      unpackedDistIndex: path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'dist', 'index.html')
+      resourcesPath: path.join(appPath, 'Contents', 'Resources')
     }
   }
   if (PLATFORM === 'win32') {
@@ -33,9 +31,7 @@ const APP = (() => {
     return {
       appPath: unpacked,
       binary: path.join(unpacked, 'Hermes.exe'),
-      resourcesPath: path.join(unpacked, 'resources'),
-      asarPath: path.join(unpacked, 'resources', 'app.asar'),
-      unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
+      resourcesPath: path.join(unpacked, 'resources')
     }
   }
   // linux unpacked layout matches windows but with different binary name
@@ -43,9 +39,7 @@ const APP = (() => {
   return {
     appPath: unpacked,
     binary: path.join(unpacked, 'Hermes'),
-    resourcesPath: path.join(unpacked, 'resources'),
-    asarPath: path.join(unpacked, 'resources', 'app.asar'),
-    unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
+    resourcesPath: path.join(unpacked, 'resources')
   }
 })()
 
@@ -288,8 +282,7 @@ function launchFresh() {
 //   - node-pty IS shipped inside app.asar.unpacked/dist/node_modules/node-pty
 //     with package.json + lib/ + at least one .node binary (the renderer's
 //     integrated terminal needs this; see Phase 1F.6).
-//   - The renderer's dist/index.html is reachable (either unpacked or
-//     inside app.asar).
+//   - The ASAR renderer index exactly matches the unpacked dist payload.
 function validateBundle() {
   if (!exists(APP.binary)) {
     die(`Missing packaged app binary: ${APP.binary}`)
@@ -358,20 +351,10 @@ function validateBundle() {
     }
   }
 
-  // Renderer payload check (either unpacked or in the asar)
-  if (exists(APP.unpackedDistIndex)) {
-    return { stamp, nodeBinaries }
-  }
-  if (!exists(APP.asarPath)) {
-    die(`Missing renderer payload: neither ${APP.unpackedDistIndex} nor ${APP.asarPath} exists`)
-  }
-  const files = listPackage(APP.asarPath)
-  // Normalize separators because @electron/asar's listPackage returns
-  // backslash-prefixed entries on Windows ('\\dist\\index.html') and
-  // forward-slash on Unix.
-  const normalized = files.map(f => f.replace(/\\/g, '/').replace(/^\/+/, ''))
-  if (!normalized.includes('dist/index.html')) {
-    die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
+  try {
+    assertPackagedRendererIntegrity(APP.resourcesPath)
+  } catch (err) {
+    die(`Packaged renderer integrity check failed: ${err.message}`)
   }
   return { stamp, nodeBinaries }
 }

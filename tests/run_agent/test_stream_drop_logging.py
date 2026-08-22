@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import logging
 import time
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 from run_agent import AIAgent
 
@@ -32,6 +34,28 @@ def _make_agent() -> AIAgent:
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+    )
+
+
+def _stream_chunk(content=None, tool_calls=None, finish_reason=None):
+    delta = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=None,
+        reasoning=None,
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)],
+        model="test/model",
+        usage=None,
+    )
+
+
+def _tool_call_delta(index=0, tc_id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index,
+        id=tc_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
@@ -218,3 +242,109 @@ def test_quiet_mode_does_not_clobber_runagent_logger_level():
     for name in ("run_agent", "tools", "trajectory_compressor", "cron", "hermes_cli"):
         logger = logging.getLogger(name)
         assert logger.getEffectiveLevel() <= logging.WARNING
+
+
+class TestStreamDropAttemptNumbers:
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_plain_transient_drop_numbers_first_attempt_and_retries(
+        self, mock_close, mock_create, monkeypatch
+    ):
+        import httpx
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        attempts = {"count": 0}
+
+        def create_stream(*args, **kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise httpx.ConnectError("connection dropped")
+            return iter([_stream_chunk(content="ok", finish_reason="stop")])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = create_stream
+        mock_create.return_value = client
+        agent = _make_agent()
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with patch.object(agent, "_emit_stream_drop", wraps=agent._emit_stream_drop) as emit:
+            agent._interruptible_streaming_api_call({})
+
+        assert attempts["count"] == 2
+        assert emit.call_args.kwargs["attempt"] == 1
+        assert emit.call_args.kwargs["max_attempts"] == 3
+        assert emit.call_args.kwargs["mid_tool_call"] is False
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_mid_tool_call_drop_numbers_each_retry(
+        self, mock_close, mock_create, monkeypatch
+    ):
+        import httpx
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        attempts = {"count": 0}
+
+        def create_stream(*args, **kwargs):
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                def failing_stream():
+                    yield _stream_chunk(content="Working")
+                    yield _stream_chunk(tool_calls=[_tool_call_delta(
+                        tc_id="call_1", name="write_file", arguments='{"path": '
+                    )])
+                    raise httpx.RemoteProtocolError("peer closed")
+                return failing_stream()
+            return iter([
+                _stream_chunk(tool_calls=[_tool_call_delta(
+                    tc_id="call_1", name="write_file", arguments='{"path": "/tmp/x"}'
+                )]),
+                _stream_chunk(finish_reason="tool_calls"),
+            ])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = create_stream
+        mock_create.return_value = client
+        agent = _make_agent()
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._fire_stream_delta = lambda text: None
+
+        with patch.object(agent, "_emit_stream_drop", wraps=agent._emit_stream_drop) as emit:
+            agent._interruptible_streaming_api_call({})
+
+        assert attempts["count"] == 3
+        assert [call.kwargs["attempt"] for call in emit.call_args_list] == [1, 2]
+        assert all(call.kwargs["max_attempts"] == 3 for call in emit.call_args_list)
+        assert all(call.kwargs["mid_tool_call"] is True for call in emit.call_args_list)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_always_failing_stream_has_retry_and_exhausted_attempt_numbers(
+        self, mock_close, mock_create, monkeypatch
+    ):
+        import httpx
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+
+        def always_fails(*args, **kwargs):
+            raise httpx.ConnectError("connection dropped")
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = always_fails
+        mock_create.return_value = client
+        agent = _make_agent()
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with (
+            patch.object(agent, "_emit_stream_drop", wraps=agent._emit_stream_drop) as emit,
+            patch.object(agent, "_log_stream_retry", wraps=agent._log_stream_retry) as log,
+        ):
+            with pytest.raises(httpx.ConnectError):
+                agent._interruptible_streaming_api_call({})
+
+        assert [call.kwargs["attempt"] for call in emit.call_args_list] == [1, 2]
+        assert log.call_args.kwargs["attempt"] == 3
+        assert log.call_args.kwargs["max_attempts"] == 3

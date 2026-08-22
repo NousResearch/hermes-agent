@@ -305,6 +305,57 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
+        self, mock_close, mock_create
+    ):
+        """Large tool arguments must not rebuild the accumulated string per delta."""
+        from run_agent import AIAgent
+
+        class AppendOnlyChunk(str):
+            def __radd__(self, other):
+                raise AssertionError("tool argument delta was concatenated eagerly")
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, tc_id="call_123", name="write_file"
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('{"path":"out.txt",')
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('"content":"hello"}')
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.arguments == (
+            '{"path":"out.txt","content":"hello"}'
+        )
+
 
 
 

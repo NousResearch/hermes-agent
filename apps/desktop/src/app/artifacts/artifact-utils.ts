@@ -1,4 +1,4 @@
-import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
+import { mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -56,6 +56,16 @@ function artifactSessionTitle(session: SessionInfo): string {
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+// Desktop renders media references as `[label](#media:...)` markdown links
+// (chat-messages.ts → mediaMarkdownHref), with the path percent-encoded
+// (`#media:D%3A%2FComfyUI%2Foutput%2Fa.png`). Decode such values back to a
+// real path before artifact matching so the Artifacts page collects them
+// exactly like the legacy `MEDIA:` form (#88084). Non-`#media:` values are
+// returned untouched; malformed encodings fall back to the raw value.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
 }
 
 function unquoteMediaValue(value: string): string {
@@ -282,7 +292,7 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -398,7 +408,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
     }
 
     collectArtifactsFromMessage(message, candidate => {
-      const value = normalizeValue(candidate)
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
       if (!value || !looksLikeArtifact(value)) {
         return

@@ -551,6 +551,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
+                    'user-guide/skills/optional/productivity/productivity-discernment-nudge',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-shop',

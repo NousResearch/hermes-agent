@@ -26,6 +26,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.streaming_control import _stop_spinner
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -3046,13 +3047,11 @@ def run_conversation(
                 # consumers are registered, and falls back to non-
                 # streaming automatically if the provider doesn't
                 # support it.
-                def _stop_spinner():
+                def _on_first_delta():
                     nonlocal thinking_spinner
-                    if thinking_spinner:
-                        thinking_spinner.stop("")
-                        thinking_spinner = None
-                    if agent.thinking_callback:
-                        agent.thinking_callback("")
+                    thinking_spinner = _stop_spinner(
+                        thinking_spinner, agent.thinking_callback
+                    )
 
                 _use_streaming = True
                 # Provider signaled "stream not supported" on a previous
@@ -3099,7 +3098,7 @@ def run_conversation(
                         )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
+                            next_api_kwargs, on_first_delta=_on_first_delta
                         )
                     from agent import relay_llm
 

@@ -136,3 +136,19 @@ def test_gate_canonicalises_the_patch_is_present():
     assert 'readlink -m' in fn, "linux_gate no longer canonicalises paths"
     # Both sides must be canonicalised, not just one.
     assert fn.count("readlink -m") >= 2, "expected both sides canonicalised"
+
+
+@requires_bash
+def test_empty_relaunch_target_falls_to_skew(tmp_path):
+    """An unset/empty RELaunch_TARGET must still gate 'skew'.
+
+    The canonicalisation line is guarded with [ -n "$RELAUNCH_TARGET" ] so
+    an empty value skips readlink and the raw empty string falls through
+    the case to the skew branch. This pins that behavior so the guard
+    cannot be "simplified" away without a visible test failure.
+    """
+    src = POSIX_SH.read_text()
+    fn = extract_linux_gate(src)
+    base = tmp_path / "install"
+    make_tree(base)
+    assert run_gate(fn, str(base), "") == "skew"

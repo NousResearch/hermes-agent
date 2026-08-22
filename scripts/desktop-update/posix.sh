@@ -319,14 +319,14 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
-  # LOCAL (mhines 2026-08-21): canonicalize both sides before the prefix
-  # compare. On this Fedora host /home is a symlink to /var/home; the
-  # relaunch target is read from /proc/<pid>/exe (kernel-canonicalised to
-  # /var/home/...) while INSTALL_ROOT is spelled /home/..., so the raw
-  # prefix match false-gates as "skew" and tells the user to reinstall.
-  # readlink -m canonicalises existing leading components without
-  # requiring the full path to exist (unlike -f); no-op when both sides
-  # already agree. Upstream issue drafted (not yet filed).
+  # Canonicalise both sides before the prefix compare. On some distros
+  # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
+  # target is read from /proc/<pid>/exe, which the kernel canonicalises
+  # through symlinks, while INSTALL_ROOT keeps the original spelling —
+  # the raw prefix match then false-gates as "skew" and tells the user
+  # to reinstall an app that is fine. readlink -m canonicalises existing
+  # leading components without requiring the full path to exist (unlike
+  # -f); a no-op when both sides are already spelled the same.
   unpacked="$(readlink -m -- "$unpacked")"
   [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in

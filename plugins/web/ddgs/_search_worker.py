@@ -77,6 +77,32 @@ def _write_envelope(envelope: dict) -> None:
     sys.stdout.flush()
 
 
+def _activate_durable_lazy_target() -> None:
+    """Put the durable lazy-install target on this worker's ``sys.path``.
+
+    Sealed-venv deployments (the Docker image sets
+    ``HERMES_DISABLE_LAZY_INSTALLS=1`` plus ``HERMES_LAZY_INSTALL_TARGET``)
+    install ``ddgs`` into a writable directory outside the venv. The gateway
+    imports from it because ``hermes_bootstrap`` activates that target at
+    startup — but this worker is spawned as a bare script and runs no
+    bootstrap, so ``from ddgs import DDGS`` failed with ``ModuleNotFoundError``
+    even though the package was installed (#75025).
+
+    Reuses ``tools.lazy_deps.activate_durable_lazy_target`` rather than
+    extending ``PYTHONPATH``: that helper *appends* the target so the venv
+    keeps precedence on every name collision. A writable directory must never
+    be able to shadow a core module. No-ops when the target is unset or
+    missing, and never raises — a failure here should degrade to the current
+    ModuleNotFoundError, not lose the request envelope.
+    """
+    try:
+        from tools.lazy_deps import activate_durable_lazy_target
+
+        activate_durable_lazy_target()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
     try:
         request = json.load(sys.stdin)
@@ -98,6 +124,10 @@ def main() -> int:
     query = str(request.get("query") or "")
     safe_limit = max(1, int(request.get("safe_limit") or 1))
     try:
+        # Before the ddgs import below — on a sealed venv the package lives in
+        # the durable target, which nothing else on this path activates.
+        _activate_durable_lazy_target()
+
         # Import inside main so script startup stays light / patchable.
         from plugins.web.ddgs.provider import _run_ddgs_search
 

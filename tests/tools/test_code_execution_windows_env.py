@@ -257,6 +257,14 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     _HERMES_CHILD_ALLOWED = frozenset({
         "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
     })
+    # Dispatcher-owned Kanban identity is stripped unconditionally from
+    # execute_code children (#81508) — even an explicit passthrough cannot
+    # re-grant a nested process the parent's board mutation capability.
+    _KANBAN_ENV_KEYS = frozenset({
+        "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_WORKSPACE",
+        "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_CLAIM_LOCK",
+        "HERMES_KANBAN_BOARD", "HERMES_KANBAN_DB",
+    })
     out = {}
     for k, v in source_env.items():
         if is_passthrough(k):
@@ -269,6 +277,8 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
             continue
         if k in _HERMES_CHILD_ALLOWED:
             out[k] = v
+    for k in _KANBAN_ENV_KEYS:
+        out.pop(k, None)
     return out
 
 

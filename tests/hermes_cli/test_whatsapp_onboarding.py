@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 import time
 
 
@@ -21,6 +22,34 @@ class _FakeProc:
 
     def kill(self):
         self.killed = True
+
+
+def test_dashboard_setup_refreshes_stale_bridge_dependencies(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+    from gateway.platforms.whatsapp_common import (
+        whatsapp_bridge_dependencies_fresh,
+    )
+
+    bridge_dir = tmp_path / "whatsapp-bridge"
+    (bridge_dir / "node_modules").mkdir(parents=True)
+    (bridge_dir / "package.json").write_text('{"name": "whatsapp-bridge"}')
+    (bridge_dir / "package-lock.json").write_text('{"lockfileVersion": 3}')
+
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _name: "npm")
+    monkeypatch.setattr(
+        "hermes_constants.with_hermes_node_path", lambda env=None: env or {}
+    )
+    installs = []
+
+    def _run(*args, **kwargs):
+        installs.append((args, kwargs))
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ws.subprocess, "run", _run)
+    ws._ensure_whatsapp_bridge_dependencies(bridge_dir)
+
+    assert installs
+    assert whatsapp_bridge_dependencies_fresh(bridge_dir)
 
 
 

@@ -18,6 +18,20 @@ def _seed_install_tree(install_bridge: Path) -> None:
     install_bridge.mkdir(parents=True, exist_ok=True)
     (install_bridge / "bridge.js").write_text("// bridge\n")
     (install_bridge / "package.json").write_text('{"name": "whatsapp-bridge"}\n')
+    (install_bridge / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+
+
+def test_dependency_fingerprint_detects_manifest_changes(tmp_path):
+    bridge_dir = tmp_path / "whatsapp-bridge"
+    _seed_install_tree(bridge_dir)
+    (bridge_dir / "node_modules").mkdir()
+
+    assert whatsapp_common.whatsapp_bridge_dependencies_fresh(bridge_dir) is False
+    assert whatsapp_common.record_whatsapp_bridge_dependency_fingerprint(bridge_dir)
+    assert whatsapp_common.whatsapp_bridge_dependencies_fresh(bridge_dir) is True
+
+    (bridge_dir / "package-lock.json").write_text('{"lockfileVersion": 3, "changed": true}\n')
+    assert whatsapp_common.whatsapp_bridge_dependencies_fresh(bridge_dir) is False
 
 
 def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):

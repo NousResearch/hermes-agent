@@ -812,6 +812,45 @@ class TestNodeRuntimeNpmResolution:
         out = capsys.readouterr().out
         assert "mixed state" in out
 
+    def test_update_refreshes_stale_installed_whatsapp_bridge(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import main as hm
+        from gateway.platforms.whatsapp_common import (
+            whatsapp_bridge_dependencies_fresh,
+        )
+        import hermes_constants
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text("{}")
+        bridge_dir = tmp_path / "scripts" / "whatsapp-bridge"
+        (bridge_dir / "node_modules").mkdir(parents=True)
+        (bridge_dir / "package.json").write_text('{"name": "whatsapp-bridge"}')
+        (bridge_dir / "package-lock.json").write_text('{"lockfileVersion": 3}')
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm")
+        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda _root: False)
+        monkeypatch.setattr(hm, "_nixos_build_env", lambda: {})
+        monkeypatch.setattr(
+            hermes_constants, "get_default_hermes_root", lambda: tmp_path / "home"
+        )
+        installs = []
+
+        def _install(*args, **kwargs):
+            installs.append((args, kwargs))
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm, "_run_npm_install_deterministic", _install)
+        with patch(
+            "tools.browser_tool.warm_agent_browser_npx_cache", return_value=True
+        ):
+            failures = hm._update_node_dependencies()
+
+        assert failures == []
+        assert installs[0][0][1] == bridge_dir
+        assert whatsapp_bridge_dependencies_fresh(bridge_dir)
+
     def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
         """A Windows-only npm on WSL must not reach web or desktop builds."""
         from hermes_cli import main as hm

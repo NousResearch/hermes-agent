@@ -1,0 +1,12 @@
+{
+  "head": "898a3f008259a8620d8d5f6eb2e1bf9e5f2b3179",
+  "reexports": [
+    "list_webhooks",
+    "enable_webhooks",
+    "create_webhook",
+    "delete_webhook",
+    "set_webhook_enabled"
+  ],
+  "router_sha256": "e14b9a7c094742cd1bf5d0ce8b486c8c87f26d9da54929cac0b4162ee18f89b4",
+  "web_server_sha256": "dafc440b540b4de044dfcdb63de18c35e39c711b198d515df9f97a1401a2f70a"
+}

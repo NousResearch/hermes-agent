@@ -1,0 +1,13 @@
+{
+  "branch": "wr/task-04-rest-router",
+  "expected_head": "898a3f008259a8620d8d5f6eb2e1bf9e5f2b3179",
+  "head": "898a3f008259a8620d8d5f6eb2e1bf9e5f2b3179",
+  "mode": "existing_pr",
+  "phase": "preflight",
+  "repository": "D:\\HERMES-TEMP\\webhook-revolution\\task-04-rest-router",
+  "schema_version": 1,
+  "status": "pass",
+  "task": 4,
+  "task_title": "Extract webhook REST routes",
+  "timestamp": "2026-08-14T21:07:49Z"
+}

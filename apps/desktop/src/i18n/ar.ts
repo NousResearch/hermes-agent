@@ -1004,7 +1004,11 @@ export const ar = defineLocale({
     toolsetEnabled: 'تم تفعيل مجموعة الأدوات',
     toolsetDisabled: 'تم تعطيل مجموعة الأدوات',
     appliesToNewSessions: name => `ينطبق على الجلسات الجديدة في ${name}`,
-    failedToUpdate: name => `فشل تحديث ${name}`
+    failedToUpdate: name => `فشل تحديث ${name}`,
+    botFilterLabel: 'تصفية حسب البوت',
+    botFilterAllBots: 'كل البوتات',
+    botAssignmentPending: 'لم يتم تحميل مهارات هذا البوت بعد',
+    botAssignmentToggle: (skill, bot, enabled) => `${enabled ? 'تشغيل' : 'إيقاف'} ${skill} على ${bot}`
   },
   agents: {
     close: 'إغلاق الوكلاء',

@@ -213,8 +213,10 @@ describe('SkillsView toolset management', () => {
       )
     })
 
-    // The selector renders on the Skills tab too (Capabilities-wide).
-    const trigger = await screen.findByRole('combobox')
+    // The selector renders on the Skills tab too (Capabilities-wide). The bot
+    // assignment matrix adds a SECOND combobox (its column filter) — wait for
+    // both, then target the scope selector, which comes first in the DOM.
+    const trigger = (await screen.findAllByRole('combobox'))[0]
     await act(async () => {
       fireEvent.click(trigger)
     })
@@ -427,5 +429,104 @@ describe('SkillsView toolset management', () => {
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
+  })
+})
+
+describe('SkillsView bot assignment matrix', () => {
+  // Two profiles → the scope selector AND the bot matrix both appear; the
+  // matrix reads every column's enabled-skills through the SAME scoped
+  // getSkills RPC the scope selector uses, keyed per profile by args.
+  function skill(name: string, enabled: boolean) {
+    return { name, description: `${name} desc`, category: 'research', enabled, usage: 0, provenance: 'bundled' }
+  }
+
+  function mockTwoProfiles() {
+    Element.prototype.scrollIntoView = vi.fn()
+    getProfiles.mockResolvedValue({
+      profiles: [
+        { name: 'default', is_default: true },
+        { name: 'researcher', is_default: false }
+      ]
+    })
+    // The current scope's list vs. researcher's — different assignments on
+    // purpose so chips must read the RIGHT profile's data.
+    getSkills.mockImplementation((profile?: null | string) =>
+      profile === 'researcher'
+        ? Promise.resolve([skill('forge', true)])
+        : Promise.resolve([skill('web-research', true), skill('forge', false)])
+    )
+  }
+
+  async function renderSkillsTab() {
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+  }
+
+  it('renders one chip per bot per skill from each profile’s scoped list', async () => {
+    mockTwoProfiles()
+    await renderSkillsTab()
+
+    // web-research: enabled here, absent for researcher → off-chip / on-chip.
+    expect(await screen.findByRole('button', { name: 'Turn web-research off for Hermes (default)' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Turn web-research on for researcher' })).toBeTruthy()
+    // forge: disabled here, enabled for researcher.
+    expect(screen.getByRole('button', { name: 'Turn forge off for researcher' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Turn forge on for Hermes (default)' })).toBeTruthy()
+  })
+
+  it('clicking a chip toggles that skill for THAT profile via the scoped toggle RPC', async () => {
+    mockTwoProfiles()
+    setSkillEnabled.mockResolvedValue({ ok: true, name: 'web-research', enabled: true })
+
+    await renderSkillsTab()
+
+    const chip = await screen.findByRole('button', { name: 'Turn web-research on for researcher' })
+    await act(async () => {
+      fireEvent.click(chip)
+    })
+
+    // Same endpoint/args shape the row switch uses — only the profile differs.
+    await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', true, 'researcher'))
+  })
+
+  it('the bot filter narrows the matrix columns to the picked profile', async () => {
+    mockTwoProfiles()
+    await renderSkillsTab()
+
+    await screen.findByRole('button', { name: 'Turn web-research off for Hermes (default)' })
+
+    const filter = screen.getByRole('combobox', { name: 'Filter by bot' })
+    await act(async () => {
+      fireEvent.click(filter)
+    })
+    const option = await screen.findByRole('option', { name: 'researcher' })
+    await act(async () => {
+      fireEvent.click(option)
+    })
+
+    // Only researcher columns remain; the default-profile chips are gone...
+    expect(screen.queryByRole('button', { name: /for Hermes \(default\)$/ })).toBeNull()
+    // ...and the researcher chips survive untouched.
+    expect(screen.getByRole('button', { name: 'Turn web-research on for researcher' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Turn forge off for researcher' })).toBeTruthy()
+  })
+
+  it('single-profile users get no matrix UI at all', async () => {
+    // beforeEach default: exactly one profile → feature silently absent.
+    getSkills.mockResolvedValue([skill('web-research', true)])
+
+    await renderSkillsTab()
+
+    expect(await screen.findByRole('switch', { name: 'web-research' })).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: 'Filter by bot' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /for (Hermes \(default\)|researcher)/ })).toBeNull()
   })
 })

@@ -1115,6 +1115,12 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    // Bot assignment matrix (#88973): per-row chips showing which bots have
+    // each skill enabled. Absent entirely for single-profile users.
+    botFilterLabel: string
+    botFilterAllBots: string
+    botAssignmentPending: string
+    botAssignmentToggle: (skill: string, bot: string, enabled: boolean) => string
     hub: {
       searchPlaceholder: string
       search: string

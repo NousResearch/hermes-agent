@@ -1465,6 +1465,10 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    botFilterLabel: '按 Bot 筛选',
+    botFilterAllBots: '全部 Bot',
+    botAssignmentPending: '该 Bot 的技能尚未加载',
+    botAssignmentToggle: (skill, bot, enabled) => `在 ${bot} 上${enabled ? '开启' : '关闭'} ${skill}`,
     hub: {
       searchPlaceholder: '搜索技能中心',
       search: '搜索',

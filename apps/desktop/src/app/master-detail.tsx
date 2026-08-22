@@ -419,6 +419,11 @@ export function ListStripButton({
 
 interface CapRowProps {
   active: boolean
+  /** Optional inline controls between the row button and the switch — the
+   *  Skills page's per-bot assignment chips. Rendered as SIBLINGS of the
+   *  select button, so a click on them never selects the row and interactive
+   *  elements are never nested inside it. */
+  aside?: ReactNode
   busy?: boolean
   enabled: boolean
   meta?: ReactNode
@@ -436,6 +441,7 @@ interface CapRowProps {
 // selecting first. Off rows dim; the switch itself dims when off.
 export function CapRow({
   active,
+  aside,
   busy,
   enabled,
   meta,
@@ -484,6 +490,7 @@ export function CapRow({
           </span>
         )}
       </RowButton>
+      {aside != null && <div className="mr-0.5 flex shrink-0 items-center gap-1">{aside}</div>}
       <Switch
         aria-label={toggleLabel}
         checked={enabled}

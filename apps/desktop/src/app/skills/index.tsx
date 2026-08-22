@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -32,6 +32,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -61,6 +62,7 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { buildSkillBotMatrix, scopeFromOptionValue, skillBotColumn, type SkillBotColumn } from './bot-matrix'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
@@ -332,6 +334,9 @@ export function SkillsView({
   const [bulkBusy, setBulkBusy] = useState(false)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
   const [selectedToolset, setSelectedToolset] = useState<string | null>(null)
+  // Bot assignment matrix column filter: 'all' or one SkillBotColumn.id.
+  // Purely this view's presentation — reset on scope/profile switches below.
+  const [botFilter, setBotFilter] = useState<string>('all')
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -394,6 +399,7 @@ export function SkillsView({
     toolCallsEpoch.current += 1
     setToolCalls(null)
     setScopeOverride(null)
+    setBotFilter('all')
   })
 
   const visibleSkills = useMemo(
@@ -471,6 +477,27 @@ export function SkillsView({
         current => current?.map(row => (row.name === skill.name ? { ...row, enabled: !enabled } : row)) ?? current
       )
       notifyError(err, t.skills.failedToUpdate(skill.name))
+    }
+  }
+
+  // The same toggle for ONE bot column of a row: optimistic write into THAT
+  // profile's cached list (shared with any scope-selector pick), rolled back
+  // visibly on failure with an authoritative refresh as the last word.
+  async function handleToggleBotSkill(bot: SkillBotColumn, skillName: string, enabled: boolean) {
+    const botKey = [...SKILLS_QUERY_KEY, bot.id]
+
+    const writeScoped = (fn: (cur: SkillInfo[] | undefined) => SkillInfo[] | undefined) =>
+      queryClient.setQueryData<SkillInfo[]>(botKey, prev => fn(prev) ?? prev)
+
+    writeScoped(cur => cur?.map(row => (row.name === skillName ? { ...row, enabled } : row)) ?? cur)
+
+    try {
+      await setSkillEnabled(skillName, enabled, bot.scope)
+      invalidateSlashCompletions()
+    } catch (err) {
+      writeScoped(cur => cur?.map(row => (row.name === skillName ? { ...row, enabled: !enabled } : row)) ?? cur)
+      notifyError(err, t.skills.failedToUpdate(skillName))
+      void queryClient.invalidateQueries({ queryKey: botKey })
     }
   }
 
@@ -681,12 +708,11 @@ export function SkillsView({
   // desktops (the roster path) and bare profile names otherwise, so one
   // handler decodes both.
   const changeScope = (value: string) => {
-    const sep = value.indexOf('::')
-
-    // Roster picks (`connectionId::profile`) stay objects — a `local::` pick
-    // must PIN the local pool even while a remote gateway is active. Legacy
-    // bare-name picks stay strings so cache keys and routing are unchanged.
-    const next: ProfileScope = sep >= 0 ? { connectionId: value.slice(0, sep), profile: value.slice(sep + 2) } : value
+    // Roster picks (`connectionId::profile`) decode to objects — a `local::`
+    // pick must PIN the local pool even while a remote gateway is active.
+    // Legacy bare-name picks stay strings so cache keys and routing are
+    // unchanged. Same decoder the bot matrix uses (one resolver per policy).
+    const next = scopeFromOptionValue(value)
 
     if (profileScopeKey(next) === scopeKey) {
       return
@@ -699,6 +725,7 @@ export function SkillsView({
     setSkillEditor(null)
     setSkillDraft('')
     setArchiveTarget(null)
+    setBotFilter('all')
   }
 
   // Scope-selector rows. Multi-connection desktops list every reachable
@@ -724,6 +751,63 @@ export function SkillsView({
       value: p.name
     }))
   }, [multiConnection, profilesData, rosterData])
+
+  // ── Bot assignment matrix (#88973) ──────────────────────────────────────
+  // An inverted view over the existing per-profile skill management: every
+  // configurable (connection, profile) scope gets one clickable chip on each
+  // skill row showing whether THAT bot has the skill enabled. Reads reuse the
+  // scoped GET /api/skills and writes the scoped PUT /api/skills/toggle —
+  // nothing new backend-side. Silently absent with <2 profiles so
+  // single-profile users see no extra chrome, and in pinned/embedded views
+  // (Bot Mode) where a matrix of other bots has no meaning.
+  const showBotMatrix = !fixedProfile && mode === 'skills' && scopeOptions.length > 1
+
+  const botColumns = useMemo<SkillBotColumn[]>(
+    () => (showBotMatrix ? scopeOptions.map(option => skillBotColumn(option.value, option.label)) : []),
+    [showBotMatrix, scopeOptions]
+  )
+
+  // Batched lazy read: one scoped list per bot column, cached under that
+  // profile's normal Capabilities key — deduped with any scope-selector pick,
+  // invalidated by the same SKILLS_QUERY_KEY prefix on refresh/toggles, and
+  // staleTime-gated so bouncing tabs/pages doesn't re-run every profile's
+  // full-list scan.
+  const botQueries = useQueries({
+    queries: botColumns.map(bot => ({
+      queryKey: [...SKILLS_QUERY_KEY, bot.id],
+      queryFn: () => getSkills(bot.scope),
+      enabled: showBotMatrix,
+      staleTime: 60_000
+    }))
+  })
+
+  // Which columns the matrix shows: all bots or exactly one. A scope change
+  // that removes the filtered bot resets to "all" (handlers above).
+  const shownBots = useMemo(
+    () => (botFilter === 'all' ? botColumns : botColumns.filter(bot => bot.id === botFilter)),
+    [botColumns, botFilter]
+  )
+
+  // Bot id -> that profile's enabled-skill names. Rebuilt when a column lands;
+  // cheap (a Set over an already-cached list), so no identity gymnastics here.
+  const botEnabledSets = useMemo(() => {
+    const sets = new Map<string, Set<string>>()
+
+    botColumns.forEach((bot, i) => {
+      const list = botQueries[i]?.data
+
+      if (list) {
+        sets.set(bot.id, new Set(list.filter(skill => skill.enabled).map(skill => skill.name)))
+      }
+    })
+
+    return sets
+  }, [botColumns, botQueries])
+
+  const botMatrix = useMemo(
+    () => buildSkillBotMatrix((skills ?? []).map(s => s.name), shownBots, botEnabledSets),
+    [botEnabledSets, shownBots, skills]
+  )
 
   // The selector's current value must match one option's value exactly. On the
   // roster path an ambient (non-override) scope is the active gateway's
@@ -822,7 +906,29 @@ export function SkillsView({
                   <ListColumn
                     header={
                       <ListStrip
-                        left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                        left={
+                          <>
+                            {sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                            {/* Bot filter: All bots | one profile. Narrows the
+                                matrix columns shown on every row; hidden when
+                                the matrix itself is (single profile). */}
+                            {showBotMatrix && (
+                              <Select onValueChange={setBotFilter} value={botFilter}>
+                                <SelectTrigger aria-label={t.skills.botFilterLabel} className="h-6 w-32 text-[0.68rem]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">{t.skills.botFilterAllBots}</SelectItem>
+                                  {botColumns.map(bot => (
+                                    <SelectItem key={bot.id} value={bot.id}>
+                                      {bot.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </>
+                        }
                         right={
                           <ListStripMenu
                             items={[
@@ -842,6 +948,19 @@ export function SkillsView({
                     {visibleSkills.map(skill => (
                       <CapRow
                         active={activeSkill?.name === skill.name}
+                        aside={
+                          showBotMatrix
+                            ? shownBots.map(bot => (
+                                <BotChip
+                                  bot={bot}
+                                  key={bot.id}
+                                  onToggle={next => void handleToggleBotSkill(bot, skill.name, next)}
+                                  skillName={skill.name}
+                                  state={botMatrix.get(skill.name)?.get(bot.id) ?? null}
+                                />
+                              ))
+                            : undefined
+                        }
                         busy={bulkBusy}
                         enabled={skill.enabled}
                         key={skill.name}
@@ -964,6 +1083,48 @@ export function SkillsView({
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.
 SkillsView.supportsFixedConnection = true as const
+
+// One bot cell of a skill row: a compact dot+name chip. Clicking flips THAT
+// skill for THAT profile through the same scoped toggle RPC as the row switch.
+// A dimmed chip means that bot's list hasn't landed yet — reads stay honest by
+// disabling instead of toggling against a guess; Refresh re-runs them.
+function BotChip({
+  bot,
+  onToggle,
+  skillName,
+  state
+}: {
+  bot: SkillBotColumn
+  onToggle: (next: boolean) => void
+  skillName: string
+  state: boolean | null
+}) {
+  const { t } = useI18n()
+  const next = !(state ?? false)
+
+  return (
+    <button
+      aria-label={t.skills.botAssignmentToggle(skillName, bot.label, next)}
+      className={cn(
+        'flex min-w-0 cursor-pointer items-center gap-1 rounded-full border border-(--ui-stroke-tertiary) px-1.5 py-px text-[0.6rem] leading-none text-(--ui-text-secondary) transition-colors hover:text-foreground',
+        state === null && 'cursor-default opacity-50'
+      )}
+      disabled={state === null}
+      onClick={() => onToggle(next)}
+      title={state === null ? t.skills.botAssignmentPending : undefined}
+      type="button"
+    >
+      <span
+        aria-hidden
+        className={cn(
+          'size-1.5 shrink-0 rounded-full',
+          state === null ? 'bg-muted-foreground/40' : state ? 'bg-emerald-500' : 'border border-current opacity-60'
+        )}
+      />
+      <span className="max-w-[7ch] truncate">{bot.label}</span>
+    </button>
+  )
+}
 
 // Shared inspector header — mirrors Messaging's PlatformDetail so Skills and
 // Tools share one title/description block and tab switches don't jump.

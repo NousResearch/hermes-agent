@@ -1142,7 +1142,11 @@ export const zhHant = defineLocale({
     edit: '編輯',
     archive: '封存',
     skillArchivedTitle: '技能已封存',
-    skillArchivedMessage: '可透過 hermes curator restore 還原。'
+    skillArchivedMessage: '可透過 hermes curator restore 還原。',
+    botFilterLabel: '依 Bot 篩選',
+    botFilterAllBots: '全部 Bot',
+    botAssignmentPending: '該 Bot 的技能尚未載入',
+    botAssignmentToggle: (skill, bot, enabled) => `在 ${bot} 上${enabled ? '開啟' : '關閉'} ${skill}`,
   },
 
   starmap: {

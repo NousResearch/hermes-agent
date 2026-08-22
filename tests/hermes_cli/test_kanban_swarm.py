@@ -109,6 +109,18 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
 
         hooks: list[tuple[str, bool]] = []
         monkeypatch.setattr(ks, "_activate_root_inline", original_activate)
+        # A real subscriber must exist for the generic observer to do any work:
+        # write_txn takes the zero-subscriber fast path on a has_hook probe, so
+        # patching _fire_kanban_lifecycle_hook alone only observes dispatches,
+        # it does not cause them. The patched fire function below still stands
+        # in for delivery — this registration only makes the hook *consumed*.
+        from hermes_cli.plugins import get_plugin_manager
+
+        mgr = get_plugin_manager()
+        monkeypatch.setitem(mgr._hooks, "kanban_task_event", [lambda **_kw: None])
+        monkeypatch.setattr(
+            "hermes_cli.plugins._plugin_manager", mgr, raising=False
+        )
         monkeypatch.setattr(
             kb,
             "_fire_kanban_lifecycle_hook",
@@ -123,7 +135,16 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
             verifier_assignee="reviewer",
             synthesizer_assignee="writer",
         )
-        assert hooks == [("kanban_task_completed", False)]
+        # The generic ``kanban_task_event`` dispatches are additive; the legacy
+        # completion hook must still fire exactly once, last, and every hook --
+        # legacy or additive -- only after the outer transaction has closed.
+        events = [event for event, _ in hooks]
+        assert events.count("kanban_task_completed") == 1
+        assert hooks[-1] == ("kanban_task_completed", False)
+        additive = [entry for entry in hooks if entry[0] == "kanban_task_event"]
+        assert additive, "expected generic kanban_task_event dispatches"
+        assert all(in_transaction is False for _event, in_transaction in additive)
+        assert set(events) == {"kanban_task_event", "kanban_task_completed"}
     finally:
         reader.close()
         writer.close()

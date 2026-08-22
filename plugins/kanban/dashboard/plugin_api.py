@@ -1007,15 +1007,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     "UPDATE tasks SET priority = ? WHERE id = ?",
                     (int(payload.priority), task_id),
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
+                kanban_db._append_event(
+                    conn, task_id, "reprioritized",
+                    {"priority": int(payload.priority)},
                 )
-            # Mutation-boundary observer (RFC #58548): this direct-SQL write
-            # bypasses every kanban_db mutator, so report it here — after
-            # the txn commits.
+            # Mutation-boundary observer (RFC #58548). The *task-row* UPDATE
+            # here is direct SQL and goes through no kanban_db mutator, so
+            # no mutator reports it for us — hence this explicit call, after
+            # the txn commits. (The task_events row is a different story: it
+            # is appended via kanban_db._append_event, so the generic per-row
+            # observer already sees it without any help from here.)
             kanban_db.notify_task_updated(
                 conn, task_id, ("priority",), board=board,
             )
@@ -1036,11 +1037,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 conn.execute(
                     f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
-                )
+                kanban_db._append_event(conn, task_id, "edited")
             # Mutation-boundary observer (RFC #58548), post-commit. Field
             # names only — values never leave the DB via this payload.
             kanban_db.notify_task_updated(
@@ -1198,20 +1195,19 @@ def _set_status_direct(
                 summary=f"status changed to {effective_status} (dashboard/direct)",
             )
             terminations.append((prev["worker_pid"], prev["claim_lock"]))
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-            "VALUES (?, ?, 'status', ?, ?)",
-            (
-                task_id,
-                run_id,
-                json.dumps(
-                    {
-                        "status": effective_status,
-                        "requested_status": new_status,
-                    }
-                ),
-                int(time.time()),
-            ),
+        kanban_db._append_event(
+            conn,
+            task_id,
+            "status",
+            {
+                "status": effective_status,
+                "requested_status": new_status,
+            },
+            run_id=run_id,
+            # The guarded UPDATE above already returned early unless it matched
+            # exactly one row, so ``effective_status`` is the status this writer
+            # actually established — never the requested one.
+            status_to=effective_status,
         )
         if reopening_satisfied_parent:
             _invalidate_descendants_for_parent_reopen(
@@ -1409,15 +1405,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             "UPDATE tasks SET priority = ? WHERE id = ?",
                             (int(payload.priority), tid),
                         )
-                        conn.execute(
-                            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                            "VALUES (?, 'reprioritized', ?, ?)",
-                            (tid, json.dumps({"priority": int(payload.priority)}),
-                             int(time.time())),
+                        kanban_db._append_event(
+                            conn, tid, "reprioritized",
+                            {"priority": int(payload.priority)},
                         )
                     # Mutation-boundary observer (RFC #58548): the bulk
-                    # editor writes with direct SQL too — report each task's
-                    # committed write.
+                    # editor's task-row UPDATE is direct SQL too, so report
+                    # each task's committed write here (its task_events row,
+                    # like the single-task editor's, reaches the generic
+                    # observer through _append_event).
                     kanban_db.notify_task_updated(
                         conn, tid, ("priority",), board=board,
                     )

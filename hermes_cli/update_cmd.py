@@ -2906,6 +2906,51 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
 
+def _python_manifests_digest() -> str | None:
+    """Combined sha256 over uv.lock and pyproject.toml."""
+    lock_file = _m().PROJECT_ROOT / "uv.lock"
+    pyproject = _m().PROJECT_ROOT / "pyproject.toml"
+    if not lock_file.exists() and not pyproject.exists():
+        return None
+    h = hashlib.sha256()
+    for p in (pyproject, lock_file):
+        if p.exists():
+            h.update(p.name.encode())
+            try:
+                h.update(p.read_bytes())
+            except OSError:
+                h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _python_lockfile_changed(hermes_root: Path | None = None) -> bool:
+    current = _python_manifests_digest()
+    if current is None:
+        return False
+    try:
+        root = hermes_root or get_hermes_home()
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = root / f".python_lock_hash_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return False
+
+
+def _record_python_lockfile_hash(hermes_root: Path | None = None) -> None:
+    digest = _python_manifests_digest()
+    if digest is None:
+        return
+    try:
+        root = hermes_root or get_hermes_home()
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = root / f".python_lock_hash_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write python lockfile hash cache")
+
+
 def _repair_node_deps_on_current_checkout(print_completion) -> None:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -3410,11 +3455,11 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal the platform launchers exposed on PATH.
+    r"""Self-heal the platform launchers exposed on PATH.
 
     On Windows, restore missing ``hermes.exe`` / ``hermes-acp.exe`` copies in
-    the dedicated ``<install>\\bin`` directory.  Existing files are not
-    overwritten because ``bin\\hermes.exe`` may be the currently running
+    the dedicated ``<install>\bin`` directory.  Existing files are not
+    overwritten because ``bin\hermes.exe`` may be the currently running
     update launcher.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
@@ -6101,6 +6146,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # otherwise "Already up to date!" gaslights the user while their
             # install stays bricked.
             healthy, detail = _venv_core_imports_healthy()
+            python_lock_changed = _python_lockfile_changed()
             # The Windows shim hand-off spawns this child precisely to run a
             # sync its parent could not. The parent already pulled, so the
             # checkout is current BY DESIGN and venv health is not the
@@ -6114,7 +6160,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
-            if handed_off_sync or not healthy:
+            elif python_lock_changed:
+                print("→ Python dependency lockfile changed; updating dependencies...")
+                print("→ Repairing Python dependencies...")
+            if handed_off_sync or not healthy or python_lock_changed:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
                 _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
@@ -6165,6 +6214,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         [sys.executable, "-m", "pip"],
                     )
                 _m()._clear_update_incomplete_marker()
+                _record_python_lockfile_hash()
                 healthy_after, detail_after = _venv_core_imports_healthy()
                 if healthy_after:
                     print("✓ Dependencies repaired!")

@@ -9449,6 +9449,29 @@ def _install_python_dependencies_with_optional_fallback(
     """
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
+    uv_bin = (
+        install_cmd_prefix[0]
+        if install_cmd_prefix and Path(install_cmd_prefix[0]).stem == "uv"
+        else None
+    )
+    lock_file = PROJECT_ROOT / "uv.lock"
+    if uv_bin and lock_file.exists() and group != "termux-all":
+        target_venv = (env or {}).get("VIRTUAL_ENV") or str(PROJECT_ROOT / "venv")
+        sync_env = {**(env or os.environ), "UV_PROJECT_ENVIRONMENT": target_venv}
+        try:
+            _run_quarantined_install(
+                [uv_bin, "sync", "--extra", group, "--locked"],
+                env=sync_env,
+                scripts_dir=scripts_dir,
+            )
+            _verify_console_scripts_installed(install_cmd_prefix, env=env)
+            return
+        except subprocess.CalledProcessError:
+            logger.debug(
+                "uv sync --extra %s --locked failed, falling back to uv pip install",
+                group,
+            )
+
     def _install(args: list[str]) -> None:
         _run_quarantined_install(
             install_cmd_prefix + args, env=env, scripts_dir=scripts_dir

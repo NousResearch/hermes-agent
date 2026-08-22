@@ -57,3 +57,7 @@ optional_env:
     description: "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
     prompt: "Credentials file path (or empty)"
     password: false
+  - name: BUZZ_THREAD_REPLIES
+    description: "Thread replies under incoming messages (true/false, default: true)"
+    prompt: "Thread replies? (true/false)"
+    password: false

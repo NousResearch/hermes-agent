@@ -1071,7 +1071,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
-from tools.environments.base import EnvironmentConnectionError
+from tools.environments.base import EnvironmentConnectionError, normalize_docker_host_cwd
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
@@ -1652,7 +1652,7 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        candidate = normalize_docker_host_cwd(docker_cwd_source)
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))

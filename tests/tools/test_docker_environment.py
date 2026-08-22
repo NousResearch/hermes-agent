@@ -126,6 +126,28 @@ def test_auto_mount_skips_host_home_directory(monkeypatch, tmp_path, home_env):
     assert "/workspace:rw,exec,size=10g" in run_args_str
 
 
+def test_auto_mount_preserves_posix_host_cwd(monkeypatch):
+    posix_cwd = "/Users/alice/project"
+    real_isdir = docker_env.os.path.isdir
+
+    def _isdir(path):
+        return path == posix_cwd or real_isdir(path)
+
+    monkeypatch.setattr(docker_env.os.path, "isdir", _isdir)
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=posix_cwd,
+        auto_mount_cwd=True,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    assert f"{posix_cwd}:/workspace" in " ".join(run_calls[0][0])
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.

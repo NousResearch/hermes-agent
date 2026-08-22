@@ -22,6 +22,7 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
+    normalize_docker_host_cwd,
 )
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -987,7 +988,7 @@ class DockerEnvironment(BaseEnvironment):
             else:
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        host_cwd_abs = normalize_docker_host_cwd(host_cwd) if host_cwd else ""
         host_cwd_is_home = bool(host_cwd_abs) and _is_user_home_path(host_cwd_abs)
         bind_host_cwd = (
             auto_mount_cwd

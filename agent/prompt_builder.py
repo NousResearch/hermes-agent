@@ -1830,6 +1830,7 @@ def build_skills_system_prompt(
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
     skills_dir_override: "Path | None" = None,
+    platform: str | None = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1850,6 +1851,10 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``platform`` explicitly scopes per-platform disabled-skill filtering. When
+    omitted, the active session/environment platform is used for backward
+    compatibility with direct callers.
     """
     # Home resolution is EXPLICIT when a caller passes skills_dir_override
     # (the agent knows its own profile home from its session_db path). This
@@ -1882,6 +1887,7 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
+            platform=platform,
             project_dirs=project_dirs,
         )
     finally:
@@ -1895,11 +1901,13 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
+    platform: str | None = None,
     project_dirs: "list[Path] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
-    _platform_hint = _current_session_platform_hint()
+    _platform_hint = platform or _current_session_platform_hint()
+    _platform_hint = _platform_hint.strip().lower() if _platform_hint else ""
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
     cache_key = (

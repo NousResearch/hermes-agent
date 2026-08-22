@@ -89,6 +89,8 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
         "bin": "bash-language-server",
     },
     "intelephense": {"strategy": "npm", "pkg": "intelephense", "bin": "intelephense"},
+    # Laravel Blade — manual (composer global require laravel/lsp)
+    "laravel-lsp": {"strategy": "manual", "pkg": "", "bin": "laravel-lsp"},
     "dockerfile-language-server-nodejs": {
         "strategy": "npm",
         "pkg": "dockerfile-language-server-nodejs",

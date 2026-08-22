@@ -62,6 +62,7 @@ agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 
 | YAML | `yaml-language-server` | npm |
 | Lua | `lua-language-server` | 手动（GitHub releases） |
 | PHP | `intelephense` | npm |
+| Laravel Blade | `laravel-lsp` | 手动（composer） |
 | OCaml | `ocaml-lsp` | 手动（opam） |
 | Dockerfile | `dockerfile-language-server-nodejs` | npm |
 | Terraform | `terraform-ls` | 手动 |

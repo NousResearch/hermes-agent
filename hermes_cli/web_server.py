@@ -3428,6 +3428,107 @@ def _collect_profile_gateway_topology_cached() -> Dict[str, Any]:
         return data
 
 
+_CONFIGURED_PLATFORM_CACHE: Dict[str, Dict[str, Any]] = {}
+_CONFIGURED_PLATFORM_CACHE_LOCK = threading.Lock()
+_CONFIGURED_PLATFORM_CACHE_TTL = 30.0
+_CONFIGURED_PLATFORM_CACHE_MAX_KEYS = 32
+_CONFIGURED_PLATFORM_CACHE_WAIT_TIMEOUT = 30.0
+# Longest a registered flight may keep new callers queued behind it.  Past this
+# age the next caller detaches it and builds a replacement instead of parking on
+# a load that may never finish.
+_CONFIGURED_PLATFORM_CACHE_FLIGHT_MAX_AGE = 30.0
+# Hard ceiling on how many ``load_gateway_config()`` calls may be running at
+# once for one profile, counting abandoned ones whose thread has not returned.
+# Callers run in Starlette's shared worker pool and a wedged discovery cannot be
+# cancelled, so without this a fingerprint that churns once per poll would let
+# every poll spawn its own unkillable builder and drain the pool.  Two is the
+# minimum that still recovers from one permanently wedged builder: the survivor
+# permit is recycled by every subsequent build.
+_CONFIGURED_PLATFORM_CACHE_MAX_BUILDERS = 2
+# The per-profile ceiling alone is not a bound on the pool: profile names come
+# from the request (``/api/status?profile=...``), so an unbounded number of
+# profiles could each hold their own permits.  This is the real backstop -- a
+# process-wide ceiling on concurrent discoveries across every profile.  It also
+# transitively bounds the in-flight, builder, and generation bookkeeping, none
+# of which is constrained by ``_CONFIGURED_PLATFORM_CACHE_MAX_KEYS``.  Kept well
+# under Starlette's default 40-thread worker pool so wedged loads can never
+# starve unrelated endpoints.
+_CONFIGURED_PLATFORM_CACHE_MAX_TOTAL_BUILDERS = 8
+# Ceiling on *total* worker-pool occupancy from this cache: builders plus
+# callers parked on a flight.  Bounding builders alone is not enough -- a single
+# hung load below the builder ceiling can still absorb unlimited waiters, each
+# holding a worker thread for up to ``_CONFIGURED_PLATFORM_CACHE_WAIT_TIMEOUT``.
+# Comfortably above the builder ceiling so waiters can never starve the builders
+# that actually make progress, and well under Starlette's default 40-thread
+# pool so unrelated endpoints keep their headroom.
+_CONFIGURED_PLATFORM_CACHE_MAX_OCCUPANCY = 16
+# Callers currently parked on a flight, process-wide.  Guarded by the cache
+# lock; released on every exit path including BaseException.
+_CONFIGURED_PLATFORM_CACHE_WAITERS = 0
+# At most one flight per profile is ever registered, so this stays bounded even
+# when the source fingerprint churns while a load is stuck.
+_CONFIGURED_PLATFORM_CACHE_IN_FLIGHT: Dict[str, Dict[str, Any]] = {}
+# Live builder threads per profile (registered *and* abandoned-but-running).
+# Entries are dropped at zero, so this is bounded by the worker pool.
+_CONFIGURED_PLATFORM_CACHE_BUILDERS: Dict[str, int] = {}
+_CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION: Dict[str, int] = {}
+_CONFIGURED_PLATFORM_CACHE_GENERATION = 0
+
+
+def _configured_platform_total_builders() -> int:
+    """Live discovery threads across every profile.  Caller holds the cache lock.
+
+    Derived rather than tracked so it cannot drift out of step with the
+    per-profile counts that gate and release the permits.  ``_BUILDERS`` never
+    holds more entries than the process-wide ceiling, so this stays cheap.
+    """
+    return sum(_CONFIGURED_PLATFORM_CACHE_BUILDERS.values())
+
+
+def _configured_platform_occupancy() -> int:
+    """Worker-pool threads this cache is holding.  Caller holds the cache lock.
+
+    A parked waiter costs the pool exactly what a builder does, so both count
+    against ``_CONFIGURED_PLATFORM_CACHE_MAX_OCCUPANCY``.
+    """
+    return _configured_platform_total_builders() + _CONFIGURED_PLATFORM_CACHE_WAITERS
+
+
+def _abandon_configured_platform_flight(key: str, flight: Dict[str, Any]) -> None:
+    """Detach a superseded or stalled flight.  Caller must hold the cache lock.
+
+    The flight's thread may still be running and cannot be cancelled, so it is
+    only unregistered: bookkeeping stays at one entry per profile, the next
+    caller is free to build a replacement, and anyone already parked on the
+    event wakes up to retry rather than waiting out the full timeout.  The
+    generation high-water mark is untouched, so a late finisher can still
+    publish if nothing newer superseded it.
+    """
+    flight["abandoned"] = True
+    if _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT.get(key) is flight:
+        del _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT[key]
+    flight["event"].set()
+
+
+def _configured_platform_source_version(home: Path) -> tuple:
+    """Cheap version for every on-disk input that can change platform status."""
+    versions = []
+    for path in (
+        home / "config.yaml",
+        home / "gateway.json",
+        home / ".env",
+        home / "plugins",
+    ):
+        try:
+            stat_result = path.stat()
+            versions.append(
+                (str(path), stat_result.st_ino, stat_result.st_mtime_ns, stat_result.st_size)
+            )
+        except OSError:
+            versions.append((str(path), None, None, None))
+    return tuple(versions)
+
+
 def _load_configured_gateway_platforms() -> set[str]:
     """Load connected platform names away from the asyncio event loop.
 
@@ -3435,11 +3536,253 @@ def _load_configured_gateway_platforms() -> set[str]:
     can take longer than Desktop's WebSocket connect timeout on Windows.  This
     helper is synchronous by design; ``get_status`` runs it in Starlette's
     worker pool so a concurrent ``/api/ws`` handshake can still complete.
+
+    ``/api/status`` is polled frequently and ``load_gateway_config()`` repeats
+    plugin discovery plus YAML parsing on every call. Cache the small derived
+    set per profile for a short window, and collapse same-profile concurrent
+    misses so polling tabs cannot duplicate the scan. Home config, credential,
+    and top-level plugin add/remove fingerprints invalidate immediately. The
+    30-second TTL bounds staleness for other inputs such as managed config,
+    process environment, registry data, and edits inside an existing plugin.
+    Different profiles never wait on one another's slow plugin discovery.
+    The loader identity is part of the entry so monkeypatched tests and runtime
+    reloads remain isolated.
+
+    A flight cannot be cancelled, so it is instead *abandoned*: a caller that
+    finds a flight built for a different fingerprint or loader, or one that has
+    outlived ``_CONFIGURED_PLATFORM_CACHE_FLIGHT_MAX_AGE``, unregisters it and
+    builds a replacement.  A caller that exhausts its own wait budget does the
+    same before giving up.  That keeps a single wedged ``load_gateway_config()``
+    from stalling every later poll for another full timeout, and keeps
+    ``_CONFIGURED_PLATFORM_CACHE_IN_FLIGHT`` at one entry per profile under
+    fingerprint churn.  An abandoned flight that finishes late still cannot
+    remove or overwrite its replacement, nor publish once a newer generation
+    exists.
+
+    Abandoning bounds the bookkeeping but not the threads, so replacing a
+    flight also requires a builder permit, gated at two levels: at most
+    ``_CONFIGURED_PLATFORM_CACHE_MAX_BUILDERS`` loads per profile, and at most
+    ``_CONFIGURED_PLATFORM_CACHE_MAX_TOTAL_BUILDERS`` across the whole process --
+    both counting abandoned loads whose thread has not returned.  The global
+    ceiling is the load-bearing one: profile names arrive from the request, so a
+    per-profile cap alone would let arbitrarily many profiles each wedge their
+    own quota and drain the shared worker pool.
+
+    Bounding builders alone still leaves the pool exposed, because a parked
+    caller costs a worker thread exactly as much as a running load does: one
+    hung flight, well below the builder ceiling, could otherwise absorb
+    unlimited waiters for ``_CONFIGURED_PLATFORM_CACHE_WAIT_TIMEOUT`` apiece.
+    So builders *and* waiters are counted together against
+    ``_CONFIGURED_PLATFORM_CACHE_MAX_OCCUPANCY``, and both are gated on it; the
+    waiter slot is claimed under the same lock that selects the flight, so the
+    ceiling cannot be overshot by callers racing between check and wait.
+
+    A caller without a permit therefore parks on a registered flight for its own
+    profile only while the process has spare capacity on both counts.  Once
+    either ceiling is reached, no new caller waits on any flight, matching or
+    superseded, and none spawns: it serves the profile's last known platform set
+    if there is one, and otherwise fails fast.  Threads already building or
+    parked are unaffected, and a waiter slot is released on every exit path --
+    success, timeout, abandonment, builder error, or ``BaseException``.
+
+    So N pollers across arbitrarily many profiles, under sustained fingerprint
+    churn and with every load wedged, produce at most
+    ``_CONFIGURED_PLATFORM_CACHE_MAX_TOTAL_BUILDERS`` stuck worker-pool threads,
+    not N.  Each of ``_CONFIGURED_PLATFORM_CACHE_IN_FLIGHT`` and
+    ``_CONFIGURED_PLATFORM_CACHE_BUILDERS`` is likewise capped at that many
+    entries, since neither outlives its builder, and
+    ``_CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION`` at that plus
+    ``_CONFIGURED_PLATFORM_CACHE_MAX_KEYS``, since a mark is retained only for a
+    cached profile or one with a live builder.
     """
+    global _CONFIGURED_PLATFORM_CACHE_GENERATION
+    global _CONFIGURED_PLATFORM_CACHE_WAITERS
+
     from gateway.config import load_gateway_config
 
-    gateway_config = load_gateway_config()
-    return {platform.value for platform in gateway_config.get_connected_platforms()}
+    home = Path(get_hermes_home())
+    key = str(home)
+    loader = load_gateway_config
+    wait_deadline = time.monotonic() + _CONFIGURED_PLATFORM_CACHE_WAIT_TIMEOUT
+    while True:
+        source_version = _configured_platform_source_version(home)
+        with _CONFIGURED_PLATFORM_CACHE_LOCK:
+            now = time.monotonic()
+            entry = _CONFIGURED_PLATFORM_CACHE.get(key)
+            if (
+                entry is not None
+                and entry["loader"] is loader
+                and entry["source_version"] == source_version
+                and now - entry["ts"] < _CONFIGURED_PLATFORM_CACHE_TTL
+            ):
+                return set(entry["platforms"])
+            flight = _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT.get(key)
+            superseded = flight is not None and (
+                flight["loader"] is not loader
+                or flight["source_version"] != source_version
+                or now - flight["started"] >= _CONFIGURED_PLATFORM_CACHE_FLIGHT_MAX_AGE
+            )
+            # Both checked for every path below, not just the build path:
+            # parking on a flight ties up a worker-pool thread exactly like
+            # running a load does.  Once either ceiling is reached, no new
+            # caller may build *or* wait on any flight, matching or superseded.
+            # Threads already building or parked are unaffected.
+            saturated_globally = (
+                _configured_platform_total_builders()
+                >= _CONFIGURED_PLATFORM_CACHE_MAX_TOTAL_BUILDERS
+            )
+            saturated_occupancy = (
+                _configured_platform_occupancy()
+                >= _CONFIGURED_PLATFORM_CACHE_MAX_OCCUPANCY
+            )
+            if flight is None or superseded:
+                builders = _CONFIGURED_PLATFORM_CACHE_BUILDERS.get(key, 0)
+                if (
+                    builders < _CONFIGURED_PLATFORM_CACHE_MAX_BUILDERS
+                    and not saturated_globally
+                    and not saturated_occupancy
+                ):
+                    if flight is not None:
+                        _abandon_configured_platform_flight(key, flight)
+                    _CONFIGURED_PLATFORM_CACHE_GENERATION += 1
+                    generation = _CONFIGURED_PLATFORM_CACHE_GENERATION
+                    flight = {
+                        "event": threading.Event(),
+                        "error": None,
+                        "abandoned": False,
+                        "generation": generation,
+                        "loader": loader,
+                        "source_version": source_version,
+                        "started": now,
+                    }
+                    _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT[key] = flight
+                    _CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION[key] = generation
+                    _CONFIGURED_PLATFORM_CACHE_BUILDERS[key] = builders + 1
+                    break
+            if saturated_occupancy or saturated_globally or flight is None:
+                # Nothing safe left to do without committing another worker
+                # thread: the process is at its occupancy or discovery ceiling,
+                # or this profile is saturated with no flight left to join.
+                # Serving the profile's last known platform set beats occupying
+                # a thread behind a load that may never finish.  A caller with
+                # no prior result at all fails fast rather than waiting for one.
+                if entry is not None and entry["loader"] is loader:
+                    return set(entry["platforms"])
+                if saturated_occupancy:
+                    scope = "process-wide occupancy"
+                elif saturated_globally:
+                    scope = "process-wide"
+                else:
+                    scope = "per-profile"
+                raise TimeoutError(
+                    "gateway platform configuration discovery is at the "
+                    f"{scope} limit"
+                )
+            # Otherwise the process has spare capacity, so parking is safe: this
+            # is either a matching flight to collapse onto, or a superseded one
+            # for a profile at its own limit.  Waiting costs no extra builder,
+            # and finishing it frees a permit to rebuild.  Claim the slot while
+            # still holding the lock, so the ceiling cannot be overshot by
+            # callers racing between the check and the wait.
+            _CONFIGURED_PLATFORM_CACHE_WAITERS += 1
+
+        # One wait budget for the whole call, so retries after a superseded
+        # flight cannot extend how long a worker-pool thread is tied up.
+        try:
+            remaining = wait_deadline - time.monotonic()
+            if remaining > 0:
+                flight["event"].wait(timeout=remaining)
+        finally:
+            with _CONFIGURED_PLATFORM_CACHE_LOCK:
+                # Single release point, reached on every exit: success, wait
+                # timeout, abandonment/retry, builder error, or BaseException.
+                _CONFIGURED_PLATFORM_CACHE_WAITERS -= 1
+                settled = flight["event"].is_set()
+                abandoned = flight["abandoned"]
+                error = flight["error"]
+                # Detach the flight only when the *flight* outlived a full wait
+                # budget, not merely because this caller joined late and ran out
+                # of its own.  Otherwise impatient pollers would keep tearing
+                # down a slow-but-healthy build and re-running the expensive
+                # discovery.
+                if (
+                    not settled
+                    and time.monotonic() - flight["started"]
+                    >= _CONFIGURED_PLATFORM_CACHE_WAIT_TIMEOUT
+                ):
+                    _abandon_configured_platform_flight(key, flight)
+        if not settled:
+            raise TimeoutError("gateway platform configuration load timed out")
+        if abandoned:
+            continue
+        if error is not None:
+            raise RuntimeError("gateway platform configuration load failed") from error
+
+    failure: BaseException | None = None
+    try:
+        gateway_config = loader()
+        platforms = frozenset(
+            platform.value for platform in gateway_config.get_connected_platforms()
+        )
+        loaded_at = time.monotonic()
+        publish_version = _configured_platform_source_version(home)
+
+        with _CONFIGURED_PLATFORM_CACHE_LOCK:
+            is_newest = (
+                _CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION.get(key)
+                == flight["generation"]
+            )
+            if publish_version == source_version and is_newest:
+                if (
+                    key not in _CONFIGURED_PLATFORM_CACHE
+                    and len(_CONFIGURED_PLATFORM_CACHE)
+                    >= _CONFIGURED_PLATFORM_CACHE_MAX_KEYS
+                ):
+                    oldest = min(
+                        _CONFIGURED_PLATFORM_CACHE,
+                        key=lambda cache_key: _CONFIGURED_PLATFORM_CACHE[cache_key]["ts"],
+                    )
+                    _CONFIGURED_PLATFORM_CACHE.pop(oldest, None)
+                    if (
+                        oldest not in _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT
+                        and oldest not in _CONFIGURED_PLATFORM_CACHE_BUILDERS
+                    ):
+                        _CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION.pop(oldest, None)
+                _CONFIGURED_PLATFORM_CACHE[key] = {
+                    "ts": loaded_at,
+                    "loader": loader,
+                    "source_version": source_version,
+                    "platforms": platforms,
+                    "generation": flight["generation"],
+                }
+        return set(platforms)
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        with _CONFIGURED_PLATFORM_CACHE_LOCK:
+            if failure is not None:
+                flight["error"] = failure
+            # Release the builder permit first: the generation-mark cleanup
+            # below must see this thread as gone.
+            builders = _CONFIGURED_PLATFORM_CACHE_BUILDERS.get(key, 1) - 1
+            if builders > 0:
+                _CONFIGURED_PLATFORM_CACHE_BUILDERS[key] = builders
+            else:
+                _CONFIGURED_PLATFORM_CACHE_BUILDERS.pop(key, None)
+            # Only ever retire our own registration: if this flight was
+            # abandoned, the slot now belongs to its replacement.
+            if _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT.get(key) is flight:
+                del _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT[key]
+            # Keep the high-water mark while any builder for the profile is
+            # still running, so a genuinely newest late finisher can publish.
+            if (
+                key not in _CONFIGURED_PLATFORM_CACHE
+                and key not in _CONFIGURED_PLATFORM_CACHE_IN_FLIGHT
+                and key not in _CONFIGURED_PLATFORM_CACHE_BUILDERS
+            ):
+                _CONFIGURED_PLATFORM_CACHE_LATEST_GENERATION.pop(key, None)
+            flight["event"].set()
 
 
 @app.get("/api/ssh/ownership")

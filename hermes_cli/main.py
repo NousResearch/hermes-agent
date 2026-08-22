@@ -2831,7 +2831,9 @@ def _launch_tui(
                 pass
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
-    # the user sees update output directly and gets the new version.
+    # the user sees update output directly and gets the new version. The
+    # internal pause flag keeps a dedicated terminal window open afterward so
+    # the result remains readable until the user dismisses it.
     # preserve_inherited=False ensures --tui and other flags are NOT carried
     # into the update subcommand.
     if code == 42:
@@ -2840,7 +2842,7 @@ def _launch_tui(
         print()
         print("⚕ Launching update...")
         print()
-        relaunch(["update"], preserve_inherited=False)
+        relaunch(["update", "--wait-for-keypress"], preserve_inherited=False)
 
     sys.exit(code)
 
@@ -10060,7 +10062,57 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"grew by {-saved_mb:.1f} MB"
 
 
-def cmd_update(args):
+def _read_single_key(stream) -> None:
+    """Read exactly one key from an interactive terminal without Enter."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.getwch()
+        return
+
+    import termios
+    import tty
+
+    fd = stream.fileno()
+    previous = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        stream.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+
+
+def _wait_for_update_keypress(*, stdin=None, stdout=None) -> None:
+    """Keep an interactive /update window open until the user dismisses it."""
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    try:
+        if not stdin.isatty():
+            return
+    except (AttributeError, OSError):
+        return
+
+    try:
+        stdout.write("\nUpdate process finished. Press any key to close this window...")
+        stdout.flush()
+    except (OSError, ValueError):
+        return
+
+    try:
+        _read_single_key(stdin)
+    except (EOFError, OSError, KeyboardInterrupt):
+        # If the terminal disappears while waiting, preserve the updater's
+        # original result rather than replacing it with a dismissal error.
+        pass
+    finally:
+        try:
+            stdout.write("\n")
+            stdout.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def _cmd_update_without_keypress_wait(args):
     """Update Hermes Agent to the latest version.
 
     Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
@@ -10182,6 +10234,19 @@ def cmd_update(args):
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)
+
+
+def cmd_update(args):
+    """Run the updater and optionally pause before a /update window closes."""
+    try:
+        return _cmd_update_without_keypress_wait(args)
+    finally:
+        if getattr(args, "wait_for_keypress", False):
+            try:
+                _wait_for_update_keypress()
+            except BaseException:
+                # This optional pause must never replace the updater's result.
+                pass
 
 
 def _coalesce_session_name_args(argv: list) -> list:

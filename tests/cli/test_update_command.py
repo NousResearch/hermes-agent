@@ -2,17 +2,17 @@
 
 Verifies that ``HermesCLI._handle_update_command`` correctly:
 - Refuses to run under a managed install (Homebrew, Docker, etc.)
-- Sets ``_pending_relaunch`` and returns ``True`` on confirmation
+- Relaunches the updater with a post-run keypress pause on confirmation
 - Cancels cleanly on a "no"-shaped answer or unrecognized input
 - Cancels cleanly when ``_prompt_text_input_modal`` returns None (timeout /
   modal dismissed)
 
 Also verifies that ``hermes_cli.main._launch_tui`` correctly handles exit
-code 42 (the TUI's signal to trigger an update) by calling
-``relaunch(["update"], preserve_inherited=False)`` from the Python wrapper
-side.  The companion Vitest (``ui-tui/src/__tests__/createSlashHandler.test.ts``)
-covers the TypeScript slash-handler that *emits* code 42; this file covers
-the Python wrapper branch that *acts on* it.
+code 42 (the TUI's signal to trigger an update) by relaunching the updater
+with the same pause behavior. The companion Vitest
+(``ui-tui/src/__tests__/createSlashHandler.test.ts``) covers the TypeScript
+slash-handler that *emits* code 42; this file covers the Python wrapper branch
+that *acts on* it.
 """
 
 from __future__ import annotations
@@ -95,13 +95,13 @@ def test_managed_install_refuses_and_does_not_set_pending_relaunch(capsys):
 @pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES", "1", "ok"])
 def test_affirmative_answer_sets_pending_relaunch_and_returns_true(answer, capsys):
     """Recognised affirmative answers ("y", "yes", "1", "ok") set
-    ``_pending_relaunch = ["update"]`` and return ``True`` so the caller
-    (process_command) can trigger the main-thread app-exit path."""
+    the paused update relaunch and return ``True`` so the caller can trigger
+    the main-thread app-exit path."""
     self_ = _make_self(modal_response=answer)
     with patch("hermes_cli.config.is_managed", return_value=False):
         result = _call(self_)
 
-    assert self_._pending_relaunch == ["update"]
+    assert self_._pending_relaunch == ["update", "--wait-for-keypress"]
     assert result is True
     assert "Launching update" in capsys.readouterr().out
 
@@ -148,3 +148,32 @@ def test_unrecognized_or_cancel_input_cancels(answer, capsys):
 
     assert self_._pending_relaunch is None
     assert not result
+
+
+def test_tui_update_relaunch_requests_keypress_pause(tmp_path, monkeypatch):
+    """Exit code 42 carries the pause flag into the updater process."""
+    from hermes_cli import config
+    from hermes_cli import main
+    from hermes_cli import relaunch as relaunch_module
+    from tools.environments import local
+
+    requested = []
+
+    def capture(args, **kwargs):
+        requested.append((args, kwargs))
+        raise RuntimeError("relaunch captured")
+
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(main, "_make_tui_argv", lambda *_args: (["node", "tui"], tmp_path))
+    monkeypatch.setattr(main, "_resolve_tui_heap_mb", lambda: 512)
+    monkeypatch.setattr(main.subprocess, "call", lambda *_args, **_kwargs: 42)
+    monkeypatch.setattr(local, "build_subprocess_env", lambda **_kwargs: {})
+    monkeypatch.setattr(config, "apply_terminal_config_to_env", lambda **_kwargs: None)
+    monkeypatch.setattr(relaunch_module, "relaunch", capture)
+
+    with pytest.raises(RuntimeError, match="relaunch captured"):
+        main._launch_tui()
+
+    assert requested == [
+        (["update", "--wait-for-keypress"], {"preserve_inherited": False})
+    ]

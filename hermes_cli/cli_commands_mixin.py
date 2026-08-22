@@ -3813,7 +3813,10 @@ class CLICommandsMixin:
         # skip terminal cleanup on POSIX (execvp replaces the process mid-TUI)
         # and only exit the worker thread on Windows (subprocess.run +
         # sys.exit inside a non-main thread does not exit the process).
-        self._pending_relaunch = ["update"]
+        # The internal flag keeps the update process open at completion so a
+        # terminal window launched for Hermes is not dismissed before the user
+        # can read the result. Direct `hermes update` calls remain unchanged.
+        self._pending_relaunch = ["update", "--wait-for-keypress"]
         return True
 
     def _handle_voice_command(self, command: str):

@@ -180,6 +180,22 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     assert str(linked_temp) not in nudge
 
 
+def test_nudge_never_requests_write_format_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"format": "prettier --write ."}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[str(tmp_path / "src" / "app.ts")],
+    )
+
+    assert nudge is not None
+    assert "pnpm run format" not in nudge
+    assert "No canonical test/lint/build command was detected" in nudge
 
 
 def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):

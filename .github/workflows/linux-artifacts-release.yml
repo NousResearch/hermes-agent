@@ -96,7 +96,9 @@ jobs:
 
       - name: Build AppImage + deb + rpm
         working-directory: apps/desktop
-        run: npm run dist:linux
+        # --publish never: electron-builder would otherwise demand GH_TOKEN
+        # to publish to GitHub Releases itself (we upload via the release job)
+        run: npm run dist:linux -- --publish never
 
       - name: Verify artifacts
         run: |
@@ -178,6 +180,8 @@ jobs:
 
       - name: Verify Flatpak
         run: |
+          flatpak install --user --noninteractive \
+            --bundle release/com.nousresearch.Hermes.flatpak
           flatpak run --command=sh com.nousresearch.Hermes -c '
             test -x /app/bin/hermes-desktop && echo "OK: Flatpak" || exit 1
           ' || exit 1

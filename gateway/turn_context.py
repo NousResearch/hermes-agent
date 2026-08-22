@@ -58,6 +58,7 @@ class TurnContext:
     # --- constants / cleanup bookkeeping ---------------------------------
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
+    _diagnostic_status_enabled: bool = True
     _cleanup_msg_ids: List[str] = field(default_factory=list)
 
     # --- progress threading metadata (assigned after construction, before

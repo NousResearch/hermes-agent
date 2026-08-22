@@ -838,11 +838,35 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+_RECOVERY_STATUS_RE = re.compile(
+    r"("
+    r"model returned empty after tool calls.{0,80}nudging to continue"
+    r"|thinking-only response.{0,80}prefilling to continue"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_recovery_status(event_type: str, text: str) -> bool:
+    """True for recovery-class statuses (empty-after-tools nudge, thinking prefill)."""
+    if str(event_type or "").strip().lower() == "recovery":
+        return True
+    return bool(_RECOVERY_STATUS_RE.search(text))
+
+
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    diagnostic_status: str = "all",
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
     surfaces should not receive transient auxiliary/compression chatter.
+    Recovery-class statuses are gated by ``display.diagnostic_status``
+    (default ``all``). Lifecycle and warning events still deliver.
     """
     text = str(message or "").strip()
     if not text:
@@ -851,6 +875,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    resolved_diagnostic = str(diagnostic_status or "all").strip().lower()
+    if (
+        _is_recovery_status(event_type, text)
+        and resolved_diagnostic in {"off", "false", "0", "no"}
+    ):
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -5317,6 +5347,7 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            diagnostic_status="all" if ctx._diagnostic_status_enabled else "off",
         )
         if prepared_message is None:
             logger.debug(
@@ -5840,6 +5871,11 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
+        # Always wire the callback. Recovery-class statuses (empty-after-tools
+        # nudge, thinking-only prefill) are filtered in
+        # ``_prepare_gateway_status_message`` when diagnostic_status is off;
+        # lifecycle and warning events including terminal-failure statuses
+        # still deliver.
         agent.status_callback = ctx._status_callback_sync
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
@@ -28309,6 +28345,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
+        _diagnostic_status_enabled = (
+            resolve_display_setting(user_config, platform_key, "diagnostic_status") != "off"
+        )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
         # getattr, not attribute access — same duck-typed-adapter guard as the
         # edit_message check in send_progress_messages below: a fake/minimal
@@ -28345,6 +28384,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             long_tool_hint_fired=long_tool_hint_fired,
             _LONG_TOOL_THRESHOLD_S=_LONG_TOOL_THRESHOLD_S,
             _cleanup_progress=_cleanup_progress,
+            _diagnostic_status_enabled=_diagnostic_status_enabled,
             _cleanup_msg_ids=_cleanup_msg_ids,
             message=message,
             AIAgent=AIAgent,

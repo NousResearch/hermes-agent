@@ -1004,6 +1004,23 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    def _emit_recovery(self, message: str) -> None:
+        """Emit a recovery-class status (empty-after-tools nudge, thinking prefill).
+
+        Gateway consumers receive it through ``status_callback("recovery", ...)``
+        so ``display.diagnostic_status: off`` can filter this class without
+        dropping lifecycle or warning events.
+        """
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("recovery", message)
+            except Exception:
+                logger.debug("status_callback error in _emit_recovery", exc_info=True)
+
     def _warn_context_overflow_blocked(
         self, reason: str, preflight_tokens: int, threshold_tokens: int
     ) -> None:
@@ -1129,13 +1146,14 @@ class AIAgent:
     # (agent.log) are unaffected — every individual emission site still
     # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
 
-    def _buffer_status(self, message: str) -> None:
+    def _buffer_status(self, message: str, *, kind: str = "status") -> None:
         """Buffer a retry/fallback status message.
 
         Stored as a (kind, text) tuple where ``kind`` is one of:
-        - ``"status"``  -> replays via ``_emit_status``
-        - ``"vprint"``  -> replays via ``_vprint(force=True)``
-        - ``"warn"``    -> replays via ``_emit_warning``
+        - ``"status"``    -> replays via ``_emit_status``
+        - ``"recovery"``  -> replays via ``_emit_recovery``
+        - ``"vprint"``    -> replays via ``_vprint(force=True)``
+        - ``"warn"``      -> replays via ``_emit_warning``
         Used to defer noisy retry chatter until we know whether the
         turn ultimately recovered or failed.
         """
@@ -1144,7 +1162,8 @@ class AIAgent:
             if buf is None:
                 buf = []
                 self._retry_status_buffer = buf
-            buf.append(("status", message))
+            replay_kind = kind if kind in {"status", "recovery", "vprint", "warn"} else "status"
+            buf.append((replay_kind, message))
         except Exception:
             # Never break the retry loop on a buffer hiccup.
             pass
@@ -1213,6 +1232,8 @@ class AIAgent:
                 try:
                     if kind == "status":
                         self._emit_status(msg)
+                    elif kind == "recovery":
+                        self._emit_recovery(msg)
                     elif kind == "warn":
                         self._emit_warning(msg)
                     else:

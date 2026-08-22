@@ -355,3 +355,38 @@ def test_durable_resume_metadata_enforces_conversation_owner():
 
     denied = ds.delegate_session(action="resume", session_id=sid, parent_agent=stranger)
     assert "belongs to another conversation" in denied.lower()
+
+
+def test_runtime_dispatch_passes_parent_agent(monkeypatch):
+    """invoke_tool must pass parent_agent to delegate_session (regression).
+
+    The generic dispatch path never forwards parent_agent, so delegate_session
+    used to fail with "requires a parent agent context" on every live call.
+    """
+    from agent.agent_runtime_helpers import invoke_tool
+
+    calls = {}
+
+    def fake_delegate_session(**kwargs):
+        calls.update(kwargs)
+        return '{"ok": true}'
+
+    monkeypatch.setattr(
+        "tools.delegate_session_tool.delegate_session", fake_delegate_session
+    )
+
+    agent = Parent("dispatch-agent")
+    # Attributes the dispatch chain touches before reaching the tool.
+    setattr(agent, "_memory_manager", None)
+    setattr(agent, "_subagent_lifecycle", None)
+
+    raw = invoke_tool(
+        agent,
+        "delegate_session",
+        {"action": "list"},
+        effective_task_id="task-1",
+    )
+
+    assert calls.get("parent_agent") is agent
+    assert calls.get("action") == "list"
+    assert raw == '{"ok": true}'

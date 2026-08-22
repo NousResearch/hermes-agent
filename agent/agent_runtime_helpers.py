@@ -3374,6 +3374,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+    elif function_name == "delegate_session":
+        def _execute(next_args: dict) -> Any:
+            from tools.delegate_session_tool import delegate_session as _delegate_session
+            return _finish_agent_tool(
+                _delegate_session(
+                    action=next_args.get("action") or "start",
+                    session_id=next_args.get("session_id"),
+                    goal=next_args.get("goal"),
+                    context=next_args.get("context"),
+                    message=next_args.get("message"),
+                    timeout=next_args.get("timeout"),
+                    parent_agent=agent,
+                ),
+                next_args,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

@@ -337,12 +337,12 @@ def _(rid, params: dict) -> dict:
     upgrades targeted evidence into a repository-wide guarantee.
     """
     try:
-        from agent.verification_evidence import verification_status
+        from agent.verification_evidence import verification_status_readonly_for_cwd
 
         return _ok(
             rid,
             {
-                "verification": verification_status(
+                "verification": verification_status_readonly_for_cwd(
                     session_id=params.get("session_id") or params.get("session_key"),
                     cwd=params.get("cwd"),
                 )

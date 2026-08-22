@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
+from urllib.parse import quote
 
 from hermes_constants import get_hermes_home
 
@@ -34,6 +35,36 @@ _VERIFY_SCHEMA_VERSION = 1
 class _ShellSegment:
     tokens: list[str]
     following_operator: str | None = None
+
+
+_REQUIRED_STATUS_TABLES = frozenset({"verification_state", "verification_events"})
+_REQUIRED_STATUS_COLUMNS: dict[str, frozenset[str]] = {
+    "verification_state": frozenset(
+        {
+            "session_id",
+            "root",
+            "last_event_id",
+            "last_edit_at",
+            "changed_paths_json",
+        }
+    ),
+    "verification_events": frozenset(
+        {
+            "id",
+            "created_at",
+            "session_id",
+            "cwd",
+            "root",
+            "command",
+            "canonical_command",
+            "kind",
+            "scope",
+            "status",
+            "exit_code",
+            "output_summary",
+        }
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -513,6 +544,90 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
     )
 
 
+def _unverified_status(*, session_id: str, root: str, changed_paths: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "status": "unverified",
+        "evidence": None,
+        "root": root,
+        "session_id": session_id,
+        "changed_paths": changed_paths or [],
+    }
+
+
+def _status_from_rows(
+    *,
+    session_id: str,
+    root: str,
+    state: sqlite3.Row | None,
+    event: sqlite3.Row | None,
+) -> dict[str, Any]:
+    if state is None:
+        return _unverified_status(session_id=session_id, root=root)
+
+    changed_paths: list[str] = []
+    try:
+        changed_paths = json.loads(state["changed_paths_json"] or "[]")
+    except (TypeError, ValueError):
+        changed_paths = []
+
+    if event is None:
+        return _unverified_status(session_id=session_id, root=root, changed_paths=changed_paths)
+
+    evidence = dict(event)
+    if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
+        status = "stale"
+    else:
+        status = evidence["status"]
+    return {
+        "status": status,
+        "evidence": evidence,
+        "root": root,
+        "session_id": session_id,
+        "changed_paths": changed_paths,
+    }
+
+
+def _fetch_status_rows(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    root: str,
+) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
+    state = conn.execute(
+        """
+        SELECT last_event_id, last_edit_at, changed_paths_json
+        FROM verification_state
+        WHERE session_id = ? AND root = ?
+        """,
+        (session_id, root),
+    ).fetchone()
+    event = None
+    if state is not None and state["last_event_id"] is not None:
+        event = conn.execute(
+            "SELECT * FROM verification_events WHERE id = ?",
+            (state["last_event_id"],),
+        ).fetchone()
+    return state, event
+
+
+def _readonly_status_schema_is_complete(conn: sqlite3.Connection) -> bool:
+    """Return whether the read-only status path can safely query the ledger."""
+
+    for table_name, required_columns in _REQUIRED_STATUS_COLUMNS.items():
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.Error:
+            return False
+        observed_columns = {row["name"] for row in rows}
+        if not required_columns.issubset(observed_columns):
+            return False
+    return True
+
+
+def _sqlite_readonly_uri(path: Path) -> str:
+    return f"file:{quote(str(path), safe='/:')}?mode=ro"
+
+
 def classify_verification_command(
     command: str,
     *,
@@ -748,53 +863,69 @@ def verification_status(
     root = str(facts.get("root") or Path(cwd or ".").resolve())
     with _DB_LOCK:
         with _transaction() as conn:
-            state = conn.execute(
-                """
-                SELECT last_event_id, last_edit_at, changed_paths_json
-                FROM verification_state
-                WHERE session_id = ? AND root = ?
-                """,
-                (sid, root),
-            ).fetchone()
-            if state is None:
-                return {
-                    "status": "unverified",
-                    "evidence": None,
-                    "root": root,
-                    "session_id": sid,
-                    "changed_paths": [],
-                }
-            event = None
-            if state["last_event_id"] is not None:
-                event = conn.execute(
-                    "SELECT * FROM verification_events WHERE id = ?",
-                    (state["last_event_id"],),
-                ).fetchone()
+            state, event = _fetch_status_rows(conn, session_id=sid, root=root)
 
-    changed_paths: list[str] = []
+    return _status_from_rows(session_id=sid, root=root, state=state, event=event)
+
+
+def verification_status_readonly(
+    *,
+    session_id: str,
+    root: str | Path,
+    db_path: str | Path,
+) -> dict[str, Any]:
+    """Return verification state from an existing ledger without mutating it."""
+
+    sid = str(session_id)
+    root_str = str(root)
+    path = Path(db_path)
+    if not path.exists():
+        return _unverified_status(session_id=sid, root=root_str)
+
     try:
-        changed_paths = json.loads(state["changed_paths_json"] or "[]")
-    except (TypeError, ValueError):
-        changed_paths = []
+        conn = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    except sqlite3.Error:
+        return _unverified_status(session_id=sid, root=root_str)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        rows = conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('verification_state', 'verification_events')
+            """
+        ).fetchall()
+        existing_tables = {row["name"] for row in rows}
+        if not _REQUIRED_STATUS_TABLES.issubset(existing_tables):
+            return _unverified_status(session_id=sid, root=root_str)
+        if not _readonly_status_schema_is_complete(conn):
+            return _unverified_status(session_id=sid, root=root_str)
+        state, event = _fetch_status_rows(conn, session_id=sid, root=root_str)
+        return _status_from_rows(session_id=sid, root=root_str, state=state, event=event)
+    except sqlite3.Error:
+        return _unverified_status(session_id=sid, root=root_str)
+    finally:
+        conn.close()
 
-    if event is None:
-        return {
-            "status": "unverified",
-            "evidence": None,
-            "root": root,
-            "session_id": sid,
-            "changed_paths": changed_paths,
-        }
 
-    evidence = dict(event)
-    if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
-        status = "stale"
-    else:
-        status = evidence["status"]
-    return {
-        "status": status,
-        "evidence": evidence,
-        "root": root,
-        "session_id": sid,
-        "changed_paths": changed_paths,
-    }
+def verification_status_readonly_for_cwd(
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+) -> dict[str, Any]:
+    """Return verification state for a cwd without creating or migrating a ledger."""
+
+    try:
+        from agent.coding_context import project_facts_for
+
+        facts = project_facts_for(cwd)
+    except Exception:
+        facts = None
+    if not facts:
+        return {"status": "not_applicable", "evidence": None}
+
+    sid = str(session_id or "default")
+    root = str(facts.get("root") or Path(cwd or ".").resolve())
+    return verification_status_readonly(session_id=sid, root=root, db_path=_db_path())

@@ -4,10 +4,13 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 from gateway.runtime_footer import (
+    _compact_reset,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -42,6 +45,16 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
     assert result == "~/projects/hermes"
 
 
+def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "other"))
+    result = _home_relative_cwd(str(tmp_path / "outside" / "dir"))
+    assert result == str(tmp_path / "outside" / "dir")
+
+
+def test_home_relative_cwd_empty_returns_empty():
+    assert _home_relative_cwd("") == ""
+
+
 # ---------------------------------------------------------------------------
 # format_runtime_footer
 # ---------------------------------------------------------------------------
@@ -74,9 +87,225 @@ def test_format_footer_skips_missing_context_length():
     assert "/tmp/wd" in out
 
 
+def test_format_footer_context_pct_clamped_to_100():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=500_000,  # way over
+        context_length=100_000,
+        cwd="",
+        fields=("context_pct",),
+    )
+    assert out == "100%"
+
+
+def test_format_footer_context_pct_never_negative():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=-50,
+        context_length=100,
+        cwd="",
+        fields=("context_pct",),
+    )
+    # Negative input => no field emitted (we require context_tokens >= 0)
+    assert out == ""
+
+
+def test_format_footer_empty_fields_returns_empty():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="/x", fields=(),
+    )
+    assert out == ""
+
+
+def test_format_footer_drops_cwd_when_empty(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="",
+        fields=("model", "context_pct", "cwd"),
+    )
+    # cwd silently dropped; model + pct remain
+    assert out == "gpt-5.4 · 50%"
+
+
+def test_format_footer_custom_field_order():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="/opt/project",
+        fields=("context_pct", "model"),  # swapped + no cwd
+    )
+    assert out == "50% · gpt-5.4"
+
+
+
+def test_format_footer_extended_fields_with_quota_and_underline():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        plan="Team",
+        windows=(
+            AccountUsageWindow(label="5h", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="7d", used_percent=30, reset_at=None),
+        ),
+    )
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        account_label="openai-codex-team-main",
+        context_tokens=21_800,
+        context_length=200_000,
+        account_usage=snapshot,
+        reasoning_effort="ultra",
+        cwd="",
+        fields=("provider", "account", "model", "reasoning", "context", "quota"),
+        underline=True,
+    )
+    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ult · ctx 21.8K/200K · 5h 80% · 7d 70%"
+
+
+def test_format_footer_compacts_reset_times_for_quota():
+    snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(
+                label="Current session",
+                used_percent=32.2,
+                reset_at=datetime.now(timezone.utc) + timedelta(hours=2, minutes=10),
+            ),
+        ),
+    )
+    out = format_runtime_footer(
+        model="anthropic/claude-sonnet-4-6",
+        context_tokens=21_800,
+        context_length=200_000,
+        account_usage=snapshot,
+        cwd="",
+        fields=("quota",),
+    )
+    assert out.startswith("5h 68% 2h")
+
+
+def test_compact_reset_omits_zero_day_and_minute_components(monkeypatch):
+    import gateway.runtime_footer as runtime_footer
+
+    fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(runtime_footer, "datetime", FixedDateTime)
+    fixed_target = FixedDateTime(2026, 1, 1, tzinfo=timezone.utc)
+
+    assert _compact_reset(fixed_target + timedelta(days=1)) == "1d"
+    assert _compact_reset(fixed_target + timedelta(hours=1)) == "1h"
+    assert _compact_reset(fixed_target + timedelta(seconds=30)) == "<1m"
+
+
+
+def test_format_footer_uses_provider_specific_compact_quota_labels():
+    snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Current week", used_percent=40, reset_at=None),
+            AccountUsageWindow(label="Opus week", used_percent=50, reset_at=None),
+            AccountUsageWindow(label="Sonnet week", used_percent=60, reset_at=None),
+        ),
+    )
+    out = format_runtime_footer(
+        model="anthropic/claude-opus-4-5",
+        provider="anthropic",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+    assert out == "7d 60% · opus7d 50% · sonnet7d 40%"
+
+
+def test_format_footer_preserves_nonstandard_quota_durations():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="15d", used_percent=10, reset_at=None),
+            AccountUsageWindow(label="17h", used_percent=20, reset_at=None),
+        ),
+    )
+
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        provider="openai-codex",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+
+    assert out == "15d 90% · 17h 80%"
+
+
+def test_format_footer_includes_balance_details_for_quota():
+    snapshot = AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=datetime.now(timezone.utc),
+        details=("Balance: ¥110.00 CNY (granted ¥10.00, topped up ¥100.00)",),
+    )
+
+    out = format_runtime_footer(
+        model="deepseek/deepseek-chat",
+        provider="deepseek",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+
+    assert out == "balance ¥110.00 CNY"
+
+
+def test_format_footer_unknown_field_silently_ignored():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="/x",
+        fields=("model", "bogus", "context_pct"),
+    )
+    assert out == "gpt-5.4 · 50%"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
+
+def test_resolve_defaults_off_empty_config():
+    cfg = resolve_footer_config({}, "telegram")
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "underline": False}
+
+
+def test_resolve_global_enable():
+    user = {"display": {"runtime_footer": {"enabled": True}}}
+    cfg = resolve_footer_config(user, "telegram")
+    assert cfg["enabled"] is True
+    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+
+
+
+def test_resolve_supports_underline_flag():
+    user = {"display": {"runtime_footer": {"enabled": True, "underline": True}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["underline"] is True
 
 
 def test_resolve_platform_override_wins():
@@ -111,9 +340,143 @@ def test_resolve_platform_can_add_fields_only():
     assert dc["fields"] == ["context_pct"]
 
 
+def test_resolve_ignores_malformed_config():
+    # Non-dict runtime_footer shouldn't crash
+    user = {"display": {"runtime_footer": "on"}}
+    cfg = resolve_footer_config(user, "telegram")
+    assert cfg["enabled"] is False
+
+
 # ---------------------------------------------------------------------------
+
+
+def test_format_footer_reasoning_abbreviations():
+    cases = {
+        "none": "off",
+        "minimal": "min",
+        "low": "low",
+        "medium": "med",
+        "high": "high",
+        "xhigh": "xhi",
+        "max": "max",
+        "ultra": "ult",
+        "false": "off",
+        "DISABLED": "off",
+    }
+    for effort, expected in cases.items():
+        out = format_runtime_footer(
+            model="m",
+            context_tokens=0,
+            context_length=100,
+            reasoning_effort=effort,
+            fields=("reasoning",),
+        )
+        assert out == expected, (effort, out)
+
+
+def test_format_footer_reasoning_omitted_when_missing():
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        context_tokens=10,
+        context_length=100,
+        fields=("model", "reasoning"),
+    )
+    assert out == "gpt-5.5"
+
+
+def test_build_footer_passes_reasoning_effort():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "reasoning"],
+                }
+            }
+        },
+        platform_key=None,
+        model="openai/gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        reasoning_effort="xhigh",
+    )
+    assert out == "gpt-5.5 · xhi"
+
+
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
+
+def test_build_footer_empty_when_disabled():
+    out = build_footer_line(
+        user_config={},
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=10, context_length=100,
+        cwd="/tmp",
+    )
+    assert out == ""
+
+
+def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=25, context_length=100,
+        cwd=str(tmp_path / "proj"),
+    )
+    (tmp_path / "proj").mkdir(exist_ok=True)
+    assert "gpt-5.4" in out
+    assert "25%" in out
+
+
+
+def test_build_footer_passes_extended_runtime_metadata():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        plan="Team",
+        windows=(
+            AccountUsageWindow(label="5h", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="7d", used_percent=30, reset_at=None),
+        ),
+    )
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "underline": True,
+                    "fields": ["provider", "account", "model", "context", "quota"],
+                }
+            }
+        },
+        platform_key="feishu",
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        account_label="team-main",
+        context_tokens=18_200,
+        context_length=400_000,
+        account_usage=snapshot,
+        cwd="",
+    )
+    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ctx 18.2K/400K · 5h 80% · 7d 70%"
+
+
+def test_build_footer_prefers_profile_scoped_resolved_config():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": False}}},
+        platform_key="telegram",
+        resolved_config={"enabled": True, "fields": ["model"], "underline": False},
+        model="openai/gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+    )
+
+    assert out == "gpt-5.5"
 
 
 def test_build_footer_per_platform_off_suppresses():
@@ -317,3 +680,17 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     with_timing = build_footer_line(**common, turn_seconds=125.0)
     assert baseline == "gpt-5.4 · 5% · /var/data"
     assert with_timing == baseline
+
+
+def test_build_footer_no_data_returns_empty_even_when_enabled():
+    # Enabled, but context_length is None AND cwd empty AND model empty ⇒ no fields
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        platform_key="telegram",
+        model="",
+        context_tokens=0, context_length=None,
+        cwd="",
+    )
+    # With no TERMINAL_CWD env either
+    if not os.environ.get("TERMINAL_CWD"):
+        assert out == ""

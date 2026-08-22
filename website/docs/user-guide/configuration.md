@@ -1827,12 +1827,17 @@ display:
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "context_pct", "cwd"]  # also: provider, account, context, quota, reasoning; optional underline: true
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+When `quota` is enabled for DeepSeek, Hermes queries the balance endpoint using
+that provider's configured `base_url`. If the URL points to a third-party
+OpenAI-compatible proxy, the proxy receives the balance request and the
+configured API credential just as it receives normal model requests.
 
 ### Per-turn summary and spinner token flow
 
@@ -1930,35 +1935,52 @@ Focus view is **display-only**. It never edits conversation history, the system 
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. Off by default so replies stay clean; opt in when you want every gateway reply to carry provenance such as model, provider, account, context usage, or remaining quota.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
+    fields: ["provider", "account", "model", "reasoning", "context", "quota"]
+    underline: true
 ```
 
-Supported fields:
+Supported `fields` (order is preserved; omit any field to hide it):
 
-| Field | Renders | Example |
-| --- | --- | --- |
-| `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
-| `context_pct` | Last-call context occupancy as a percent | `5%` |
-| `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
-| `cwd` | Home-relative working directory | `~` |
+| Field | What it shows |
+|-------|---------------|
+| `model` | Model id used for the turn |
+| `reasoning` | Compact reasoning-effort abbreviation (`off`/`min`/`low`/`med`/`high`/`xhi`/`max`/`ult`) |
+| `provider` | Provider / auth path that served the turn |
+| `account` | Compact account/plan label when available |
+| `context` | Absolute context usage (`used/limit`) |
+| `context_pct` | Context usage as a percentage |
+| `latency` | Wall-clock duration of the turn (`22s`, `1m05s`) |
+| `quota` | Compact remaining quota windows returned by the provider |
+| `cwd` | Working directory, with `$HOME` collapsed to `~` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+Notes:
 
-The `/footer` slash command toggles this at runtime in any session.
+- Default fields remain `["model", "context_pct", "cwd"]` when `fields` is unset.
+- `latency` is opt-in; fields whose data is unavailable are skipped silently.
+- `underline: true` prepends a short separator line before the footer.
+- `quota` only renders windows a provider actually returns; providers without usage APIs stay silent for that field.
+- Account/quota lookups use the exact runtime credential that served the turn, so credential-pool rotation does not show another account's limits.
+- Quota results are cached per profile and credential. Cold or stale entries refresh in the background; a cold cache omits quota on the first reply rather than delaying final-message delivery, while a transient refresh failure keeps the last valid snapshot.
+- `reasoning` shows the live turn effort from the agent runtime (including `/reasoning` overrides), abbreviated for mobile footers.
+- Unknown field names are ignored.
+- Per-platform overrides live under `display.platforms.<platform>.runtime_footer`.
 
-Example footer appended to a Telegram/Discord/Slack reply:
+The `/footer` slash command toggles the global footer setting at runtime in any session (`on|off|status`).
+
+Example footer appended to a Telegram/Discord/Slack/Feishu reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+──────────────
+xai-oauth · lance*** · grok-4.5 · ult · ctx 18.2k/256k · 5h 72% · 7d 41%
 ```
 
-Only the **final** message of a turn gets the footer; interim updates stay clean.
+Only the **final** message of a turn gets the footer; interim updates stay clean. When streaming already delivered the final text piecemeal, the footer may be sent as a separate trailing message.
 
 ### Per-platform progress overrides
 

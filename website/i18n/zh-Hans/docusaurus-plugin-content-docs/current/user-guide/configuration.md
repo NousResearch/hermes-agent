@@ -1229,10 +1229,12 @@ display:
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
   runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "context_pct", "cwd"]  # 还支持：provider、account、context、quota、reasoning；可选 underline: true
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
   language: en            # 静态消息的 UI 语言（审批提示、部分 gateway 回复）。en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+启用 DeepSeek 的 `quota` 字段时，Hermes 会使用该 provider 配置的 `base_url` 请求余额接口。如果这里配置的是第三方 OpenAI 兼容代理，余额请求及配置的 API 凭证也会发送给该代理，这与普通模型请求的行为一致。
 
 ### 文件变更验证器
 

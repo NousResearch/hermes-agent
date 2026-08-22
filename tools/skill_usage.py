@@ -1068,7 +1068,7 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
+def archive_skill(skill_name: str, *, skill_dir: Path | str | None = None) -> Tuple[bool, str]:
     """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
 
     Returns (ok, message). Never archives hub-installed skills. Bundled
@@ -1076,7 +1076,12 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     when one is archived, its name is added to the suppression list so the
     update-time re-seeder leaves it archived instead of restoring it.
     """
-    local_skill_dir = _find_skill_dir(skill_name)
+    if skill_dir is not None:
+        local_skill_dir = Path(skill_dir)
+        if not local_skill_dir.is_dir():
+            return False, f"skill directory '{local_skill_dir}' does not exist"
+    else:
+        local_skill_dir = _find_skill_dir(skill_name)
     if local_skill_dir is None and _find_external_skill_dir(skill_name) is not None:
         return False, _external_read_only_message(skill_name)
 

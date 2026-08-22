@@ -4,6 +4,7 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
@@ -732,6 +733,93 @@ def _check_version_consistency(issues: list[str]) -> None:
         )
 
 
+def _check_performance_risks(issues: list[str]) -> None:
+    """Surface settings and schedules that make ordinary replies feel stuck.
+
+    This check is deliberately read-only.  It points users at the existing
+    configuration and prompt-size surfaces instead of silently changing
+    latency/quality trade-offs under ``doctor --fix``.
+    """
+    _section("Response Performance")
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        check_warn("Performance configuration could not be inspected", str(exc))
+        return
+
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    streaming_cfg = cfg.get("streaming") if isinstance(cfg.get("streaming"), dict) else {}
+    timeout = int(agent_cfg.get("gateway_timeout") or 0)
+
+    if timeout >= 900:
+        check_warn(
+            "Gateway can appear stuck for a long time",
+            f"(idle timeout {timeout // 60}m)",
+        )
+        issues.append(
+            "Lower agent.gateway_timeout (for example, 300 seconds) so dead provider calls fail promptly"
+        )
+    elif timeout:
+        check_ok("Gateway idle timeout", f"({timeout}s)")
+    else:
+        check_warn("Gateway idle timeout is unlimited")
+        issues.append("Set agent.gateway_timeout to a finite value")
+
+    if streaming_cfg.get("enabled", True) is False:
+        check_warn("Streaming is disabled", "(answers appear only after completion)")
+        issues.append("Set streaming.enabled: true for visible response progress")
+    else:
+        check_ok("Response streaming enabled")
+
+    overlapping_jobs: list[str] = []
+    jobs_path = HERMES_HOME / "cron" / "jobs.json"
+    try:
+        raw_jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
+        jobs = raw_jobs.get("jobs", []) if isinstance(raw_jobs, dict) else []
+        for job in jobs:
+            if not isinstance(job, dict) or not job.get("enabled") or job.get("no_agent"):
+                continue
+            schedule = job.get("schedule")
+            if not isinstance(schedule, dict) or schedule.get("kind") != "interval":
+                continue
+            interval_seconds = int(schedule.get("minutes") or 0) * 60
+            if timeout and interval_seconds and interval_seconds < timeout:
+                overlapping_jobs.append(str(job.get("name") or job.get("id") or "unnamed job"))
+    except (OSError, ValueError, TypeError):
+        pass
+
+    if overlapping_jobs:
+        names = ", ".join(overlapping_jobs[:3])
+        if len(overlapping_jobs) > 3:
+            names += f", +{len(overlapping_jobs) - 3} more"
+        check_warn("Agent cron jobs can overlap the gateway timeout", f"({names})")
+        issues.append(
+            "Increase the listed cron intervals or lower agent.gateway_timeout to prevent overlapping LLM runs"
+        )
+    else:
+        check_ok("No interval cron jobs can overlap the gateway timeout")
+
+    try:
+        from hermes_cli.prompt_size import compute_prompt_breakdown
+
+        breakdown = compute_prompt_breakdown("cli")
+        fixed_bytes = int(breakdown["system_prompt"]["bytes"]) + int(breakdown["tools"]["json_bytes"])
+        if fixed_bytes >= 150_000:
+            check_warn(
+                "Fresh chats start with a large fixed prompt",
+                f"({fixed_bytes / 1024:.0f} KiB before conversation history)",
+            )
+            issues.append(
+                "Run 'hermes prompt-size' and trim oversized workspace instructions or unused toolsets"
+            )
+        else:
+            check_ok("Fresh-chat fixed prompt size", f"({fixed_bytes / 1024:.0f} KiB)")
+    except Exception as exc:
+        check_warn("Fresh-chat prompt size could not be measured", str(exc))
+
+
 def _check_s6_supervision(issues: list[str]) -> None:
     """Inside a container under our s6 /init, surface what s6 sees.
 
@@ -1204,6 +1292,8 @@ def run_doctor(args):
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
+
+    _check_performance_risks(issues)
 
     _section("SSL / CA Certificates")
     check_certificates(should_fix=should_fix, issues=manual_issues)

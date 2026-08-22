@@ -2029,6 +2029,28 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     except Exception:
         _profile = None
 
+    # Resolve custom-provider prompt-cache capability once for both paths.
+    # Custom providers (provider="custom" or "custom:<name>") go through the
+    # profile path (CustomProfile) which hardcodes supports_prompt_cache_key=False,
+    # so the config-level flag would be ignored without this lookup.  Named
+    # custom providers ("custom:<name>") have no profile and hit the legacy
+    # path, where the same value must be passed through.
+    _supports_prompt_cache_key = False
+    _provider_norm = (agent.provider or "").strip().lower()
+    if _provider_norm == "custom" or _provider_norm.startswith("custom:"):
+        try:
+            from hermes_cli.route_identity import normalize_route_base_url
+
+            _route = normalize_route_base_url(agent.base_url)
+            _supports_prompt_cache_key = any(
+                isinstance(entry, dict)
+                and normalize_route_base_url(entry.get("base_url")) == _route
+                and entry.get("supports_prompt_cache_key") is True
+                for entry in getattr(agent, "_custom_providers", [])
+            )
+        except Exception:
+            _supports_prompt_cache_key = False
+
     if _profile:
         _ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
         if _ephemeral_out is not None:
@@ -2060,6 +2082,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            supports_prompt_cache_key=_supports_prompt_cache_key,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -2108,6 +2131,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        supports_prompt_cache_key=_supports_prompt_cache_key,
     )
 
 

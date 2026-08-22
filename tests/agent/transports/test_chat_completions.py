@@ -746,6 +746,27 @@ class TestPromptCacheKeyCapability:
 
         assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
 
+    def test_custom_provider_config_capability_reaches_request_body(self, transport):
+        from hermes_cli.config import _normalize_custom_provider_entry
+
+        provider = _normalize_custom_provider_entry({
+            "name": "cliproxy",
+            "base_url": "https://cliproxy.example/v1",
+            "supports_prompt_cache_key": True,
+        })
+        assert provider is not None
+
+        kwargs = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="stable-session",
+            base_url=provider["base_url"],
+            supports_prompt_cache_key=provider["supports_prompt_cache_key"],
+        )
+
+        assert self._request_body(kwargs)["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
     def test_openai_api_base_url_implies_capability(self, transport):
         """api.openai.com gets the key WITHOUT an explicit flag (exact host)."""
         kwargs = transport.build_kwargs(

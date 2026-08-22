@@ -1392,6 +1392,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
+        "supports_prompt_cache_key",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -1533,6 +1534,10 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    supports_prompt_cache_key = entry.get("supports_prompt_cache_key")
+    if isinstance(supports_prompt_cache_key, bool):
+        normalized["supports_prompt_cache_key"] = supports_prompt_cache_key
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -1583,6 +1588,7 @@ def _custom_provider_entry_to_provider_config(
         "discover_models",
         "extra_body",
         "extra_headers",
+        "supports_prompt_cache_key",
         "ssl_ca_cert",
         "ssl_verify",
     ):
@@ -2020,6 +2026,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "supports_prompt_cache_key",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

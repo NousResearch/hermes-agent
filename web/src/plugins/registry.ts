@@ -37,7 +37,12 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
-import { registerSlot, PluginSlot } from "./slots";
+import { registerSlot, PluginSlot, type SlotMetadata } from "./slots";
+import {
+  acceptsCurrentScriptRegistration,
+  getCurrentPluginAsset,
+  isPluginAssetActive,
+} from "./assetIdentity";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -67,6 +72,47 @@ function registerPlugin(name: string, component: React.ComponentType) {
   _notify();
 }
 
+function registerPluginFromSDK(name: string, component: React.ComponentType) {
+  if (!acceptsCurrentScriptRegistration(name)) return;
+  registerPlugin(name, component);
+}
+
+function registerPluginSlot(
+  plugin: string,
+  slot: string,
+  component: React.ComponentType,
+  metadata?: SlotMetadata,
+) {
+  const clearedError = _loadErrors.delete(plugin);
+  registerSlot(plugin, slot, component, metadata);
+  if (clearedError) _notify();
+}
+
+type PluginRegistryFacade = NonNullable<Window["__HERMES_PLUGINS__"]>;
+
+const sharedRegistryFacade: PluginRegistryFacade = {
+  register: registerPluginFromSDK,
+  registerSlot(plugin, slot, component, metadata) {
+    if (!acceptsCurrentScriptRegistration(plugin)) return;
+    registerPluginSlot(plugin, slot, component, metadata);
+  },
+};
+
+function assetRegistryFacade(plugin: string, asset: string): PluginRegistryFacade {
+  const accepts = (requestedPlugin: string) =>
+    requestedPlugin === plugin && isPluginAssetActive(plugin, asset);
+  return {
+    register(requestedPlugin, component) {
+      if (!accepts(requestedPlugin)) return;
+      registerPlugin(requestedPlugin, component);
+    },
+    registerSlot(requestedPlugin, slot, component, metadata) {
+      if (!accepts(requestedPlugin)) return;
+      registerPluginSlot(requestedPlugin, slot, component, metadata);
+    },
+  };
+}
+
 /** Get a registered component by plugin name. */
 export function getPluginComponent(name: string): React.ComponentType | undefined {
   return _registered.get(name);
@@ -79,6 +125,15 @@ export function getPluginLoadError(name: string): string | undefined {
 export function setPluginLoadError(name: string, message: string) {
   _loadErrors.set(name, message);
   _notify();
+}
+
+/** Remove a plugin's top-level component and load error during manifest
+ * reconciliation. Slot registrations are owned by the slot registry. */
+export function unregisterPlugin(name: string) {
+  const removedComponent = _registered.delete(name);
+  const removedError = _loadErrors.delete(name);
+  const changed = removedComponent || removedError;
+  if (changed) _notify();
 }
 
 /** Subscribe to registry changes (returns unsubscribe fn). */
@@ -110,10 +165,16 @@ export const SDK_CONTRACT_VERSION = "1.1.0";
 // here (duplicate ambient declarations with differing modifiers conflict).
 
 export function exposePluginSDK() {
-  window.__HERMES_PLUGINS__ = {
-    register: registerPlugin,
-    registerSlot,
-  };
+  Object.defineProperty(window, "__HERMES_PLUGINS__", {
+    configurable: true,
+    enumerable: true,
+    get(): PluginRegistryFacade {
+      const identity = getCurrentPluginAsset();
+      return identity
+        ? assetRegistryFacade(identity.plugin, identity.asset)
+        : sharedRegistryFacade;
+    },
+  });
 
   window.__HERMES_PLUGIN_SDK__ = {
     // Contract version of the plugin SDK surface (see plugins/sdk.d.ts).

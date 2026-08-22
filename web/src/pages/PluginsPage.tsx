@@ -25,7 +25,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
-import { PluginSlot } from "@/plugins";
+import { PluginSlot, notifyDashboardPluginsChanged } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -383,6 +383,7 @@ export default function PluginsPage() {
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
+      notifyDashboardPluginsChanged();
       await loadHub();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Install failed", "error");
@@ -395,6 +396,7 @@ export default function PluginsPage() {
     setRescanBusy(true);
     try {
       const rc = await api.rescanPlugins();
+      notifyDashboardPluginsChanged();
       showToast(
         `${t.pluginsPage.refreshDashboard} (${rc.count})`,
         "success",
@@ -496,6 +498,7 @@ export default function PluginsPage() {
     setRowBusy(name);
     try {
       await fn();
+      notifyDashboardPluginsChanged();
       await loadHub();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Failed", "error");

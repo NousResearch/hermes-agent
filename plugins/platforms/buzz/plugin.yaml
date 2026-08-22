@@ -45,6 +45,14 @@ optional_env:
     description: "Allow any community member to talk to the agent (true/false)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: BUZZ_REQUIRE_MENTION
+    description: "Require an explicit mention in top-level shared-channel messages (true/false)"
+    prompt: "Require channel mentions? (true/false)"
+    password: false
+  - name: BUZZ_THREAD_REQUIRE_MENTION
+    description: "Require an explicit mention independently in structurally threaded replies (true/false)"
+    prompt: "Require thread mentions? (true/false)"
+    password: false
   - name: BUZZ_POLL_INTERVAL
     description: "Seconds between inbound poll sweeps (default: 4)"
     prompt: "Poll interval seconds"

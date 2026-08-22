@@ -33,7 +33,10 @@ gateway:
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
-        allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        allowed_users: []          # empty = deny all unless allow_all_users is true
+        allow_all_users: false
+        require_mention: true
+        thread_require_mention: true
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -52,6 +55,8 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | — | Allow any community member to talk to the agent |
+| `BUZZ_REQUIRE_MENTION` | — | Require an explicit mention in top-level shared-channel messages (`true`/`false`) |
+| `BUZZ_THREAD_REQUIRE_MENTION` | — | Independently require an explicit mention in structurally threaded replies (`true`/`false`) |
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
@@ -80,6 +85,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        thread_require_mention: true      # apply the same default independently to marked and legacy NIP-10 thread replies
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 
@@ -90,6 +96,7 @@ gateway:
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+- `thread_require_mention: true` — threaded replies have an independent mention policy. Hermes recognizes both marked and legacy positional NIP-10 thread structures.
 
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 
@@ -103,7 +110,22 @@ gateway:
 
 ## Access control
 
-By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.
+By default the Buzz-specific allow-list is empty. Buzz-specific access is granted by `BUZZ_ALLOW_ALL_USERS=true` or by listing npubs/hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). These controls are not the complete Gateway authorization boundary: profile pairing approvals and global `GATEWAY_ALLOWED_USERS`, its `*` wildcard, or `GATEWAY_ALLOW_ALL_USERS` are additive and can authorize users beyond the Buzz-specific policy. Community membership itself is enforced by the relay — only members can post.
+
+### Manage live policy in the Dashboard
+
+Open **Dashboard → Config**, select the Hermes profile you want to manage, and use the **Buzz-specific policy** section. It controls `allowed_users`, `allow_all_users`, `require_mention`, and `thread_require_mention` for that exact profile. Valid saves are canonicalized under `gateway.platforms.buzz.extra`; supported legacy policy aliases are removed without changing unrelated Buzz or Hermes settings. The panel warns when it can safely detect an additive global Gateway or pairing grant, but never reveals global allowlist values or pairing identities.
+
+Policy saves and removals take effect on the next inbound event. **No Gateway restart is required for these four policy fields.** Transport, relay, credential, channel-subscription, and binary-path changes are separate startup configuration and may still require restarting the Gateway.
+
+Policy precedence is:
+
+1. explicit environment policy (`BUZZ_*`, with managed environment values taking precedence over profile values);
+2. managed `config.yaml` overlay;
+3. the selected profile's `config.yaml`;
+4. restrictive defaults: no allowed users, allow-all off, and mentions required in channels and threads.
+
+The Dashboard shows environment-overridden field names but never their values, identities, or file paths. Overridden controls are intentionally blank or indeterminate, including under a managed lock; the active environment value and configured value underneath are not serialized. Managed policy makes the panel read-only; if the managed layer cannot be inspected safely, writes are refused rather than falling through to user configuration. Global Gateway and pairing grants remain additive to this Buzz-specific policy, and pairing identities are never exposed.
 
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
 

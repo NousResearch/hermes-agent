@@ -50,7 +50,11 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { PluginSlot } from "@/plugins";
+import {
+  PluginSlot,
+  useConfigSectionIcons,
+  useConfigSectionNames,
+} from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -89,11 +93,13 @@ const CATEGORY_ICONS: Record<
 function CategoryIcon({
   category,
   className,
+  pluginIcon,
 }: {
   category: string;
   className?: string;
+  pluginIcon?: React.ComponentType<{ className?: string }>;
 }) {
-  const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
+  const Icon = pluginIcon ?? CATEGORY_ICONS[category] ?? FileQuestion;
   return <Icon className={className ?? "h-4 w-4"} />;
 }
 
@@ -124,6 +130,8 @@ export default function ConfigPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const pluginConfigSections = useConfigSectionNames();
+  const pluginConfigSectionIcons = useConfigSectionIcons();
 
   useLayoutEffect(() => {
     if (!config || !schema) {
@@ -202,12 +210,6 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Set active category when categories load
-  useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
-    }
-  }, [categoryOrder, activeCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
@@ -222,17 +224,23 @@ export default function ConfigPage() {
   }, [yamlMode]);
 
   /* ---- Categories ---- */
-  const categories = useMemo(() => {
+  const categories = (() => {
     if (!schema) return [];
     const allCats = [
       ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
+        [
+          ...Object.values(schema).map((s) => String(s.category ?? "general")),
+          ...pluginConfigSections,
+        ],
       ),
     ];
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+  })();
+  const selectedCategory = categories.includes(activeCategory)
+    ? activeCategory
+    : (categories[0] ?? "");
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -242,8 +250,9 @@ export default function ConfigPage() {
       const cat = String(s.category ?? "general");
       counts[cat] = (counts[cat] || 0) + 1;
     }
+    for (const cat of pluginConfigSections) counts[cat] = 1;
     return counts;
-  }, [schema]);
+  }, [schema, pluginConfigSections]);
 
   /* ---- Search ---- */
   const isSearching = searchQuery.trim().length > 0;
@@ -268,12 +277,15 @@ export default function ConfigPage() {
   }, [isSearching, lowerSearch, schema]);
 
   /* ---- Active tab fields ---- */
-  const activeFields = useMemo(() => {
-    if (!schema || isSearching) return [];
-    return Object.entries(schema).filter(
-      ([, s]) => String(s.category ?? "general") === activeCategory,
-    );
-  }, [schema, activeCategory, isSearching]);
+  const activeFields = !schema || isSearching
+    ? []
+    : Object.entries(schema).filter(
+        ([, s]) => String(s.category ?? "general") === selectedCategory,
+      );
+  const activePluginSection =
+    !isSearching && pluginConfigSections.includes(selectedCategory)
+      ? `config:section:${selectedCategory}`
+      : null;
 
   /* ---- Handlers ---- */
   const handleSave = async () => {
@@ -325,7 +337,7 @@ export default function ConfigPage() {
     if (scopedFields.length === 0) return;
     const scopeLabel = isSearching
       ? t.config.searchResults
-      : prettyCategoryName(activeCategory);
+      : prettyCategoryName(selectedCategory);
     let next: Record<string, unknown> = config;
     for (const [key] of scopedFields) {
       next = setNestedValue(next, key, getNestedValue(defaults, key));
@@ -391,7 +403,7 @@ export default function ConfigPage() {
         !showCategory &&
         section &&
         section !== lastSection &&
-        section !== activeCategory;
+        section !== selectedCategory;
       lastSection = section;
       lastCat = cat;
 
@@ -402,6 +414,7 @@ export default function ConfigPage() {
               <CategoryIcon
                 category={cat}
                 className="h-4 w-4 text-muted-foreground"
+                pluginIcon={pluginConfigSectionIcons[cat]}
               />
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
@@ -432,7 +445,6 @@ export default function ConfigPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -468,11 +480,11 @@ export default function ConfigPage() {
             className="hidden"
             onChange={handleImport}
           />
-          {!yamlMode &&
+          {!yamlMode && !activePluginSection &&
             (() => {
               const resetScopeLabel = isSearching
                 ? t.config.searchResults
-                : prettyCategoryName(activeCategory);
+                : prettyCategoryName(selectedCategory);
               const resetTitle = t.config.resetScopeTooltip.replace(
                 "{scope}",
                 resetScopeLabel,
@@ -510,7 +522,7 @@ export default function ConfigPage() {
             >
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
-          ) : (
+          ) : activePluginSection ? null : (
             <Button
               size="sm"
               className="uppercase"
@@ -564,7 +576,7 @@ export default function ConfigPage() {
 
                 <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
                   {categories.map((cat) => {
-                    const isActive = !isSearching && activeCategory === cat;
+                    const isActive = !isSearching && selectedCategory === cat;
 
                     return (
                       <ListItem
@@ -579,6 +591,7 @@ export default function ConfigPage() {
                         <CategoryIcon
                           category={cat}
                           className="h-3.5 w-3.5 shrink-0"
+                          pluginIcon={pluginConfigSectionIcons[cat]}
                         />
                         <span className="flex-1 truncate">
                           {prettyCategoryName(cat)}
@@ -601,7 +614,9 @@ export default function ConfigPage() {
           </aside>
 
           <div className="flex-1 min-w-0">
-            {isSearching ? (
+            {activePluginSection && !isSearching ? (
+              <PluginSlot name={activePluginSection} />
+            ) : isSearching ? (
               <Card>
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
@@ -635,10 +650,10 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <CategoryIcon
-                        category={activeCategory}
+                        category={selectedCategory}
                         className="h-4 w-4"
                       />
-                      {prettyCategoryName(activeCategory)}
+                      {prettyCategoryName(selectedCategory)}
                     </CardTitle>
                     <Badge tone="secondary" className="text-xs">
                       {activeFields.length}{" "}
@@ -666,7 +681,7 @@ export default function ConfigPage() {
           "{scope}",
           isSearching
             ? t.config.searchResults
-            : prettyCategoryName(activeCategory),
+            : prettyCategoryName(selectedCategory),
         )}
         description={`This will reset ${
           (isSearching ? searchMatchedFields : activeFields).length

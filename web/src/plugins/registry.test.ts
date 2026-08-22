@@ -9,7 +9,11 @@
  * Toast/useToast/useConfirmDelete on the plugin SDK". See issue #50547.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { exposePluginSDK } from "./registry";
+import {
+  exposePluginSDK,
+  getPluginComponent,
+  unregisterPlugin,
+} from "./registry";
 
 describe("plugin SDK dialog/toast surface", () => {
   beforeEach(() => {
@@ -34,13 +38,31 @@ describe("plugin SDK dialog/toast surface", () => {
     expect(sdk.components.Toast).toBeDefined();
   });
 
-  it("exposes useToast and useConfirmDelete on hooks", () => {
+  it("exposes useToast and useConfirmDelete on hooks without changing SDK 1.1.0", () => {
     exposePluginSDK();
-    const sdk = (globalThis as unknown as { window: { __HERMES_PLUGIN_SDK__: { components: Record<string, unknown>; hooks: Record<string, unknown> } } }).window.__HERMES_PLUGIN_SDK__;
+    const sdk = (globalThis as unknown as { window: { __HERMES_PLUGIN_SDK__: { sdkVersion: string; components: Record<string, unknown>; hooks: Record<string, unknown> } } }).window.__HERMES_PLUGIN_SDK__;
+    expect(sdk.sdkVersion).toBe("1.1.0");
     expect(typeof sdk.hooks.useToast).toBe("function");
     expect(typeof sdk.hooks.useConfirmDelete).toBe("function");
     // Original React hooks still present (no accidental removal).
     expect(typeof sdk.hooks.useState).toBe("function");
     expect(typeof sdk.hooks.useCallback).toBe("function");
+  });
+
+  it("preserves untagged registration for ordinary unmanaged plugins", () => {
+    exposePluginSDK();
+    const OrdinaryPlugin = () => null;
+    const registry = (globalThis as unknown as {
+      window: {
+        __HERMES_PLUGINS__: {
+          register: (name: string, component: () => null) => void;
+        };
+      };
+    }).window.__HERMES_PLUGINS__;
+
+    registry.register("ordinary-plugin", OrdinaryPlugin);
+
+    expect(getPluginComponent("ordinary-plugin")).toBe(OrdinaryPlugin);
+    unregisterPlugin("ordinary-plugin");
   });
 });

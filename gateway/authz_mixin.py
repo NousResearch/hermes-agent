@@ -18,6 +18,7 @@ import time -> no import cycle. The lazy import preserves the exact logger name
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Optional
 
 from gateway.config import Platform
@@ -72,6 +73,27 @@ def _platform_gate_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _platform_gate_env_present(name: str) -> tuple[bool, str]:
+    """Read a scoped platform gate while preserving absent versus empty."""
+    if not name:
+        return False, ""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    scope = current_secret_scope()
+    multiplex = is_multiplex_active()
+    if scope is not None:
+        if name in scope:
+            value = scope.get(name)
+            return True, "" if value is None else str(value).strip()
+        if multiplex:
+            return False, ""
+    elif multiplex:
+        return False, ""
+    if name not in os.environ:
+        return False, ""
+    return True, str(os.environ[name]).strip()
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -85,6 +107,55 @@ def _coerce_allow_set(raw) -> set[str]:
     if isinstance(raw, list):
         return {str(part).strip() for part in raw if str(part).strip()}
     return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
+def _normalize_plugin_allow_set(values: set[str], normalizer) -> set[str]:
+    """Canonicalize plugin principals while preserving wildcard semantics."""
+    normalized_values = set()
+    for value in values:
+        if value == "*":
+            normalized_values.add(value)
+            continue
+        normalized = normalizer(value)
+        if normalized:
+            normalized_values.add(normalized)
+    return normalized_values
+
+
+def _resolve_plugin_authorization(resolver, profile) -> dict[str, str | bool]:
+    """Acquire and strictly normalize a plugin's central authorization policy.
+
+    Resolver policy is intentionally a narrow, fail-closed schema.  The only
+    accepted fields are a list of string identities and a real boolean flag;
+    callers exception-contain this complete transaction.
+    """
+    resolved = resolver(profile)
+    if resolved is None:
+        return {}
+    if not isinstance(resolved, Mapping):
+        raise TypeError("authorization resolver must return a mapping")
+
+    supported_keys = {"allowed_users", "allow_all_users"}
+    keys = set(resolved)
+    if not keys <= supported_keys:
+        raise ValueError("authorization resolver returned unsupported fields")
+
+    normalized: dict[str, str | bool] = {}
+    if "allowed_users" in keys:
+        allowed_users = resolved["allowed_users"]
+        if not isinstance(allowed_users, list) or not all(
+            isinstance(identity, str) for identity in allowed_users
+        ):
+            raise TypeError("allowed_users must be a list of strings")
+        normalized["allowed_users"] = ",".join(allowed_users)
+
+    if "allow_all_users" in keys:
+        allow_all_users = resolved["allow_all_users"]
+        if not isinstance(allow_all_users, bool):
+            raise TypeError("allow_all_users must be a boolean")
+        normalized["allow_all_users"] = allow_all_users
+
+    return normalized
 
 
 class GatewayAuthorizationMixin:
@@ -389,15 +460,26 @@ class GatewayAuthorizationMixin:
         *,
         allow_adapter_delegation: bool = True,
     ) -> bool:
-        """
-        Check if a user is authorized to use the bot.
-        
-        Checks in order:
-        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
-        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
-        5. Default: deny
+        """Compatibility entry point for the shared effective predicate."""
+        return self._is_effectively_authorized(
+            source,
+            allow_adapter_delegation=allow_adapter_delegation,
+        )
+
+    def _is_effectively_authorized(
+        self,
+        source: SessionSource,
+        *,
+        allow_adapter_delegation: bool = True,
+    ) -> bool:
+        """Side-effect-free effective authorization shared with adapter preflight.
+
+        Gateway dispatch calls this through :meth:`_is_user_authorized` and
+        adapter preflight calls the runner-installed authorization callback. Both
+        therefore use the same canonical plugin identity, transport profile,
+        scoped environment, resolver, pairing, plugin/global allowlists,
+        wildcard, and allow-all decision. Any acquisition/normalization failure
+        denies.
         """
         from gateway.run import logger
         # Home Assistant events are system-generated (state changes), not
@@ -560,23 +642,58 @@ class GatewayAuthorizationMixin:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
 
-        # Plugin platforms: check the registry for auth env var names
+        plugin_authorization: dict[str, str | bool] = {}
+        plugin_entry = None
+
+        # Plugin platforms: check the registry for auth env var names and an
+        # optional live config-backed policy resolver.
         if source.platform not in platform_env_map:
             try:
                 from gateway.platform_registry import platform_registry
 
-                entry = platform_registry.get(source.platform.value)
-                if entry:
-                    if entry.allowed_users_env:
-                        platform_env_map[source.platform] = entry.allowed_users_env
-                    if entry.allow_all_env:
-                        platform_allow_all_map[source.platform] = entry.allow_all_env
+                plugin_entry = platform_registry.get(source.platform.value)
+                if plugin_entry:
+                    if plugin_entry.allowed_users_env:
+                        platform_env_map[source.platform] = plugin_entry.allowed_users_env
+                    if plugin_entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = plugin_entry.allow_all_env
+                    if plugin_entry.authorization_config_fn is not None:
+                        try:
+                            plugin_authorization = _resolve_plugin_authorization(
+                                plugin_entry.authorization_config_fn,
+                                adapter_profile,
+                            )
+                        except Exception:
+                            return False
             except Exception:
-                pass
+                return False
+
+        normalizer = (
+            plugin_entry.authorization_user_normalizer
+            if plugin_entry is not None
+            else None
+        )
+        canonical_user_id = user_id
+        if normalizer is not None:
+            try:
+                canonical_user_id = normalizer(user_id)
+            except Exception:
+                return False
+            if not canonical_user_id:
+                return False
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
+        try:
+            allow_all_present, allow_all_value = _platform_gate_env_present(
+                platform_allow_all_var
+            )
+        except Exception:
+            return False
+        if not allow_all_present and "allow_all_users" in plugin_authorization:
+            if plugin_authorization["allow_all_users"]:
+                return True
+        if allow_all_value.lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -606,11 +723,24 @@ class GatewayAuthorizationMixin:
         # the source has no profile or the profile isn't registered.
         platform_name = source.platform.value if source.platform else ""
         pairing_store = self._pairing_store_for(source)
-        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
+        if pairing_store is not None and pairing_store.is_approved(
+            platform_name, canonical_user_id
+        ):
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
+        platform_allowlist_var = platform_env_map.get(source.platform, "")
+        try:
+            allowlist_present, platform_allowlist = _platform_gate_env_present(
+                platform_allowlist_var
+            )
+        except Exception:
+            return False
+        if not allowlist_present and "allowed_users" in plugin_authorization:
+            resolved_allowed_users = plugin_authorization["allowed_users"]
+            if not isinstance(resolved_allowed_users, str):
+                return False
+            platform_allowlist = resolved_allowed_users
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
@@ -682,7 +812,7 @@ class GatewayAuthorizationMixin:
                             else None
                         )
                         if callable(dm_check):
-                            return bool(dm_check(user_id))
+                            return bool(dm_check(canonical_user_id))
                     return True
             # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
             # group_allow_from at intake but do not override enforces_own_access_policy.
@@ -697,7 +827,7 @@ class GatewayAuthorizationMixin:
                     adapter_allow = extra.get("allow_from")
                 if adapter_allow:
                     allowed = _coerce_allow_set(adapter_allow)
-                    if user_id in allowed or "*" in allowed:
+                    if canonical_user_id in allowed or "*" in allowed:
                         return True
             # No allowlists configured -- check global allow-all flag
             return _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
@@ -748,19 +878,39 @@ class GatewayAuthorizationMixin:
         # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            platform_allowed_ids = {
+                uid.strip() for uid in platform_allowlist.split(",") if uid.strip()
+            }
+            if normalizer is not None:
+                try:
+                    platform_allowed_ids = _normalize_plugin_allow_set(
+                        platform_allowed_ids, normalizer
+                    )
+                except Exception:
+                    return False
+            allowed_ids.update(platform_allowed_ids)
         if group_user_allowlist:
             allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
         if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+            global_allowed_ids = {
+                uid.strip() for uid in global_allowlist.split(",") if uid.strip()
+            }
+            if normalizer is not None:
+                try:
+                    global_allowed_ids = _normalize_plugin_allow_set(
+                        global_allowed_ids, normalizer
+                    )
+                except Exception:
+                    return False
+            allowed_ids.update(global_allowed_ids)
 
         # "*" in any allowlist means allow everyone (consistent with
         # SIGNAL_GROUP_ALLOWED_USERS precedent)
         if "*" in allowed_ids:
             return True
 
-        check_ids = {user_id}
-        if "@" in user_id:
+        check_ids = {canonical_user_id}
+        if normalizer is None and "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
         # WhatsApp (Baileys + Cloud): resolve phone↔LID / JID aliases so

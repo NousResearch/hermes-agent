@@ -51,6 +51,9 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `plugins:bottom`    — bottom of /plugins page
  *  - `config:top`       — top of /config page
  *  - `config:bottom`    — bottom of /config page
+ *  - `config:section:*` — plugin-owned entry in Config's Sections list;
+ *                         the suffix is the section key (for example,
+ *                         `config:section:buzz`)
  *  - `env:top`          — top of /env (Keys) page
  *  - `env:bottom`       — bottom of /env (Keys) page
  *  - `docs:top`         — top of /docs page (above the docs iframe)
@@ -100,6 +103,11 @@ type SlotListener = () => void;
 interface SlotEntry {
   plugin: string;
   component: React.ComponentType;
+  metadata?: SlotMetadata;
+}
+
+export interface SlotMetadata {
+  icon?: React.ComponentType<{ className?: string }>;
 }
 
 /** Map<slotName, SlotEntry[]>. Entries are appended in registration order. */
@@ -126,10 +134,11 @@ export function registerSlot(
   plugin: string,
   slot: string,
   component: React.ComponentType,
+  metadata?: SlotMetadata,
 ): void {
   const existing = _slotRegistry.get(slot) ?? [];
   const filtered = existing.filter((e) => e.plugin !== plugin);
-  filtered.push({ plugin, component });
+  filtered.push({ plugin, component, metadata });
   _slotRegistry.set(slot, filtered);
   _notifySlots();
 }
@@ -138,6 +147,57 @@ export function registerSlot(
  *  registry state. */
 export function getSlotEntries(slot: string): SlotEntry[] {
   return (_slotRegistry.get(slot) ?? []).slice();
+}
+
+const CONFIG_SECTION_PREFIX = "config:section:";
+
+/** Config categories contributed by currently registered plugin slots. */
+export function getConfigSectionNames(): string[] {
+  return [..._slotRegistry.keys()]
+    .filter((slot) => slot.startsWith(CONFIG_SECTION_PREFIX))
+    .map((slot) => slot.slice(CONFIG_SECTION_PREFIX.length))
+    .filter(Boolean)
+    .sort();
+}
+
+/** Icons contributed by currently registered plugin-owned Config sections. */
+export function getConfigSectionIcons(): Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> {
+  const icons: Record<string, React.ComponentType<{ className?: string }>> = {};
+  for (const [slot, entries] of _slotRegistry.entries()) {
+    if (!slot.startsWith(CONFIG_SECTION_PREFIX)) continue;
+    const section = slot.slice(CONFIG_SECTION_PREFIX.length);
+    const icon = entries.find((entry) => entry.metadata?.icon)?.metadata?.icon;
+    if (section && icon) icons[section] = icon;
+  }
+  return icons;
+}
+
+/** Reactively track plugin-owned Config sections as plugins load/unload. */
+export function useConfigSectionNames(): string[] {
+  const [sections, setSections] = useState<string[]>(getConfigSectionNames);
+  useEffect(() => {
+    const refresh = () => setSections(getConfigSectionNames());
+    refresh();
+    return onSlotRegistered(refresh);
+  }, []);
+  return sections;
+}
+
+/** Reactively track icons for plugin-owned Config sections. */
+export function useConfigSectionIcons(): Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> {
+  const [icons, setIcons] = useState(getConfigSectionIcons);
+  useEffect(() => {
+    const refresh = () => setIcons(getConfigSectionIcons());
+    refresh();
+    return onSlotRegistered(refresh);
+  }, []);
+  return icons;
 }
 
 /** Subscribe to registry changes. Returns an unsubscribe function. */

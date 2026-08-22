@@ -80,11 +80,21 @@ export type BuildWsAuthParam = () => Promise<[string, string]>;
 // Registry surface (window.__HERMES_PLUGINS__)
 // ---------------------------------------------------------------------------
 
+export interface PluginSlotMetadata {
+  /** Config-section icon; ignored by host slots that do not render metadata. */
+  icon?: ComponentType<{ className?: string }>;
+}
+
 export interface PluginRegistry {
   /** Register the plugin's main tab component by manifest name. */
   register(name: string, component: ComponentType<Record<string, never>>): void;
   /** Register a component into a named host slot. */
-  registerSlot(slot: string, name: string, component: ComponentType): void;
+  registerSlot(
+    plugin: string,
+    slot: string,
+    component: ComponentType,
+    metadata?: PluginSlotMetadata,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------

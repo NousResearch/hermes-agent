@@ -9386,6 +9386,24 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _task_has_review_handoff(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True if ``task_id`` has ever been through a review handoff.
+
+    A review handoff (``request_review``) stamps a ``review_requested`` event;
+    the subsequent reviewer verdict comments (``changes_requested``, approval
+    notes) legitimately quote the PR URL under review. Tasks with this history
+    are intrinsically tied to a PR, so a PR URL appearing in their comments is
+    *expected*, not a "duplicate work" signal. See issue #85663.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is not None
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9526,13 +9544,20 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    #    Skip for tasks that have a review-handoff history (issue #85663): a
+    #    reviewer's verdict comment (e.g. ``changes_requested``) quotes the PR
+    #    URL under review, which would otherwise read as "a worker opened a
+    #    duplicate PR" and strand a review task in ``ready`` after it is
+    #    unblocked. A review-handoff task is intrinsically tied to a PR, so the
+    #    PR-URL-in-comments signal is expected, not a duplicate-work signal.
+    if not _task_has_review_handoff(conn, task_id):
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

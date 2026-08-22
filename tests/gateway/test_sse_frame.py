@@ -76,6 +76,82 @@ def test_sse_frame_ensure_ascii_false_reproduces_session_event_stream():
         assert _sse_frame(payload, event=name, ensure_ascii=False) == old_session(name, payload)
 
 
+def test_sse_frame_ensure_ascii_false_survives_lone_surrogate():
+    """``ensure_ascii=False`` leaves a lone UTF-16 surrogate raw in the
+    serialized JSON, and UTF-8 cannot encode one.  Encoding it must not raise:
+    a raise here propagates into the caller's SSE writer loop, which stops
+    consuming and closes a response that already sent HTTP 200, so the client
+    hangs with no terminal event.
+    """
+    payload = {"text": "truncated emoji \ud83d pasted from a clipboard"}
+
+    raw = _sse_frame(payload, event="run.started", ensure_ascii=False)
+
+    assert isinstance(raw, bytes)
+    assert raw.startswith(b"event: run.started\n")
+    assert raw.endswith(b"\n\n")
+    decoded = raw.decode("utf-8")
+    body = json.loads(decoded.split("data: ", 1)[1].strip())
+    # Repaired, not dropped: the surrogate becomes U+FFFD and the surrounding
+    # text is delivered intact.
+    assert "�" in body["text"]
+    assert "\ud83d" not in body["text"]
+    assert body["text"].startswith("truncated emoji ")
+    assert body["text"].endswith(" pasted from a clipboard")
+
+
+def test_sse_frame_ensure_ascii_false_repairs_surrogate_in_nested_payload():
+    """The session event stream nests user text under ``user_message`` — the
+    repair happens on the serialized frame, so nesting depth is irrelevant.
+    """
+    payload = {
+        "user_message": {"role": "user", "content": "hi \udccc there"},
+        "session_id": "s1",
+        "run_id": "r1",
+        "seq": 1,
+    }
+
+    raw = _sse_frame(payload, event="run.started", ensure_ascii=False)
+
+    body = json.loads(raw.decode("utf-8").split("data: ", 1)[1].strip())
+    assert body["user_message"]["content"] == "hi � there"
+    assert body["session_id"] == "s1"
+    assert body["seq"] == 1
+
+
+def test_sse_frame_default_escapes_lone_surrogate_without_repair():
+    """``ensure_ascii=True`` (the default, used by every other writer) escapes
+    the surrogate as ``\\udXXX`` text, so it never reaches the UTF-8 encoder.
+    That path must keep passing the code point through untouched.
+    """
+    payload = {"text": "hi \ud83d there"}
+
+    out = _sse_frame(payload)
+
+    assert out == _inline_frame(payload)
+    assert b"\\ud83d" in out
+    # Escaped, so a JSON parser still reconstructs the original surrogate.
+    assert json.loads(out.decode().split("data: ", 1)[1].strip()) == payload
+
+
+def test_sse_frame_byte_contract_unchanged_for_encodable_payloads():
+    """The repair is reachable only from the encoder failing, so every payload
+    that already encoded must produce byte-identical output — in both modes.
+    """
+    for data in (
+        {"id": "c1", "choices": [{"delta": {"role": "assistant"}}]},
+        {"text": "café — Münchner 🏔"},
+        {"content": "héllo wörld ✓", "seq": 3},
+        {"nested": {"deep": ["plain ascii", 1, None, True]}},
+    ):
+        for event in (None, "session.update"):
+            prefix = f"event: {event}\n" if event else ""
+            for ensure_ascii in (True, False):
+                assert _sse_frame(data, event=event, ensure_ascii=ensure_ascii) == (
+                    f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
+                )
+
+
 def test_sse_frame_typed_object_roundtrip():
     obj = {"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}]}
     out = _sse_frame(obj)

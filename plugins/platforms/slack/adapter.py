@@ -708,6 +708,41 @@ _SOCKET_CLIENT_TASK_ATTRS = (
 # call must not be able to hold up shutdown indefinitely.
 _SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
 
+# ``SocketModeClient.close()`` begins with websocket disconnect I/O before it
+# closes the shared aiohttp session. A half-dead transport can wedge that await
+# indefinitely, which strands the watchdog inside teardown and prevents the
+# replacement handler from ever starting.
+_SOCKET_HANDLER_CLOSE_TIMEOUT_S = 3.0
+
+
+def _consume_socket_close_result(task: asyncio.Task) -> None:
+    """Drain a timed-out close task if it eventually finishes."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # pragma: no cover - defensive logging
+        logger.debug("[Slack] Timed-out Socket Mode close failed", exc_info=True)
+
+
+async def _await_socket_close(awaitable: Any, timeout: float) -> bool:
+    """Await close work with a strict bound and cancellation-safe cleanup."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()
+        task.add_done_callback(_consume_socket_close_result)
+        raise
+
+    if task not in done:
+        task.cancel()
+        task.add_done_callback(_consume_socket_close_result)
+        return False
+
+    await task
+    return True
+
 
 async def _cancel_socket_tasks(tasks: Any) -> None:
     """Cancel Socket Mode tasks and wait, with a bound, for them to finish.
@@ -1269,7 +1304,31 @@ class SlackAdapter(BasePlatformAdapter):
 
         if handler is not None:
             try:
-                await handler.close_async()
+                closed = await _await_socket_close(
+                    handler.close_async(), _SOCKET_HANDLER_CLOSE_TIMEOUT_S
+                )
+                if not closed:
+                    raise asyncio.TimeoutError
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Slack] Socket Mode handler did not close within %.1fs; "
+                    "continuing reconnect",
+                    _SOCKET_HANDLER_CLOSE_TIMEOUT_S,
+                )
+                session = getattr(client, "aiohttp_client_session", None)
+                close_session = getattr(session, "close", None)
+                if callable(close_session):
+                    try:
+                        close_result = close_session()
+                        if inspect.isawaitable(close_result):
+                            await _await_socket_close(
+                                close_result, _SOCKET_HANDLER_CLOSE_TIMEOUT_S
+                            )
+                    except Exception:  # pragma: no cover - best-effort cleanup
+                        logger.debug(
+                            "[Slack] Timed-out Socket Mode session cleanup failed",
+                            exc_info=True,
+                        )
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning(
                     "[Slack] Error while closing Socket Mode handler: %s",

@@ -16,13 +16,15 @@ row sitting in the root store.
 """
 
 import sqlite3
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -251,3 +253,81 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     assert runner._session_db_handles == {}
     assert root_db._db._conn is None
     assert profile_db._db._conn is None
+
+
+@pytest.mark.asyncio
+async def test_shared_primary_routes_session_lifecycle_to_profile_store(
+    multiplex_homes, monkeypatch
+):
+    """Owner-scoped ingress must hand the whole session lifecycle to the route.
+
+    The default adapter still authorizes with its own secrets.  Once routing has
+    selected ``fitness``, however, session creation and both lazy DB properties
+    must resolve against that profile before transcript loading begins.
+    """
+    from agent import secret_scope
+    from gateway import run as run_mod
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+    from hermes_constants import get_hermes_home
+
+    root, profile = multiplex_homes
+    (root / ".env").write_text("ROUTE_SCOPE_TOKEN=owner\n", encoding="utf-8")
+    (profile / ".env").write_text("ROUTE_SCOPE_TOKEN=routed\n", encoding="utf-8")
+    monkeypatch.setattr(run_mod, "get_hermes_home", lambda: root)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.session_store = _make_store(root)
+    runner._async_session_store = AsyncSessionStore(runner.session_store)
+    runner._session_db_pinned = _SESSION_DB_UNPINNED
+    runner._session_db_handles = {}
+    runner._session_db_handles_lock = threading.Lock()
+    runner._resolve_profile_home_for_source = lambda _source: profile
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="shared-group",
+        chat_type="group",
+    )
+    event = SimpleNamespace(source=source)
+
+    async def _inner(_event, routed_source, _quick_key, _generation):
+        assert Path(get_hermes_home()) == profile
+        assert secret_scope.get_secret("ROUTE_SCOPE_TOKEN") == "routed"
+        entry = await runner.async_session_store.get_or_create_session(routed_source)
+        assert Path(runner.session_store._db.db_path) == profile / "state.db"
+        assert Path(runner._session_db._db.db_path) == profile / "state.db"
+        history = await runner.async_session_store.load_transcript(entry.session_id)
+        if not history:
+            await runner.async_session_store.append_to_transcript(
+                entry.session_id, {"role": "user", "content": "remember me"}
+            )
+        return entry.session_id, history
+
+    runner._handle_message_with_agent_inner = _inner
+
+    async def _authorized_owner_ingress(routed_event):
+        assert Path(get_hermes_home()) == root
+        assert secret_scope.get_secret("ROUTE_SCOPE_TOKEN") == "owner"
+        routed_event.source.profile = "fitness"
+        return await GatewayRunner._handle_message_with_agent(
+            runner, routed_event, routed_event.source, "route-key", 1
+        )
+
+    runner._handle_message = _authorized_owner_ingress
+    secret_scope.set_multiplex_active(True)
+    try:
+        handler = runner._make_default_profile_message_handler()
+        session_id, first_history = await handler(event)
+        repeated_session_id, second_history = await handler(event)
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert repeated_session_id == session_id
+    assert first_history == []
+    assert [(message["role"], message["content"]) for message in second_history] == [
+        ("user", "remember me")
+    ]
+    assert _session_ids(profile / "state.db") == {session_id}
+    assert _session_ids(root / "state.db") == set()

@@ -2173,7 +2173,7 @@ def _current_max_iterations() -> int:
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
-from contextlib import contextmanager as _contextmanager
+from contextlib import contextmanager as _contextmanager, nullcontext as _nullcontext
 
 
 # Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
@@ -2242,12 +2242,17 @@ def _profile_runtime_scope(profile_home: "Path"):
     from hermes_cli.env_loader import hydrate_profile_secret_sources
 
     home_token = set_hermes_home_override(str(profile_home))
-    hydrate_profile_secret_sources(Path(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    secret_token = None
     try:
-        yield
+        hydrate_profile_secret_sources(Path(profile_home))
+        secret_token = set_secret_scope(
+            build_profile_secret_scope(Path(profile_home))
+        )
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
     finally:
-        reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
 
@@ -18198,63 +18203,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        # Authorization and route stamping above intentionally run in the
+        # owning adapter's scope.  Once the turn is claimed, keep the routed
+        # scope through post-turn bookkeeping and durable-marker cleanup too;
+        # both paths resolve profile-local state after the agent returns.
+        _turn_scope_entered = False
         try:
-            try:
-                _agent_result = await self._handle_message_with_agent(
-                    event, source, _quick_key, _run_generation
+            _turn_scope = _nullcontext()
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                _turn_scope = _profile_runtime_scope(
+                    self._resolve_profile_home_for_source(source)
                 )
-            except TurnLeaseTimeoutError as exc:
-                # This is a rejected message, not a completed agent turn. Return
-                # before the /goal judge below so it cannot consume the resend
-                # notice and enqueue a synthetic continuation loop.
-                logger.error(
-                    "Rejecting turn for routing key %s on session %s after "
-                    "turn-lease timeout; transcript load was not started and "
-                    "the user must resend",
-                    _quick_key,
-                    exc.session_id,
-                )
-                return (
-                    "⏳ Another turn is still running on this session. To "
-                    "protect the transcript, this message was not processed. "
-                    "Wait for the active turn to finish, then resend it."
-                )
-            try:
-                await self._run_post_turn_hooks(
-                    agent_result=_agent_result,
-                    source=source,
-                    is_internal=is_internal,
-                    event=event,
-                )
-            except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
-            return _agent_result
+            with _turn_scope:
+                _turn_scope_entered = True
+                try:
+                    try:
+                        _agent_result = await self._handle_message_with_agent(
+                            event, source, _quick_key, _run_generation
+                        )
+                    except TurnLeaseTimeoutError as exc:
+                        # This is a rejected message, not a completed agent turn. Return
+                        # before the /goal judge below so it cannot consume the resend
+                        # notice and enqueue a synthetic continuation loop.
+                        logger.error(
+                            "Rejecting turn for routing key %s on session %s after "
+                            "turn-lease timeout; transcript load was not started and "
+                            "the user must resend",
+                            _quick_key,
+                            exc.session_id,
+                        )
+                        return (
+                            "⏳ Another turn is still running on this session. To "
+                            "protect the transcript, this message was not processed. "
+                            "Wait for the active turn to finish, then resend it."
+                        )
+                    try:
+                        await self._run_post_turn_hooks(
+                            agent_result=_agent_result,
+                            source=source,
+                            is_internal=is_internal,
+                            event=event,
+                        )
+                    except Exception as _goal_exc:
+                        logger.debug("post-turn hook failed: %s", _goal_exc)
+                    return _agent_result
+                finally:
+                    # MoA one-shot restore must run on EVERY exit path, not just
+                    # success. The restore data lives on the per-turn event object
+                    # (_moa_restore_override), which is discarded once the event goes
+                    # out of scope — so if _handle_message_with_agent raises, a restore
+                    # in the try block would be skipped and the MoA override would leak
+                    # permanently (every later message silently fans out through MoA).
+                    # Putting it in finally guarantees the revert on success, exception,
+                    # and interrupt alike.
+                    self._restore_moa_one_shot(event, _quick_key)
+                    self._restore_pending_one_turn_model_override(_quick_key)
+                    # Normal completion/exception/interrupt owns and clears this exact
+                    # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
+                    # the next unclean startup's recovery pass.
+                    await self._clear_durable_active_turn(event)
         finally:
-            # MoA one-shot restore must run on EVERY exit path, not just
-            # success. The restore data lives on the per-turn event object
-            # (_moa_restore_override), which is discarded once the event goes
-            # out of scope — so if _handle_message_with_agent raises, a restore
-            # in the try block would be skipped and the MoA override would leak
-            # permanently (every later message silently fans out through MoA).
-            # Putting it in finally guarantees the revert on success, exception,
-            # and interrupt alike.
-            self._restore_moa_one_shot(event, _quick_key)
-            self._restore_pending_one_turn_model_override(_quick_key)
-            # Normal completion/exception/interrupt owns and clears this exact
-            # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
-            # the next unclean startup's recovery pass.
-            await self._clear_durable_active_turn(event)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
+            # A context manager can fail before yielding. Restore one-shot state
+            # on that path too, but avoid doing so twice after a normal entry.
+            if not _turn_scope_entered:
+                self._restore_moa_one_shot(event, _quick_key)
+                self._restore_pending_one_turn_model_override(_quick_key)
+            # These process-local claims must be released even if profile-scope
+            # setup or durable cleanup raises.
             self._release_running_agent_state(_quick_key)
-            # Turn lease (#64934): release THIS turn's lease token — keyed by
-            # (routing key, run generation) so this unwind can only ever free
-            # the lease its own turn acquired, never a newer turn's.
             self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
@@ -19004,8 +19020,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
-        """Inner handler that runs under the _running_agents sentinel guard."""
+    async def _handle_message_with_agent(
+        self, event, source, _quick_key: str, run_generation: int
+    ):
+        """Run the routed session lifecycle in the selected profile scope.
+
+        Primary adapters enter through the default profile so authorization and
+        platform secrets remain owned by that adapter.  Route stamping happens
+        during that ingress path, but session creation and transcript loading
+        happen here, before ``_run_agent`` applies its narrower agent scope.  A
+        multiplexed turn therefore has to switch scopes at this boundary so
+        every session-store access and the eventual agent use the same DB.
+
+        Single-profile gateways keep the existing unscoped path unchanged.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._handle_message_with_agent_inner(
+                event, source, _quick_key, run_generation
+            )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        if Path(get_hermes_home()) == Path(profile_home):
+            return await self._handle_message_with_agent_inner(
+                event, source, _quick_key, run_generation
+            )
+        with _profile_runtime_scope(profile_home):
+            return await self._handle_message_with_agent_inner(
+                event, source, _quick_key, run_generation
+            )
+
+    async def _handle_message_with_agent_inner(
+        self, event, source, _quick_key: str, run_generation: int
+    ):
+        """Execute one turn after its profile storage scope has been selected."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")

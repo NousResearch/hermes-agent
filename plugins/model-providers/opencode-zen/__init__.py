@@ -206,6 +206,14 @@ opencode_zen = OpenCodeZenProfile(
     base_url="https://opencode.ai/zen/v1",
     default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
+    # Flat-namespace reseller that fronts vision-capable frontier models
+    # (Claude, GPT, Gemini). The provider API accepts image content inside
+    # tool-result messages, mirroring openrouter/nous semantics. Set here
+    # so ``_supports_media_in_tool_results`` returns True and the vision
+    # fast-path stays enabled for vision-capable models served through
+    # this proxy. Users who want aux-vision routing can still opt in via
+    # ``auxiliary.vision.provider`` in config.yaml.
+    supports_vision=True,
 )
 
 opencode_go = OpenCodeGoProfile(
@@ -215,6 +223,16 @@ opencode_go = OpenCodeGoProfile(
     base_url="https://opencode.ai/zen/go/v1",
     default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # Flat-namespace reseller. Anthropic Messages surface (used by MiniMax
+    # and Qwen 3.7 on this proxy) accepts image content inside tool-result
+    # messages; OpenAI Chat Completions surface (used by GLM/Kimi) accepts
+    # image_url parts on user and tool messages. Treat the provider as
+    # vision-capable for routing decisions; per-model vision still
+    # resolves through models.dev or the ``model.supports_vision`` /
+    # ``providers.<name>.models.<model>.supports_vision`` config
+    # overrides. Users who want aux-vision routing can still opt in via
+    # ``auxiliary.vision.provider`` in config.yaml.
+    supports_vision=True,
 )
 
 register_provider(opencode_zen)

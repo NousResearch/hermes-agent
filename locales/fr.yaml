@@ -1,6 +1,17 @@
 # Hermes static-message catalog -- French (français)
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Propriétaire"
+  administrator: "Administrateur"
+  unknown: "inconnu"
+  attachment_label: "[Pièce jointe {index}]"
+  attachment_type: "Type : {value}"
+  attachment_filename: "Nom du fichier : {value}"
+  attachment_dimensions: "Dimensions : {width}x{height}"
+  attachment_size: "Taille : {value}"
+  attachment_url: "URL : {value}"
+
 approval:
   dangerous_header: "⚠️  COMMANDE DANGEREUSE : {description}"
   choose_long:     "      [o]ne fois  |  [s]ession  |  [t]oujours  |  [r]efuser"

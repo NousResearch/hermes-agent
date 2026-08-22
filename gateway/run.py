@@ -1469,12 +1469,13 @@ def _build_replay_entry(
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_QQBOT_OBSERVED_CONTEXT_PROMPT_MARKER = "observed QQ group context"
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+    """Return True for group turns that may include observed chatter.
 
     Telegram's observe-unmentioned mode persists skipped group chatter so a
     later @mention can see it. Those rows must not replay as ordinary user
@@ -1484,7 +1485,10 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     and unit-testable.
     """
 
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+    return bool(channel_prompt and any(marker in channel_prompt for marker in (
+        _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
+        _QQBOT_OBSERVED_CONTEXT_PROMPT_MARKER,
+    )))
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -16851,6 +16855,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+
+        # Some adapters persist unaddressed group traffic in a shared session
+        # but retain the sender identity until this point for authorization.
+        # Switch only after the access gate so a synthetic user-less source
+        # cannot bypass pairings or allowlists. Commands deliberately keep the
+        # sender-scoped source for command authorization.
+        if (
+                getattr(event, "metadata", {}).get("shared_group_session") is True
+                and source.chat_type in {"group", "forum", "channel"}
+        ):
+            source = dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+            event.source = source
 
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events

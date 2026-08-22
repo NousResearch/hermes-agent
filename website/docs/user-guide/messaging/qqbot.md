@@ -1,6 +1,6 @@
 # QQ Bot
 
-Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private (C2C), group @-mentions, guild, and direct messages with voice transcription.
+Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private (C2C), group @-mentions, optional full group messages, guild, and direct messages with voice transcription.
 
 ## Overview
 
@@ -69,6 +69,7 @@ platforms:
     extra:
       app_id: "your-app-id"
       client_secret: "your-secret"
+      bot_openid: "your-bot-member-openid" # required to recognize <@OPENID> in full mode when QQ omits mentions[].bot
       markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
@@ -76,12 +77,29 @@ platforms:
       group_policy: "open"       # open | allowlist | disabled
       group_allow_from:
         - "group_openid_1"
+      group_message_history_size: 500          # retained full-mode messages per group
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
 ```
+
+## Full Group Message Mode
+
+Enable "Receive all messages" for the QQ application to receive
+`GROUP_MESSAGE_CREATE` events. Hermes stores allowed group messages as
+context-only rows in the shared group session, but does not call the model or
+reply to ordinary messages. A full-mode message triggers Hermes only when it starts with `/` or
+the payload identifies a bot mention. QQ may also send a
+`GROUP_AT_MESSAGE_CREATE` event for the same mention; Hermes de-duplicates the
+active turn regardless of event order.
+
+On a later @-message, observed rows are supplied to the model in a separate
+context block rather than as prior user requests. This lets the model answer
+questions about earlier group traffic without treating ordinary chatter as an
+instruction. The group transcript follows normal Hermes session retention and
+compression behavior.
 
 ## Voice Messages (STT)
 

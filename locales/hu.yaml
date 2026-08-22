@@ -1,6 +1,17 @@
 # Hermes statikus üzenetkatalógus -- Magyar
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Tulajdonos"
+  administrator: "Rendszergazda"
+  unknown: "ismeretlen"
+  attachment_label: "[Melléklet {index}]"
+  attachment_type: "Típus: {value}"
+  attachment_filename: "Fájlnév: {value}"
+  attachment_dimensions: "Méretek: {width}x{height}"
+  attachment_size: "Méret: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
   choose_long:     "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"

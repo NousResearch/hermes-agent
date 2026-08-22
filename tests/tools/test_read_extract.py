@@ -20,6 +20,7 @@ from unittest import mock
 
 from tools.read_extract import (
     ExtractionError,
+    extract_document_bytes,
     extract_document_text,
     is_extractable_document,
 )
@@ -55,6 +56,47 @@ def _write_xlsx(path, *, workbook, rels, shared, sheets):
 
 _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_NS_PKG_R = "http://schemas.openxmlformats.org/package/2006/relationships"
+_NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+
+
+def _pptx_slide(paragraphs):
+    """paragraphs: list of lists of run-text; each inner list is one <a:p>."""
+    body = "".join(
+        "<a:p>" + "".join(f"<a:r><a:t>{t}</a:t></a:r>" for t in runs) + "</a:p>"
+        for runs in paragraphs
+    )
+    return (f'<p:sld xmlns:p="{_NS_P}" xmlns:a="{_NS_A}"><p:cSld><p:spTree>'
+            f'<p:sp><p:txBody>{body}</p:txBody></p:sp>'
+            f'</p:spTree></p:cSld></p:sld>')
+
+
+def _write_pptx(path, slides, *, presentation=True, order=None, rel_slides=None):
+    """slides: dict slideN (int) -> raw slide xml. order: r:id slide numbers."""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        for n, xml in slides.items():
+            z.writestr(f"ppt/slides/slide{n}.xml", xml)
+        if presentation:
+            seq = order if order is not None else sorted(slides)
+            sldids = "".join(
+                f'<p:sldId id="{256 + i}" r:id="rId{n}"/>' for i, n in enumerate(seq, 1)
+            )
+            z.writestr("ppt/presentation.xml",
+                       f'<p:presentation xmlns:p="{_NS_P}" xmlns:r="{_NS_R}">'
+                       f'<p:sldIdLst>{sldids}</p:sldIdLst></p:presentation>')
+            related = slides if rel_slides is None else rel_slides
+            rels = "".join(
+                f'<Relationship Id="rId{n}" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" '
+                f'Target="slides/slide{n}.xml"/>'
+                for n in related
+            )
+            z.writestr("ppt/_rels/presentation.xml.rels",
+                       f'<Relationships xmlns="{_NS_PKG_R}">{rels}</Relationships>')
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +108,7 @@ class TestIsExtractable(unittest.TestCase):
         self.assertTrue(is_extractable_document("a.ipynb"))
         self.assertTrue(is_extractable_document("/x/B.DOCX"))
         self.assertTrue(is_extractable_document("report.xlsx"))
+        self.assertTrue(is_extractable_document("/x/Deck.PPTX"))
 
     def test_unrecognized_extensions(self):
         self.assertFalse(is_extractable_document("a.py"))
@@ -223,6 +266,7 @@ class TestAnydocAbsent(unittest.TestCase):
         self.assertTrue(is_extractable_document("a.ipynb"))
         self.assertTrue(is_extractable_document("a.docx"))
         self.assertTrue(is_extractable_document("a.xlsx"))
+        self.assertTrue(is_extractable_document("a.pptx"))
 
 
 class TestAnydocInitLifecycle(unittest.TestCase):
@@ -523,6 +567,165 @@ class TestDocxExtraction(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# PowerPoint (.pptx)
+# ---------------------------------------------------------------------------
+
+class TestPptxExtraction(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_pptx_")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_slides_and_runs(self):
+        p = os.path.join(self.tmp, "d.pptx")
+        _write_pptx(p, {
+            1: _pptx_slide([["Hello ", "World"], ["second line"]]),
+            2: _pptx_slide([["Slide two"]]),
+        })
+        text = extract_document_text(p)
+        self.assertIn("Hello World", text)   # runs in a paragraph are joined
+        self.assertIn("second line", text)
+        self.assertIn("Slide two", text)
+        self.assertLess(text.index("Hello World"), text.index("Slide two"))
+
+    def test_backend_bytes_use_stdlib_extractor(self):
+        p = os.path.join(self.tmp, "remote.pptx")
+        _write_pptx(p, {1: _pptx_slide([["Remote deck"]])})
+        with open(p, "rb") as fh:
+            text = extract_document_bytes(fh.read(), "/workspace/remote.pptx")
+        self.assertIn("Remote deck", text)
+
+    def test_respects_presentation_order_not_filenames(self):
+        # Slides authored 1,2,3 but presented 3,1,2 (reordered in PowerPoint).
+        p = os.path.join(self.tmp, "ordered.pptx")
+        _write_pptx(p, {
+            1: _pptx_slide([["Alpha"]]),
+            2: _pptx_slide([["Bravo"]]),
+            3: _pptx_slide([["Charlie"]]),
+        }, order=[3, 1, 2])
+        text = extract_document_text(p)
+        self.assertLess(text.index("Charlie"), text.index("Alpha"))
+        self.assertLess(text.index("Alpha"), text.index("Bravo"))
+
+    def test_fallback_numeric_order_without_presentation(self):
+        # No presentation.xml → numeric filename order; slide10 must follow slide2.
+        p = os.path.join(self.tmp, "nopres.pptx")
+        _write_pptx(p, {
+            2: _pptx_slide([["Two"]]),
+            10: _pptx_slide([["Ten"]]),
+        }, presentation=False)
+        text = extract_document_text(p)
+        self.assertLess(text.index("Two"), text.index("Ten"))
+
+    def test_incomplete_relationships_fall_back_without_losing_slides(self):
+        p = os.path.join(self.tmp, "partial-rels.pptx")
+        _write_pptx(p, {
+            1: _pptx_slide([["One"]]),
+            2: _pptx_slide([["Two"]]),
+        }, order=[1, 2], rel_slides=[1])
+        text = extract_document_text(p)
+        self.assertIn("One", text)
+        self.assertIn("Two", text)
+        self.assertLess(text.index("One"), text.index("Two"))
+
+    def test_alternate_content_not_duplicated(self):
+        # WordArt and shapes with modern text effects are serialized inside
+        # <mc:AlternateContent>, carrying the SAME text in both the <mc:Choice>
+        # and <mc:Fallback> branches. The text must be extracted once, and a
+        # genuinely repeated value in a separate shape must survive.
+        p = os.path.join(self.tmp, "wordart.pptx")
+        slide = (
+            f'<p:sld xmlns:p="{_NS_P}" xmlns:a="{_NS_A}" xmlns:mc="{_NS_MC}" '
+            'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main">'
+            '<p:cSld><p:spTree>'
+            '<mc:AlternateContent>'
+            '<mc:Choice Requires="a14">'
+            '<p:sp><p:txBody><a:p><a:r><a:t>Fancy Title</a:t></a:r></a:p></p:txBody></p:sp>'
+            '</mc:Choice>'
+            '<mc:Fallback>'
+            '<p:sp><p:txBody><a:p><a:r><a:t>Fancy Title</a:t></a:r></a:p></p:txBody></p:sp>'
+            '</mc:Fallback>'
+            '</mc:AlternateContent>'
+            '<p:sp><p:txBody><a:p><a:r><a:t>Fancy Title</a:t></a:r></a:p></p:txBody></p:sp>'
+            '</p:spTree></p:cSld></p:sld>'
+        )
+        _write_pptx(p, {1: slide})
+        text = extract_document_text(p)
+        # one AlternateContent copy dropped, the standalone shape kept → 2, not 3
+        self.assertEqual(text.count("Fancy Title"), 2)
+
+    def test_alternate_content_selects_one_supported_choice(self):
+        p = os.path.join(self.tmp, "choices.pptx")
+        slide = (
+            f'<p:sld xmlns:p="{_NS_P}" xmlns:a="{_NS_A}" xmlns:mc="{_NS_MC}" '
+            'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main">'
+            '<p:cSld><p:spTree><mc:AlternateContent>'
+            '<mc:Choice Requires="a14"><a:p><a:r><a:t>Future</a:t></a:r></a:p></mc:Choice>'
+            '<mc:Choice Requires="a"><a:p><a:r><a:t>Supported</a:t></a:r></a:p></mc:Choice>'
+            '<mc:Fallback><a:p><a:r><a:t>Fallback</a:t></a:r></a:p></mc:Fallback>'
+            '</mc:AlternateContent></p:spTree></p:cSld></p:sld>'
+        )
+        _write_pptx(p, {1: slide})
+        text = extract_document_text(p)
+        self.assertIn("Supported", text)
+        self.assertNotIn("Future", text)
+        self.assertNotIn("Fallback", text)
+
+    def test_alternate_content_uses_fallback_when_choices_are_unknown(self):
+        p = os.path.join(self.tmp, "fallback.pptx")
+        slide = (
+            f'<p:sld xmlns:p="{_NS_P}" xmlns:a="{_NS_A}" xmlns:mc="{_NS_MC}" '
+            'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main">'
+            '<p:cSld><p:spTree><mc:AlternateContent>'
+            '<mc:Choice Requires="a14"><a:p><a:r><a:t>Future</a:t></a:r></a:p></mc:Choice>'
+            '<mc:Fallback><a:p><a:r><a:t>Compatible</a:t></a:r></a:p></mc:Fallback>'
+            '</mc:AlternateContent></p:spTree></p:cSld></p:sld>'
+        )
+        _write_pptx(p, {1: slide})
+        text = extract_document_text(p)
+        self.assertIn("Compatible", text)
+        self.assertNotIn("Future", text)
+
+    def test_inline_alternate_content_ignores_unselected_runs(self):
+        p = os.path.join(self.tmp, "inline-choice.pptx")
+        slide = (
+            f'<p:sld xmlns:p="{_NS_P}" xmlns:a="{_NS_A}" xmlns:mc="{_NS_MC}" '
+            'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main">'
+            '<p:cSld><p:spTree><a:p>'
+            '<mc:AlternateContent>'
+            '<mc:Choice Requires="a14"><a:r><a:t>Future</a:t></a:r></mc:Choice>'
+            '<mc:Fallback><a:r><a:t>Compatible</a:t></a:r></mc:Fallback>'
+            '</mc:AlternateContent>'
+            '<mc:AlternateContent>'
+            '<mc:Choice Requires="a"><a:r><a:t>Supported</a:t></a:r></mc:Choice>'
+            '<mc:Fallback><a:r><a:t>Wrong</a:t></a:r></mc:Fallback>'
+            '</mc:AlternateContent>'
+            '</a:p></p:spTree></p:cSld></p:sld>'
+        )
+        _write_pptx(p, {1: slide})
+        text = extract_document_text(p)
+        self.assertIn("CompatibleSupported", text)
+        self.assertNotIn("Future", text)
+        self.assertNotIn("Wrong", text)
+
+    def test_not_a_zip_raises(self):
+        p = os.path.join(self.tmp, "bad.pptx")
+        with open(p, "wb") as fh:
+            fh.write(b"plain bytes, not a zip")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
+    def test_no_slides_raises(self):
+        p = os.path.join(self.tmp, "empty.pptx")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("[Content_Types].xml", "<Types/>")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
+
+# ---------------------------------------------------------------------------
 # Excel workbooks (.xlsx) — #10740
 # ---------------------------------------------------------------------------
 
@@ -669,6 +872,13 @@ class TestReadFileToolIntegration(unittest.TestCase):
         res = json.loads(read_file_tool(p))
         self.assertTrue(res.get("extracted_document"))
         self.assertIn("Report body", res["content"])
+
+    def test_pptx_read_extracts(self):
+        p = os.path.join(self.tmp, "deck.pptx")
+        _write_pptx(p, {1: _pptx_slide([["Deck body"]])})
+        res = json.loads(read_file_tool(p))
+        self.assertTrue(res.get("extracted_document"))
+        self.assertIn("Deck body", res["content"])
 
     def test_backend_only_anydoc_path_uses_transferred_bytes(self):
         from tools import file_tools, read_extract

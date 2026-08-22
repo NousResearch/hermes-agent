@@ -1,10 +1,11 @@
 """Stdlib document-to-text extraction for ``read_file``.
 
-Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies.
+Supports Jupyter notebooks, DOCX, XLSX, and PPTX without adding hard
+dependencies.
 When the optional ``firecrawl-anydoc`` package is installed (``pip install
 firecrawl-anydoc``, imports as ``anydoc``), coverage widens to legacy Office
 (.doc/.ppt/.xls), OpenDocument, RTF, EPUB, and PDF — converted to Markdown by
-its Rust core. The stdlib extractors remain authoritative for their three
+its Rust core. The stdlib extractors remain authoritative for their four
 formats so behavior is identical whether or not anydoc is present.
 Malformed documents raise :class:`ExtractionError`; callers can then fall back to
 normal text/binary handling.
@@ -23,6 +24,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 from xml.etree import ElementTree as ET
@@ -35,11 +37,11 @@ __all__ = [
     "is_extractable_document",
 ]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".pptx"})
 # Formats handled only when the optional anydoc converter is installed.
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".ppt", ".pps", ".pot", ".pptm", ".ppsx", ".ppsm",
     ".xls", ".xlsm", ".xlsb",
     ".odt", ".ods", ".odp",
     ".rtf", ".epub", ".pdf",
@@ -57,6 +59,16 @@ _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+_NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+
+_SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+_PPTX_SLIDE_REL_TYPES = frozenset({
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+    "https://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+})
+_SUPPORTED_MCE_NAMESPACES = frozenset({_NS_P, _NS_A})
 
 
 class ExtractionError(Exception):
@@ -129,6 +141,8 @@ def extract_document_text(path: str) -> str:
         return _extract_docx(path)
     if ext == ".xlsx":
         return _extract_xlsx(path)
+    if ext == ".pptx":
+        return _extract_pptx(path)
     if ext in ANYDOC_EXTENSIONS:
         return _extract_anydoc(path)
     raise ExtractionError(f"Unsupported document type: {path!r}")
@@ -697,3 +711,181 @@ def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
     if typ == "e":
         return value or "#ERROR"
     return value
+
+
+# ---------------------------------------------------------------------------
+# PowerPoint (.pptx)
+# ---------------------------------------------------------------------------
+
+def _extract_pptx(path: str) -> str:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+            parts = _pptx_slide_parts(zf, names)
+            out: list[str] = []
+            for index, part in enumerate(parts, 1):
+                try:
+                    lines = _slide_text(zf.read(part))
+                except ET.ParseError:
+                    continue
+                out.append(f"# ── Slide {index} ──")
+                out.extend(lines)
+                if not any(line.strip() for line in lines):
+                    out.append("(no text)")
+                out.append("")
+    except zipfile.BadZipFile as exc:
+        raise ExtractionError(f"Not a valid PPTX: {exc}") from exc
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    if not out:
+        raise ExtractionError("PPTX has no slides with content")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _pptx_slide_parts(zf: zipfile.ZipFile, names: set[str]) -> list[str]:
+    """Ordered slide part names.
+
+    Preferred order comes from ``ppt/presentation.xml`` (``<p:sldId r:id=...>``)
+    resolved through its ``.rels`` — this respects slide reordering, which the
+    ``slideN.xml`` filenames do not. Falls back to numeric filename order when
+    the presentation part or its rels are missing/malformed.
+    """
+    p, r = f"{{{_NS_P}}}", f"{{{_NS_REL}}}"
+    try:
+        root = ET.fromstring(zf.read("ppt/presentation.xml"))
+        rids = [sld.get(f"{r}id") for sld in root.iter(f"{p}sldId")]
+    except (KeyError, ET.ParseError):
+        rids = []
+
+    rels = _pptx_rels(zf, names)
+    if rids:
+        ordered: list[str] = []
+        for rid in rids:
+            target = rels.get(rid or "")
+            if not target:
+                break
+            part = _pptx_part(target)
+            if part not in names:
+                break
+            ordered.append(part)
+        else:
+            return ordered
+
+    # Fallback: every ppt/slides/slideN.xml, in numeric (not lexical) order so
+    # slide10 sorts after slide2.
+    slides = [n for n in names if _SLIDE_RE.match(n)]
+    return sorted(slides, key=lambda n: int(_SLIDE_RE.match(n).group(1)))
+
+
+def _pptx_rels(zf: zipfile.ZipFile, names: set[str]) -> dict[str, str]:
+    rels_path = "ppt/_rels/presentation.xml.rels"
+    if rels_path not in names:
+        return {}
+    try:
+        root = ET.fromstring(zf.read(rels_path))
+    except ET.ParseError:
+        return {}
+    rel_tag = f"{{{_NS_PKG_REL}}}Relationship"
+    rels: dict[str, str] = {}
+    for rel in root.iter(rel_tag):
+        rid = rel.get("Id", "")
+        is_slide = rel.get("Type") in _PPTX_SLIDE_REL_TYPES
+        is_internal = rel.get("TargetMode", "Internal") == "Internal"
+        if not rid or not is_slide or not is_internal:
+            continue
+        rels[rid] = rel.get("Target", "")
+    return rels
+
+
+def _pptx_part(target: str) -> str:
+    target = target.lstrip("/")
+    return posixpath.normpath(target if target.startswith("ppt/") else f"ppt/{target}")
+
+
+def _xml_with_choice_scopes(
+    xml_bytes: bytes,
+) -> tuple[ET.Element, dict[ET.Element, dict[str, str]]]:
+    """Parse XML while retaining namespace scopes for MCE Choice elements."""
+    pending: dict[str, str] = {}
+    stack: list[dict[str, str]] = []
+    scopes: dict[ET.Element, dict[str, str]] = {}
+    choice_tag = f"{{{_NS_MC}}}Choice"
+    parser = ET.iterparse(BytesIO(xml_bytes), events=("start-ns", "start", "end"))
+    for event, value in parser:
+        if event == "start-ns":
+            prefix, uri = value
+            pending[prefix or ""] = uri
+        elif event == "start":
+            scope = stack[-1] if stack else {}
+            if pending:
+                scope = scope.copy()
+                scope.update(pending)
+                pending.clear()
+            stack.append(scope)
+            if value.tag == choice_tag:
+                scopes[value] = scope
+        else:
+            stack.pop()
+    return parser.root, scopes
+
+
+def _ignored_mce_elements(
+    root: ET.Element,
+    scopes: dict[ET.Element, dict[str, str]],
+) -> set[ET.Element]:
+    """Elements in unselected mc:AlternateContent branches."""
+    mc = f"{{{_NS_MC}}}"
+    choice_tag, fallback_tag = f"{mc}Choice", f"{mc}Fallback"
+    ignored: set[ET.Element] = set()
+    for alternate in root.iter(f"{mc}AlternateContent"):
+        branches = [child for child in alternate if child.tag in {choice_tag, fallback_tag}]
+        selected: ET.Element | None = None
+        fallback: ET.Element | None = None
+        for branch in branches:
+            if branch.tag == fallback_tag:
+                if fallback is None:
+                    fallback = branch
+                continue
+            required = branch.get("Requires", "").split()
+            scope = scopes.get(branch, {})
+            requirements_met = required and all(
+                scope.get(prefix) in _SUPPORTED_MCE_NAMESPACES
+                for prefix in required
+            )
+            if selected is None and requirements_met:
+                selected = branch
+        if selected is None:
+            selected = fallback
+        for child in alternate:
+            if child is not selected:
+                ignored.update(child.iter())
+    return ignored
+
+
+def _slide_text(xml_bytes: bytes) -> list[str]:
+    root, scopes = _xml_with_choice_scopes(xml_bytes)
+    a = f"{{{_NS_A}}}"
+    lines: list[str] = []
+    # MCE AlternateContent is a choice, not a container whose branches should
+    # all be traversed. Select the first Choice whose required namespaces this
+    # extractor understands, or its Fallback, and ignore every node in the
+    # other branches. This covers both whole-paragraph and inline alternatives.
+    # Element identity keeps genuinely repeated text elsewhere.
+    ignored_elements = _ignored_mce_elements(root, scopes)
+    # Each DrawingML paragraph (<a:p>) — including those inside text boxes,
+    # tables and placeholders — is one logical line. <a:t> holds the runs;
+    # <a:br> is a soft line break within a paragraph.
+    for para in root.iter(f"{a}p"):
+        if para in ignored_elements:
+            continue
+        buf: list[str] = []
+        for node in para.iter():
+            if node in ignored_elements:
+                continue
+            if node.tag == f"{a}t":
+                buf.append(node.text or "")
+            elif node.tag == f"{a}br":
+                buf.append("\n")
+        lines.extend("".join(buf).split("\n"))
+    return lines

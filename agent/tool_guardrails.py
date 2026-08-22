@@ -56,6 +56,7 @@ MUTATING_TOOL_NAMES = frozenset(
         "cronjob",
         "delegate_task",
         "process",
+        "watch",  # runs shell commands on a schedule
     }
 )
 

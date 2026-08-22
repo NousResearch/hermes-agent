@@ -58,6 +58,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "vision_analyze",
     "web_extract",
     "web_search",
+    "watch",  # background poll; no shared mutable session state
 })
 
 # Filesystem tools whose parallel admission is decided by path overlap.

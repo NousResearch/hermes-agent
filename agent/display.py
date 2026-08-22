@@ -463,6 +463,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
+        "watch": "command",
         "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
@@ -658,6 +659,7 @@ _TOOL_VERBS: dict[str, str] = {
     "skill_manage": "Updating skill",
     "delegate_task": "Delegating",
     "cronjob": "Scheduling",
+    "watch": "Watching",
     "clarify": "Asking",
     "memory": "Updating memory",
     "todo": "Updating tasks",

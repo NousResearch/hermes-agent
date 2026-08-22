@@ -4502,6 +4502,8 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         if provider is None:
+            global _openrouter_catalog_cache
+            _openrouter_catalog_cache = None
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()

@@ -106,3 +106,10 @@ plans/
 .gitattributes
 .hadolint.yaml
 .mailmap
+
+# Repo-root debug/export artifacts — must never reach image layers (COPY . .)
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+/default.tar.gz
+/*.tar.gz

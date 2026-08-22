@@ -99,10 +99,10 @@ apps/desktop/src/**/*.d.ts
 !apps/desktop/src/vite-env.d.ts
 
 # Repo-root build/debug artifacts that must never be committed
-log.txt
-sqlite_leak_fix.png
-*.png.bak
-default.tar.gz
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+/default.tar.gz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts

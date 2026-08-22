@@ -107,6 +107,17 @@ class TestGeminiModelCatalog:
         assert "gemini" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["gemini"]) >= 1
 
+    def test_setup_fallback_matches_model_picker_catalog(self):
+        """The setup wizard and model picker must offer the same Gemini models.
+
+        This invariant catches the direct-provider drift that can otherwise
+        leave a newly supported model visible on one configuration surface
+        but absent from the other.
+        """
+        from hermes_cli.setup import _DEFAULT_PROVIDER_MODELS
+
+        assert _DEFAULT_PROVIDER_MODELS["gemini"] == _PROVIDER_MODELS["gemini"]
+
 
 # ── Model Normalization ──
 

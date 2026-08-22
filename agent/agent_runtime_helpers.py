@@ -3837,7 +3837,11 @@ def looks_like_codex_intermediate_ack(
         return False
 
     has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        re.search(
+            r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
+            r"|i am now|i'm now|i am currently|i'm currently)\b",
+            assistant_text,
+        )
     )
     if not has_future_ack:
         return False
@@ -3862,6 +3866,14 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        "compiling",
+        "writing",
+        "generating",
+        "creating",
+        "building",
+        "preparing",
+        "assembling",
+        "putting together",
     )
     workspace_markers = (
         "directory",

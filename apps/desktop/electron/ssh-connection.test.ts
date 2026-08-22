@@ -921,6 +921,61 @@ test('failed ControlMaster close disowns the master instead of retrying it', asy
   assert.equal(spawnFn.calls.length, 1)
 })
 
+test('runSsh hides the console window of the ssh child on Windows', async () => {
+  // Electron's main process is GUI-subsystem, so a console-subsystem child gets
+  // its own visible console on Windows. runSsh is the funnel for every one-shot
+  // ssh invocation (open/isAlive/exec/forward/cancelForward), so without
+  // windowsHide the remote-backend readiness poll flashes a console repeatedly.
+  let captured: any = null
+
+  const spawnFn: any = (_cmd, _args, opts) => {
+    captured = opts
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+
+    child.kill = () => {}
+    process.nextTick(() => child.emit('close', 0))
+
+    return child
+  }
+
+  await runSsh(['host', 'true'], { timeoutMs: 5000, spawnFn })
+  assert.equal(captured?.windowsHide, true, 'every ssh child must be spawned with windowsHide')
+})
+
+test('no-mux: the persistent -N -L tunnel child hides its console window on Windows', async () => {
+  // mux defaults to false on Windows, so this branch IS the Windows path. The
+  // tunnel child outlives the whole remote session — an unhidden console would
+  // sit in the taskbar, and closing it would drop the port forward.
+  const localPort = 5111
+  let tunnelOpts: any = null
+
+  const spawnFn: any = (_cmd, args, opts) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => true
+
+    if (args.includes('-N')) {
+      tunnelOpts = opts
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+  await conn.forward(localPort, 9119)
+  assert.equal(tunnelOpts?.windowsHide, true, 'the persistent tunnel child must be spawned with windowsHide')
+})
+
 test('stopTunnelChild waits for process exit', async () => {
   const child: any = new EventEmitter()
   child.exitCode = null

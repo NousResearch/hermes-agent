@@ -17,16 +17,29 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
+def test_schtasks_encoding_ignores_python_utf8_mode(monkeypatch):
+    """Use the Windows locale encoding even when UTF-8 Mode changes the preferred encoding."""
+
+    monkeypatch.setattr(gateway_windows.locale, "getencoding", lambda: "cp932")
+    monkeypatch.setattr(
+        gateway_windows.locale,
+        "getpreferredencoding",
+        lambda *a, **k: "utf-8",
+    )
+
+    assert gateway_windows._schtasks_encoding() == "cp932"
+
+
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     """A broken/empty locale must not leave us without a decoder (issue #38172)."""
 
-    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
+    monkeypatch.setattr(gateway_windows.locale, "getencoding", lambda: "")
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
     def _boom(*args, **kwargs):
         raise RuntimeError("locale exploded")
 
-    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", _boom)
+    monkeypatch.setattr(gateway_windows.locale, "getencoding", _boom)
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
 
@@ -362,7 +375,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
 
 
 

@@ -13386,6 +13386,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # table only exists (and is only queryable) when the loadable tokenizer
     # is present — so we probe each before touching it (see optimize_fts).
     _FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+    _ORPHAN_MESSAGE_GC_BATCH_SIZE = 10_000
+
+    def prune_orphaned_messages(
+        self, *, batch_size: Optional[int] = _ORPHAN_MESSAGE_GC_BATCH_SIZE
+    ) -> int:
+        """Delete one bounded batch of messages whose session no longer exists.
+
+        Current session deletion paths remove canonical messages before their
+        session row, but older Hermes versions did not. Those historical rows
+        keep both ``messages`` and its FTS5 indexes alive indefinitely. Deleting
+        from the canonical table deliberately lets the existing FTS triggers
+        remove the corresponding search entries.
+
+        ``batch_size`` bounds the write transaction so callers can use this on
+        large upgraded databases without one monolithic delete. Pass ``None``
+        to remove every orphan in one transaction. Returns the rows deleted.
+        """
+        if batch_size is not None:
+            batch_size = int(batch_size)
+            if batch_size <= 0:
+                return 0
+
+        def _do(conn):
+            limit_sql = " LIMIT ?" if batch_size is not None else ""
+            params = (batch_size,) if batch_size is not None else ()
+            cursor = conn.execute(
+                "DELETE FROM messages WHERE id IN ("
+                "SELECT m.id FROM messages m "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions s WHERE s.id = m.session_id"
+                ") ORDER BY m.id"
+                f"{limit_sql})",
+                params,
+            )
+            return max(cursor.rowcount, 0)
+
+        return self._execute_write(_do) or 0
 
     def logical_size_bytes(self) -> Optional[int]:
         """Database size in bytes as SQLite itself accounts for it.
@@ -13429,13 +13466,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         active. Safe to call at startup before the gateway/CLI starts
         serving traffic.
 
-        FTS5 segments are merged first via :meth:`optimize_fts` so the
-        subsequent VACUUM reclaims the pages freed by the merge. This is a
-        layout-only optimization — search results are unchanged.
+        Historical orphan messages are garbage-collected in bounded
+        transactions first. FTS5 segments are then merged via
+        :meth:`optimize_fts` so the subsequent VACUUM reclaims the pages freed
+        by both steps. Search results for live sessions are unchanged.
 
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
+        # Use bounded transactions even though VACUUM itself is an offline,
+        # foreground operation. A legacy database can contain millions of
+        # orphan rows; one giant DELETE would create a correspondingly giant
+        # WAL transaction before VACUUM gets a chance to reclaim anything.
+        orphan_messages = 0
+        while True:
+            deleted = self.prune_orphaned_messages()
+            orphan_messages += deleted
+            if deleted < self._ORPHAN_MESSAGE_GC_BATCH_SIZE:
+                break
+        if orphan_messages:
+            logger.info(
+                "Garbage-collected %d orphaned message rows before VACUUM",
+                orphan_messages,
+            )
+
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0

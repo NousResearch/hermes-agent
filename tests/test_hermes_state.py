@@ -2593,6 +2593,53 @@ class TestStateMeta:
 
 
 class TestVacuum:
+    @staticmethod
+    def _orphan_session_messages(db, session_ids):
+        db._conn.commit()
+        db._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            placeholders = ",".join("?" * len(session_ids))
+            db._conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({placeholders})", session_ids
+            )
+            db._conn.commit()
+        finally:
+            db._conn.execute("PRAGMA foreign_keys = ON")
+
+    def test_orphan_message_gc_is_bounded_and_updates_fts(self, db):
+        for sid, content in (
+            ("dead-a", "ORPHANALPHA"),
+            ("dead-b", "ORPHANBRAVO"),
+            ("live", "SURVIVORCHARLIE"),
+        ):
+            db.create_session(session_id=sid, source="cli")
+            db.append_message(session_id=sid, role="user", content=content)
+        self._orphan_session_messages(db, ["dead-a", "dead-b"])
+
+        assert db.prune_orphaned_messages(batch_size=1) == 1
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages m "
+            "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = m.session_id)"
+        ).fetchone()[0] == 1
+
+        assert db.prune_orphaned_messages(batch_size=1) == 1
+        assert db.prune_orphaned_messages(batch_size=1) == 0
+        assert db.search_messages("ORPHANALPHA") == []
+        assert db.search_messages("ORPHANBRAVO") == []
+        assert len(db.search_messages("SURVIVORCHARLIE")) == 1
+
+    def test_vacuum_garbage_collects_historical_orphan_messages(self, db):
+        db.create_session(session_id="dead", source="cli")
+        db.append_message(
+            session_id="dead", role="user", content="VACUUMORPHANNEEDLE"
+        )
+        self._orphan_session_messages(db, ["dead"])
+
+        db.vacuum()
+
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+        assert db.search_messages("VACUUMORPHANNEEDLE") == []
+
     def test_vacuum_runs_without_error(self, db):
         """VACUUM must succeed on a fresh DB (no rows to reclaim)."""
         db.create_session(session_id="s1", source="cli")

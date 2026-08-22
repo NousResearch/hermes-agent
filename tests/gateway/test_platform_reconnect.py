@@ -446,6 +446,28 @@ class TestSpawnSupervised:
     """Verify the task-level supervision wrapper around watcher launches."""
 
     @pytest.mark.asyncio
+    async def test_watcher_does_not_inherit_delegated_child_context(self):
+        """Long-lived gateway services must not inherit one turn's child scope."""
+        from agent.delegation_context import (
+            delegated_child_context,
+            is_delegated_child_context,
+        )
+
+        runner = _make_runner()
+        observed = []
+
+        async def _watcher():
+            observed.append(is_delegated_child_context())
+
+        with delegated_child_context():
+            assert is_delegated_child_context() is True
+            task = runner._spawn_supervised(_watcher, "isolated_watcher")
+            await task
+            assert is_delegated_child_context() is True
+
+        assert observed == [False]
+
+    @pytest.mark.asyncio
     async def test_clean_synchronous_return_is_not_respawned(self):
         # A supervised coro that returns immediately (clean exit) must be
         # invoked EXACTLY ONCE — a clean return means deliberate shutdown or a

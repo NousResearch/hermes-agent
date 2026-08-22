@@ -10949,7 +10949,7 @@ def _run_prompt_submit(
             # begin() first — it cuts any still-speaking previous turn, and
             # that cut IS this turn's barge-in, so it must latch before we
             # consume the latch below.
-            tts_queue = _tts_stream_begin()
+            tts_queue = _tts_stream_begin(sid)
 
             # Full-duplex agent-turn listener: armed at utterance-submit so
             # the user can interject DURING generation, not just during
@@ -11446,12 +11446,13 @@ def _run_prompt_submit(
             # (no provider / missing deps probed at turn start), speak the
             # final text whole (cli.py:_voice_speak_response parity). The
             # streaming path already spoke everything via tts_queue.
+            # Session-scoped: only the chat that enabled TTS may speak (#78523).
             if (
                 status == "complete"
                 and tts_queue is None
                 and isinstance(raw, str)
                 and raw.strip()
-                and _voice_tts_enabled()
+                and _voice_tts_enabled(sid)
             ):
                 try:
                     spoken = raw
@@ -14350,8 +14351,50 @@ def _voice_mode_enabled() -> bool:
     return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
-def _voice_tts_enabled() -> bool:
-    """Whether agent replies should be spoken back via TTS (runtime only)."""
+# Per-session TTS opt-in. Microphone / speaker arbitration stays
+# process-global (one device), but enabling spoken replies in session A must
+# not synthesize responses from session B (#78523 — unsolicited provider usage).
+_voice_tts_sids_lock = threading.Lock()
+_voice_tts_enabled_sids: set[str] = set()
+
+
+def _voice_tts_set(session_id: str | None, enabled: bool) -> None:
+    """Enable or disable TTS for one TUI session (runtime only)."""
+    sid = (session_id or "").strip()
+    with _voice_tts_sids_lock:
+        if enabled:
+            if sid:
+                _voice_tts_enabled_sids.add(sid)
+            # Keep env in sync for tests / status without a sid, and for
+            # the legacy process-global path when only one chat is active.
+            os.environ["HERMES_VOICE_TTS"] = "1"
+        else:
+            if sid:
+                _voice_tts_enabled_sids.discard(sid)
+            # Clear the process env only when no session still wants TTS.
+            if not _voice_tts_enabled_sids:
+                os.environ["HERMES_VOICE_TTS"] = "0"
+
+
+def _voice_tts_clear_all() -> None:
+    """Disable TTS for every session (voice mode off / stop phrase)."""
+    with _voice_tts_sids_lock:
+        _voice_tts_enabled_sids.clear()
+    os.environ["HERMES_VOICE_TTS"] = "0"
+
+
+def _voice_tts_enabled(session_id: str | None = None) -> bool:
+    """Whether agent replies should be spoken back via TTS (runtime only).
+
+    When *session_id* is provided, only that session's opt-in counts — a
+    process-global ``HERMES_VOICE_TTS=1`` left by another chat must not
+    leak (#78523). Without a session id (unit tests, status without sid),
+    fall back to the process env flag for backward compatibility.
+    """
+    sid = (session_id or "").strip()
+    if sid:
+        with _voice_tts_sids_lock:
+            return sid in _voice_tts_enabled_sids
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
@@ -14381,9 +14424,14 @@ _tts_stream_lock = threading.Lock()
 _tts_stream_state: Optional[dict] = None
 
 
-def _tts_stream_begin() -> Optional[queue.Queue]:
-    """Start a per-turn streaming TTS consumer; None when TTS can't stream."""
-    if not _voice_tts_enabled():
+def _tts_stream_begin(session_id: str | None = None) -> Optional[queue.Queue]:
+    """Start a per-turn streaming TTS consumer; None when TTS can't stream.
+
+    *session_id* scopes the TTS opt-in check so only the session that enabled
+    spoken replies feeds the provider (#78523). Playback arbitration remains
+    process-global (one speaker).
+    """
+    if not _voice_tts_enabled(session_id):
         return None
     try:
         from tools.tts_tool import check_tts_requirements, stream_tts_to_speaker
@@ -14602,7 +14650,7 @@ def _full_duplex_listener() -> None:
                     # "stop everything": the turn was already interrupted /
                     # TTS cut at trip time; now end the voice chat.
                     os.environ["HERMES_VOICE"] = "0"
-                    os.environ["HERMES_VOICE_TTS"] = "0"
+                    _voice_tts_clear_all()
                     try:
                         from hermes_cli.voice import stop_continuous
 
@@ -15118,10 +15166,16 @@ def _(rid, params: dict) -> dict:
       off also tears down any active continuous recording loop. Does NOT
       start recording on its own; recording is driven by ``voice.record``
       (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
-    * ``tts`` — toggle speech-output of agent replies. Requires mode on
-      (mirrors CLI's _toggle_voice_tts guard).
+    * ``tts`` — toggle speech-output of agent replies **for this session**.
+      Requires mode on (mirrors CLI's _toggle_voice_tts guard). TTS opt-in
+      is session-scoped so enabling it in chat A does not synthesize
+      replies from chat B (#78523).
+
+    ``session_id`` (optional on status; recommended on tts) scopes the TTS
+    flag. Voice *mode* remains process-global (one microphone).
     """
     action = params.get("action", "status")
+    session_id = params.get("session_id") or ""
 
     if action == "status":
         # Mirror CLI's _show_voice_status: include STT/TTS provider
@@ -15134,7 +15188,7 @@ def _(rid, params: dict) -> dict:
         payload: dict = {
             "enabled": _voice_mode_enabled(),
             "record_key": _voice_record_key(),
-            "tts": _voice_tts_enabled(),
+            "tts": _voice_tts_enabled(session_id or None),
         }
         try:
             from tools.voice_mode import check_voice_requirements
@@ -15169,6 +15223,12 @@ def _(rid, params: dict) -> dict:
                 stop_hint = voice_stop_hint()
             except Exception:
                 stop_hint = ""
+            # Remember which session owns the mode so status/TTS default
+            # to that chat when clients omit session_id.
+            if session_id:
+                with _voice_sid_lock:
+                    global _voice_event_sid
+                    _voice_event_sid = session_id
 
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the
@@ -15182,9 +15242,9 @@ def _(rid, params: dict) -> dict:
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
 
-            # Clear TTS so it can be toggled independently after voice is off,
-            # and silence any in-flight streaming speech.
-            os.environ["HERMES_VOICE_TTS"] = "0"
+            # Clear TTS for every session so it can be toggled independently
+            # after voice is off, and silence any in-flight streaming speech.
+            _voice_tts_clear_all()
             _tts_stream_stop(user_barge=False)
 
         return _ok(
@@ -15192,7 +15252,7 @@ def _(rid, params: dict) -> dict:
             {
                 "enabled": enabled,
                 "record_key": _voice_record_key(),
-                "tts": _voice_tts_enabled(),
+                "tts": _voice_tts_enabled(session_id or None),
                 "stop_hint": stop_hint,
             },
         )
@@ -15200,9 +15260,20 @@ def _(rid, params: dict) -> dict:
     if action == "tts":
         if not _voice_mode_enabled():
             return _err(rid, 4014, "enable voice mode first: /voice on")
-        new_value = not _voice_tts_enabled()
-        # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
-        os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
+        # Prefer the caller's session_id; fall back to the last voice-owning
+        # sid so clients that only send action=tts still scope correctly.
+        tts_sid = session_id
+        if not tts_sid:
+            with _voice_sid_lock:
+                tts_sid = _voice_event_sid
+        new_value = not _voice_tts_enabled(tts_sid or None)
+        # Runtime-only, session-scoped (#78523) — see voice.toggle on/off.
+        if tts_sid:
+            _voice_tts_set(tts_sid, new_value)
+        else:
+            # No session context: keep legacy process-global env toggle so
+            # older clients / tests without session_id still work.
+            os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
         if not new_value:
             _tts_stream_stop(user_barge=False)
         # Include ``record_key`` on every branch so a /voice tts toggle
@@ -15316,7 +15387,7 @@ def _(rid, params: dict) -> dict:
                 # it as a no-speech timeout. The continuous loop has
                 # already halted before this callback fires.
                 os.environ["HERMES_VOICE"] = "0"
-                os.environ["HERMES_VOICE_TTS"] = "0"
+                _voice_tts_clear_all()
                 try:
                     _tts_stream_stop(user_barge=False)
                 except Exception:

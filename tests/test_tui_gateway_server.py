@@ -6247,7 +6247,7 @@ def _configure_immediate_prompt_run(
         server, "_sync_session_key_after_compress", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: False)
-    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda *a, **k: False)
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
 
@@ -17897,6 +17897,61 @@ def test_get_usage_clamps_post_compression_sentinel():
 # ---------------------------------------------------------------------------
 # Streaming TTS — per-turn pipeline + barge-in
 # ---------------------------------------------------------------------------
+
+
+def test_voice_tts_is_session_scoped(monkeypatch):
+    """#78523: enabling TTS in session A must not enable TTS for session B.
+
+    Process env may still read "1" after A enables TTS (legacy status path),
+    but session-scoped checks for B must stay False so a concurrent chat
+    cannot incur unsolicited provider usage.
+    """
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""}
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    with server._voice_tts_sids_lock:
+        server._voice_tts_enabled_sids.clear()
+
+    # Enable TTS only for session A.
+    resp = server.dispatch(
+        {
+            "id": "tts-a",
+            "method": "voice.toggle",
+            "params": {"action": "tts", "session_id": "sess-A"},
+        }
+    )
+    assert resp["result"]["tts"] is True
+    assert server._voice_tts_enabled("sess-A") is True
+    assert server._voice_tts_enabled("sess-B") is False
+    # No session context still sees the env flag (status / tests).
+    assert server._voice_tts_enabled() is True
+
+    # Turn begin for B must not start a pipeline even if env is "1".
+    _fake_tts_modules(monkeypatch, requirements=True)
+    assert server._tts_stream_begin("sess-B") is None
+    queue_a = server._tts_stream_begin("sess-A")
+    assert queue_a is not None
+    server._tts_stream_stop(user_barge=False)
+
+    # Disable A — B still off; env cleared when no sessions remain.
+    server.dispatch(
+        {
+            "id": "tts-a-off",
+            "method": "voice.toggle",
+            "params": {"action": "tts", "session_id": "sess-A"},
+        }
+    )
+    assert server._voice_tts_enabled("sess-A") is False
+    assert server._voice_tts_enabled("sess-B") is False
+    assert os.environ.get("HERMES_VOICE_TTS", "0") == "0"
+
 
 def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
     """Install lightweight tools.tts_tool / tools.voice_mode fakes."""

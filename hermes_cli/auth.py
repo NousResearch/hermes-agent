@@ -109,6 +109,25 @@ except Exception:
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
+# Internal-only key stamped onto an in-memory store dict that was created as
+# a *load-failure* fallback (genuine JSON/schema corruption after a
+# successful read) rather than an explicit user action (fresh install,
+# ``hermes auth logout``, etc.). ``_save_auth_store`` refuses to persist a
+# store carrying this marker while ``providers`` is still empty, so a load
+# failure alone can never flush an empty store over real on-disk credentials.
+# Any caller that legitimately mutates the store (adds/removes a provider,
+# writes credential_pool entries, ...) clears the marker before saving.
+_LOAD_FAILURE_MARKER = "__load_failure_fallback__"
+
+
+class AuthStoreWriteGuardError(RuntimeError):
+    """Raised when a write path tries to persist an unsafe empty auth store.
+
+    Specifically: an in-memory store that was only ever created as a
+    load-failure fallback (see ``_LOAD_FAILURE_MARKER``) and never received
+    a real provider or credential_pool entry from an explicit user action.
+    """
+
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
@@ -1287,6 +1306,97 @@ def _auth_store_lock(
         yield
 
 
+_CORRUPT_AUTH_BACKUP_RETENTION = 10
+
+
+def _prune_corrupt_auth_backups(
+    parent: Path, base_name: str, keep: Optional[Path] = None,
+) -> None:
+    """Cap the number of retained ``auth.json.corrupt.<hash>.bak`` files.
+
+    Content-addressing dedupes identical corrupt bytes, but a store whose
+    bytes keep changing between corruption events (a partial repair, ongoing
+    damage, a fleet of profiles racing the same file) can still accumulate
+    backups without bound. After creating a new backup we keep only the
+    ``_CORRUPT_AUTH_BACKUP_RETENTION`` most recent by mtime and delete the
+    rest. ``keep`` (the just-created backup) is never pruned regardless of its
+    mtime, because ``shutil.copy2`` preserves the SOURCE file's timestamp,
+    which may well be older than existing backups.
+
+    Best effort: pruning failures must never mask the corruption the caller is
+    already reporting.
+    """
+    try:
+        backups = [
+            candidate
+            for candidate in parent.glob(f"{base_name}.corrupt.*.bak")
+            if candidate.is_file() and candidate != keep
+        ]
+    except OSError:
+        return
+    budget = _CORRUPT_AUTH_BACKUP_RETENTION - (1 if keep is not None else 0)
+    budget = max(budget, 0)
+    if len(backups) <= budget:
+        return
+
+    def _mtime(item: Path) -> float:
+        try:
+            return item.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    backups.sort(key=_mtime, reverse=True)
+    for stale in backups[budget:]:
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _backup_corrupt_auth_store(auth_file: Path) -> Optional[Path]:
+    """Copy a corrupt auth store to a content-addressed backup.
+
+    The filename is deterministic in the file's sha256, so repeated loads of
+    the same corrupt bytes reuse a single backup rather than minting a new
+    copy per read. Returns the backup path, or ``None`` when no copy could be
+    written (the caller then declines to advertise one).
+
+    Writes are confined to the store's own parent directory and the basename
+    is derived purely from ``auth_file.name`` plus a hex digest, so no
+    caller-supplied path segment can escape it.
+    """
+    try:
+        resolved = auth_file.resolve()
+        parent = resolved.parent
+        base_name = resolved.name
+
+        digest = hashlib.sha256()
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        token = digest.hexdigest()[:16]
+
+        candidate = parent / f"{base_name}.corrupt.{token}.bak"
+        # Defensive: the constructed path must still sit inside parent.
+        if candidate.parent != parent:
+            return None
+        if candidate.exists():
+            # Same bytes already preserved — reuse it, write nothing.
+            return candidate
+        shutil.copy2(resolved, candidate)
+    except Exception:
+        logger.debug(
+            "auth: could not preserve a copy of the corrupt store for %s",
+            auth_file, exc_info=True,
+        )
+        return None
+
+    # A NEW backup landed on disk — enforce the retention cap so a
+    # mutating-corruption loop cannot accumulate quarantines forever.
+    _prune_corrupt_auth_backups(parent, base_name, keep=candidate)
+    return candidate
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
@@ -1309,17 +1419,20 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         raise
     except Exception as exc:
         # Genuine corruption: unparseable JSON, or bytes that are not UTF-8.
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
-        preserved = False
-        try:
-            import shutil
-            shutil.copy2(auth_file, corrupt_path)
-            preserved = True
-        except Exception:
-            logger.debug(
-                "auth: could not preserve a copy of the corrupt store at %s",
-                corrupt_path, exc_info=True,
-            )
+        # Preserve a copy under a CONTENT-ADDRESSED name. This function leaves
+        # the corrupt auth.json in place, so every later load of the same bad
+        # bytes reaches this branch again; a unique-per-attempt (e.g.
+        # timestamped) name would therefore mint a fresh copy on every single
+        # read and amplify disk usage without bound. Hashing the bytes means
+        # repeated quarantines of UNCHANGED corruption reuse one backup, while
+        # bytes that actually change — a partial repair, further damage —
+        # still get their own preserved copy.
+        #
+        # Mirrors the retention design already used for corrupt kanban
+        # databases in hermes_cli/kanban_db.py (_backup_corrupt_db /
+        # _prune_corrupt_backups).
+        corrupt_path = _backup_corrupt_auth_store(auth_file)
+        preserved = corrupt_path is not None
         if preserved:
             logger.warning(
                 "auth: failed to parse %s (%s), starting with empty store. "
@@ -1330,10 +1443,19 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
             # Do not advertise a backup that was never written.
             logger.warning(
                 "auth: failed to parse %s (%s), starting with empty store. "
-                "A copy could NOT be preserved at %s",
-                auth_file, exc, corrupt_path,
+                "A copy could NOT be preserved.",
+                auth_file, exc,
             )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        # Mark this store as a load-failure fallback, not a user-created empty
+        # store. _save_auth_store() refuses to persist it while it is still
+        # empty, so a load failure alone can never flush and erase real
+        # on-disk credentials; only an explicit subsequent write (e.g. the
+        # user re-authenticating) clears the marker.
+        return {
+            "version": AUTH_STORE_VERSION,
+            "providers": {},
+            _LOAD_FAILURE_MARKER: True,
+        }
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -1357,6 +1479,29 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    # Invariant: a store that only exists because a *load* failed (genuine
+    # JSON/schema corruption; never a transient OSError, which raises before
+    # a store like this is ever constructed — see _load_auth_store) must
+    # never be flushed to disk while it is still empty. Doing so would take
+    # a real, merely-unparseable auth.json and permanently replace it with
+    # nothing. The marker is cleared implicitly the moment a caller adds a
+    # real provider or credential_pool entry, since the store is then no
+    # longer empty and this guard no longer applies.
+    if auth_store.get(_LOAD_FAILURE_MARKER) and not auth_store.get(
+        "providers"
+    ) and not auth_store.get("credential_pool"):
+        logger.error(
+            "auth: refusing to write an empty auth store that originated "
+            "from a load failure (target=%s); on-disk credentials, if any, "
+            "were left untouched",
+            target_path if target_path is not None else _auth_file_path(),
+        )
+        raise AuthStoreWriteGuardError(
+            "refusing to persist an empty auth store created as a load-"
+            "failure fallback; this would silently delete any existing "
+            "on-disk credentials"
+        )
+    auth_store.pop(_LOAD_FAILURE_MARKER, None)
     # target_path=None preserves the existing contract (write the active
     # store at _auth_file_path()). An explicit path lets callers persist a
     # specific store — e.g. the global-root write-through for rotating xAI

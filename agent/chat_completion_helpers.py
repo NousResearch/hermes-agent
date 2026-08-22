@@ -50,7 +50,7 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
-_PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
+_PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish", "network_error", "network-error"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
@@ -4371,6 +4371,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason "
                 "(possible upstream error or malformed SSE response)."
+            )
+        # finish_reason="network_error"/"network-error" (observed on OpenCode Zen
+        # x-preview-f-free; OpenCode fixed the same bug in v1.18.20/21): the
+        # stream terminates cleanly with an error finish reason and often ZERO
+        # content. Treating it as a successful empty turn leaves the agent with
+        # nothing to do - surfacing as a hang until a follow-up message. Raise
+        # so the bounded stream-retry machinery handles it like any transient
+        # provider drop.
+        _fr_text = str(finish_reason or "").strip().lower()
+        if (
+            _fr_text in ("network_error", "network-error")
+            and not content_parts
+            and not reasoning_parts
+            and not tool_calls_acc
+        ):
+            raise EmptyStreamError(
+                f"Provider stream ended with finish_reason={_fr_text} and no "
+                "content (transient upstream network failure)."
             )
 
         # A stream that delivered a tool call but only partial/unparseable

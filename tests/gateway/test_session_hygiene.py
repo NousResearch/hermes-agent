@@ -800,16 +800,26 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
         for c in sent_contents
     ), f"turn-hold must send deferral notice, got: {sent_contents}"
 
-    # Behavior witness 2: turn-hold must NOT advance the failure cooldown.
+    # Behavior witness 2: turn-hold must NOT advance the failure STREAK.
     fake_db.get_compression_failure_cooldown.assert_called()
-    # The cooldown is only *read* (to check for existing), never *written*
-    # by the turn-hold path. The idle-timeout path would call
-    # _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
-    # We verify by checking the DB mock was not asked to persist a new
-    # failure streak.
-    assert not hasattr(fake_db, 'set_compression_failure_cooldown') or \
-        not fake_db.set_compression_failure_cooldown.called, \
-        "turn-hold must not write failure cooldown"
+    # The escalating ladder (x1, x3, x9) is reserved for real failures via
+    # _hygiene_cooldown_for_failure -> increment_hygiene_failure_streak.
+    # The turn-hold path records only a flat, non-escalating retry-after
+    # (spacing out re-attempts so sustained traffic does not spawn and
+    # cancel a fresh compressor every turn) and must never touch the streak.
+    assert not fake_db.increment_hygiene_failure_streak.called, \
+        "turn-hold must not advance the failure streak"
+    assert fake_db.record_compression_failure_cooldown.called, \
+        "turn-hold must record the flat retry-after spacing"
+    _th_args = fake_db.record_compression_failure_cooldown.call_args[0]
+    import time as _time_mod
+    _th_retry = _th_args[1] - _time_mod.time()
+    assert _th_retry <= 120, (
+        f"turn-hold retry-after must stay flat (~60s), got {_th_retry:.0f}s "
+        "— escalating ladder leaked into the deferral path"
+    )
+    assert "turn-hold" in (_th_args[2] or ""), \
+        "retry-after reason must name the turn-hold deferral"
 
     # Behavior witness 3: the #87011 contract remains truthful —
     # "session hygiene compression timed out" still means a real idle

@@ -901,6 +901,13 @@ DEFAULT_CONFIG = {
                                       # while tokens are still moving — bounds a degenerate
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
+        "hygiene_max_turn_hold_seconds": 10,  # max seconds an ARRIVING user turn is held while a
+                                      # still-streaming hygiene summary finishes. Distinct from
+                                      # hygiene_timeout_seconds (compressor inactivity budget):
+                                      # this bounds user-visible latency once real input is
+                                      # waiting. Kept well under chat-transport idle timeouts
+                                      # (Telegram ~30s). On expiry the turn proceeds
+                                      # uncompressed — an availability boundary, not a failure.
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
                                       # (conversation loop, /compress, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:

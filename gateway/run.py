@@ -162,6 +162,14 @@ _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # retry is cheap and still recovers within a session.
 _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
 
+# Flat retry-after recorded when a hygiene compression is ABANDONED because
+# the turn-hold budget expired while the summary was still streaming (not a
+# failure — the compressor was healthy, we just could not keep holding the
+# user's turn). Spaces out re-attempts so sustained traffic does not spawn,
+# hold, and cancel a fresh compressor on every single turn; deliberately
+# outside the failure-streak ladder above.
+_HYGIENE_TURNHOLD_RETRY_SECONDS = 60.0
+
 
 def _hygiene_cooldown_for_failure(
     gateway,
@@ -20661,6 +20669,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 context="session hygiene turn-hold",
                                             )
                                             _hyg_cleanup_deferred = True
+                                            # Short, NON-escalating retry-after. Without
+                                            # it, every subsequent turn re-spawns a fresh
+                                            # compressor, holds it for the turn-hold
+                                            # budget, and cancels it again — a per-turn
+                                            # summary-model token burn that never commits
+                                            # under sustained traffic. This is deliberately
+                                            # NOT _hygiene_cooldown_for_failure: the
+                                            # compressor is healthy, so the failure streak
+                                            # must not advance (behavior witness below);
+                                            # only the flat retry spacing is recorded.
+                                            _record_hygiene_cooldown(
+                                                self, session_entry.session_id,
+                                                _HYGIENE_TURNHOLD_RETRY_SECONDS,
+                                                "hygiene compression deferred: "
+                                                "turn-hold budget expired while the "
+                                                "summary was still streaming",
+                                            )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
                                             )

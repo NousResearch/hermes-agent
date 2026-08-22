@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from contextvars import copy_context
 from typing import Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -186,15 +187,34 @@ def _pip_python_version() -> Optional[str]:
     return None
 
 
-def _build_probe_line() -> str:
+def _resolve_terminal_backend() -> str:
+    """Resolve the routed profile's terminal backend.
+
+    Must be called from the *requesting* context, not from the probe worker
+    thread: the backend lives in a contextvar that a bare ``threading.Thread``
+    does not inherit.
+    """
+    try:
+        from tools.terminal_tool import get_terminal_setting
+
+        return (get_terminal_setting("TERMINAL_ENV") or "local").strip().lower()
+    except Exception:  # never let config resolution break prompt building
+        logger.debug("terminal backend resolution failed", exc_info=True)
+        return "local"
+
+
+def _build_probe_line(backend: str) -> str:
     """Build the one-liner.  Returns "" when nothing notable is detected.
 
     Emit only when SOMETHING is off — the goal is to save the model from
     hitting an avoidable wall, not to narrate a healthy environment.
+
+    *backend* is resolved by the caller (see ``_resolve_terminal_backend``)
+    rather than read here, so the answer follows the routed profile instead of
+    whatever the worker thread's context happens to hold.
     """
     # Bail out if a remote terminal backend is configured; the host's
     # Python state isn't where the agent's tools run.
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
     if backend in _REMOTE_BACKENDS:
         return ""
 
@@ -293,10 +313,22 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
             _PROBE_GEN += 1
             _WAIT_ALREADY_TIMED_OUT = False
 
+    # Resolve the backend HERE, in the caller's context, where a multiplexed
+    # gateway's per-profile terminal scope is installed.  A remote backend
+    # answers "" without consulting the cache at all: the cached line
+    # describes the *host's* Python toolchain, so serving it to a profile
+    # whose tools run in a container would describe the wrong machine.  That
+    # keying is what stops profile A's probe line reaching profile B — the
+    # single cache slot now unambiguously holds the local-backend answer,
+    # which is identical for every profile that shares this host.
+    backend = _resolve_terminal_backend()
+    if backend in _REMOTE_BACKENDS:
+        return ""
+
     if _PROBE_DONE.is_set():
         return _CACHED_LINE or ""
 
-    _ensure_probe_started()
+    _ensure_probe_started(backend)
     wait_timeout = 0.05 if _WAIT_ALREADY_TIMED_OUT else _PROBE_WAIT_TIMEOUT
     if not _PROBE_DONE.wait(timeout=wait_timeout):
         # Probe stuck or pathologically slow.  The line is a nice-to-have;
@@ -313,11 +345,11 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     return _CACHED_LINE or ""
 
 
-def _probe_worker(gen: int) -> None:
+def _probe_worker(gen: int, backend: str) -> None:
     """Body of the single probe thread — computes and publishes the line."""
     global _CACHED_LINE
     try:
-        line = _build_probe_line()
+        line = _build_probe_line(backend)
     except Exception as exc:  # never let probe failure propagate
         logger.debug("env_probe failed: %s", exc)
         line = ""
@@ -328,7 +360,7 @@ def _probe_worker(gen: int) -> None:
         _PROBE_DONE.set()
 
 
-def _ensure_probe_started() -> None:
+def _ensure_probe_started(backend: str = "local") -> None:
     """Start the probe worker if it isn't running and hasn't finished."""
     global _PROBE_THREAD
     with _CACHE_LOCK:
@@ -336,9 +368,15 @@ def _ensure_probe_started() -> None:
             return
         if _PROBE_THREAD is not None and _PROBE_THREAD.is_alive():
             return
+        # Carry the spawning context into the worker, mirroring the gateway's
+        # copy_context() hop into the agent worker thread: a bare Thread
+        # starts with an empty context, so any contextvar the probe reads
+        # (today via terminal_tool's profile scope) would resolve to its
+        # process-global default instead of the routed profile's value.
+        ctx = copy_context()
         _PROBE_THREAD = threading.Thread(
-            target=_probe_worker,
-            args=(_PROBE_GEN,),
+            target=ctx.run,
+            args=(_probe_worker, _PROBE_GEN, backend),
             name="env-probe",
             daemon=True,
         )

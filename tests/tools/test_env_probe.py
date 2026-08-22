@@ -160,7 +160,7 @@ class TestStuckProbeNeverBlocksCallers:
 
         release = _threading.Event()
 
-        def stuck_probe():
+        def stuck_probe(backend="local"):
             # Simulate the wedged pipe read: blocks until released.
             release.wait(timeout=30)
             return "Python toolchain: late-result."
@@ -206,7 +206,7 @@ class TestStuckProbeNeverBlocksCallers:
 
         release = _threading.Event()
 
-        def slow_probe():
+        def slow_probe(backend="local"):
             release.wait(timeout=30)
             return "Python toolchain: recovered."
 
@@ -232,7 +232,7 @@ class TestStuckProbeNeverBlocksCallers:
 
         release = _threading.Event()
 
-        def stuck_probe():
+        def stuck_probe(backend="local"):
             release.wait(timeout=30)
             return ""
 

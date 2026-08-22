@@ -1258,6 +1258,25 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
+def _terminal_setting(name: str, default: str = "") -> str:
+    """Read one ``TERMINAL_*`` setting for the routed profile.
+
+    Goes through ``terminal_tool.get_terminal_setting`` so a multiplexed
+    gateway resolves the setting for the profile this turn is routed to,
+    rather than reading whichever profile bridged its config into
+    ``os.environ`` first.  Imports locally and fails soft to *default* for the
+    same reason ``_probe_remote_backend`` does: ``tools/`` imports are heavy,
+    and prompt construction must not depend on them being available.
+    """
+    try:
+        from tools.terminal_tool import get_terminal_setting
+
+        return get_terminal_setting(name, default)
+    except Exception as e:
+        logger.debug("Terminal setting %s unavailable: %s", name, e)
+        return default
+
+
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
@@ -1266,7 +1285,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
+    cwd_hint = _terminal_setting("TERMINAL_CWD", "")
     cache_key = (env_type, cwd_hint)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
@@ -1412,7 +1431,7 @@ def build_environment_hints() -> str:
 
     hints: list[str] = []
 
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    backend = (_terminal_setting("TERMINAL_ENV", "local") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
 
     if not is_remote_backend:

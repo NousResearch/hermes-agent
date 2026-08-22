@@ -1861,11 +1861,18 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
+        # Honour the one-shot output-cap override the truncation recovery paths
+        # set (length continuation boost, truncated tool-call boost, output-cap
+        # clamp). Without consuming it here, Converse traffic always requested
+        # the static cap and every retry re-truncated identically.
+        _bedrock_ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
+        if _bedrock_ephemeral_out is not None:
+            agent._ephemeral_max_output_tokens = None  # consume immediately
         return _bt.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
+            max_tokens=_bedrock_ephemeral_out or agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
         )

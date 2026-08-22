@@ -1,4 +1,5 @@
 import type { CronJob, CronJobMutation } from "./api";
+import { VALID_EFFORTS } from "./reasoning-effort";
 
 export interface CronJobFormState {
   name: string;
@@ -15,6 +16,8 @@ export interface CronJobFormState {
   continuity: boolean;
   enabled_toolsets: string[];
   workdir: string;
+  /** Per-job reasoning effort pin. "" = follow config resolution. */
+  reasoning_effort: string;
 }
 
 /** Split a comma/newline list (or array) into trimmed, non-empty items. */
@@ -50,6 +53,9 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
   );
   if (form.continuity) contextFrom.push("self");
   const enabledToolsets = form.enabled_toolsets.filter(Boolean);
+  // "" / unknown = follow config resolution; collapse to null so an update
+  // explicitly clears the per-job pin (backend normalizes null/"" to clear).
+  const effort = String(form.reasoning_effort ?? "").trim().toLowerCase();
   return {
     name: form.name.trim(),
     prompt: form.prompt.trim(),
@@ -64,6 +70,7 @@ export function buildCronJobPayload(form: CronJobFormState): CronJobMutation {
     context_from: contextFrom.length > 0 ? contextFrom : null,
     enabled_toolsets: enabledToolsets.length > 0 ? enabledToolsets : null,
     workdir: optionalText(form.workdir),
+    reasoning_effort: VALID_EFFORTS.has(effort) ? effort : null,
   };
 }
 
@@ -100,5 +107,6 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
     continuity,
     enabled_toolsets: splitCronList(job.enabled_toolsets),
     workdir: asString(job.workdir),
+    reasoning_effort: asString((job as { reasoning_effort?: unknown }).reasoning_effort),
   };
 }

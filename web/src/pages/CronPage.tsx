@@ -38,6 +38,7 @@ import {
   type ScheduleDescribeStrings,
 } from "@/lib/schedule";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { EFFORT_OPTIONS } from "@/lib/reasoning-effort";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -148,6 +149,7 @@ function emptyCronJobForm(): CronJobEditorState {
     continuity: false,
     enabled_toolsets: [],
     workdir: "",
+    reasoning_effort: "",
     scheduleState: { ...DEFAULT_SCHEDULE_STATE },
   };
 }
@@ -249,6 +251,27 @@ function CronAdvancedFields({
               )}
             </Select>
           </div>
+        </div>
+
+        <div className="grid gap-1">
+          <Label htmlFor={`${idPrefix}-reasoning-effort`}>Reasoning</Label>
+          <Select
+            id={`${idPrefix}-reasoning-effort`}
+            value={form.reasoning_effort}
+            onValueChange={(v) => update("reasoning_effort", v)}
+          >
+            <SelectOption value="">Follow config (default)</SelectOption>
+            {EFFORT_OPTIONS.map((opt) => (
+              <SelectOption key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectOption>
+            ))}
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Pin thinking for this job only. Models without reasoning support
+            (e.g. gpt-4o-mini) need Off; a pin here overrides the global
+            reasoning config at fire time.
+          </p>
         </div>
 
         <div className="grid gap-1">

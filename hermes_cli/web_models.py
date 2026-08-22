@@ -388,6 +388,10 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    # Optional per-job reasoning effort pin (none/minimal/.../ultra), same
+    # grammar cron.jobs.create_job accepts; None leaves the job following
+    # config resolution.
+    reasoning_effort: Optional[str] = None
 
 
 class CronJobUpdate(BaseModel):

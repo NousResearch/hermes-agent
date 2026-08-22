@@ -25,6 +25,7 @@ function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
     continuity: false,
     enabled_toolsets: [],
     workdir: "",
+    reasoning_effort: "",
     ...overrides,
   };
 }
@@ -85,7 +86,21 @@ describe("buildCronJobPayload", () => {
       context_from: null,
       enabled_toolsets: null,
       workdir: null,
+      reasoning_effort: null,
     });
+  });
+
+  it("pins reasoning_effort only for known levels and clears otherwise", () => {
+    expect(
+      buildCronJobPayload(form({ reasoning_effort: "none" })).reasoning_effort,
+    ).toBe("none");
+    expect(
+      buildCronJobPayload(form({ reasoning_effort: "HIGH" })).reasoning_effort,
+    ).toBe("high");
+    // "" = follow config; update payloads must explicitly clear the pin.
+    expect(
+      buildCronJobPayload(form({ reasoning_effort: "" })).reasoning_effort,
+    ).toBeNull();
   });
 });
 
@@ -135,6 +150,24 @@ describe("cronJobFormFromJob", () => {
       context_from: "upstream-a",
       continuity: true,
     });
+  });
+
+  it("hydrates the reasoning effort pin and defaults to follow-config", () => {
+    expect(
+      cronJobFormFromJob({
+        id: "abc",
+        enabled: true,
+        schedule_display: "every 1h",
+        reasoning_effort: "none",
+      } as CronJob).reasoning_effort,
+    ).toBe("none");
+    expect(
+      cronJobFormFromJob({
+        id: "abc",
+        enabled: true,
+        schedule_display: "every 1h",
+      } as CronJob).reasoning_effort,
+    ).toBe("");
   });
 
   it("prefers one-shot run_at over the human display string", () => {

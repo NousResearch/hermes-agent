@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from threading import Lock
@@ -204,15 +205,117 @@ class SessionManager:
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        # Async single-flight for off-loop session construction, keyed by the
+        # id being built. Entries are asyncio.Future; concurrent callers for
+        # the same id await the winner's future instead of building a second
+        # agent. Guarded by ``_lock`` (held only for dict mutations, never
+        # across a build), and touched exclusively from the event loop.
+        self._building: Dict[str, "asyncio.Future[Optional[SessionState]]"] = {}
+
+    # ---- async construction -------------------------------------------------
+    #
+    # Building an AIAgent is slow and fully blocking: config load, provider
+    # resolution, memory-provider init, and a SQLite write. Calling it straight
+    # from a coroutine (as ``session/new`` used to) blocks the loop that serves
+    # every JSON-RPC request, so the host sees an initialized agent that accepts
+    # requests and answers none, with no log line flushing either. See #78205.
+    #
+    # These helpers move the build to a worker thread and de-duplicate
+    # concurrent requests for the same session id.
+
+    async def _run_single_flight(self, key: str, build):
+        """Run ``build`` off-loop, collapsing concurrent callers on ``key``.
+
+        The first caller owns the build; later callers await the same future.
+        Awaiting is cancellation-safe for the *waiter*: a cancelled waiter
+        stops waiting, but never cancels the in-flight build, so the owner's
+        result is still published for whoever else wants it. That asymmetry is
+        deliberate — a host that gives up on ``session/load`` must not destroy
+        session state it already owns.
+        """
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            existing = self._building.get(key)
+            if existing is None:
+                future: "asyncio.Future[Optional[SessionState]]" = loop.create_future()
+                self._building[key] = future
+                owner = True
+            else:
+                future, owner = existing, False
+
+        if not owner:
+            # asyncio.shield keeps a cancelled waiter from cancelling the
+            # shared build that other callers may still be waiting on.
+            return await asyncio.shield(future)
+
+        try:
+            result = await asyncio.to_thread(build)
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            with self._lock:
+                self._building.pop(key, None)
+            if not future.done():
+                future.set_exception(exc)
+            # Nobody may be awaiting this future; consuming the exception here
+            # avoids "never retrieved" noise while the raise below reports it.
+            future.exception()
+            raise
+        with self._lock:
+            self._building.pop(key, None)
+        if not future.done():
+            future.set_result(result)
+        return result
+
+    async def create_session_async(self, cwd: str = ".") -> SessionState:
+        """Off-loop :meth:`create_session`.
+
+        Each call mints a fresh id, so there is nothing to de-duplicate; the
+        single-flight map is keyed on that new id purely for symmetry.
+        """
+        session_id = str(uuid.uuid4())
+        state = await self._run_single_flight(
+            session_id, lambda: self.create_session(cwd=cwd, session_id=session_id)
+        )
+        assert state is not None  # create_session never returns None
+        return state
+
+    async def get_session_async(self, session_id: str) -> Optional[SessionState]:
+        """Off-loop :meth:`get_session`.
+
+        The in-memory hit is answered inline; only a DB restore, which rebuilds
+        an agent, goes to a worker thread.
+        """
+        with self._lock:
+            state = self._sessions.get(session_id)
+        if state is not None:
+            return state
+        return await self._run_single_flight(
+            session_id, lambda: self.get_session(session_id)
+        )
+
+    async def update_cwd_async(self, session_id: str, cwd: str) -> Optional[SessionState]:
+        """Off-loop :meth:`update_cwd` (restores through ``get_session``)."""
+        state = await self.get_session_async(session_id)
+        if state is None:
+            return None
+        return await asyncio.to_thread(self.update_cwd, session_id, cwd)
+
+    async def fork_session_async(
+        self, session_id: str, cwd: str = "."
+    ) -> Optional[SessionState]:
+        """Off-loop :meth:`fork_session`."""
+        return await asyncio.to_thread(self.fork_session, session_id, cwd)
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", session_id: str | None = None) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        Blocking. Prefer :meth:`create_session_async` from the event loop.
+        """
         import threading
 
         cwd = _translate_acp_cwd(cwd)
-        session_id = str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = SessionState(
             session_id=session_id,

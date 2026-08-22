@@ -490,6 +490,25 @@ def test_xai_oauth_listed_as_device_code_flow():
     assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
+def test_anthropic_row_name_matches_its_oauth_behavior():
+    """The anthropic row must not call itself an "API Key" path (#91822).
+
+    Its Login button opens Hermes' claude.ai OAuth (pkce) — no key field.
+    A name claiming "API Key" sent users hunting for the key path into a
+    Claude subscription sign-in (label-side sibling of #24058's dispatch
+    fix). The real key path is the row's cli_command.
+    """
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    entry = providers["anthropic"]
+    assert "API Key" not in entry["name"]
+    assert "OAuth" in entry["name"]
+    # The flow stays pkce (existing PKCE users' status/disconnect paths
+    # depend on it); the fix is naming honesty, not flow surgery.
+    assert entry["flow"] == "pkce"
+
+
 def test_accounts_offers_every_oauth_provider_from_catalog():
     """PARITY CONTRACT: every accounts-tab provider in the unified catalog (the
     `hermes model` universe) must be offered by /api/providers/oauth. This keeps

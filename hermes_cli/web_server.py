@@ -10568,7 +10568,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     # usage credits on top of a Claude Max plan — see disclaimer in name).
     {
         "id": "anthropic",
-        "name": "Anthropic API Key",
+        # The name must match what the button does: this row's Login opens
+        # Hermes' claude.ai OAuth (PKCE), NOT an API-key entry form. Calling
+        # it "Anthropic API Key" made users who never selected a Claude
+        # model think the API-key path lived here and got an unexpected
+        # Claude sign-in page (#91822 — #24058's dispatch fix made pkce
+        # route correctly; this closes its label side). The actual API-key
+        # path is the row's cli_command (hermes auth add anthropic).
+        "name": "Anthropic OAuth (Claude Sign-in)",
         "flow": "pkce",
         "cli_command": "hermes auth add anthropic",
         "docs_url": "https://docs.claude.com/en/api/getting-started",
@@ -10708,14 +10715,18 @@ def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
     """Return the manual disconnect path when the API cannot clear this provider."""
+    # env_var first: a key sourced from the environment lives in Settings →
+    # Keys regardless of the entry's flow — including an "external"-flow
+    # row whose credential Hermes itself stores (#91822 made the Anthropic
+    # API-key row external, and its env-sourced key still needs this hint).
+    if status.get("source") == "env_var":
+        return "Remove the API key from Settings → Keys instead."
     if provider.get("flow") == "external":
         if _oauth_provider_disconnect_command(provider):
             # The GUI offers a one-click "run in terminal" path; this hint is the
             # fallback wording for surfaces that only show text.
             return "Managed outside Hermes — run the disconnect command to remove it."
         return "Managed by that provider's CLI; remove it there."
-    if status.get("source") == "env_var":
-        return "Remove the API key from Settings → Keys instead."
     return None
 
 

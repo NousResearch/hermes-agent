@@ -25,6 +25,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  reconcileAppliedGlobalConnection,
   REGISTRY_VERSION,
   rememberSshEnumeration,
   removeConnection,
@@ -1216,6 +1217,90 @@ test('upsertConnection replaces by id and appends new ids', () => {
 
   assert.equal(registry.connections.filter(c => c.id === a.id).length, 1)
   assert.equal(registry.connections.find(c => c.id === a.id)?.url, 'http://a:2')
+})
+
+test('Apply remote inserts into an existing local-only registry and becomes primary/current', () => {
+  const registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://gateway.example.com/', authMode: 'oauth' }
+  })
+
+  const remote = registry.connections.find(connection => connection.kind === 'remote')
+
+  assert.ok(remote)
+  assert.equal(registry.primary, remote.id)
+  assert.equal(registry.lastUsed, remote.id)
+  assert.equal(
+    resolvedConnectionId(registry, {
+      baseUrl: 'https://gateway.example.com',
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    remote.id
+  )
+})
+
+test('Apply remote preserves an existing URL identity and label without duplicates', () => {
+  let registry = emptyRegistry()
+
+  registry = upsertConnection(registry, {
+    id: 'hermes-alex',
+    kind: 'remote',
+    label: 'Existing gateway',
+    url: 'https://gateway.example.com',
+    authMode: 'token',
+    token: { old: true }
+  })
+
+  const applied = reconcileAppliedGlobalConnection(registry, {
+    mode: 'remote',
+    remote: { url: 'https://GATEWAY.example.com/', authMode: 'oauth' }
+  })
+
+  const matches = applied.connections.filter(connection => connection.url === 'https://gateway.example.com')
+
+  assert.equal(matches.length, 1)
+  assert.equal(matches[0].id, 'hermes-alex')
+  assert.equal(matches[0].label, 'Existing gateway')
+  assert.equal(matches[0].authMode, 'oauth')
+  assert.equal(applied.primary, 'hermes-alex')
+  assert.equal(applied.lastUsed, 'hermes-alex')
+})
+
+test('Apply local moves primary/current to This device without deleting registered remotes', () => {
+  const remoteRegistry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://one.example.com', authMode: 'oauth' }
+  })
+
+  const localRegistry = reconcileAppliedGlobalConnection(remoteRegistry, { mode: 'local', remote: {} })
+
+  assert.equal(localRegistry.primary, LOCAL_CONNECTION_ID)
+  assert.equal(localRegistry.lastUsed, LOCAL_CONNECTION_ID)
+  assert.equal(localRegistry.connections.filter(connection => connection.kind === 'remote').length, 1)
+  assert.equal(resolvedConnectionId(localRegistry, { mode: 'local' }), LOCAL_CONNECTION_ID)
+})
+
+test('Apply between two remotes keeps each real registration once and activates the latest', () => {
+  const first = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://one.example.com', authMode: 'oauth' }
+  })
+
+  const second = reconcileAppliedGlobalConnection(first, {
+    mode: 'remote',
+    remote: { url: 'https://two.example.com/', authMode: 'oauth' }
+  })
+
+  const remotes = second.connections.filter(connection => connection.kind === 'remote')
+
+  assert.deepEqual(
+    remotes.map(connection => connection.url).sort(),
+    ['https://one.example.com', 'https://two.example.com']
+  )
+  assert.equal(new Set(remotes.map(connection => connection.id)).size, 2)
+  assert.equal(second.primary, remotes.find(connection => connection.url === 'https://two.example.com')?.id)
+  assert.equal(second.lastUsed, second.primary)
 })
 
 // --- connectionDialFieldsChanged (edit → recycle decision) ---

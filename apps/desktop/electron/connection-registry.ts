@@ -1207,6 +1207,79 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
   return { ...registry, lastUsed: id }
 }
 
+/**
+ * Reconcile a successfully-coerced global v1 connection config into the v2
+ * registry. Settings still writes connection.json for compatibility, but an
+ * Apply must publish the same primary identity to connections.json in the
+ * same transaction or the live remote descriptor has no connectionId.
+ *
+ * Remote-shaped entries are matched by normalized URL across remote/cloud so
+ * changing provenance never duplicates a gateway. Existing identity and
+ * user-chosen label win; a new entry derives both from the host. Switching to
+ * local keeps registered remotes available while moving primary/last-used
+ * back to This device.
+ */
+export function reconcileAppliedGlobalConnection(
+  registry: ConnectionRegistry,
+  config: Record<string, any>
+): ConnectionRegistry {
+  const mode = config?.mode
+
+  if (!modeIsRemoteLike(mode)) {
+    if (mode === 'local') {
+      return { ...registry, primary: LOCAL_CONNECTION_ID, lastUsed: LOCAL_CONNECTION_ID }
+    }
+
+    // SSH registry identity is managed by its existing registry editor and
+    // migration path. Do not reinterpret or delete it here.
+    return registry
+  }
+
+  const block = config.remote && typeof config.remote === 'object' ? config.remote : {}
+  const url = normalizeRemoteBaseUrl(block.url)
+
+  const existing = registry.connections.find(connection => {
+    if (connection.kind !== 'remote' && connection.kind !== 'cloud') {
+      return false
+    }
+
+    try {
+      return normalizeRemoteBaseUrl(connection.url) === url
+    } catch {
+      return false
+    }
+  })
+
+  const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
+
+  const label =
+    existing?.label ||
+    uniqueLabel(
+      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+      registry.connections.map(connection => connection.label)
+    )
+
+  const entry = normalizeConnectionInput(
+    {
+      id: existing?.id,
+      kind,
+      label,
+      url,
+      authMode: block.authMode,
+      token: block.token,
+      headers: block.headers,
+      org: block.org
+    },
+    registry
+  )
+
+  return {
+    ...upsertConnection(registry, entry),
+    primary: entry.id,
+    lastUsed: entry.id
+  }
+}
+
 /** Choose whether launch restores the explicit primary or the last-used source. */
 export function setConnectionLaunchMode(registry: ConnectionRegistry, launchMode: string): ConnectionRegistry {
   if (launchMode !== 'last-used' && launchMode !== 'primary') {

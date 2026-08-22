@@ -169,11 +169,19 @@ describe('ConnectionSwitcher', () => {
     expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
   })
 
-  it('adds no source chrome for a local-only setup', () => {
+  it('shows the active gateway and a discoverable manage action for a local-only setup', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.queryByRole('group', { name: 'Registered gateways' })).toBeNull()
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+
+    expect(trigger.textContent).toContain('This device')
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage gateways…' }))
+
+    expect(onConnect).toHaveBeenCalledTimes(1)
+    expect(selectConnection).not.toHaveBeenCalled()
   })
 
   it('shows a named source selector instead of profile-like gateway glyphs', () => {
@@ -201,24 +209,6 @@ describe('ConnectionSwitcher', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Manage gateways…' }))
     expect(onConnect).toHaveBeenCalledTimes(1)
     expect(selectConnection).toHaveBeenCalledTimes(1)
-  })
-
-  it('fits the shared statusbar slot without changing its gateway identity', () => {
-    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
-    render(<ConnectionSwitcher compact onConnect={onConnect} />)
-
-    const group = screen.getByRole('group', { name: 'Registered gateways' })
-    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
-
-    expect(group.className).toContain('h-full')
-    expect(group.className).toContain('min-w-20')
-    expect(group.className).toContain('max-w-40')
-    expect(group.className).toContain('shrink')
-    expect(group.className).toContain('overflow-hidden')
-    expect(trigger.className).toContain('text-[0.6875rem]')
-    expect(trigger.className).toContain('min-w-0')
-    expect(trigger.className).toContain('overflow-hidden')
-    expect(trigger.textContent).toContain('This device')
   })
 
   it('keeps source controls stable while a remote is opening', () => {

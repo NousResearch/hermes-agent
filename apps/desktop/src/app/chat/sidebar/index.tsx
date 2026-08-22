@@ -3,7 +3,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
@@ -138,12 +138,14 @@ import {
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  SETTINGS_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   SKILLS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
+import { ConnectionSwitcher } from './connection-switcher'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -324,6 +326,7 @@ export function ChatSidebar({
   const { t } = useI18n()
   const s = t.sidebar
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
@@ -1886,7 +1889,10 @@ export function ChatSidebar({
 
         {!showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
 
-        <div className="shrink-0 px-0.5 pb-1 pt-0.5">
+        <div className="shrink-0 border-t border-(--ui-stroke-tertiary) px-0.5 pb-1 pt-0.5">
+          <div className="pb-0.5">
+            <ConnectionSwitcher onConnect={() => navigate(SETTINGS_ROUTE + '?tab=gateway')} />
+          </div>
           <ProfileRail />
         </div>
       </SidebarContent>

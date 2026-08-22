@@ -51,7 +51,6 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
-import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -76,7 +75,7 @@ import type { ProfileInfo } from '@/types/hermes'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
-import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { PROFILES_ROUTE } from '../../routes'
 
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -114,8 +113,8 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
 // The active profile pops in its own color — the "where am I" cue. Gateway
-// identity lives in the statusbar, so this strip remains entirely available to
-// profiles regardless of how many backends are registered.
+// identity lives in its own Sessions-sidebar row above, so this strip remains
+// entirely about profiles regardless of how many backends are registered.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -124,7 +123,6 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
-  const multipleConnections = useStore($hasMultipleConnections)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -327,18 +325,6 @@ export function ProfileRail() {
           single-profile user must be able to edit the default's persona
           without first creating a throwaway second profile. */}
       <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
-
-      {/* Multi-gateway discoverability: before a second source exists, a plug
-          pinned beside Manage deep-links to the unified Gateways page. Once
-          there are several sources, the same action lives in their selector. */}
-      {!multipleConnections && (
-        <ProfilePill
-          active={false}
-          glyph="plug"
-          label={p.connectGateway}
-          onSelect={() => navigate(`${SETTINGS_ROUTE}?tab=gateway`)}
-        />
-      )}
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}

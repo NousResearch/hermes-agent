@@ -38,7 +38,7 @@ import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
 import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
-export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
+export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
@@ -118,10 +118,6 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     return () => window.removeEventListener('keydown', closeOnEscape, { capture: true })
   }, [menuOpen])
 
-  if (connections.length <= 1) {
-    return null
-  }
-
   const choose = (connectionId: string) => {
     triggerHaptic('selection')
     const connection = connections.find(candidate => candidate.id === connectionId)
@@ -135,7 +131,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     <div
       aria-busy={pendingConnectionId !== null}
       aria-label={t.settings.connections.title}
-      className={cn('min-w-20 shrink overflow-hidden', compact ? 'h-full max-w-40' : 'max-w-72')}
+      className="min-w-20 max-w-72 shrink overflow-hidden"
       data-slot="connection-switcher"
       role="group"
     >
@@ -152,7 +148,6 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
         <DropdownMenuTrigger asChild>
           <ConnectionSwitcherTrigger
             activeConnection={activeConnection}
-            compact={compact}
             pending={pendingConnectionId !== null}
             title={t.settings.connections.title}
           />
@@ -246,14 +241,12 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
 
 interface ConnectionMenuProps {
   activeConnection?: DesktopRegistryConnection
-  compact: boolean
   pending: boolean
   title: string
 }
 
 function ConnectionSwitcherTrigger({
   activeConnection,
-  compact,
   pending,
   title,
   ...triggerProps
@@ -264,7 +257,6 @@ function ConnectionSwitcherTrigger({
       aria-label={activeConnection ? `${title}: ${activeConnection.label}` : title}
       className={cn(
         'w-full min-w-0 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
-        compact && 'h-full min-h-0 rounded-none px-1.5 text-[0.6875rem] font-normal',
         triggerProps.className
       )}
       size="xs"

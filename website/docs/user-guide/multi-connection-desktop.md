@@ -24,10 +24,9 @@ redirect there). Three doors lead to it:
 - **Settings → Gateways** — the page itself (**Cmd/Ctrl+,**, then
   **Gateways** in the settings nav). The connections registry is a section
   of that page, below the machine-level connection-mode controls.
-- **The sidebar profile rail** — the plug button at the right end of the rail
-  (tooltip: **"Connect another Hermes gateway…"**) deep-links straight to
-  the Gateways page. It is always visible, even before you have created
-  a second profile or a second connection.
+- **The Sessions sidebar gateway row** — open the current gateway and choose
+  **Manage gateways…**. The row is always visible, even before you have created
+  a second profile or registered a second connection.
 - **The command palette** — **Cmd/Ctrl+K**, then type *Gateways* (also
   matches *connections*, *add gateway*, *remote*, *ssh*, *instances*).
 
@@ -84,7 +83,7 @@ does not switch the current workspace.
 ## Adding a connection, step by step
 
 1. Open **Settings → Gateways** and scroll to the connections registry (or
-   click the plug in the profile rail).
+   choose **Manage gateways…** from the Sessions sidebar gateway row).
 2. Click **Add connection**.
 3. Pick the kind: **Local**, **Hermes Cloud**, **Remote gateway**, or **SSH**.
    (**Local** is disabled while the app-managed local entry exists — which is
@@ -163,13 +162,14 @@ The sidebar foot follows one hierarchy: **gateway → profile → sessions**.
 Gateways are machines or hosted backends; profiles are isolated Hermes agents
 that live on one gateway.
 
-- With one registered gateway, no gateway control is added. Local-only Desktop
-  keeps the same profile rail and keyboard flow as before.
-- With several gateways, the sidebar shows one named gateway selector. Its device,
-  cloud, network, or terminal icon identifies the connection type; profile
-  avatars remain a separate control after the divider. The same selector scales
-  from two gateways to a larger fleet without turning backends into profile-like
-  glyphs or crowding profile actions out of the rail.
+- With one registered gateway, the sidebar keeps a quiet named gateway row. It
+  shows the current source and its menu provides the discoverable **Manage
+  gateways…** entry point without adding gateway actions to the profile rail.
+- With several gateways, that same row becomes the switcher. Its device, cloud,
+  network, or terminal icon identifies the connection type; profile avatars
+  remain a separate row below. The selector scales from two gateways to a larger
+  fleet without turning backends into profile-like glyphs or crowding profile
+  actions out of the rail.
 - Selecting a gateway restores the last profile used there. The profile rail
   then shows only that gateway's profiles; the home pill returns to its default
   profile and the layers pill shows **All profiles on this gateway**.
@@ -203,9 +203,9 @@ that live on one gateway.
   on the gateway the window is connected to; edits on other machines apply on
   their next session.
 
-Add, test, rename, or remove gateways in **Settings → Gateways**. The plug
-button beside the profile actions is a shortcut to that single management
-home, not a second add flow.
+Add, test, rename, or remove gateways in **Settings → Gateways**. The
+**Manage gateways…** action in the sidebar gateway menu is a shortcut to that
+single management home, not a second add flow.
 
 ### Sessions and Bot Mode
 

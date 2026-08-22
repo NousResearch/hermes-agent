@@ -18,7 +18,7 @@ class Mem0Backend(ABC):
         self,
         messages: list,
         *,
-        user_id: str,
+        user_id: str | None,
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
@@ -61,7 +61,7 @@ class PlatformBackend(Mem0Backend):
         self,
         messages: list,
         *,
-        user_id: str,
+        user_id: str | None,
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
@@ -123,17 +123,20 @@ class SelfHostedBackend(Mem0Backend):
         self,
         messages: list,
         *,
-        user_id: str,
+        user_id: str | None,
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,
     ) -> dict:
         body: dict[str, Any] = {
             "messages": messages,
-            "user_id": user_id,
             "agent_id": agent_id,
             "infer": infer,
         }
+        # agent-scoped (shared) writes pass user_id=None; omit the key so the
+        # server scopes the memory to the agent, not to a null user.
+        if user_id:
+            body["user_id"] = user_id
         if metadata:
             body["metadata"] = metadata
         return self._json("POST", "/memories", json=body)
@@ -277,7 +280,7 @@ class OSSBackend(Mem0Backend):
         self,
         messages: list,
         *,
-        user_id: str,
+        user_id: str | None,
         agent_id: str,
         infer: bool = False,
         metadata: dict | None = None,

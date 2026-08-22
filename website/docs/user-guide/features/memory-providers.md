@@ -344,7 +344,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | **Data storage** | Mem0 Cloud (platform), your own Mem0 server (self-hosted dashboard), or in-process (OSS) |
 | **Cost** | Mem0 pricing (platform) / free (self-hosted or OSS) |
 
-**Tools (4):** `mem0_search` (semantic search; optional reranking in platform mode, off by default), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
+**Tools (4):** `mem0_search` (semantic search; optional reranking in platform mode, off by default), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID). When `shared_pool.enabled` is set in `mem0.json`, two **agent-scoped shared-pool tools** are also registered: `mem0_search_shared` (read the shared "company knowledge" pool) and `mem0_add_shared` (write to it, restricted to `shared_pool.authorized_submitters`). See the [mem0 plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/mem0/README.md) for the shared-pool configuration.
 
 **Setup (Platform):**
 ```bash

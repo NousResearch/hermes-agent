@@ -24,6 +24,16 @@ setup`):
                        store. When unset, the gateway-native id (e.g. Telegram
                        numeric id, Discord snowflake) is used instead.
   agent_id           — Agent identifier (default: hermes)
+  shared_pool        — Optional object enabling an agent-scoped shared
+                       "company knowledge" pool:
+                         enabled (bool, default false) — register and expose
+                             mem0_search_shared / mem0_add_shared.
+                         authorized_submitters (list[str], default []) — operator
+                             identifiers allowed to WRITE to the shared pool. When
+                             empty, any operator may submit. When non-empty,
+                             mem0_add_shared is refused for operators not listed.
+                       Shared search is always readable by every operator; this
+                       setting only controls who may contribute.
 
 The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID environment variables are
 still read as a backward-compatible fallback, but mem0.json is the canonical
@@ -69,6 +79,48 @@ def _is_client_error(exc: Exception) -> bool:
         return True
     err_str = str(exc).lower()
     return "404" in err_str or "not found" in err_str or "valid uuid" in err_str
+
+
+def _result_has_user_id(result: dict) -> bool:
+    """True if a search result belongs to a per-user scope.
+
+    Agent-scoped ("shared") records are written with no user_id, so mem0 does
+    not promote a ``user_id`` key onto their result dict. Per-user records carry
+    ``user_id`` either at the top level (promoted) or inside ``metadata``.
+    """
+    if result.get("user_id"):
+        return True
+    md = result.get("metadata") or {}
+    return bool(md.get("user_id"))
+
+
+def _result_is_shared(result: dict) -> bool:
+    """True if a search result is a genuine shared-pool (company) record.
+
+    Shared writes are tagged positively with ``metadata.scope == "shared"``
+    (see _write_shared_metadata). This is the primary signal the shared read
+    path uses, so the company view is an intersection: a record must be
+    positively tagged as shared AND carry no per-user scope. Relying on the
+    positive marker (rather than only the absence of user_id) means the
+    isolation boundary survives backend result-shape drift — a renamed or
+    nested user_id field cannot silently admit a private note into the
+    company view.
+    """
+    md = result.get("metadata") or {}
+    return md.get("scope") == "shared"
+
+
+def _result_is_shared_pool_record(result: dict) -> bool:
+    """Two-belt shared-pool membership check.
+
+    Belt 1: positively tagged as shared (metadata.scope == "shared").
+    Belt 2: carries no per-user scope (no user_id top-level or in metadata),
+            so a shared-tagged record that also has a user_id is still
+            excluded from the company view. Shared records are written with
+            no user_id, so both belts normally agree; belt 2 defends against
+            a mis-tag or a record that deliberately carries both.
+    """
+    return _result_is_shared(result) and not _result_has_user_id(result)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +238,54 @@ DELETE_SCHEMA = {
     },
 }
 
+# Agent-scoped shared-pool tools. These read/write memories at the AGENT level
+# (agent_id set, user_id absent) so every operator of this agent shares one
+# "company knowledge" pool, while each operator's private memories stay
+# isolated under their own user_id. Disabled unless shared_pool.enabled is set
+# in mem0.json; see ADD_SHARED_SCHEMA / _shared_pool_authorized for the
+# configurable submitter allowlist.
+SEARCH_SHARED_SCHEMA = {
+    "name": "mem0_search_shared",
+    "description": (
+        "Search the SHARED company-knowledge pool for this agent. It returns "
+        "ONLY true agent-scoped company facts (the records written via "
+        "mem0_add_shared or with no per-user scope) — NOT operators' private "
+        "notes, which stay isolated and never leak into the company view. Use "
+        "it before answering anything about company or team matters: policies, "
+        "systems, procedures, who-can-approve-what, service accounts. For a "
+        "single operator's strictly private facts, use mem0_search instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for in the shared company-knowledge pool."},
+            "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
+        },
+        "required": ["query"],
+    },
+}
+
+ADD_SHARED_SCHEMA = {
+    "name": "mem0_add_shared",
+    "description": (
+        "Store a fact in the SHARED company-knowledge pool (agent-scoped, visible "
+        "to every operator of this agent). Use this ONLY for facts that are "
+        "company-wide and not confidential to any single client, operator, or "
+        "person — e.g. policies, systems, procedures, service accounts, company "
+        "contact info. Anything about one specific operator, client, or person "
+        "goes in the per-user private store (mem0_add) instead. Only operators "
+        "listed in shared_pool.authorized_submitters (mem0.json) may write here; "
+        "if the current operator is not authorized this call is refused."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "The company-wide fact to store in the shared pool."},
+        },
+        "required": ["content"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -207,6 +307,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = "hermes"
         self._rerank_default = False
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
+        self._shared_pool_enabled = False
+        self._shared_pool_submitters: List[str] = []
+        self._shared_pool_resolved = False
         self._sync_thread = None
         self._prefetch_thread = None
         self._prefetch_query = ""
@@ -364,6 +467,9 @@ class Mem0MemoryProvider(MemoryProvider):
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
         self._channel = kwargs.get("platform") or "cli"
+        # Shared company-knowledge pool (agent-scoped) config. Resolved into
+        # _shared_pool_enabled / _shared_pool_submitters; off unless enabled.
+        self._resolve_shared_pool()
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -382,6 +488,44 @@ class Mem0MemoryProvider(MemoryProvider):
         # per-channel filtered views without coupling identity to the channel.
         return {"channel": self._channel} if self._channel else {}
 
+    def _write_shared_metadata(self) -> Dict[str, Any]:
+        # Shared-pool writes are tagged with a POSITIVE scope marker
+        # ("scope": "shared") in addition to the usual channel. The shared
+        # read path filters on this marker as its primary signal (not merely
+        # the absence of a user_id), so the company view is an intersection —
+        # records positively tagged as shared that also carry no per-user
+        # scope — rather than a set-difference. This survives backend result
+        # shape drift (a renamed/nested user_id field no longer silently
+        # admits a private note into the company view).
+        md = self._write_metadata()
+        md["scope"] = "shared"
+        return md
+
+    def _shared_submitters_filter(self) -> Dict[str, Any]:
+        """Return the agent-scoped filter used by the shared pool.
+
+        agent_id only (no user_id) surfaces the full agent-wide view — shared
+        facts AND every operator's notes. This is intentionally a superset of
+        every per-user scope.
+        """
+        return {"agent_id": self._agent_id}
+
+    def _shared_pool_authorized(self) -> bool:
+        """True if the current operator may write to the shared pool.
+
+        If shared_pool.authorized_submitters is empty (default), any operator
+        may contribute. Otherwise the current user_id must be listed.
+        Comparison is case-insensitive (.casefold() on both sides) and
+        gateway-agnostic: user_id is whatever this gateway resolved for the
+        operator (a Telegram/Discord id, a CLI username, an email-style id,
+        etc.), and an allowlist entry that differs only in casing must still
+        match.
+        """
+        if not self._shared_pool_submitters:
+            return True
+        want = self._user_id.casefold()
+        return any(want == s.casefold() for s in self._shared_pool_submitters)
+
     def system_prompt_block(self) -> str:
         # Mirror the precedence in _create_backend (oss > host > platform) so
         # the label always names the backend that actually runs. Checking
@@ -395,6 +539,20 @@ class Mem0MemoryProvider(MemoryProvider):
             mode_label = "platform (cloud API)"
         # Rerank is a Mem0 Platform feature only.
         rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
+        shared_note = ""
+        if self._shared_pool_enabled:
+            shared_note = (
+                "\\nSHARED company-knowledge pool: mem0_search_shared returns "
+                "ONLY true agent-scoped company facts (written via "
+                "mem0_add_shared), never individual operators' private notes — "
+                "use it for company policies, systems, procedures, service "
+                "accounts, who-can-approve-what. mem0_add_shared writes a "
+                "company fact visible to every operator. The write is refused "
+                "automatically for operators not in "
+                "shared_pool.authorized_submitters. Keep any single operator's "
+                "personal details, secrets, and client-confidential info in the "
+                "per-user store (mem0_add / mem0_search)."
+            )
         return (
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
@@ -409,6 +567,7 @@ class Mem0MemoryProvider(MemoryProvider):
             "you have every fact the question needs before you answer.\n"
             "Tools: mem0_search to find memories, mem0_add to store facts, "
             f"mem0_update and mem0_delete to manage by ID.{rerank_note}"
+            f"{shared_note}"
         )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -511,8 +670,40 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
             self._sync_thread.start()
 
+    def _resolve_shared_pool(self, force: bool = False) -> None:
+        """Resolve the shared-pool config from mem0.json.
+
+        Called from ``initialize()`` and (defensively) from
+        ``get_tool_schemas()``. ``add_provider()`` calls ``get_tool_schemas()``
+        *before* ``initialize_all()`` runs, so the shared-pool flags must not
+        depend on initialization ordering — otherwise the shared tools would
+        be advertised in the system prompt but never registered for dispatch
+        (\"Unknown tool\"). Resolving from config here keeps tool-set and prompt
+        views consistent.
+
+        Once resolved (via initialize() or an explicit set), the flags are kept
+        unless ``force`` is passed — so a caller that has intentionally set
+        ``_shared_pool_enabled``/``_shared_pool_submitters`` isn't clobbered.
+        """
+        if self._shared_pool_resolved and not force:
+            return
+        spool = self._config.get("shared_pool") if self._config else None
+        if spool is None:
+            spool = _load_config().get("shared_pool") or {}
+        self._shared_pool_enabled = bool(spool.get("enabled", False))
+        subs = spool.get("authorized_submitters", []) or []
+        self._shared_pool_submitters = [s for s in subs if isinstance(s, str) and s]
+        self._shared_pool_resolved = True
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        # Re-resolve once so the tool set is correct even when get_tool_schemas()
+        # is called before initialize() (e.g. at add_provider() time).
+        self._resolve_shared_pool()
+        schemas = [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        if self._shared_pool_enabled:
+            schemas.append(SEARCH_SHARED_SCHEMA)
+            schemas.append(ADD_SHARED_SCHEMA)
+        return schemas
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:
@@ -553,6 +744,80 @@ class Mem0MemoryProvider(MemoryProvider):
                 if not _is_client_error(e):
                     self._record_failure()
                 return tool_error(self._format_error("Search failed", e))
+
+        elif tool_name == "mem0_search_shared":
+            # Only available when the shared pool is enabled.
+            if not self._shared_pool_enabled:
+                return tool_error("Shared company pool is not enabled (set shared_pool.enabled=true in mem0.json).")
+            query = args.get("query", "")
+            if not query:
+                return tool_error("Missing required parameter: query")
+            try:
+                top_k = max(1, min(int(args.get("top_k", 10)), 50))
+                results = self._backend.search(
+                    query,
+                    filters=self._shared_submitters_filter(),
+                    top_k=top_k,
+                    rerank=False,
+                )
+                self._record_success()
+                if not results:
+                    return json.dumps({"result": "No shared memories found."})
+                # The shared pool is the set of TRUE agent-scoped company facts:
+                # records written via mem0_add_shared. These are positively
+                # tagged metadata.scope="shared" and carry no user_id. Keep only
+                # records that pass BOTH belts — positively tagged as shared AND
+                # free of any per-user scope — so an operator's private memory
+                # can never leak into the company view, even if the backend
+                # result shape changes the way user identity is carried.
+                shared_only = [
+                    r for r in results
+                    if _result_is_shared_pool_record(r)
+                ]
+                if not shared_only:
+                    return json.dumps({"result": "No shared memories found."})
+                items = [{"id": r.get("id"), "memory": r.get("memory", ""),
+                          "score": r.get("score", 0)} for r in shared_only]
+                return json.dumps({"results": items, "count": len(items)})
+            except Exception as e:
+                if not _is_client_error(e):
+                    self._record_failure()
+                return tool_error(self._format_error("Shared search failed", e))
+
+        elif tool_name == "mem0_add_shared":
+            # Only available when the shared pool is enabled.
+            if not self._shared_pool_enabled:
+                return tool_error("Shared company pool is not enabled (set shared_pool.enabled=true in mem0.json).")
+            content = args.get("content", "")
+            if not content:
+                return tool_error("Missing required parameter: content")
+            # Enforce the submitter allowlist in code (not just prompt guidance).
+            if not self._shared_pool_authorized():
+                return tool_error(
+                    "Operator not authorized to write to the shared company pool. "
+                    "Only operators in shared_pool.authorized_submitters may "
+                    "contribute; others may still read via mem0_search_shared."
+                )
+            try:
+                # Agent-scoped write: user_id absent, agent_id set. Lands in the
+                # shared pool visible to every operator of this agent. Also
+                # tagged with metadata.scope="shared" so the read path can
+                # identify shared records by a positive marker, not merely by
+                # the absence of a per-user scope.
+                result = self._backend.add(
+                    [{"role": "user", "content": content}],
+                    user_id=None,  # agent-scoped (shared) — no per-user principal
+                    agent_id=self._agent_id,
+                    infer=False,
+                    metadata=self._write_shared_metadata(),
+                )
+                self._record_success()
+                event_id = result.get("event_id") if isinstance(result, dict) else None
+                msg = "Shared fact stored." if (self._mode == "oss" or self._host) else "Shared fact queued for storage."
+                return json.dumps({"result": msg, "event_id": event_id})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(self._format_error("Failed to store shared", e))
 
         elif tool_name == "mem0_add":
             content = args.get("content", "")

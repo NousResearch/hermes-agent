@@ -20,6 +20,13 @@ import subprocess
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from tools.github_capabilities import (
+    CodePublicationReceipt,
+    GitHubAuthorityContext,
+    GitHubOperation,
+    build_capability_report,
+    require_code_publication_receipt,
+)
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -382,7 +389,74 @@ def review_commit(cwd: str, message: str, push: bool) -> dict:
     return {"ok": True}
 
 
+def _github_ship_report(cwd: str, operations: list[GitHubOperation]):
+    """Return GitHub authority evidence when this worktree has an authenticated gh."""
+    if not shutil.which("gh"):
+        return None
+    auth_ok, _ = _gh(cwd, ["auth", "status"])
+    if not auth_ok:
+        return None
+
+    repo_ok, repo_out = _gh(
+        cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]
+    )
+    repository = repo_out.strip()
+    if not repo_ok or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        remote = _git_out(cwd, ["remote", "get-url", "origin"]).lower()
+        if "github.com" not in remote:
+            return None
+        context = GitHubAuthorityContext(
+            repository=repository or "unknown/unknown",
+            authenticated=True,
+        )
+        return build_capability_report(context, operations)
+
+    metadata_ok, metadata_out = _gh(cwd, ["api", f"repos/{repository}"])
+    if not metadata_ok:
+        context = GitHubAuthorityContext(repository=repository, authenticated=True)
+        return build_capability_report(context, operations)
+    try:
+        data = json.loads(metadata_out)
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict) or not data:
+        context = GitHubAuthorityContext(repository=repository, authenticated=True)
+        return build_capability_report(context, operations)
+
+    owner = data.get("owner") or {}
+    permissions = data.get("permissions") or {}
+    viewer_permission = str(data.get("viewerPermission") or "").lower()
+    can_push = bool(
+        permissions.get("push")
+        or viewer_permission in {"push", "maintain", "admin"}
+    ) if isinstance(permissions, dict) else viewer_permission in {"push", "maintain", "admin"}
+    organization = str(
+        (data.get("organization") or {}).get("login")
+        or (owner.get("login") if str(owner.get("type") or "").lower() == "organization" else "")
+    )
+    context = GitHubAuthorityContext(
+        repository=repository,
+        account=str(owner.get("login") or ""),
+        organization=organization,
+        authenticated=True,
+        repository_permissions={"push": "write" if can_push else "read"},
+        repository_readable=True,
+    )
+    return build_capability_report(context, operations)
+
+
+def _preflight_github_mutation(cwd: str, operations: list[GitHubOperation]) -> None:
+    report = _github_ship_report(cwd, operations)
+    if report is None:
+        return
+    report.require(operations)
+
+
 def _review_push(cwd: str) -> None:
+    _preflight_github_mutation(
+        cwd,
+        [GitHubOperation.CONTENTS_WRITE, GitHubOperation.GIT_DATA_REFS_WRITE],
+    )
     upstream = _git_out(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).strip()
     if upstream:
         _git_ok(cwd, ["push"])
@@ -557,13 +631,48 @@ def review_create_pr(cwd: str) -> dict:
     """Create a PR for the current branch (push first), letting gh fill title/body."""
     try:
         _review_push(cwd)
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        raise RuntimeError(f"Cannot publish code before push succeeds: {exc}") from exc
+    _preflight_github_mutation(cwd, [GitHubOperation.PULL_REQUEST_CREATE])
     created, out = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
         raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")
     url = next((line for line in reversed(out.strip().splitlines()) if line.strip()), "")
-    return {"url": url}
+    view_ok, view_out = _gh(
+        cwd,
+        ["pr", "view", "--json", "url,state,isDraft,headRefName,headRefOid"],
+    )
+    if not view_ok:
+        raise RuntimeError("PR was created but its completion receipt could not be read.")
+    try:
+        pr = json.loads(view_out)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("PR was created but GitHub returned invalid receipt metadata.") from exc
+    remote_url = str(pr.get("url") or url)
+    branch = str(pr.get("headRefName") or _git_out(
+        cwd, ["rev-parse", "--abbrev-ref", "HEAD"]
+    ).strip())
+    commit_sha = _git_out(cwd, ["rev-parse", "HEAD"]).strip()
+    remote_sha = str(pr.get("headRefOid") or "")
+    if remote_sha and commit_sha and remote_sha != commit_sha:
+        raise RuntimeError("PR completion receipt does not match the local HEAD commit.")
+    base = _branch_base(cwd)
+    source_diff_verified = bool(
+        base and _git_out(cwd, ["diff", f"{base}...HEAD"]).strip()
+    )
+    receipt = require_code_publication_receipt(CodePublicationReceipt(
+        repository=str((_gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])[1]).strip()),
+        branch=branch,
+        commit_sha=commit_sha,
+        source_diff_verified=source_diff_verified,
+        pull_request_url=remote_url,
+    ))
+    return {
+        "url": receipt.pull_request_url,
+        "branch": receipt.branch,
+        "commit": receipt.commit_sha,
+        "verified": True,
+    }
 
 
 # ── worktrees & branches ─────────────────────────────────────────────────────

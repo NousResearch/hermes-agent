@@ -1622,10 +1622,35 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
 
 
+def _github_publish_failure(auth, repository: str, operation, response) -> tuple[bool, str]:
+    """Turn an API mutation failure into a typed, actionable authority error."""
+    from tools.github_capabilities import GitHubCapabilityError
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    message = str(getattr(response, "text", "") or "")[:500]
+    try:
+        report = auth.capability_report(repository, [operation])
+        capability = report.for_operation(operation).with_failure(status_code, message)
+        return False, str(GitHubCapabilityError(capability))
+    except Exception:
+        return False, f"GitHub {operation.value} failed: {status_code} {message[:200]}".strip()
+
+
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     auth) -> tuple:
     """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
     import httpx
+    from tools.github_capabilities import GitHubCapabilityError, GitHubOperation
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target_repo or ""):
+        return False, "Invalid GitHub repository; expected owner/repository."
+    try:
+        # PR creation is distinct from writing the eventual fork.
+        auth.preflight(target_repo, [GitHubOperation.PULL_REQUEST_CREATE])
+    except GitHubCapabilityError as exc:
+        return False, str(exc)
+    except AttributeError:
+        return False, "GitHub authority preflight is unavailable; no mutation was attempted."
 
     headers = auth.get_headers()
 
@@ -1635,15 +1660,27 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             f"https://api.github.com/repos/{target_repo}/forks",
             headers=headers, timeout=30,
         )
-        if resp.status_code in {200, 202}:
-            fork = resp.json()
-            fork_repo = fork["full_name"]
-        elif resp.status_code == 403:
-            return False, "GitHub token lacks permission to fork repos"
-        else:
-            return False, f"Failed to fork {target_repo}: {resp.status_code}"
+        if resp.status_code not in {200, 202}:
+            return _github_publish_failure(
+                auth, target_repo, GitHubOperation.PULL_REQUEST_CREATE, resp
+            )
+        fork = resp.json()
+        fork_repo = str(fork.get("full_name") or "") if isinstance(fork, dict) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", fork_repo):
+            return False, "GitHub fork response did not contain a valid repository."
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
+    except (TypeError, ValueError, KeyError) as e:
+        return False, f"Invalid fork response: {e}"
+
+    try:
+        # Fork contents and refs are separately preflighted from PR creation.
+        auth.preflight(
+            fork_repo,
+            [GitHubOperation.CONTENTS_WRITE, GitHubOperation.GIT_DATA_REFS_WRITE],
+        )
+    except GitHubCapabilityError as exc:
+        return False, str(exc)
 
     # 2. Get default branch
     try:
@@ -1651,9 +1688,18 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             f"https://api.github.com/repos/{target_repo}",
             headers=headers, timeout=15,
         )
-        default_branch = resp.json().get("default_branch", "main")
-    except Exception:
-        default_branch = "main"
+        if resp.status_code != 200:
+            return _github_publish_failure(
+                auth, target_repo, GitHubOperation.REPOSITORY_METADATA_READ, resp
+            )
+        data = resp.json()
+        default_branch = str(data.get("default_branch") or "main")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", default_branch):
+            return False, "GitHub repository returned an invalid default branch."
+    except httpx.HTTPError as e:
+        return False, f"Network error reading repository metadata: {e}"
+    except (TypeError, ValueError, KeyError) as e:
+        return False, f"Invalid repository metadata response: {e}"
 
     # 3. Get the base tree SHA
     try:
@@ -1661,22 +1707,34 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
             headers=headers, timeout=15,
         )
-        base_sha = resp.json()["object"]["sha"]
-    except Exception as e:
-        return False, f"Failed to get base branch: {e}"
+        if resp.status_code != 200:
+            return _github_publish_failure(
+                auth, fork_repo, GitHubOperation.GIT_DATA_REFS_WRITE, resp
+            )
+        base_sha = str(resp.json()["object"]["sha"])
+    except httpx.HTTPError as e:
+        return False, f"Network error reading base branch: {e}"
+    except (TypeError, ValueError, KeyError) as e:
+        return False, f"Invalid base branch response: {e}"
 
     # 4. Create a new branch
     branch_name = f"add-skill-{skill_name}"
     try:
-        httpx.post(
+        resp = httpx.post(
             f"https://api.github.com/repos/{fork_repo}/git/refs",
             headers=headers, timeout=15,
             json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
         )
-    except Exception as e:
-        return False, f"Failed to create branch: {e}"
+        if resp.status_code != 201:
+            return _github_publish_failure(
+                auth, fork_repo, GitHubOperation.GIT_DATA_REFS_WRITE, resp
+            )
+    except httpx.HTTPError as e:
+        return False, f"Network error creating branch: {e}"
 
     # 5. Upload skill files
+    uploaded_files = 0
+    last_commit_sha = ""
     for f in skill_path.rglob("*"):
         if not f.is_file():
             continue
@@ -1685,7 +1743,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         try:
             import base64
             content_b64 = base64.b64encode(f.read_bytes()).decode()
-            httpx.put(
+            resp = httpx.put(
                 f"https://api.github.com/repos/{fork_repo}/contents/{upload_path}",
                 headers=headers, timeout=15,
                 json={
@@ -1694,8 +1752,21 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     "branch": branch_name,
                 },
             )
-        except Exception as e:
-            return False, f"Failed to upload {rel}: {e}"
+            if resp.status_code not in {200, 201}:
+                return _github_publish_failure(
+                    auth, fork_repo, GitHubOperation.CONTENTS_WRITE, resp
+                )
+            payload = resp.json()
+            commit = payload.get("commit") if isinstance(payload, dict) else None
+            commit_sha = commit.get("sha") if isinstance(commit, dict) else None
+            if not commit_sha:
+                return False, f"GitHub upload for {rel} returned no commit SHA."
+            last_commit_sha = str(commit_sha)
+            uploaded_files += 1
+        except httpx.HTTPError as e:
+            return False, f"Network error uploading {rel}: {e}"
+        except (TypeError, ValueError, KeyError) as e:
+            return False, f"Invalid upload response for {rel}: {e}"
 
     # 6. Create PR
     try:
@@ -1710,13 +1781,31 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                 "base": default_branch,
             },
         )
-        if resp.status_code == 201:
-            pr_url = resp.json().get("html_url", "")
-            return True, f"PR created: {pr_url}"
-        else:
-            return False, f"Failed to create PR: {resp.status_code} {resp.text[:200]}"
+        if resp.status_code != 201:
+            return _github_publish_failure(
+                auth, target_repo, GitHubOperation.PULL_REQUEST_CREATE, resp
+            )
+        payload = resp.json()
+        pr_url = str(payload.get("html_url") or "") if isinstance(payload, dict) else ""
+        if not pr_url:
+            return False, "GitHub PR response did not contain a URL."
     except httpx.HTTPError as e:
         return False, f"Network error creating PR: {e}"
+    except (TypeError, ValueError, KeyError) as e:
+        return False, f"Invalid PR response: {e}"
+
+    from tools.github_capabilities import CodePublicationReceipt, require_code_publication_receipt
+    try:
+        receipt = require_code_publication_receipt(CodePublicationReceipt(
+            repository=fork_repo,
+            branch=branch_name,
+            commit_sha=last_commit_sha,
+            source_diff_verified=uploaded_files > 0,
+            pull_request_url=pr_url,
+        ))
+    except RuntimeError as e:
+        return False, str(e)
+    return True, f"PR created: {receipt.pull_request_url}"
 
 
 def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> None:

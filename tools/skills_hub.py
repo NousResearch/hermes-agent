@@ -37,6 +37,12 @@ import yaml
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
+from tools.github_capabilities import (
+    GitHubAuthorityContext,
+    GitHubCapabilityReport,
+    GitHubOperation,
+    build_capability_report,
+)
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
@@ -365,6 +371,17 @@ class GitHubAuth:
         self._cached_token: Optional[str] = None
         self._cached_method: Optional[str] = None
         self._app_token_expiry: float = 0
+        # These fields are deliberately kept separate from authentication:
+        # receiving a token does not prove that the installation selected a
+        # repository or granted the permission for a later mutation.
+        self._app_principal_configured = False
+        self._app_installation_id: Optional[str] = None
+        self._app_installation_exists: Optional[bool] = None
+        self._app_repository_selection: Optional[str] = None
+        self._app_selected_repositories: set[str] = set()
+        self._app_declared_permissions: Dict[str, str] = {}
+        self._app_granted_permissions: Dict[str, str] = {}
+        self._app_auth_failure: Optional[tuple[int, str]] = None
 
     def get_headers(self) -> Dict[str, str]:
         """Return authorization headers for GitHub API requests."""
@@ -381,6 +398,113 @@ class GitHubAuth:
         """Return which auth method is active: 'pat', 'gh-cli', 'github-app', or 'anonymous'."""
         self._resolve_token()
         return self._cached_method or "anonymous"
+
+    def capability_report(
+        self,
+        repository: str,
+        operations: Optional[List[GitHubOperation]] = None,
+    ) -> GitHubCapabilityReport:
+        """Report effective authority for exact repository object classes."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository or ""):
+            context = GitHubAuthorityContext(repository=repository)
+            return build_capability_report(context, operations)
+
+        token = self._resolve_token()
+        app_principal = self._app_principal_configured or self._cached_method == "github-app"
+        repository_readable: Optional[bool] = None
+        repository_permissions: Dict[str, Any] = {}
+        account = ""
+        organization = ""
+
+        try:
+            response = httpx.get(
+                f"https://api.github.com/repos/{repository}",
+                headers=self.get_headers(),
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict):
+                    repository_readable = True
+                    owner = data.get("owner") or {}
+                    account = str(owner.get("login") or "")
+                    organization_data = data.get("organization") or {}
+                    organization = str(
+                        organization_data.get("login")
+                        or (account if str(owner.get("type") or "").lower() == "organization" else "")
+                    )
+                    permissions = data.get("permissions") or {}
+                    if isinstance(permissions, dict):
+                        repository_permissions = dict(permissions)
+            elif response.status_code in {401, 403, 404}:
+                repository_readable = False
+        except Exception as exc:
+            logger.debug("GitHub capability metadata lookup failed: %s", exc)
+
+        installation_exists = self._app_installation_exists if app_principal else None
+        repository_selected: Optional[bool] = None
+        if app_principal:
+            if not self._app_installation_id:
+                installation_exists = False
+            elif installation_exists is None and self._cached_method == "github-app":
+                installation_exists = True
+            selection = (self._app_repository_selection or "").lower()
+            if selection == "all":
+                repository_selected = True
+            elif selection == "selected":
+                normalized = repository.lower()
+                if self._app_selected_repositories:
+                    repository_selected = normalized in self._app_selected_repositories
+                elif token:
+                    repository_selected = self._repository_is_in_installation(repository)
+
+        context = GitHubAuthorityContext(
+            repository=repository,
+            account=account,
+            organization=organization,
+            authenticated=token is not None,
+            app_principal=app_principal,
+            installation_id=self._app_installation_id,
+            installation_exists=installation_exists,
+            repository_selected=repository_selected,
+            declared_permissions=self._app_declared_permissions,
+            installation_permissions=self._app_granted_permissions,
+            repository_permissions=repository_permissions,
+            repository_readable=repository_readable,
+        )
+        return build_capability_report(context, operations)
+
+    def preflight(
+        self,
+        repository: str,
+        operations: List[GitHubOperation],
+    ) -> GitHubCapabilityReport:
+        """Require effective authority before a repository mutation."""
+        return self.capability_report(repository, operations).require(operations)
+
+    def _repository_is_in_installation(self, repository: str) -> Optional[bool]:
+        """Ask GitHub's installation endpoint only when selection is unknown."""
+        try:
+            response = httpx.get(
+                "https://api.github.com/installation/repositories",
+                headers=self.get_headers(),
+                timeout=10,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            repositories = data.get("repositories") if isinstance(data, dict) else None
+            if not isinstance(repositories, list):
+                return None
+            target = repository.lower()
+            return any(
+                isinstance(item, dict)
+                and str(item.get("full_name") or "").lower() == target
+                for item in repositories
+            )
+        except Exception as exc:
+            logger.debug("GitHub installation repository lookup failed: %s", exc)
+            return None
 
     def _resolve_token(self) -> Optional[str]:
         # Return cached token if still valid
@@ -436,6 +560,10 @@ class GitHubAuth:
         key_path = get_secret("GITHUB_APP_PRIVATE_KEY_PATH")
         installation_id = get_secret("GITHUB_APP_INSTALLATION_ID")
 
+        self._app_principal_configured = bool(app_id or key_path or installation_id)
+        self._app_installation_id = str(installation_id) if installation_id else None
+        if self._app_principal_configured and not installation_id:
+            self._app_installation_exists = False
         if not all([app_id, key_path, installation_id]):
             return None
 
@@ -459,6 +587,29 @@ class GitHubAuth:
             }
             encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")
 
+            # The App manifest is the source of declared permissions. The
+            # installation token response below is the source of granted
+            # permissions and repository selection.
+            try:
+                app_resp = httpx.get(
+                    "https://api.github.com/app",
+                    headers={
+                        "Authorization": f"Bearer {encoded_jwt}",
+                        "Accept": "application/vnd.github.v3+json",
+                    },
+                    timeout=10,
+                )
+                if app_resp.status_code == 200:
+                    app_data = app_resp.json()
+                    permissions = app_data.get("permissions") if isinstance(app_data, dict) else None
+                    if isinstance(permissions, dict):
+                        self._app_declared_permissions = {
+                            str(name): str(value).lower()
+                            for name, value in permissions.items()
+                        }
+            except Exception as exc:
+                logger.debug("GitHub App manifest lookup failed: %s", exc)
+
             resp = httpx.post(
                 f"https://api.github.com/app/installations/{installation_id}/access_tokens",
                 headers={
@@ -468,7 +619,33 @@ class GitHubAuth:
                 timeout=10,
             )
             if resp.status_code == 201:
-                return resp.json().get("token")
+                data = resp.json()
+                self._app_installation_exists = True
+                if isinstance(data, dict):
+                    permissions = data.get("permissions")
+                    if isinstance(permissions, dict):
+                        self._app_granted_permissions = {
+                            str(name): str(value).lower()
+                            for name, value in permissions.items()
+                        }
+                    selection = data.get("repository_selection")
+                    if selection:
+                        self._app_repository_selection = str(selection)
+                    repositories = data.get("repositories")
+                    if isinstance(repositories, list):
+                        self._app_selected_repositories = {
+                            str(item.get("full_name")).lower()
+                            for item in repositories
+                            if isinstance(item, dict) and item.get("full_name")
+                        }
+                    return data.get("token")
+            else:
+                self._app_auth_failure = (
+                    resp.status_code,
+                    str(getattr(resp, "text", "") or "")[:300],
+                )
+                if resp.status_code == 404:
+                    self._app_installation_exists = False
         except Exception as e:
             logger.debug("GitHub App auth failed: %s", e)
 

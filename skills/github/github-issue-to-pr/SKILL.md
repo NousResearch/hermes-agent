@@ -35,13 +35,34 @@ Before writing anything, run `gh pr list --search "#<N>" --state all` plus at le
 
 ### 3. Validate the premise against current code — and against design intent
 
+For GitHub automation, validate authority separately from token availability.
+Before any repository-object mutation, produce an effective capability report
+for the exact operation class: account/org, repository, installation ID,
+repository selection, app-declared permission, installation-granted
+permission, effective result, and reason. Treat app_not_installed,
+repository_not_selected, permission_not_granted, branch_protection_denied,
+organization_policy_denied, and resource_not_accessible_unknown as distinct
+outcomes; a successful issue comment, review, or metadata write is not evidence
+for Contents, Git Data/refs, PR creation, Actions, or workflow authority.
+
 Reproduce the bug or demonstrate the missing behavior on the current default branch with a failing test or fixture, using `search_files` and `read_file` to trace the reported path. Then check the second question: is the "bug" actually deliberate design? Run `git log -p -S "<symbol>"` on the code the issue wants changed and read the original commit's intent — a missing link or restriction is often the feature. Challenge stale or flawed issue prose instead of implementing it blindly. Done when the root cause or feature gap is demonstrated in current code AND the change doesn't fight an intentional design.
 
 ### 4. Define acceptance and risk
 
+For code publication, acceptance includes an object-specific completion receipt:
+the target repository, branch, resulting commit SHA, verified source diff, and
+PR URL when a PR is part of the workflow. A metadata receipt alone never closes
+the code task.
+
 List acceptance criteria, interfaces, migrations/state changes, compatibility, security/privacy, rollout, and rollback. Map every criterion to a test or explicit verification. Done when review has a finite contract.
 
 ### 5. Implement the smallest complete change — and fix the class
+
+Put the capability preflight immediately before the first mutation and fail
+closed on unknown authority. For each mutating response, retain the object
+class, status, and actionable recovery reason. For code publication, do not
+report completion until the commit SHA, branch, and verified source diff are
+recorded in a receipt.
 
 Work on an isolated branch or worktree, loading `systematic-debugging` or `test-driven-development` when the bug class calls for them. Add regression tests first, then implement. When the fix is in hand, `search_files` for the same bug shape at sibling call sites and fix the whole class in this PR — an incomplete fix that leaves known siblings broken is worse than none. Every changed line must trace to the issue; no drive-by cleanup. Done when targeted tests pass, the original failure no longer reproduces, and sibling sites are fixed or explicitly ruled out.
 
@@ -50,6 +71,10 @@ Work on an isolated branch or worktree, loading `systematic-debugging` or `test-
 Temporarily restore the old behavior of the exact function under test, run the new test, and confirm it FAILS; then restore the fix and confirm it passes. A regression test that passes with and without the fix proves nothing. Done when the test demonstrably fails on pre-fix code.
 
 ### 7. Run repository quality gates, then open the PR immediately
+
+Before pushing or opening a PR, verify the publication receipt and inspect the
+actual source diff. Confirm that the branch/ref and Contents authority was
+checked independently from PR metadata authority.
 
 Run the formatter, lint, typecheck, and the repo's canonical test entrypoint on affected areas; use `requesting-code-review` on the diff. Then push and open the PR right away — the PR is what dispatches CI, and CI latency is the long pole; do not sit on finished work. Load `github-pr-workflow` for PR mechanics: conventional branch/commit, body linking the issue with problem, approach, tests, risk, and exclusions. Read the PR back and verify head SHA, base, title, and files. Done when the PR exists with the intended diff and CI is running.
 
@@ -60,6 +85,9 @@ Inspect live checks and failure logs via `gh pr checks` / `gh run view --log-fai
 ## Pitfalls
 
 - Coding before reading issue comments, sweeping for duplicate PRs, or reading current code.
+- Treating token availability, a successful metadata write, or an issue/review receipt as repository-object authority.
+- Mutating before an exact operation-class preflight, or calling an unexplained 403 a permission failure.
+- Claiming code publication without a commit SHA, branch, and verified source-diff receipt.
 - "Fixing" behavior that the original commit shows is intentional design.
 - Fixing a symptom at one call site while sibling sites keep the same bug.
 - Shipping a regression test that also passes without the fix.
@@ -71,6 +99,8 @@ Inspect live checks and failure logs via `gh pr checks` / `gh run view --log-fai
 - [ ] Full issue thread read; newest comment state reflected in the plan.
 - [ ] Duplicate-PR sweep run with issue number + 2 keyword variants.
 - [ ] Premise reproduced on current code; design intent checked via git history.
+- [ ] Exact operation-class capability report and typed recovery reason recorded before mutation.
+- [ ] Code publication receipt contains target repository, branch, commit SHA, and verified source diff.
 - [ ] Regression test proven to fail without the fix.
 - [ ] Sibling call sites fixed or explicitly ruled out.
 - [ ] Every changed line traces to the issue.

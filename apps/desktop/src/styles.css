@@ -1324,6 +1324,12 @@ body.guest-pointer-lock :is(webview, iframe) {
     height: 0.25rem;
   }
 
+  html.platform-linux .scrollbar-dt::-webkit-scrollbar,
+  html.platform-linux .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
+    width: 0.625rem;
+    height: 0.625rem;
+  }
+
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,

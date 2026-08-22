@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pin-seeker
+description: Search golf tee times. Returns GolfNow links; does not book or hold. Search queries (location and schedule) are sent to pinseeker.xyz.
+source: https://pinseeker.xyz/agents.html
+
+# Official hosted Streamable HTTP server. URL-only — Hermes never spawns a
+# local process for this entry. Public search; no credentials required.
+transport:
+  type: http
+  url: https://pinseeker.xyz/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_tee_times
+
+suggest:
+  keywords:
+    - golf
+    - tee time
+    - tee times
+    - golfnow
+    - pin seeker
+  hosts:
+    - pinseeker.xyz
+    - golfnow.com
+
+post_install: |
+  Pin Seeker searches public tee times and returns GolfNow URLs.
+  It cannot book, hold, reserve, or pay. Give the golfer the GolfNow
+  link so they can complete checkout themselves.
+
+  Try: "Find me a Saturday morning tee time near Pleasanton for 2."
+  Search queries (location and schedule) are sent to pinseeker.xyz.

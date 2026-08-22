@@ -4889,6 +4889,8 @@ def _persist_model_switch(result) -> None:
         # removal without needing a key-delete. Leaving the old value would
         # route the new model at the previous custom host (#48305).
         save_config_value("model.base_url", None)
+    # Clear or replace stale model.key_env the same way as base_url (#88989).
+    save_config_value("model.key_env", getattr(result, "key_env", None) or None)
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:

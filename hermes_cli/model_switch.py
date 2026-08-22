@@ -627,6 +627,79 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # Env-var name to persist as model.key_env. Empty means "clear the stale
+    # value" — never persist the resolved secret as model.api_key (#88989).
+    key_env: str = ""
+
+
+def _env_ref_name(value: str) -> str:
+    text = str(value or "").strip()
+    if text.startswith("${") and text.endswith("}") and len(text) > 3:
+        return text[2:-1].strip()
+    return ""
+
+
+def resolve_switch_key_env(
+    target_provider: str,
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> str:
+    """Env-var name that should land in ``model.key_env`` after a switch.
+
+    Returns ``""`` when the destination has no named env var so callers can
+    clear a stale ``key_env`` left by the previous provider. Does not return
+    or persist the resolved secret.
+    """
+    slug = str(target_provider or "").strip()
+    if not slug:
+        return ""
+    slug_l = slug.lower()
+    candidates = [slug, slug_l]
+    if slug_l.startswith("custom:"):
+        bare = slug[7:]
+        candidates.extend([bare, bare.lower()])
+
+    if isinstance(user_providers, dict):
+        for key in candidates:
+            entry = user_providers.get(key)
+            if not isinstance(entry, dict):
+                continue
+            named = str(entry.get("key_env") or "").strip()
+            if named:
+                return named
+            ref = _env_ref_name(str(entry.get("api_key") or ""))
+            if ref:
+                return ref
+
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            aliases = custom_provider_aliases(
+                str(entry.get("name") or ""),
+                str(entry.get("provider_key") or ""),
+            )
+            if slug_l not in aliases and slug not in aliases:
+                continue
+            named = str(entry.get("key_env") or "").strip()
+            if named:
+                return named
+            ref = _env_ref_name(str(entry.get("api_key") or ""))
+            if ref:
+                return ref
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.providers import ALIASES
+
+        canonical = ALIASES.get(slug_l, slug_l)
+        pconfig = PROVIDER_REGISTRY.get(canonical)
+        env_vars = tuple(getattr(pconfig, "api_key_env_vars", ()) or ())
+        if env_vars:
+            return str(env_vars[0]).strip()
+    except Exception:
+        pass
+    return ""
 
 
 @dataclass(frozen=True)
@@ -2198,6 +2271,11 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        key_env=resolve_switch_key_env(
+            target_provider,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+        ),
     )
 
 

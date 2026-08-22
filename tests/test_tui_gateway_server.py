@@ -17602,6 +17602,38 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
     assert not saved["model"].get("base_url"), saved["model"].get("base_url")
 
 
+def test_persist_model_switch_syncs_key_env(tmp_path, monkeypatch):
+    """#88989: TUI persist must replace a stale model.key_env, not leave the
+    previous provider's env-var name on disk."""
+    import types
+    import yaml
+    import cli
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: old-model\n"
+        "  provider: custom\n"
+        "  key_env: AGNES_API_KEY\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+    result = types.SimpleNamespace(
+        new_model="deepseek-v4-flash",
+        target_provider="deepseek",
+        base_url="https://api.deepseek.com",
+        key_env="DEEPSEEK_API_KEY",
+    )
+    server._persist_model_switch(result)
+    saved = yaml.safe_load(cfg_path.read_text())
+
+    assert saved["model"]["default"] == "deepseek-v4-flash"
+    assert saved["model"]["provider"] == "deepseek"
+    assert saved["model"]["key_env"] == "DEEPSEEK_API_KEY"
+    assert "api_key" not in saved["model"]
+
+
 # ---------------------------------------------------------------------------
 # _resolve_runtime_with_fallback — init-time provider fallback
 # ---------------------------------------------------------------------------

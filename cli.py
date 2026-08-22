@@ -11113,6 +11113,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # need (#25106).
             save_config_value("model.base_url", result.base_url or None)
             save_config_value("model.api_mode", result.api_mode or None)
+            # Same lifecycle as base_url: write the destination env-var name
+            # (or None) so a previous provider's key_env cannot 401 the next
+            # request. Never persist result.api_key — that is the resolved
+            # secret (#88989).
+            save_config_value("model.key_env", result.key_env or None)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -11508,6 +11513,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # must be synced on every global switch (#25106).
             save_config_value("model.base_url", result.base_url or None)
             save_config_value("model.api_mode", result.api_mode or None)
+            save_config_value("model.key_env", result.key_env or None)
             _cprint("    Saved to config.yaml")
         elif one_turn:
             _cprint("    (next turn only — restores after one response)")

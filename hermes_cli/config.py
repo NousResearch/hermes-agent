@@ -1017,6 +1017,38 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+_MODEL_OVERRIDE_METADATA_KEYS = frozenset({
+    "context_window",
+    "max_output_tokens",
+    "supports_tools",
+    "supports_vision",
+    "supports_reasoning",
+    "model_family",
+})
+
+
+def _split_config_key_path(dotted_key: str) -> list[str]:
+    """Split a config path while preserving dotted model override IDs.
+
+    ``model_overrides`` is an open mapping, so its model segment consumes every
+    remaining component except a recognized trailing metadata key. This keeps
+    arbitrary dotted IDs addressable, but the dotted CLI syntax cannot
+    distinguish a model ID ending in a metadata-key name from that metadata
+    field; such an override must be written directly in YAML. An unrecognized
+    trailing component is therefore part of the model ID, not a schema error.
+    """
+    parts = dotted_key.split(".")
+    if (
+        len(parts) >= 3
+        and parts[0] == "model_overrides"
+        and parts[1] != "_default"
+    ):
+        if len(parts) >= 4 and parts[-1] in _MODEL_OVERRIDE_METADATA_KEYS:
+            return [parts[0], parts[1], ".".join(parts[2:-1]), parts[-1]]
+        return [parts[0], parts[1], ".".join(parts[2:])]
+    return parts
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1039,7 +1071,7 @@ def _set_nested(config, dotted_key: str, value):
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
     """
-    parts = dotted_key.split(".")
+    parts = _split_config_key_path(dotted_key)
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -1101,7 +1133,7 @@ _MISSING = object()
 def _get_nested(config, dotted_key: str):
     """Return a dotted-path value from nested dict/list config data."""
     current = config
-    for part in dotted_key.split("."):
+    for part in _split_config_key_path(dotted_key):
         if isinstance(current, list):
             try:
                 current = current[int(part)]
@@ -1118,7 +1150,7 @@ def _get_nested(config, dotted_key: str):
 
 def _unset_nested(config, dotted_key: str) -> bool:
     """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
+    parts = _split_config_key_path(dotted_key)
     if not parts:
         return False
 
@@ -5132,7 +5164,7 @@ def _default_value_for_key(dotted_key: str):
     best-effort coercion used by ``config set``.
     """
     node = DEFAULT_CONFIG
-    for part in dotted_key.split("."):
+    for part in _split_config_key_path(dotted_key):
         if not isinstance(node, dict) or part not in node:
             return None
         node = node[part]
@@ -5153,6 +5185,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "personalities",
     "command_allowlist",
     "model_catalog",
+    "model_overrides",
     "channel_prompts",
     "server_actions",
     "secrets",
@@ -5244,7 +5277,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     if not key:
         return False, None
 
-    segments = key.split(".")
+    segments = _split_config_key_path(key)
     top = segments[0]
 
     # ── Underscore-prefixed keys are internal/test markers ───────────

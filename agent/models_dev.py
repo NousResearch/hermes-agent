@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import atomic_json_write
+from utils import atomic_json_write, base_url_identity
 
 import requests
 
@@ -183,6 +183,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
     "alibaba": "alibaba",
+    "alibaba-coding-plan": "alibaba-coding-plan",
     "qwen-oauth": "alibaba",
     "copilot": "github-copilot",
     "ai-gateway": "vercel",
@@ -213,6 +214,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
 }
+
+_CODING_PLAN_CATALOG_SUFFIX = "-coding-plan"
 
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one,
 # e.g. both "meta" and "meta-ai" may map to the same models.dev id).
@@ -733,7 +736,11 @@ def fetch_models_dev(
 
 
 def lookup_models_dev_context(
-    provider: str, model: str, *, allow_network: bool = False
+    provider: str,
+    model: str,
+    *,
+    base_url: str = "",
+    allow_network: bool = False,
 ) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
@@ -748,6 +755,9 @@ def lookup_models_dev_context(
     ``allow_network`` defaults to False — context-length lookup is a
     hot path (called during every conversation turn) and must never block
     on the network. Pass True only from explicit refresh flows.
+
+    ``base_url`` selects route-specific provider catalogs when one Hermes
+    provider identity fronts multiple products, such as Z.AI Coding Plan.
     """
     # Explicit config override — checked before catalog so it always wins.
     override_ctx = _override_context_window(provider, model)
@@ -766,53 +776,78 @@ def lookup_models_dev_context(
         if allow_network
         else fetch_models_dev(allow_network=False)
     )
-    provider_data = data.get(mdev_provider_id)
-    if not isinstance(provider_data, dict):
-        return _default_override_context(provider)
-
-    models = provider_data.get("models", {})
-    if not isinstance(models, dict):
-        return _default_override_context(provider)
-
-    # Exact match
-    entry = models.get(model)
-    if entry:
-        ctx = _extract_context(entry)
-        if ctx:
-            return ctx
-
-    # Case-insensitive match
+    provider_ids = _catalog_search_order(mdev_provider_id, base_url, data)
     model_lower = model.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower:
-            ctx = _extract_context(mdata)
-            if ctx:
-                return ctx
+    for provider_id in provider_ids:
+        provider_data = data.get(provider_id)
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
 
-    # Suffix-aware fallback: some providers (e.g. ollama-cloud) store
-    # model IDs with :cloud / -cloud suffixes in models.dev while the
-    # live API returns bare names.  Without this, kimi-k2.6 misses the
-    # kimi-k2.6:cloud entry and falls through to stale OpenRouter metadata
-    # reporting 32768 — tripping the 64k minimum-context guard.
-    # The suffix-stripping in fetch_ollama_cloud_models() handles the
-    # model-picker UX; this handles the context-length lookup path.
-    for suffix in (":cloud", "-cloud"):
-        suffixed_key = model + suffix
-        entry = models.get(suffixed_key)
+        # Exact match
+        entry = models.get(model)
         if entry:
             ctx = _extract_context(entry)
             if ctx:
                 return ctx
-        # Also try case-insensitive
-        suffixed_lower = model_lower + suffix
+
+        # Case-insensitive match
         for mid, mdata in models.items():
-            if mid.lower() == suffixed_lower:
+            if mid.lower() == model_lower:
                 ctx = _extract_context(mdata)
                 if ctx:
                     return ctx
 
+        # Suffix-aware fallback: some providers (e.g. ollama-cloud) store
+        # model IDs with :cloud / -cloud suffixes in models.dev while the
+        # live API returns bare names.
+        for suffix in (":cloud", "-cloud"):
+            suffixed_key = model + suffix
+            entry = models.get(suffixed_key)
+            if entry:
+                ctx = _extract_context(entry)
+                if ctx:
+                    return ctx
+            suffixed_lower = model_lower + suffix
+            for mid, mdata in models.items():
+                if mid.lower() == suffixed_lower:
+                    ctx = _extract_context(mdata)
+                    if ctx:
+                        return ctx
+
     # Catalog miss — a _default override may fill the gap (#84482).
     return _default_override_context(provider)
+
+
+def _catalog_search_order(
+    mdev_provider_id: str,
+    base_url: str,
+    data: Dict[str, Any],
+) -> tuple[str, ...]:
+    """Return route-specific models.dev catalogs before the regular catalog.
+
+    Coding Plan products have separate provider entries and provider-specific
+    limits. Match their declared API URL instead of borrowing a sibling merely
+    because the regular catalog missed; the latter would leak subscription-only
+    metadata into a provider's standard API.
+    """
+    if mdev_provider_id.endswith(_CODING_PLAN_CATALOG_SUFFIX):
+        return (mdev_provider_id,)
+
+    requested_identity = base_url_identity(base_url)
+    if requested_identity is not None:
+        for provider_id, provider_data in data.items():
+            if not provider_id.endswith(_CODING_PLAN_CATALOG_SUFFIX):
+                continue
+            if not isinstance(provider_data, dict):
+                continue
+            catalog_identity = base_url_identity(str(provider_data.get("api") or ""))
+            if catalog_identity is not None and catalog_identity == requested_identity:
+                return (provider_id, mdev_provider_id)
+
+    return (mdev_provider_id,)
 
 
 def _default_override_context(provider: str) -> Optional[int]:

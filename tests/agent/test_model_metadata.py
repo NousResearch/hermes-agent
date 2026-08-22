@@ -217,6 +217,28 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_zai_coding_plan_context_comes_from_route_catalog(self):
+        registry = {
+            "zai": {"models": {}},
+            "zai-coding-plan": {
+                "api": "https://api.z.ai/api/coding/paas/v4",
+                "models": {
+                    "glm-5.3": {"limit": {"context": 1_000_000}},
+                },
+            },
+        }
+        with patch(
+            "agent.models_dev.fetch_models_dev", return_value=registry
+        ), patch(
+            "agent.model_metadata.get_cached_context_length", return_value=None
+        ):
+            assert get_model_context_length(
+                "glm-5.3",
+                base_url="https://api.z.ai/api/coding/paas/v4",
+                api_key="dummy",
+                provider="zai",
+            ) == 1_000_000
+
     def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
         """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \

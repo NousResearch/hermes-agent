@@ -76,6 +76,7 @@ from agent.model_metadata import (
     estimate_request_tokens_rough,
 )
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from utils import base_url_identity
 
 logger = logging.getLogger(__name__)
 
@@ -1691,11 +1692,39 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
 
+        aux_context_config = getattr(
+            agent, "_aux_compression_context_length_config", None
+        )
+        if aux_context_config is None:
+            same_model = str(aux_model).strip().casefold() == str(
+                getattr(agent, "model", "") or ""
+            ).strip().casefold()
+            main_base_url = str(getattr(agent, "base_url", "") or "")
+            aux_provider = (
+                _aux_cfg_provider
+                if _aux_cfg_provider and _aux_cfg_provider != "auto"
+                else getattr(agent, "provider", "")
+            )
+            same_provider = str(aux_provider or "").casefold() == str(
+                getattr(agent, "provider", "") or ""
+            ).casefold()
+            main_identity = base_url_identity(main_base_url)
+            aux_identity = base_url_identity(aux_base_url)
+            same_endpoint = (
+                bool(main_identity and aux_identity and main_identity == aux_identity)
+                if aux_base_url or main_base_url
+                else same_provider
+            )
+            if same_model and same_endpoint:
+                # The default compression runtime inherits the main model and
+                # endpoint. Preserve its route-scoped explicit context pin too.
+                aux_context_config = getattr(agent, "_config_context_length", None)
+
         aux_context = get_model_context_length(
             aux_model,
             base_url=aux_base_url,
             api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
+            config_context_length=aux_context_config,
             # Each model must be resolved with its own provider so that
             # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
             # are invoked for the correct client, not inherited from the main model.

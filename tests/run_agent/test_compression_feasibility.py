@@ -194,6 +194,50 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     )
 
 
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_inherits_main_context_pin_for_same_runtime(
+    mock_get_client, mock_ctx_len
+):
+    """The default aux runtime must retain the main model's explicit pin."""
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.50)
+    agent.model = "glm-5.3"
+    agent.provider = "zai"
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent._config_context_length = 1_000_000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://API.Z.AI:443/api/coding/paas/v4/"
+    mock_client.api_key = "zai-test"
+    mock_get_client.return_value = (mock_client, "glm-5.3")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 1_000_000
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_does_not_inherit_main_pin_for_other_endpoint(
+    mock_get_client, mock_ctx_len
+):
+    """A same-named model on another endpoint needs independent metadata."""
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.10)
+    agent.model = "glm-5.3"
+    agent.provider = "zai"
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent._config_context_length = 1_000_000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://other.example/v1"
+    mock_client.api_key = "other-test"
+    mock_get_client.return_value = (mock_client, "glm-5.3")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] is None
+
+
 
 
 def test_init_feasibility_check_uses_aux_context_override_from_config():

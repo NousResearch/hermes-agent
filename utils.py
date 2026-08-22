@@ -865,6 +865,30 @@ def base_url_hostname(base_url: str) -> str:
     return (parsed.hostname or "").lower().rstrip(".")
 
 
+def base_url_identity(base_url: str) -> tuple[str, str, int | None, str] | None:
+    """Return a canonical endpoint identity for exact base-URL comparisons."""
+    raw = (base_url or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw if "://" in raw else f"//{raw}")
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return None
+    if not hostname:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    path = (parsed.path or "").rstrip("/")
+    if parsed.params:
+        path = f"{path};{parsed.params}"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return scheme, hostname, port, path
+
+
 # ─── Model Capability Detection ──────────────────────────────────────────────
 
 

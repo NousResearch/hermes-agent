@@ -65,9 +65,49 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Workspace** — the directory a worker operates in. Three kinds:
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design. Files explicitly declared through `kanban_complete(artifacts=[...])` are copied into durable per-task attachment storage before cleanup; existing deliverable paths in legacy completion summaries receive the same treatment. Other scratch files are removed. A missing declared scratch artifact keeps the task in-flight so the worker can correct the path and retry. Use `worktree:` or `dir:<path>` when the whole workspace should remain available. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design. **Preserved on completion.**
-  - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
+  - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to bind the task to a repository root or requested task-worktree path. Worker-side `git worktree add` creates the task checkout, using `--branch` when provided. A worktree task is rejected at creation if it has no explicit path, project repository, or board `default_workdir`; Hermes never guesses a repository from the gateway's current directory. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+### Worktree repository binding and baseline semantics
+
+Auto-decomposition propagates a repository binding to every worktree child.
+If the root path is a repository-root checkout, children store that root. If
+the root path is an existing linked worktree, Hermes resolves its common
+repository and stores the common repository-root checkout instead. Each child
+still receives a fresh `<repo>/.worktrees/<child-id>` checkout; siblings never
+share the root's literal worktree directory.
+
+Repository binding does **not** imply commit inheritance. When the requested
+path points to another task's linked worktree, a fresh task branch is created
+from `HEAD` of the common repository-root checkout. It is not created from the
+sibling worktree's `HEAD`. Path inheritance is not commit inheritance.
+
+Hermes does not currently expose an explicit task baseline field. Corrective
+or dependent work that must start from a non-default commit should remain a
+separate follow-up feature rather than overloading `workspace_path` or asking a
+worker to reset after dispatch. The follow-up contract is:
+
+- Persist nullable `base_sha` on tasks; accept `base_ref` only as creation-time
+  input and resolve it to an immutable full commit SHA before persistence.
+- Add `base_ref` / `base_sha` inputs to the dashboard API, CLI create command,
+  worker `kanban_create` tool, and decomposer child schema. Explicit child
+  baseline wins; otherwise a child may inherit the root's persisted
+  `base_sha`. Repository binding and baseline remain separate fields.
+- Reject conflicting `base_ref` plus `base_sha`, nonexistent or ambiguous
+  revisions, SHAs outside the bound repository, and any baseline request made
+  before a repository can be resolved. Errors must identify the proposed task
+  or child and show both the workspace-resolution and revision-resolution
+  chains. Never pass untrusted revision text to a shell.
+- Materialize a new branch with
+  `git worktree add -b <task-branch> <path> <base_sha>`. Existing tasks with
+  `base_sha=NULL` retain today's repository-
+  root `HEAD` behavior. Movable refs are resolved once at creation, so retries
+  and delayed dispatches remain reproducible.
+- Migration adds one nullable column and requires no backfill. Regression tests
+  must cover API/CLI/tool/decomposer propagation, immutable ref resolution,
+  invalid and cross-repository revisions, root-vs-linked-worktree baselines,
+  delayed dispatch after a branch moves, and backward-compatible NULL behavior.
 
 ## Boards (multi-project)
 

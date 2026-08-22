@@ -3155,6 +3155,52 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def validate_workspace_binding(
+    *,
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    project_repo: Optional[str],
+    board: Optional[str],
+    identity: str,
+    board_default: Optional[str] = None,
+) -> None:
+    """Reject an unresolvable worktree before its task row is persisted."""
+    if workspace_kind != "worktree":
+        return
+    board_slug = board if board else get_current_board()
+    if board_default is None:
+        board_default = read_board_metadata(board_slug).get("default_workdir")
+    task_path = str(workspace_path or "").strip() or None
+    project_path = str(project_repo or "").strip() or None
+    default_path = str(board_default or "").strip() or None
+    if task_path or project_path or default_path:
+        return
+    raise ValueError(
+        f"{identity} has workspace_kind=worktree but its workspace resolution "
+        f"chain is unresolved: task workspace_path=<absent>; "
+        f"project repository=<absent>; board {board_slug!r} "
+        "default_workdir=<absent>. Set an explicit absolute workspace_path, "
+        "link the task to a project repository, or configure this board's "
+        "default_workdir. No task was created."
+    )
+
+
+def _project_repository(project_id: Optional[str]) -> Optional[str]:
+    """Resolve a project id/slug to its primary repository, if visible."""
+    if not project_id:
+        return None
+    from hermes_cli import projects_db as _pdb
+
+    try:
+        with _pdb.connect_closing() as project_conn:
+            project = _pdb.get_project(project_conn, str(project_id))
+    except Exception:
+        return None
+    if project is None or not project.primary_path:
+        return None
+    return str(project.primary_path)
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3419,16 +3465,24 @@ def create_task(
     # task would point cleanup at the user's source tree (#28818). The
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
+    board_slug = board if board else get_current_board()
+    board_default = read_board_metadata(board_slug).get("default_workdir")
     if (
         workspace_path is None
         and project_repo is None
         and workspace_kind in {"dir", "worktree"}
     ):
-        board_slug = board if board else get_current_board()
-        board_meta = read_board_metadata(board_slug)
-        board_default = board_meta.get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+
+    validate_workspace_binding(
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        project_repo=project_repo,
+        board=board_slug,
+        board_default=board_default,
+        identity=f"proposed task {title.strip()!r}",
+    )
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
@@ -7370,7 +7424,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, project_id "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7385,6 +7439,15 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        root_project_id = root_row["project_id"]
+        board_slug = get_current_board()
+        board_default = read_board_metadata(board_slug).get("default_workdir")
+        root_repo_binding: Optional[str] = None
+        if root_ws_kind == "worktree" and root_ws_path:
+            repo_root = _common_repo_root_for_workspace(Path(root_ws_path))
+            if repo_root is not None:
+                root_repo_binding = str(repo_root)
+        root_project_repo = _project_repository(root_project_id)
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -7401,26 +7464,40 @@ def decompose_triage_task(
             # child can't accidentally point a 'dir' at the root's
             # worktree path or vice versa).
             child_ws_kind = child.get("workspace_kind") or root_ws_kind
+            child_project_id = child.get("project_id") or root_project_id
+            child_project_repo = (
+                _project_repository(child_project_id)
+                if child_project_id != root_project_id
+                else root_project_repo
+            )
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
             elif child_ws_kind == "worktree":
-                # Never share one worktree checkout between siblings: the
-                # root's literal path would put every child in the same
-                # directory on the first-dispatched sibling's branch, with
-                # no lock — siblings can be promoted and dispatched
-                # concurrently. Leave the path unset so dispatch
-                # materializes a fresh <repo>/.worktrees/<child-id> per
-                # child from the board anchor.
-                child_ws_path = None
+                # Bind every child to the common repository root, never to the
+                # root task's literal checkout. Dispatch turns this repo-root
+                # binding into a fresh <repo>/.worktrees/<child-id> checkout.
+                child_ws_path = root_repo_binding or child_project_repo
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            validate_workspace_binding(
+                workspace_kind=child_ws_kind,
+                workspace_path=child_ws_path,
+                project_repo=child_project_repo,
+                board=board_slug,
+                board_default=board_default,
+                identity=(
+                    f"proposed child {new_id} ({title!r}), inherited from root "
+                    f"{task_id} workspace_path={root_ws_path!r} "
+                    f"common_repository={root_repo_binding or '<unresolved>'}"
+                ),
+            )
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, project_id, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7428,6 +7505,7 @@ def decompose_triage_task(
                     assignee,
                     child_ws_kind,
                     child_ws_path,
+                    child_project_id,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -7708,6 +7786,19 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         if current == current.parent:
             return None
         current = current.parent
+
+
+def _common_repo_root_for_workspace(path: Path) -> Optional[Path]:
+    """Return the repository-root checkout for a root or linked worktree path."""
+    expanded = path.expanduser()
+    common_dir = _git_common_dir(expanded)
+    git_dir = _git_dir(expanded)
+    if common_dir is not None and git_dir is not None and common_dir != git_dir:
+        # Standard non-bare repositories keep the common git dir at
+        # <repository-root>/.git even when ``path`` is a linked worktree.
+        if common_dir.name == ".git":
+            return common_dir.parent.resolve(strict=False)
+    return _repo_root_for_worktree_target(expanded)
 
 
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:

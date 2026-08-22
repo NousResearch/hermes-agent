@@ -1,4 +1,4 @@
-"""Per-task worktree isolation for decompose siblings.
+"""Per-task worktree isolation and repository binding propagation.
 
 Decompose children used to inherit the root's literal ``workspace_path``,
 so every sibling of a worktree-kind root pointed at the SAME checkout —
@@ -7,8 +7,9 @@ on whatever branch was there, letting sibling workers run concurrently in
 one directory on one branch (cross-task provenance corruption, no lock).
 
 Two-part fix under test:
-- ``decompose_triage_task`` leaves worktree children's ``workspace_path``
-  unset so each child materializes its own ``<repo>/.worktrees/<child-id>``.
+- ``decompose_triage_task`` stores the common repository root as each
+  worktree child's binding, so each child materializes its own
+  ``<repo>/.worktrees/<child-id>`` without depending on a board default.
 - ``_resolve_worktree_workspace`` falls back to a fresh per-task worktree
   when the requested path is occupied by another task's branch (heals
   pre-existing rows that still carry a shared path).
@@ -35,8 +36,8 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
         [
             "git", "-C", str(cwd),
             "-c", "user.name=Test User",
@@ -45,7 +46,7 @@ def _git(cwd: Path, *args: str) -> None:
             *args,
         ],
         check=True, capture_output=True, text=True,
-    )
+    ).stdout.strip()
 
 
 def _make_repo(tmp_path: Path) -> Path:
@@ -66,16 +67,16 @@ def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
     return target
 
 
-def test_decompose_worktree_children_get_own_workspace(kanban_home):
+def test_decompose_repo_root_propagates_resolvable_binding(kanban_home, tmp_path):
+    repo = _make_repo(tmp_path)
     with kb.connect() as conn:
-        root = kb.create_task(conn, title="build the feature", triage=True)
-        conn.execute(
-            "UPDATE tasks SET workspace_kind='worktree', "
-            "workspace_path='/repo/.worktrees/root' WHERE id = ?",
-            (root,),
+        root = kb.create_task(
+            conn,
+            title="build the feature",
+            triage=True,
+            workspace_kind="worktree",
+            workspace_path=str(repo),
         )
-        conn.commit()
-
         child_ids = kb.decompose_triage_task(
             conn,
             root,
@@ -89,16 +90,53 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
         assert child_ids is not None and len(child_ids) == 2
 
         for cid in child_ids:
-            row = conn.execute(
-                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
-                (cid,),
-            ).fetchone()
-            assert row["workspace_kind"] == "worktree"
-            # Each child resolves its own <repo>/.worktrees/<child-id> at
-            # dispatch; the root's literal path must never be shared.
-            assert row["workspace_path"] is None
+            child = kb.get_task(conn, cid)
+            assert child is not None
+            assert child.workspace_path is not None
+            assert child.workspace_kind == "worktree"
+            assert Path(child.workspace_path).resolve() == repo.resolve()
+            workspace, branch = kb._resolve_worktree_workspace(child)
+            assert workspace == (repo / ".worktrees" / cid).resolve()
+            assert branch == f"wt/{cid}"
 
 
+def test_decompose_linked_worktree_uses_common_repo_root_head(
+    kanban_home, tmp_path
+):
+    repo = _make_repo(tmp_path)
+    repo_head = _git(repo, "rev-parse", "HEAD")
+    sibling = _add_worktree(repo, repo / ".worktrees" / "root", "wt/root")
+    (sibling / "sibling.txt").write_text("sibling-only\n", encoding="utf-8")
+    _git(sibling, "add", "sibling.txt")
+    _git(sibling, "commit", "-m", "sibling commit")
+    sibling_head = _git(sibling, "rev-parse", "HEAD")
+    assert sibling_head != repo_head
+
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="correct sibling work",
+            triage=True,
+            workspace_kind="worktree",
+            workspace_path=str(sibling),
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement correction", "assignee": "alice"}],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 1
+        child = kb.get_task(conn, child_ids[0])
+
+    assert child is not None
+    assert child.workspace_path is not None
+    assert Path(child.workspace_path).resolve() == repo.resolve()
+    workspace, _branch = kb._resolve_worktree_workspace(child)
+    child_head = _git(workspace, "rev-parse", "HEAD")
+    assert child_head == repo_head
+    assert child_head != sibling_head
 
 
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
@@ -124,7 +162,3 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert head == "wt/sibling"
-
-
-
-

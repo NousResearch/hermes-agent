@@ -116,6 +116,26 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_rejects_unbound_worktree_before_persistence(client):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "unbound dashboard task",
+            "assignee": "engineer",
+            "workspace_kind": "worktree",
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "unbound dashboard task" in detail
+    assert "task workspace_path=<absent>" in detail
+    assert "project repository=<absent>" in detail
+    assert "board 'default' default_workdir=<absent>" in detail
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn, include_archived=True, limit=100) == []
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

@@ -116,6 +116,35 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+def test_cli_rejects_unbound_worktree_before_persistence(kanban_home):
+    output = kc.run_slash(
+        "create 'unbound cli task' --assignee engineer --workspace worktree"
+    )
+
+    assert "unbound cli task" in output
+    assert "task workspace_path=<absent>" in output
+    assert "project repository=<absent>" in output
+    assert "board 'default' default_workdir=<absent>" in output
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn, include_archived=True, limit=100) == []
+
+
+def test_cli_allows_board_default_bound_worktree(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    output = kc.run_slash(
+        "create 'default-bound cli task' --assignee engineer --workspace worktree"
+    )
+
+    assert "Created" in output
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn, include_archived=True, limit=100)
+        assert len(tasks) == 1
+        assert tasks[0].workspace_path == str(repo)
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------

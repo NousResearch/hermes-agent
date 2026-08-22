@@ -53,6 +53,31 @@ def test_explicit_branch_overrides_project_default(kanban_conn):
     assert task.branch_name == "feature/custom"
 
 
+def test_decompose_propagates_project_repository_without_board_default(kanban_conn):
+    proj = _make_project(name="Decompose App", repo="/tmp/decompose-app")
+    assert proj is not None
+    root_id = kb.create_task(
+        kanban_conn,
+        title="build app",
+        project_id=proj.slug,
+        triage=True,
+    )
+
+    child_ids = kb.decompose_triage_task(
+        kanban_conn,
+        root_id,
+        root_assignee="orchestrator",
+        children=[{"title": "implement app", "assignee": "engineer"}],
+    )
+
+    assert child_ids is not None and len(child_ids) == 1
+    child = kb.get_task(kanban_conn, child_ids[0])
+    assert child is not None
+    assert child.project_id == proj.id
+    assert child.workspace_path == proj.primary_path
+    assert kb.read_board_metadata("default")["default_workdir"] is None
+
+
 def test_unlinked_task_unchanged(kanban_conn):
     tid = kb.create_task(kanban_conn, title="plain")
     task = kb.get_task(kanban_conn, tid)

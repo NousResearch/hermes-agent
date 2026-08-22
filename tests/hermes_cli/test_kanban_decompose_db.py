@@ -88,5 +88,38 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_rejects_unbound_legacy_worktree_atomically(kanban_home):
+    with kb.connect() as conn:
+        root = _create_triage(conn, title="legacy malformed root")
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path=NULL "
+            "WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+
+        with pytest.raises(ValueError) as excinfo:
+            kb.decompose_triage_task(
+                conn,
+                root,
+                root_assignee="orchestrator",
+                children=[{"title": "new child", "assignee": "engineer"}],
+                author="decomposer",
+            )
+
+        message = str(excinfo.value)
+        assert "proposed child" in message
+        assert "new child" in message
+        assert "task workspace_path=<absent>" in message
+        assert "project repository=<absent>" in message
+        assert "board 'default' default_workdir=<absent>" in message
+        tasks = kb.list_tasks(conn, include_archived=True, limit=100)
+        assert [task.id for task in tasks] == [root]
+        root_task = kb.get_task(conn, root)
+        assert root_task is not None
+        assert root_task.status == "triage"
+        assert kb.read_board_metadata("default")["default_workdir"] is None
+
+
 
 

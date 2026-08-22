@@ -13774,7 +13774,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ends the prior session in SQLite and reopens the CLI session under
         # the new key. The CLI's transcript becomes the active one for the
         # gateway from this moment on.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        await self._cancel_deferred_clarify_session(session_key, reason="session_handoff")
+        switched = await self.async_session_store.switch_session(
+            session_key,
+            cli_session_id,
+        )
         if switched is None:
             raise RuntimeError(
                 f"could not switch session key {session_key} → {cli_session_id}"
@@ -14880,6 +14884,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+            await self._cancel_all_deferred_clarify(
+                reason=("gateway_restart" if self._restart_requested else "gateway_shutdown")
+            )
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
@@ -15136,6 +15143,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
+            )
+            # A turn already draining when shutdown began may create a deferred
+            # prompt after the initial cancellation pass.  Once agents are
+            # finalized and adapters are disconnected, sweep again so no button
+            # from that race can resume work after the session boundary.
+            await self._cancel_all_deferred_clarify(
+                reason=(
+                    "gateway_restart_final"
+                    if self._restart_requested
+                    else "gateway_shutdown_final"
+                )
             )
 
             for _task in list(self._background_tasks):
@@ -18354,6 +18372,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             message_text = f"[{_safe_user_name}] {message_text}"
 
+        # Durable deferred clarify text answers must be consumed before the
+        # normal message reaches the agent; otherwise an open-ended answer (or
+        # an "Other" response) becomes an unrelated user turn after restart.
+        if message_text and not str(message_text).lstrip().startswith("/"):
+            try:
+                from gateway.extensions.deferred_clarify import build_recovery_prompt
+                from tools.clarify_interaction import resolve_text_for_session
+
+                _resolved_clarify = resolve_text_for_session(
+                    session_key,
+                    str(message_text),
+                    user_id=str(source.user_id) if source.user_id is not None else None,
+                    chat_id=str(source.chat_id) if source.chat_id is not None else None,
+                    thread_id=str(source.thread_id) if source.thread_id is not None else None,
+                )
+                if _resolved_clarify is not None:
+                    message_text = build_recovery_prompt(
+                        question=_resolved_clarify.question,
+                        answer=_resolved_clarify.answer or str(message_text),
+                    )
+                    try:
+                        event.metadata["deferred_clarify_interaction_id"] = _resolved_clarify.interaction_id
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("deferred clarify text intercept failed", exc_info=True)
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.
@@ -19124,7 +19169,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+                    await self._cancel_deferred_clarify_session(
+                        session_key,
+                        reason="telegram_topic_session_switch",
+                    )
+                    switched = await self.async_session_store.switch_session(
+                        session_key,
+                        bound_session_id,
+                    )
                     if switched is not None:
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
@@ -19153,6 +19205,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # model/reasoning overrides, a queued "/model switched" note, or
             # a stale resolved-model cache (#48031, #58403). See
             # _CONVERSATION_SCOPED_STATE.
+            await self._cancel_deferred_clarify_session(
+                session_key,
+                reason="automatic_session_reset",
+            )
             self._clear_conversation_scope(session_key, reason="auto_reset")
             # Evict the cached agent so the fresh session does not inherit the
             # previous conversation's context_compressor._previous_summary —
@@ -20727,6 +20783,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
+                )
+                await self._cancel_deferred_clarify_session(
+                    session_key,
+                    reason="compression_exhausted_reset",
                 )
                 new_entry = await self.async_session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
@@ -26841,6 +26901,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    async def _cancel_deferred_clarify_session(
+        self,
+        session_key: str,
+        *,
+        reason: str,
+    ) -> int:
+        """Best-effort cancellation for durable prompts at session boundaries."""
+        if not session_key:
+            return 0
+        try:
+            from tools.clarify_interaction import cancel_session
+
+            cancelled = await asyncio.to_thread(
+                cancel_session,
+                session_key,
+                reason=reason,
+            )
+            if cancelled:
+                logger.info(
+                    "Cancelled %d deferred clarify interaction(s) for %s (%s)",
+                    cancelled,
+                    session_key,
+                    reason,
+                )
+            return cancelled
+        except Exception as exc:
+            logger.warning(
+                "Failed to cancel deferred clarify interactions for %s (%s): %s",
+                session_key,
+                reason,
+                exc,
+            )
+            return 0
+
+    async def _cancel_all_deferred_clarify(self, *, reason: str) -> int:
+        """Best-effort cancellation for profile-wide gateway shutdown."""
+        try:
+            from tools.clarify_interaction import cancel_all
+
+            cancelled = await asyncio.to_thread(cancel_all, reason=reason)
+            if cancelled:
+                logger.info(
+                    "Cancelled %d deferred clarify interaction(s) (%s)",
+                    cancelled,
+                    reason,
+                )
+            return cancelled
+        except Exception as exc:
+            logger.warning(
+                "Failed to cancel deferred clarify interactions (%s): %s",
+                reason,
+                exc,
+            )
+            return 0
+
     async def _interrupt_and_clear_session(
         self,
         session_key: str,
@@ -26853,6 +26968,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
+        await self._cancel_deferred_clarify_session(
+            session_key,
+            reason=invalidation_reason,
+        )
         _iac_state = self._peek_session_state(session_key)
         running_agent = _iac_state.turn.agent if _iac_state else None
         _process_task_id = ""

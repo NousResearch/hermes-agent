@@ -776,6 +776,14 @@ def _strip_background_review_harness(
 # Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
 _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
+# Intrinsic persistence marker stamped on message dicts that are known-durable.
+# MUST stay in sync with run_agent._DB_PERSISTED_MARKER and
+# agent.context_compressor._DB_PERSISTED_MARKER (same literal; defined locally
+# because hermes_state must not import run_agent — circular import — and
+# importing the agent layer for one constant inverts the state/agent layering).
+# Drift is guarded by test_marker_constant_in_sync (#92231).
+_DB_PERSISTED_MARKER_KEY = "_db_persisted"
+
 
 def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
     """True when ``msg`` is a persisted assistant turn whose content is a bare
@@ -11090,6 +11098,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            # Born durable (#92231): this dict is materialized FROM a durable
+            # row, so stamp the persistence marker at the source instead of
+            # relying on every restore caller to thread the loaded list back
+            # through a flush as ``conversation_history=`` — any
+            # identity-losing handoff (compression's durable-snapshot
+            # adoption, incremental persists with no history arg) would
+            # otherwise re-append the ENTIRE transcript on flush.
+            # Underscore-prefixed like ``_row_id``: every transport strips it
+            # before the wire, and compression's assembly copies deliberately
+            # strip it so rotated child handoffs still flush (see
+            # _fresh_compaction_message_copy).
+            msg[_DB_PERSISTED_MARKER_KEY] = True
             # Durable per-message identity for surfaces that need to address a
             # specific row later (desktop reactions). OPT-IN: only the gateway
             # asks for it — every other consumer (ACP restore, export,

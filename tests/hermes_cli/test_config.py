@@ -247,6 +247,32 @@ class TestSaveAndLoadRoundtrip:
 
 
 class TestSaveEnvValueSecure:
+    def test_save_env_value_without_update_environ_leaves_os_environment_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        env_path = tmp_path / ".env"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "process-user")
+        result = save_env_value(
+            "GATEWAY_ALLOWED_USERS",
+            "scoped-user",
+            update_environ=False,
+        )
+
+        assert result is True
+        assert env_path.exists()
+        assert "GATEWAY_ALLOWED_USERS=scoped-user" in env_path.read_text(encoding="utf-8")
+        # The helper writes only .env with this mode.
+        assert os.environ.get("GATEWAY_ALLOWED_USERS") == "process-user"
+
+    def test_save_env_value_default_update_environ_updates_process(self, tmp_path):
+        env_path = tmp_path / ".env"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "GATEWAY_ALLOWED_USERS": "process-user"}):
+            result = save_env_value("GATEWAY_ALLOWED_USERS", "scoped-user")
+            assert result is True
+            assert "GATEWAY_ALLOWED_USERS=scoped-user" in env_path.read_text(encoding="utf-8")
+            assert os.environ.get("GATEWAY_ALLOWED_USERS") == "scoped-user"
+            assert load_env()["GATEWAY_ALLOWED_USERS"] == "scoped-user"
 
     def test_secure_save_returns_metadata_only(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -324,6 +350,16 @@ class TestSaveEnvValueSecure:
 
 
 class TestRemoveEnvValue:
+    def test_remove_env_value_without_update_environ_leaves_os_environment_untouched(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("DROP_ME=to-remove\nKEEP=stay\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "DROP_ME": "process-value"}):
+            result = remove_env_value("DROP_ME", update_environ=False)
+            assert result is True
+            content = env_path.read_text(encoding="utf-8")
+            assert "DROP_ME" not in content
+            assert os.environ.get("DROP_ME") == "process-value"
+
     def test_removes_key_from_env_file(self, tmp_path):
         env_path = tmp_path / ".env"
         env_path.write_text("KEY_A=value_a\nKEY_B=value_b\nKEY_C=value_c\n")

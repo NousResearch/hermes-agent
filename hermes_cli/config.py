@@ -4204,11 +4204,18 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     return stripped.startswith(f"{key}=")
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+def save_env_value(key: str, value: str, *, update_environ: bool = True):
+    """Save or update a value in ``.env`` under the active HERMES_HOME.
+
+    ``update_environ=False`` is for a multiplexed profile scope: the active
+    HERMES_HOME still selects that profile's ``.env``, but publishing the
+    value into process-global ``os.environ`` would contaminate sibling
+    profiles. Existing interactive/single-profile callers keep the legacy
+    update behavior.
+    """
     if is_managed():
         managed_error(f"set {key}")
-        return
+        return False
     # Managed scope guard: a managed env key can't be set by the user — the
     # managed .env wins at load anyway. Distinct from is_managed() above.
     from hermes_cli import managed_scope
@@ -4221,7 +4228,7 @@ def save_env_value(key: str, value: str):
             f"and cannot be changed.",
             file=sys.stderr,
         )
-        return
+        return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
@@ -4294,8 +4301,10 @@ def save_env_value(key: str, value: str):
             pass
         raise
 
-    os.environ[key] = value
+    if update_environ:
+        os.environ[key] = value
     invalidate_env_cache()
+    return True
 
 
 def custom_endpoint_key_env(identity: str) -> str:
@@ -4317,10 +4326,13 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
-def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ.
+def remove_env_value(key: str, *, update_environ: bool = True) -> bool:
+    """Remove a key from ``.env`` under the active HERMES_HOME.
 
-    Returns True if the key was found and removed, False otherwise.
+    When ``update_environ`` is true (the legacy default), also remove the
+    process-global environment value. Scoped multiplex writes disable that
+    publication to avoid contaminating sibling profiles. Returns True if the
+    key was found and removed, False otherwise.
     """
     if is_managed():
         managed_error(f"remove {key}")
@@ -4341,7 +4353,8 @@ def remove_env_value(key: str) -> bool:
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
     if not env_path.exists():
-        os.environ.pop(key, None)
+        if update_environ:
+            os.environ.pop(key, None)
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
@@ -4385,7 +4398,8 @@ def remove_env_value(key: str) -> bool:
                 pass
             raise
 
-    os.environ.pop(key, None)
+    if update_environ:
+        os.environ.pop(key, None)
     invalidate_env_cache()
     return found
 

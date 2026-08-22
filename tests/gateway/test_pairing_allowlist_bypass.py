@@ -14,10 +14,12 @@ Design (union + option-i mirror):
 """
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from agent import secret_scope
 from gateway.session import Platform, SessionSource
 
 
@@ -59,6 +61,16 @@ def _make_source(user_id: str = "pairme", chat_type: str = "dm"):
     )
 
 
+def _pairing_store_for_home(home: Path, monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import gateway.pairing as pairing_mod
+
+    pairing_mod = importlib.reload(pairing_mod)
+    return pairing_mod, pairing_mod.PairingStore()
+
+
 def test_paired_user_authorized_even_when_not_in_allowlist(monkeypatch):
     """Union semantics: pairing is a grant, honored alongside the allowlist."""
     runner = _make_runner(paired=True)
@@ -72,6 +84,59 @@ def test_unpaired_user_in_allowlist_still_authorized(monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
 
     assert runner._is_user_authorized(_make_source("owner1")) is True
+
+
+def test_scoped_approval_adds_to_profile_env_not_parent_env(tmp_path, monkeypatch):
+    """Profile-scoped approvals mirror to the scoped .env, not process env."""
+    default_home = tmp_path / "default-home"
+    profile_home = tmp_path / "profiles" / "coder"
+    default_home.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    (default_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=parent-owner\n")
+    (profile_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=owner1\n")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "parent-process-owner")
+    pairing_mod, store = _pairing_store_for_home(profile_home, monkeypatch)
+    prior_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"TELEGRAM_ALLOWED_USERS": "owner1"})
+    try:
+        _approve_new_user(store, "telegram", "newuser99")
+        assert pairing_mod._read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(prior_multiplex)
+    profile_env = profile_home / ".env"
+    default_env = default_home / ".env"
+    assert "TELEGRAM_ALLOWED_USERS=owner1,newuser99" in profile_env.read_text(encoding="utf-8")
+    assert "TELEGRAM_ALLOWED_USERS=parent-owner" in default_env.read_text(encoding="utf-8")
+    assert os.environ.get("TELEGRAM_ALLOWED_USERS") == "parent-process-owner"
+
+
+def test_scoped_revoke_removes_from_profile_env_not_parent_env(tmp_path, monkeypatch):
+    """Profile-scoped revokes should sync only the scoped allowlist mirror."""
+    default_home = tmp_path / "default-home"
+    profile_home = tmp_path / "profiles" / "coder"
+    default_home.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    (default_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=parent-owner\n")
+    (profile_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=owner1,newuser99\n")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "parent-process-owner")
+    pairing_mod, store = _pairing_store_for_home(profile_home, monkeypatch)
+    prior_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"TELEGRAM_ALLOWED_USERS": "owner1,newuser99"})
+    try:
+        store._approve_user("telegram", "newuser99", "")
+        assert store.revoke("telegram", "newuser99") is True
+        assert pairing_mod._read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "owner1"
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(prior_multiplex)
+    profile_env = profile_home / ".env"
+    default_env = default_home / ".env"
+    assert "TELEGRAM_ALLOWED_USERS=owner1" in profile_env.read_text(encoding="utf-8")
+    assert "TELEGRAM_ALLOWED_USERS=parent-owner" in default_env.read_text(encoding="utf-8")
+    assert os.environ.get("TELEGRAM_ALLOWED_USERS") == "parent-process-owner"
 
 
 # --------------------------------------------------------------------------

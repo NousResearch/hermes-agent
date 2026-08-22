@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
@@ -85,6 +86,25 @@ def reset_secret_scope(token: Token) -> None:
 def current_secret_scope() -> Optional[Mapping[str, str]]:
     """Return the active secret mapping, or None when no scope is installed."""
     return _SECRET_SCOPE.get()
+
+
+def update_current_secret_scope(name: str, value: Optional[str]) -> bool:
+    """Update one value in the active mutable scope without touching environ.
+
+    A profile-scoped configuration write can take effect during the current
+    multiplexed turn only if its already-installed secret mapping is updated
+    too. ``build_profile_secret_scope`` returns a dict, but accept arbitrary
+    read-only mappings for callers that deliberately install one and report
+    ``False`` rather than weakening their isolation boundary.
+    """
+    scope = _SECRET_SCOPE.get()
+    if not isinstance(scope, MutableMapping):
+        return False
+    if value is None:
+        scope.pop(name, None)
+    else:
+        scope[name] = value
+    return True
 
 
 # ── genuinely-global env vars (NOT per-profile secrets) ──────────────────

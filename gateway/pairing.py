@@ -155,10 +155,9 @@ def _read_allowlist_env(env_var: str) -> str:
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.
 
-    TODO(profile-secrets): the grant mirror below still WRITES through
-    ``hermes_cli.config.save_env_value`` / ``remove_env_value``, which target
-    the root ``.env`` — those writes need a profile-aware counterpart before
-    pairing grants can be mirrored correctly under multiplexing.
+    Pairing's mirror writes use the active profile's HERMES_HOME and suppress
+    the legacy process-global ``os.environ`` update when a multiplex scope is
+    installed, so sibling profiles cannot inherit a newly approved grant.
     """
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
@@ -170,6 +169,45 @@ def _read_allowlist_env(env_var: str) -> str:
     except Exception:
         pass
     return (os.getenv(env_var) or "").strip()
+
+
+def _is_profile_secret_scope_active() -> bool:
+    """Return True when writes are occurring under a per-profile secret scope."""
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return is_multiplex_active() and current_secret_scope() is not None
+    except Exception:
+        return False
+
+
+def _persist_allowlist_env(env_var: str, value: Optional[str]) -> bool:
+    """Mirror a grant into the active profile ``.env`` when configured.
+
+    ``get_env_path()`` already follows the runtime HERMES_HOME override.  The
+    only special case for a multiplexed scope is preventing config's legacy
+    process-global environment update, which would leak this profile's grant.
+    """
+    try:
+        from hermes_cli.config import remove_env_value, save_env_value
+
+        if value is None:
+            if _is_profile_secret_scope_active():
+                persisted = remove_env_value(env_var, update_environ=False)
+            else:
+                persisted = remove_env_value(env_var)
+        elif _is_profile_secret_scope_active():
+            persisted = save_env_value(env_var, value, update_environ=False)
+        else:
+            persisted = save_env_value(env_var, value)
+        if persisted and _is_profile_secret_scope_active():
+            from agent.secret_scope import update_current_secret_scope
+
+            update_current_secret_scope(env_var, value)
+        return bool(persisted)
+    except Exception:
+        # Best-effort: the pairing store remains the authoritative grant.
+        return False
 
 
 def _sync_allowlist_add(platform: str, user_id: str) -> None:
@@ -191,14 +229,8 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     if "*" in ids or str(user_id) in ids:
         return  # Already covered.
     ids.append(str(user_id))
-    try:
-        from hermes_cli.config import save_env_value
-
-        save_env_value(env_var, ",".join(ids))
-    except Exception:
-        # Best-effort: the pairing store grant still authorizes via the union,
-        # so a failure here degrades to "grant recorded but not mirrored".
-        pass
+    combined = ",".join(ids)
+    _persist_allowlist_env(env_var, combined)
 
 
 def _iter_live_gateway_adapters():
@@ -315,15 +347,7 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     ]
     if len(remaining) == len(ids):
         return  # Not present.
-    try:
-        from hermes_cli.config import save_env_value, remove_env_value
-
-        if remaining:
-            save_env_value(env_var, ",".join(remaining))
-        else:
-            remove_env_value(env_var)
-    except Exception:
-        pass
+    _persist_allowlist_env(env_var, ",".join(remaining) if remaining else None)
     _sync_live_adapter_allowlist_remove(platform, user_id)
 
 

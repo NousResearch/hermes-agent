@@ -106,7 +106,7 @@ class TestSkillsShGroupings:
              patch.object(src, "_write_cache"), \
              patch.object(src, "_get_skillsh_groupings", return_value=groupings), \
              patch.object(src, "inspect", return_value=meta), \
-             patch("tools.skills_hub.httpx.get", return_value=resp):
+             patch("tools.skills_hub._ssrf_safe_http_get", return_value=resp):
             skills = src._list_skills_in_repo("NVIDIA/skills", "skills/")
 
         assert len(skills) == 1
@@ -159,7 +159,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -189,7 +189,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "fetch")
     def test_fetch_falls_back_to_tree_search_for_deeply_nested_skills(
         self, mock_fetch, mock_get, _mock_read_cache, _mock_write_cache,
@@ -257,7 +257,7 @@ class TestFindSkillInRepoTree:
         auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
         return GitHubSource(auth=auth)
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_finds_deeply_nested_skill(self, mock_get):
         tree_entries = [
             {"path": "README.md", "type": "blob"},
@@ -282,7 +282,7 @@ class TestFindSkillInRepoTree:
         result = self._source()._find_skill_in_repo_tree("davila7/claude-code-templates", "senior-backend")
         assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_returns_none_when_repo_api_fails(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
@@ -522,6 +522,26 @@ class TestTapsManager:
         mgr.add("owner/repo")
         assert mgr.remove("owner/repo") is True
         assert mgr.load() == []
+
+# ---------------------------------------------------------------------------
+# LobeHubSource._fetch_agent
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAgent:
+    @patch("tools.skills_hub._guarded_http_get")
+    def test_valid_id_uses_guarded_fetch_with_agent_url_and_timeout(self, mock_get):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"identifier": "test-agent"}
+        mock_get.return_value = response
+
+        result = LobeHubSource()._fetch_agent("test-agent")
+
+        assert result == {"identifier": "test-agent"}
+        mock_get.assert_called_once_with(
+            "https://chat-agents.lobehub.com/test-agent.json", timeout=15
+        )
+
 
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
@@ -1075,7 +1095,7 @@ class TestDownloadDirectoryViaTree:
         return GitHubSource(auth=auth)
 
     @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
         """Tree API returns files from nested subdirectories."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
@@ -1102,7 +1122,7 @@ class TestDownloadDirectoryViaTree:
         assert len(files) == 3
 
     @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
         """When tree is truncated, fall back to recursive Contents API."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
@@ -1124,7 +1144,7 @@ class TestDownloadDirectoryRecursive:
         return GitHubSource(auth=auth)
 
     @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_recursive_downloads_subdirectories(self, mock_get, mock_fetch):
         """Contents API recursion includes subdirectories."""
         root_resp = MagicMock(status_code=200, json=lambda: [

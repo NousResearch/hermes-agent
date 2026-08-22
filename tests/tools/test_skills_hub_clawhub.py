@@ -32,9 +32,10 @@ class TestClawHubSource(unittest.TestCase):
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch.object(ClawHubSource, "_load_catalog_index", return_value=[])
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
     def test_search_uses_listing_endpoint_as_fallback(
-        self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
+        self, mock_get, mock_safe_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
     ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills"):
@@ -55,6 +56,7 @@ class TestClawHubSource(unittest.TestCase):
                 return _MockResponse(status_code=404, json_data={})
             return _MockResponse(status_code=404, json_data={})
 
+        mock_safe_get.return_value = _MockResponse(status_code=404, json_data={})
         mock_get.side_effect = side_effect
 
         results = self.src.search("caldav", limit=5)
@@ -64,13 +66,13 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].name, "CalDAV Calendar")
         self.assertEqual(results[0].description, "Calendar integration")
 
-        self.assertGreaterEqual(mock_get.call_count, 2)
+        self.assertEqual(mock_get.call_count, 1)
         args, kwargs = mock_get.call_args_list[0]
         self.assertTrue(args[0].endswith("/skills"))
         self.assertEqual(kwargs["params"], {"search": "caldav", "limit": 5})
 
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
@@ -89,7 +91,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.description, "Calendar integration")
         self.assertEqual(meta.identifier, "caldav-calendar")
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_handles_nested_skill_payload(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
@@ -113,10 +115,9 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.tags, ["automation"])
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.httpx.get")
-    def test_inspect_captures_owner_from_detail_api(self, mock_get, mock_safe_get):
+    def test_inspect_captures_owner_from_detail_api(self, mock_safe_get):
         """inspect() fetches the detail API which includes owner — capture it."""
-        mock_get.return_value = _MockResponse(
+        mock_safe_get.return_value = _MockResponse(
             status_code=200,
             json_data={
                 "skill": {
@@ -135,7 +136,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertEqual(meta.extra.get("owner"), "thesethrose")
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_tolerates_missing_owner(self, mock_get):
         """inspect() should still work when the API omits owner."""
         mock_get.return_value = _MockResponse(
@@ -157,9 +158,10 @@ class TestClawHubSource(unittest.TestCase):
         self.assertNotIn("owner", meta.extra or {})
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_safe_get):
         def side_effect(url, *args, **kwargs):
+            if "/download" in url:
+                return _MockResponse(status_code=404, json_data={})
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
                     status_code=200,
@@ -178,10 +180,11 @@ class TestClawHubSource(unittest.TestCase):
                         ]
                     },
                 )
+            if url == "https://files.example/skill-md":
+                return _MockResponse(status_code=200, text="# Skill")
             return _MockResponse(status_code=404, json_data={})
 
-        mock_get.side_effect = side_effect
-        mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
+        mock_safe_get.side_effect = side_effect
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -190,9 +193,11 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
-        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
+        mock_safe_get.assert_any_call(
+            "https://files.example/skill-md", timeout=20, headers=None, params=None
+        )
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
@@ -211,9 +216,8 @@ class TestClawHubSource(unittest.TestCase):
 
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
-    @patch("tools.skills_hub.httpx.get")
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
+    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_safe, _mock_policy):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -236,14 +240,19 @@ class TestClawHubSource(unittest.TestCase):
                 )
             return _MockResponse(status_code=404, json_data={})
 
-        mock_get.side_effect = side_effect
+        mock_safe_get.side_effect = side_effect
         mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
 
         bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
-        self.assertEqual(mock_get.call_count, 3)
-        mock_safe_get.assert_not_called()
+        self.assertEqual(mock_safe_get.call_count, 3)
+        private_calls = [
+            call
+            for call in mock_safe_get.call_args_list
+            if call.args and str(call.args[0]).startswith("http://127.0.0.1/")
+        ]
+        self.assertEqual(private_calls, [])
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -409,7 +418,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNone(bundle)
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_rejects_owner_mismatch_on_clawhub_url_path(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,

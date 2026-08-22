@@ -305,3 +305,109 @@ class TestSessionIsBusyEdgeCases:
 
         runner._running_agents[key] = object()
         assert runner.session_is_busy(key) is True
+
+
+class TestAgentBusyAfterKwarg:
+    """Review fix #1: agent_busy_after must reach the hook callback, not just
+    a DEBUG log. Plugins rely on the documented contract."""
+
+    @pytest.mark.asyncio
+    async def test_receives_agent_busy_after_in_kwargs(self, monkeypatch):
+        """pre_gateway_dispatch callback receives agent_busy_after kwarg."""
+        _clear_auth_env(monkeypatch)
+        monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+        seen = {"before": None, "after": None, "session_key": None}
+
+        def _fake_hook(name, **kwargs):
+            if name == "pre_gateway_dispatch":
+                seen["before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["after"] = kwargs.get("agent_busy_after", "MISSING")
+                seen["session_key"] = kwargs.get("session_key", "MISSING")
+            return [{"action": "allow"}]
+
+        async def _capture(event, source, _quick_key, _run_generation):
+            return "ok"
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+        runner, _adapter = _make_runner(Platform.WHATSAPP)
+        runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+        event = _make_event("hi")
+        await runner._handle_message(event)
+
+        assert seen.get("before") is False
+        assert seen.get("after") is False
+        assert seen.get("session_key") != "MISSING"
+
+
+class TestStrictSignaturePluginCompat:
+    """Review fix #2: invoke_hook must not blow up existing plugins when the
+    hook gains new kwargs. Hermes plugins receive the payload via **kwargs or
+    via matching keyword names; invoke_hook filters additive fields by the
+    callback's declared parameters, so a legacy **kwargs callback that only
+    inspects known keys keeps working untouched."""
+
+    @pytest.mark.asyncio
+    async def test_existing_kwargs_plugin_receives_new_fields(self, monkeypatch):
+        """A pre-existing **kwargs plugin sees agent_busy_*/session_key without
+        error and can read only the keys it cares about."""
+        _clear_auth_env(monkeypatch)
+        monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+        seen = {"event": None, "gateway": None, "agent_busy_before": "MISSING", "session_key": "MISSING"}
+
+        def _legacy_hook(name, **kwargs):
+            if name == "pre_gateway_dispatch":
+                seen["event"] = kwargs.get("event")
+                seen["gateway"] = kwargs.get("gateway")
+                seen["agent_busy_before"] = kwargs.get("agent_busy_before", "MISSING")
+                seen["session_key"] = kwargs.get("session_key", "MISSING")
+            return [{"action": "allow"}]
+
+        async def _capture(event, source, _quick_key, _run_generation):
+            return "ok"
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _legacy_hook)
+
+        runner, _adapter = _make_runner(Platform.WHATSAPP)
+        # idle session: no running agent, so agent_busy_before is False
+        runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+        result = await runner._handle_message(_make_event("hi"))
+        assert result is not None
+        assert seen.get("event") is not None
+        assert seen.get("gateway") is not None
+        assert seen.get("agent_busy_before") is False
+        assert seen.get("session_key") != "MISSING"
+
+    def test_invoke_hook_filters_additive_fields_from_narrow_callback(self, monkeypatch):
+        """Unit-level: a callback declaring only (event, gateway) is invoked
+        with exactly those, never TypeError on unseen kwargs."""
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager.__new__(PluginManager)
+        mgr._hooks = {"pre_gateway_dispatch": []}
+
+        captured = {}
+
+        def _narrow(event, gateway):
+            captured["event"] = event
+            captured["gateway"] = gateway
+            return {"action": "allow"}
+
+        mgr._hooks["pre_gateway_dispatch"].append(_narrow)
+        # Payload carries additive fields the narrow callback never declared.
+        out = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event="E",
+            gateway="G",
+            session_store="S",
+            session_key="K",
+            agent_busy_before=True,
+            agent_busy_after=False,
+            telemetry_schema_version=1,
+        )
+        assert out == [{"action": "allow"}]
+        assert captured == {"event": "E", "gateway": "G"}

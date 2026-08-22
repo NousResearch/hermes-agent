@@ -6824,6 +6824,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         External callers (plugins, hooks, API consumers) use this to decide
         whether the session is mid-turn without reaching into private
         ``SessionState`` internals.
+
+        Divergence from ``_is_session_running`` (read this before relying on
+        the result):
+          * This method is a *raw key-membership* check on ``_running_agents``.
+            It returns True for a session that has reserved a turn slot,
+            including a short-lived **pending sentinel** before the agent
+            object is attached.
+          * ``_is_session_running`` instead peeks the ``SessionState`` and
+            requires an actual ``turn.agent`` to be present, so it excludes the
+            pending-sentinel window.
+          * Use ``session_is_busy`` when you only need "is this session about
+            to be / is mid-turn" (e.g. buffering inbound radio). Use
+            ``_is_session_running`` when you need "an agent is actively
+            executing a turn". The two can briefly disagree during the
+            sentinel→agent handoff; that mismatch is expected, not a bug.
         """
         sessions = getattr(self, "_running_agents", None)
         if sessions is None:
@@ -16578,6 +16593,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             _quick_key = self._session_key_for_source(source)
             _agent_busy_before = self.session_is_busy(_quick_key)
+            _agent_busy_after = self.session_is_busy(_quick_key)
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -16590,11 +16606,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_store=getattr(self, "session_store", None),
                     session_key=_quick_key,
                     agent_busy_before=_agent_busy_before,
+                    agent_busy_after=_agent_busy_after,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
-            _agent_busy_after = self.session_is_busy(_quick_key)
             if _agent_busy_before != _agent_busy_after:
                 logger.debug(
                     "agent_busy changed during pre_gateway_dispatch: %s -> %s "

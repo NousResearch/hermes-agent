@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -239,6 +240,55 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+def test_bedrock_kimi_k25_pricing_uses_the_endpoint_region(monkeypatch):
+    """Kimi K2.5 has region-specific Bedrock prices, including Mantle.
+
+    The reporter's Sydney Mantle deployment must price at AWS's Sydney rate,
+    while a US Runtime endpoint uses the lower US rate.  A supported region
+    without a published snapshot stays unknown rather than borrowing one.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    model = "moonshotai.kimi-k2.5"
+    sydney_mantle = "https://bedrock-mantle.ap-southeast-2.api.aws/v1"
+    us_runtime = "https://bedrock-runtime.us-east-1.amazonaws.com"
+
+    mantle_route = resolve_billing_route(
+        model,
+        provider="custom",
+        base_url=sydney_mantle,
+    )
+    assert mantle_route.provider == "bedrock"
+    assert mantle_route.billing_mode == "official_docs_snapshot"
+
+    sydney = get_pricing_entry(model, provider="custom", base_url=sydney_mantle)
+    us = get_pricing_entry(model, provider="bedrock", base_url=us_runtime)
+
+    assert sydney is not None
+    assert sydney.input_cost_per_million == Decimal("0.6180")
+    assert sydney.output_cost_per_million == Decimal("3.0900")
+    assert us is not None
+    assert us.input_cost_per_million == Decimal("0.60")
+    assert us.output_cost_per_million == Decimal("3.00")
+
+    result = estimate_usage_cost(
+        model,
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+        provider="custom",
+        base_url=sydney_mantle,
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd == Decimal("3.7080")
+
+    assert get_pricing_entry(
+        model,
+        provider="bedrock",
+        base_url="https://bedrock-runtime.ap-southeast-4.amazonaws.com",
+    ) is None
 
 
 

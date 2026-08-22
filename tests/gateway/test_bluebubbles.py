@@ -175,6 +175,51 @@ class TestBlueBubblesWebhookParsing:
 
 class TestBlueBubblesGuidResolution:
 
+    @pytest.mark.asyncio
+    async def test_direct_send_resolves_exact_identifier_on_second_page(self, monkeypatch):
+        """Direct email sends must search beyond the first 100 chats."""
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append((path, payload))
+            if path == "/api/v1/chat/query":
+                if payload["offset"] == 0:
+                    return {
+                        "data": [
+                            {
+                                "guid": f"iMessage;-;other-{index}@example.com",
+                                "chatIdentifier": f"other-{index}@example.com",
+                            }
+                            for index in range(100)
+                        ]
+                    }
+                return {
+                    "data": [
+                        {
+                            "guid": "iMessage;-;user@example.com",
+                            "chatIdentifier": "user@example.com",
+                        }
+                    ]
+                }
+            if path == "/api/v1/message/text":
+                assert payload["chatGuid"] == "iMessage;-;user@example.com"
+                assert payload["message"] == "hello"
+                return {"data": {"guid": "message-guid"}}
+            raise AssertionError(f"unexpected path: {path}")
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "message-guid"
+        assert calls[:2] == [
+            ("/api/v1/chat/query", {"limit": 100, "offset": 0}),
+            ("/api/v1/chat/query", {"limit": 100, "offset": 100}),
+        ]
+        assert calls[2][0] == "/api/v1/message/text"
+
 
     @pytest.mark.asyncio
     async def test_participant_only_match_does_not_resolve_to_group(self, monkeypatch):

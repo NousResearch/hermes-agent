@@ -166,7 +166,7 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         or adapter._slack_message_matches_mention_patterns(text)
     )
 
-    if not is_one_to_one_dm and bot_uid:
+    if not is_one_to_one_dm:
         # allowed_channels check (whitelist — must pass before other gating)
         allowed = adapter._slack_allowed_channels()
         if allowed and channel_id not in allowed:
@@ -292,31 +292,6 @@ def test_thread_reply_without_active_session_ignored():
         adapter, text="followup",
         thread_reply=True, active_session=False,
     ) is False
-
-
-def test_bot_uid_none_processes_channel_message():
-    """When bot_uid is None (before auth_test), channel messages pass through.
-
-    This preserves the old behavior: the gating block is skipped entirely
-    when bot_uid is falsy, so messages are not silently dropped during
-    startup or for new workspaces.
-    """
-    adapter = _make_adapter(require_mention=True)
-    adapter._bot_user_id = None
-    adapter._team_bot_user_ids = {}
-
-    # With bot_uid=None, the `if not is_dm and bot_uid:` condition is False,
-    # so the gating block is skipped — message passes through.
-    bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
-    assert bot_uid is None
-
-    # Simulate: gating block not entered when bot_uid is falsy
-    is_dm = False
-    if not is_dm and bot_uid:
-        result = False  # would enter gating
-    else:
-        result = True  # gating skipped, message processed
-    assert result is True
 
 
 # ---------------------------------------------------------------------------

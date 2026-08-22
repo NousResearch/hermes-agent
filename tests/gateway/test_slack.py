@@ -204,6 +204,56 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "text", "mention_patterns", "expected_calls"),
+    [
+        ("message", "ordinary channel message", [], 0),
+        ("app_mention", "trusted native mention", [], 1),
+        ("message", "hermes check this", ["^hermes"], 1),
+    ],
+)
+async def test_missing_trusted_identity_uses_real_channel_gate(
+    adapter, event_type, text, mention_patterns, expected_calls
+):
+    adapter._bot_user_id = None
+    adapter._team_bot_user_ids = {}
+    adapter.config.extra.update({"require_mention": True, "mention_patterns": mention_patterns})
+    await adapter._handle_slack_message(
+        {
+            "type": event_type,
+            "text": text,
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T1",
+            "ts": "1234567890.000001",
+            "client_msg_id": "cmid-trusted-identity-gate",
+        }
+    )
+    assert adapter.handle_message.await_count == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_native_mention_supersedes_same_timestamp_generic_event(adapter):
+    adapter._bot_user_id = None
+    adapter._team_bot_user_ids = {}
+    adapter.config.extra["require_mention"] = True
+    event = {
+        "text": "trusted native mention",
+        "user": "U_USER",
+        "channel": "C123",
+        "channel_type": "channel",
+        "team": "T1",
+        "ts": "1234567890.000002",
+        "client_msg_id": "cmid-native-mention-order",
+    }
+    await adapter._handle_slack_message({"type": "message", **event})
+    await adapter._handle_slack_message({"type": "app_mention", **event})
+    await adapter._handle_slack_message({"type": "app_mention", **event})
+    adapter.handle_message.assert_awaited_once()
+
+
 class TestBotEventDiagnostics:
     """#30091 — surface upstream filters that drop bot events."""
 
@@ -332,6 +382,7 @@ class TestAppMentionHandler:
         mock_app.client = AsyncMock()
         mock_app.client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
             }
@@ -341,6 +392,7 @@ class TestAppMentionHandler:
         mock_web_client = AsyncMock()
         mock_web_client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
                 "team_id": "T_FAKE",
@@ -541,6 +593,10 @@ class TestSlackConnectCleanup:
             result = await adapter.connect()
 
         assert result is True
+        assert adapter._bot_user_id == ""
+        assert adapter._team_bot_user_ids == {"T_FAKE": ""}
+        assert adapter._bot_display_name == ""
+        assert adapter._team_bot_names == {"T_FAKE": ""}
         first_handler.close_async.assert_awaited_once_with()
         assert adapter._handler is second_handler
 
@@ -659,6 +715,7 @@ class TestSlackSocketWatchdog:
         mock_web_client = AsyncMock()
         mock_web_client.auth_test = AsyncMock(
             return_value={
+                "bot_id": "B_BOT",
                 "user_id": "U_BOT",
                 "user": "testbot",
                 "team_id": "T_FAKE",

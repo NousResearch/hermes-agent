@@ -2783,6 +2783,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -3061,11 +3062,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        fallback_model = (
-            None
-            if confirmed_runtime_lock
-            else GatewayRunner._load_fallback_model()
-        )
+        fallback_model = GatewayRunner._load_fallback_model()
 
         # Resolve reasoning against the model this request will actually
         # run. Per-model ``agent.reasoning_overrides`` key off that model,
@@ -3096,6 +3093,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -5174,6 +5172,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning content as a tagged tuple for the SSE writer."""
+                _stream_q.put_threadsafe(("__reasoning__", text))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -5191,6 +5193,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
@@ -5301,6 +5304,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": finish_reason,
                 }
             ],
+            "reasoning_content": result.get("last_reasoning") or None,
             "usage": {
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
@@ -5368,14 +5372,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples:
+
+                - ``("__reasoning__", text)`` are sent as
+                  ``delta.reasoning_content`` chunks for Open WebUI's native
+                  thoughts panel (and any other frontend that supports the
+                  OpenAI ``reasoning_content`` SSE extension).
+                - ``("__tool_progress__", payload)`` are sent as a custom
+                  ``event: hermes.tool.progress`` SSE event so frontends
+                  can display them without storing the markers in
+                  conversation history.  See #6972 for the original event,
+                  #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
+                if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                    tag, payload = item
+                    if tag == "__tool_progress__":
+                        await response.write(_sse_frame(payload, event="hermes.tool.progress"))
+                    elif tag == "__reasoning__":
+                        reasoning_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": payload}, "finish_reason": None}],
+                        }
+                        await response.write(_sse_frame(reasoning_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -5827,6 +5846,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
+            async def _emit_reasoning_delta(text: str) -> None:
+                await _write_event("response.reasoning.delta", {
+                    "type": "response.reasoning.delta",
+                    "delta": text,
+                    "item_id": message_item_id,
+                })
+
             # Main drain loop — thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
@@ -5835,7 +5861,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
                 prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                before emitting. ``__reasoning__`` tuples fire a custom
+                ``response.reasoning.delta`` event.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
@@ -5847,6 +5874,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -6292,6 +6321,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning content as a tagged tuple for the SSE writer."""
+                _stream_q.put_threadsafe(("__reasoning__", text))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -6302,6 +6335,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
@@ -7130,6 +7164,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
@@ -7205,6 +7240,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
+                        reasoning_callback=reasoning_callback,
                         gateway_session_key=gateway_session_key,
                         requested_model=requested_model,
                         requested_provider=requested_provider,

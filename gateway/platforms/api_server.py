@@ -4798,12 +4798,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         else ""
                     ),
                 )
+                result_partial = bool(result.get("partial")) if isinstance(result, dict) else False
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
                     "content": final_response,
-                    "completed": True,
-                    "partial": False,
+                    "completed": not result_partial,
+                    "partial": result_partial,
                     "interrupted": False,
                     "runtime": effective_runtime,
                 }))

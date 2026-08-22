@@ -1763,19 +1763,21 @@ class AIAgent:
         Ollama can misreport truncated output as finish_reason='stop'.
         Detection relies on explicit Ollama signatures:
         - Port 11434 (Ollama default)
-        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - Endpoint resolves to a local/private address (localhost, LAN,
+          Docker internal DNS, Tailscale, etc.)
         - provider explicitly set to "ollama"
 
-        Crucially it does NOT match arbitrary local/private endpoints
-        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
-        report finish_reason correctly and were the source of #13971's
-        false-positive truncation continuations.
+        Crucially it does NOT match cloud-hosted Ollama endpoints
+        (ollama.com, etc.), which report finish_reason correctly and
+        were the source of #72316's false-positive truncation.
         """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+        if ":11434" in self._base_url_lower:
+            return True
+        if bool(self.base_url and is_local_endpoint(self.base_url)):
             return True
         return provider_lower == "ollama"
 

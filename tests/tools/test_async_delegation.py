@@ -124,6 +124,114 @@ def test_dispatch_returns_immediately_without_blocking():
     gate.set()
 
 
+def test_durable_dispatch_failure_releases_capacity_without_starting_worker(
+    monkeypatch,
+):
+    real_persist = ad._persist_dispatch
+    started = threading.Event()
+
+    def fail_persist(_record):
+        raise ad.sqlite3.OperationalError("database is locked")
+
+    def runner():
+        started.set()
+        return {"status": "completed", "summary": "should not run"}
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
+    rejected = ad.dispatch_async_delegation(
+        goal="not durable",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=runner,
+        max_async_children=1,
+    )
+
+    assert rejected == {
+        "status": "rejected",
+        "error": (
+            "Failed to persist async delegation; no background task was started."
+        ),
+    }
+    assert started.is_set() is False
+    assert ad.active_count() == 0
+
+    # The failed registration released the only slot, so a later durable
+    # dispatch can use it normally.
+    monkeypatch.setattr(ad, "_persist_dispatch", real_persist)
+    accepted = ad.dispatch_async_delegation(
+        goal="durable retry",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=1,
+    )
+    assert accepted["status"] == "dispatched"
+    assert _drain_for(accepted["delegation_id"]) is not None
+
+
+def test_batch_durable_dispatch_failure_releases_capacity_without_starting_worker(
+    monkeypatch,
+):
+    started = threading.Event()
+
+    def fail_persist(_record):
+        raise ad.sqlite3.OperationalError("database is locked")
+
+    def runner():
+        started.set()
+        return {"results": []}
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persist)
+    rejected = ad.dispatch_async_delegation_batch(
+        goals=["not durable"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=runner,
+        max_async_children=1,
+    )
+
+    assert rejected == {
+        "status": "rejected",
+        "error": (
+            "Failed to persist async delegation batch; "
+            "no background task was started."
+        ),
+    }
+    assert started.is_set() is False
+    assert ad.active_count() == 0
+
+
+def test_durable_prune_failure_does_not_reject_committed_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "_prune_durable_records",
+        lambda: (_ for _ in ()).throw(OSError("retention unavailable")),
+    )
+
+    accepted = ad.dispatch_async_delegation(
+        goal="dispatch survives prune",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=1,
+    )
+
+    assert accepted["status"] == "dispatched"
+    assert _drain_for(accepted["delegation_id"]) is not None
+
+
 def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 

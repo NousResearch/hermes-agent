@@ -265,7 +265,53 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              owner_started_at, json.dumps(task_payload),
              record.get("origin_session_id", "")),
         )
-    _prune_durable_records()
+    try:
+        _prune_durable_records()
+    except Exception:
+        # Retention maintenance is secondary to the dispatch row that was
+        # already committed. Rejecting here would claim the task never
+        # started even though restart recovery can now see it.
+        logger.debug(
+            "Async delegation %s: durable prune failed after dispatch",
+            record.get("delegation_id"),
+            exc_info=True,
+        )
+
+
+def _persist_dispatch_or_reject(
+    record: Dict[str, Any], *, is_batch: bool
+) -> Optional[Dict[str, str]]:
+    """Persist a registered dispatch before any worker can start.
+
+    The in-memory capacity record is installed before this call so admission
+    remains atomic. If the durable insert fails, roll that record back under
+    the same lock and return a structured rejection; otherwise a SQLite error
+    escapes to the tool caller while a ghost ``running`` record consumes an
+    async slot forever.
+    """
+    try:
+        _persist_dispatch(record)
+    except Exception as exc:
+        delegation_id = str(record.get("delegation_id") or "")
+        with _records_lock:
+            if _records.get(delegation_id) is record:
+                _records.pop(delegation_id, None)
+        kind = " batch" if is_batch else ""
+        logger.error(
+            "Async delegation%s %s: durable dispatch failed; worker not "
+            "started: %s",
+            kind,
+            delegation_id,
+            exc,
+        )
+        return {
+            "status": "rejected",
+            "error": (
+                f"Failed to persist async delegation{kind}; "
+                "no background task was started."
+            ),
+        }
+    return None
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
@@ -806,7 +852,8 @@ def dispatch_async_delegation(
     -------
     dict
         ``{"status": "dispatched", "delegation_id": ...}`` on success, or
-        ``{"status": "rejected", "error": ...}`` when at capacity.
+        ``{"status": "rejected", "error": ...}`` when at capacity or when
+        the durable dispatch record cannot be written.
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
@@ -853,7 +900,9 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    rejected = _persist_dispatch_or_reject(record, is_batch=False)
+    if rejected is not None:
+        return rejected
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -1047,7 +1096,7 @@ def dispatch_async_delegation_batch(
 
     Returns ``{"status": "dispatched", "delegation_id": ...}`` on success or
     ``{"status": "rejected", "error": ...}`` when the async pool is at
-    capacity.
+    capacity or when the durable dispatch record cannot be written.
     """
     delegation_id = delegation_id or _new_delegation_id()
     dispatched_at = time.time()
@@ -1096,7 +1145,9 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    rejected = _persist_dispatch_or_reject(record, is_batch=True)
+    if rejected is not None:
+        return rejected
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:

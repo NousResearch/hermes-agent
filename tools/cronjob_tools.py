@@ -45,6 +45,7 @@ from cron.jobs import (
     is_job_runnable,
     list_jobs,
     mark_job_run,
+    normalize_repeat_value,
     parse_schedule,
     pause_job,
     remove_job,
@@ -1229,7 +1230,7 @@ def cronjob(
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
@@ -1652,8 +1653,10 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: "forever"/"infinite"/"once" and 0/negative -> None
+                # (infinite); numeric strings are coerced to int. Never
+                # compare a raw str against an int (TypeError, #7142 family).
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -1722,8 +1725,11 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "description": "Optional human-friendly name"
             },
             "repeat": {
-                "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "string", "enum": ["forever", "infinite", "once"]}
+                ],
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring). Pass an integer for a fixed N-run job, or the string 'forever'/'infinite' to mark a recurring job as unbounded, or 'once' for a single run."
             },
             "deliver": {
                 "type": "string",

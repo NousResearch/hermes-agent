@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -279,6 +280,76 @@ class TestUnifiedCronjobTool:
         resumed = json.loads(cronjob(action="resume", job_id=job_id))
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
+
+    def _repeat_times(self, job_id):
+        from cron.jobs import get_job
+
+        return get_job(job_id)["repeat"]["times"]
+
+    def test_create_with_repeat_forever_string(self):
+        """Regression for #66824/#64520: repeat='forever' must not raise a
+        str-vs-int TypeError and must store times=None (infinite)."""
+        created = json.loads(
+            cronjob(action="create", prompt="Repeat forever test", schedule="every 1h", repeat="forever")
+        )
+        assert created["success"] is True, created
+        assert self._repeat_times(created["job_id"]) is None
+
+    def test_create_with_repeat_infinite_string(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Repeat infinite test", schedule="every 1h", repeat="infinite")
+        )
+        assert created["success"] is True, created
+        assert self._repeat_times(created["job_id"]) is None
+
+    def test_create_with_repeat_once_string_on_one_shot(self):
+        """repeat='once' on a one-shot schedule stores times=1 (#7142)."""
+        created = json.loads(
+            cronjob(action="create", prompt="Repeat once test", schedule="30m", repeat="once")
+        )
+        assert created["success"] is True, created
+        assert self._repeat_times(created["job_id"]) == 1
+
+    def test_create_with_numeric_repeat_string(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Repeat numeric test", schedule="every 1h", repeat="3")
+        )
+        assert created["success"] is True, created
+        assert self._repeat_times(created["job_id"]) == 3
+
+    def test_update_with_repeat_forever_string(self):
+        created = json.loads(cronjob(action="create", prompt="Update forever test", schedule="every 1h", repeat=3))
+        assert created["success"] is True
+        updated = json.loads(cronjob(action="update", job_id=created["job_id"], repeat="forever"))
+        assert updated["success"] is True, updated
+        assert self._repeat_times(created["job_id"]) is None
+
+    def test_update_with_repeat_once_string(self):
+        created = json.loads(cronjob(action="create", prompt="Update once test", schedule="every 1h", repeat=3))
+        assert created["success"] is True
+        updated = json.loads(cronjob(action="update", job_id=created["job_id"], repeat="once"))
+        assert updated["success"] is True, updated
+        # "once" is a directive for one-shot schedules; on a recurring job it
+        # normalizes to unset (infinite) rather than crashing.
+        assert self._repeat_times(created["job_id"]) is None
+
+    def test_update_with_numeric_repeat_string(self):
+        created = json.loads(cronjob(action="create", prompt="Update numeric test", schedule="every 1h", repeat=2))
+        assert created["success"] is True
+        updated = json.loads(cronjob(action="update", job_id=created["job_id"], repeat="5"))
+        assert updated["success"] is True, updated
+        assert self._repeat_times(created["job_id"]) == 5
+
+    def test_repeat_schema_accepts_integer_and_string_directives(self):
+        """The model-facing tool contract must advertise the string
+        directives the implementation now accepts (teknium1 review point on
+        #64724)."""
+        rs = CRONJOB_SCHEMA["parameters"]["properties"]["repeat"]
+        types = [s.get("type") for s in rs["anyOf"]]
+        assert "integer" in types
+        assert "string" in types
+        str_schema = next(s for s in rs["anyOf"] if s.get("type") == "string")
+        assert set(str_schema["enum"]) == {"forever", "infinite", "once"}
 
 
     @staticmethod

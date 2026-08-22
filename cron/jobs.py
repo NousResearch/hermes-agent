@@ -502,6 +502,29 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Normalize repeat values coming from tool/model input.
+
+    Accepts ints and int-like strings (``"3"`` -> ``3``). The directives
+    ``"forever"``/``"infinite"`` and ``"once"`` mean "unset" here: callers
+    rely on the one-shot auto-repeat rule to turn ``None`` into ``1`` for
+    one-shot schedules, and ``None`` means infinite for recurring ones.
+    Non-numeric strings, zero, and negatives all normalize to ``None`` so
+    no downstream path ever compares a str against an int.
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        lowered = repeat.strip().lower()
+        if lowered in {"forever", "infinite", "once"}:
+            return None
+    try:
+        repeat_int = int(repeat)
+    except (TypeError, ValueError):
+        return None
+    return None if repeat_int <= 0 else repeat_int
+
+
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
     """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
     if value is None:
@@ -1816,7 +1839,7 @@ def create_job(
     prompt: Optional[str],
     schedule: str,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
@@ -1842,7 +1865,9 @@ def create_job(
                 Ignored when ``no_agent=True`` except as an optional name hint.
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
-        repeat: How many times to run (None = forever, 1 = once)
+        repeat: How many times to run (None = forever, 1 = once). Accepts an
+            int, a numeric string ("3"), or the directives "forever"/"infinite"
+            (unbounded) and "once" (one-shot schedules auto-set to 1).
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
         origin: Source info where job was created (for "origin" delivery)
         skill: Optional legacy single skill name to load before running the prompt
@@ -1906,9 +1931,10 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: coerce string directives ("forever"/"infinite"/"once",
+    # numeric strings) and treat 0/negative as None (infinite). Never compare
+    # a str against an int here — that raises TypeError for "forever".
+    repeat = normalize_repeat_value(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

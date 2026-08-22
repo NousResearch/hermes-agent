@@ -35,7 +35,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "google-antigravity"}
 
 
 def _get_custom_provider_names() -> list:
@@ -387,6 +387,20 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "google-antigravity":
+        from hermes_cli import antigravity_auth as ag
+
+        state = ag.run_pkce_login(
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or ag._OAUTH_CALLBACK_TIMEOUT_SECONDS,
+        )
+        # Singleton-only by design: provider state owns refresh/project data.
+        # A generic pool copy would become stale and cannot preserve project
+        # context during credential rotation.
+        ag.save_state(state, set_active=True)
+        print(f"Signed in to {provider}.")
+        return
+
     if provider == "qwen-oauth":
         creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
         auth_mod._mark_qwen_oauth_active(creds)
@@ -528,7 +542,18 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    provider = getattr(args, "provider", None)
+    if str(provider or "").strip().lower() == "google-antigravity":
+        from hermes_cli.antigravity_auth import revoke_and_logout
+
+        cleared = revoke_and_logout()
+        print(
+            "Logged out of Google Antigravity."
+            if cleared
+            else "No auth state found for Google Antigravity."
+        )
+        return
+    auth_mod.logout_command(SimpleNamespace(provider=provider))
 
 
 def auth_spotify_command(args) -> None:

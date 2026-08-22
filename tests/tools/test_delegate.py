@@ -872,6 +872,23 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             requested="crof.ai", target_model="deepseek-v4-pro-CEER"
         )
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_antigravity_runtime_project_reaches_delegation_credentials(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "google-antigravity",
+            "model": "gemini-3.1-pro-high",
+            "base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal",
+            "api_key": "ya29.TEST",
+            "api_mode": "chat_completions",
+            "project_id": "proj-managed",
+        }
+        creds = _resolve_delegation_credentials(
+            {"provider": "google-antigravity", "model": "gemini-3.1-pro-high"},
+            _make_mock_parent(depth=0),
+        )
+        self.assertEqual(creds["provider_project_id"], "proj-managed")
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
@@ -908,6 +925,36 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_cross_brand_antigravity_project_reaches_child_agent(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "model": "gemini-3.1-pro-high",
+            "provider": "google-antigravity",
+        }
+        mock_creds.return_value = {
+            "model": "gemini-3.1-pro-high",
+            "provider": "google-antigravity",
+            "base_url": "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal",
+            "api_key": "ya29.TEST",
+            "api_mode": "chat_completions",
+            "provider_project_id": "proj-managed",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openai-codex"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+            delegate_task(goal="Cross-brand Antigravity", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "google-antigravity")
+            self.assertEqual(kwargs["provider_project_id"], "proj-managed")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

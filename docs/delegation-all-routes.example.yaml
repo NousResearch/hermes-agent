@@ -1,0 +1,104 @@
+# Copy the `agent.orchestrator_usage_routing` and `delegation` blocks into
+# ~/.hermes/config.yaml when using the feat/delegation-all-routes branch.
+# No login or live quota probe is triggered here.
+agent:
+  orchestrator_usage_routing:
+    enabled: true
+    primary_provider: openai-codex
+    primary_model: gpt-5.6-sol
+    fallback_provider: google-antigravity
+    fallback_model: gemini-3.1-pro-high
+    switch_at_remaining_percent: 10
+    restore_above_remaining_percent: 10
+    usage_ttl_seconds: 900
+    usage_stale_seconds: 7200
+    primary_usage_window_prefixes: [Session, Weekly]
+
+delegation:
+  # Legacy fallback when adaptive routing is disabled or routes are removed.
+  provider: openai-codex
+  model: gpt-5.6-sol
+
+  routing:
+    enabled: true
+    usage_ttl_seconds: 900
+    usage_stale_seconds: 7200
+    unknown_usage: fixed_priority
+
+  routes:
+    - id: claude-fable-coding
+      backend: claude-p
+      provider: claude-p
+      model: claude-fable-5
+      model_class: frontier
+      task_difficulties: [complex, frontier]
+      capabilities: [coding, reasoning, tool_use, long_context]
+      tool_profile: coding
+      priority: 8
+      max_turns: 50
+      max_budget_usd: 7
+      timeout_seconds: 1500
+      cooldown_seconds: 180
+      usage_window_prefixes: [Current session, Current week]
+
+    - id: codex-native
+      backend: native
+      provider: openai-codex
+      model: gpt-5.6-sol
+      model_class: advanced
+      task_difficulties: [routine, standard, complex]
+      capabilities: [coding, reasoning, tool_use, long_context, review]
+      priority: 20
+      reserve_remaining_percent: 15
+
+    - id: antigravity-flash
+      backend: native
+      provider: google-antigravity
+      model: gemini-3-flash-agent
+      model_class: balanced
+      task_difficulties: [routine, standard]
+      capabilities: [reasoning, tool_use, long_context]
+      priority: 30
+      reserve_remaining_percent: 10
+      usage_window_prefixes: [Gemini Models]
+
+    - id: antigravity-pro
+      backend: native
+      provider: google-antigravity
+      model: gemini-3.1-pro-high
+      model_class: advanced
+      task_difficulties: [standard, complex]
+      capabilities: [coding, reasoning, tool_use, long_context, review]
+      priority: 25
+      reserve_remaining_percent: 15
+      usage_window_prefixes: [Gemini Models]
+
+    - id: claude-review
+      backend: claude-p
+      provider: claude-p
+      model: claude-opus-5
+      model_class: frontier
+      task_difficulties: [complex, frontier]
+      capabilities: [reasoning, long_context, review]
+      tool_profile: review
+      priority: 10
+      max_turns: 40
+      max_budget_usd: 6
+      timeout_seconds: 1200
+      cooldown_seconds: 120
+      usage_window_prefixes: [Current session, Current week, Opus week]
+
+    - id: claude-coding
+      backend: claude-p
+      provider: claude-p
+      model: claude-sonnet-5
+      model_class: advanced
+      task_difficulties: [standard, complex]
+      capabilities: [coding, reasoning, tool_use, long_context]
+      tool_profile: coding
+      priority: 15
+      max_turns: 40
+      max_budget_usd: 5
+      timeout_seconds: 1200
+      cooldown_seconds: 120
+      usage_window_prefixes: [Current session, Current week, Sonnet week]

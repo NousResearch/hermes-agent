@@ -227,3 +227,147 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+# ── Google Antigravity account quota (`/usage`) ──────────────────────────────
+
+
+def _antigravity_windows():
+    from agent.gemini_cloudcode_adapter import parse_quota_summary
+
+    return parse_quota_summary(
+        {
+            "buckets": [
+                {
+                    "bucketId": "gemini-weekly",
+                    "remainingFraction": 0.62,
+                    "window": "weekly",
+                    "resetTime": "2030-08-25T09:00:00Z",
+                    "description": "62% left for user@example.com",
+                },
+                {
+                    "bucketId": "gemini-5h",
+                    "remainingFraction": 0.25,
+                    "window": "5h",
+                    "resetTime": "2030-08-22T14:30:00Z",
+                },
+            ]
+        }
+    )
+
+
+def test_antigravity_usage_returns_snapshot_from_resolved_runtime(monkeypatch):
+    """`/usage` for google-antigravity: resolved OAuth runtime in, normalized
+    quota windows out. Token/project never leave the in-memory call."""
+    seen = {}
+
+    def _fake_fetch(*, access_token, project, base_url, timeout=8.0, http_client=None):
+        seen["has_token"] = bool(access_token)
+        seen["project"] = project
+        seen["base_url"] = base_url
+        seen["timeout"] = timeout
+        return _antigravity_windows()
+
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_antigravity_usage_credentials",
+        lambda: ("tok-abc", "proj-1", "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal"),
+    )
+    monkeypatch.setattr(account_usage, "_antigravity_fetch_quota_summary", _fake_fetch)
+
+    snapshot = account_usage.fetch_account_usage("google-antigravity")
+
+    assert snapshot is not None
+    assert snapshot.provider == "google-antigravity"
+    assert snapshot.available
+    assert [w.label for w in snapshot.windows] == [
+        "Gemini Models (weekly)",
+        "Gemini Models (5h)",
+    ]
+    assert seen["has_token"] is True
+    assert seen["project"] == "proj-1"
+    assert seen["timeout"] > 0
+    # No account identity anywhere in the snapshot.
+    assert "example.com" not in repr(snapshot)
+    assert "proj-1" not in repr(snapshot)
+
+
+def test_antigravity_usage_unavailable_when_quota_summary_missing(monkeypatch):
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_antigravity_usage_credentials",
+        lambda: ("tok-abc", "proj-1", "https://example.invalid/v1internal"),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_antigravity_fetch_quota_summary",
+        lambda **kwargs: None,
+    )
+
+    snapshot = account_usage.fetch_account_usage("google-antigravity")
+
+    assert snapshot is not None
+    assert snapshot.windows == ()
+    assert not snapshot.available
+    assert snapshot.unavailable_reason
+
+
+def test_antigravity_usage_fails_closed_when_not_signed_in(monkeypatch):
+    def _raise():
+        raise RuntimeError("not signed in")
+
+    monkeypatch.setattr(
+        account_usage, "_resolve_antigravity_usage_credentials", _raise
+    )
+
+    assert account_usage.fetch_account_usage("google-antigravity") is None
+
+
+def test_other_providers_are_unchanged_by_antigravity_wiring(monkeypatch, codex_usage_payload):
+    """The Antigravity branch must not intercept any existing provider."""
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_antigravity_usage_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("antigravity path must not run")),
+    )
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert snapshot is not None and snapshot.provider == "openai-codex"
+    assert account_usage.fetch_account_usage("gemini") is None
+    assert account_usage.fetch_account_usage("auto") is None
+
+
+def test_antigravity_usage_lines_show_windows_without_identity(monkeypatch):
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_antigravity_usage_credentials",
+        lambda: ("tok-abc", "proj-1", "https://example.invalid/v1internal"),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_antigravity_fetch_quota_summary",
+        lambda **kwargs: _antigravity_windows(),
+    )
+
+    snapshot = account_usage.fetch_account_usage("google-antigravity")
+    lines = account_usage.render_account_usage_lines(snapshot)
+    blob = "\n".join(lines)
+
+    assert "google-antigravity" in blob
+    assert "Gemini Models (weekly): 62% remaining (38% used)" in blob
+    assert "Gemini Models (5h): 25% remaining (75% used)" in blob
+    assert blob.count("resets ") == 2
+    assert "example.com" not in blob
+    assert "proj-1" not in blob
+    assert "tok-abc" not in blob

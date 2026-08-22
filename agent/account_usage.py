@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
-from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+from agent.anthropic_adapter import (
+    _is_oauth_token,
+    resolve_anthropic_token,
+    resolve_claude_subscription_token,
+)
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -748,17 +752,16 @@ def redeem_codex_reset_credit(
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
-    if not token:
-        return None
-    if not _is_oauth_token(token):
-        return AccountUsageSnapshot(
-            provider="anthropic",
-            source="oauth_usage_api",
-            fetched_at=_utc_now(),
-            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
-        )
+def _fetch_anthropic_oauth_usage_snapshot(
+    token: str, *, provider: str
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch and map the Anthropic OAuth usage endpoint for *provider*.
+
+    Shared by the ``anthropic`` provider (resolver may return an API key —
+    callers check ``_is_oauth_token`` first) and the ``claude-p`` backend
+    (resolver is subscription-only by construction, see
+    :func:`agent.anthropic_adapter.resolve_claude_subscription_token`).
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -782,7 +785,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        try:
+            used = float(util)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(used) or not 0.0 <= used <= 100.0:
+            continue
         windows.append(
             AccountUsageWindow(
                 label=label,
@@ -801,12 +809,40 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
                 f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
             )
     return AccountUsageSnapshot(
-        provider="anthropic",
+        provider=provider,
         source="oauth_usage_api",
         fetched_at=_utc_now(),
         windows=tuple(windows),
         details=tuple(details),
     )
+
+
+def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
+    token = (resolve_anthropic_token() or "").strip()
+    if not token:
+        return None
+    if not _is_oauth_token(token):
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+        )
+    return _fetch_anthropic_oauth_usage_snapshot(token, provider="anthropic")
+
+
+def _fetch_claude_p_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch subscription usage for the ``claude-p`` delegation backend.
+
+    Uses the narrow, subscription-only resolver — never
+    ``resolve_anthropic_token`` (which can return an ``ANTHROPIC_API_KEY``).
+    ``claude -p`` execution is subscription-only and must never be reported
+    against API billing.
+    """
+    token = (resolve_claude_subscription_token() or "").strip()
+    if not token:
+        return None
+    return _fetch_anthropic_oauth_usage_snapshot(token, provider="claude-p")
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
@@ -881,6 +917,86 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+# ── Google Antigravity (Code Assist subscription quota) ──────────────────────
+
+
+def _resolve_antigravity_usage_credentials() -> tuple[str, Optional[str], str]:
+    """Return ``(token, project, base_url)`` from the existing OAuth runtime.
+
+    Reuses the same resolver the agent runtime uses, so ``/usage`` reports the
+    account that actually serves requests. The token stays in memory — it is
+    only handed to the quota fetch below and never logged or persisted here.
+    Raises when the user is not signed in (the caller fails open).
+    """
+    from hermes_cli.antigravity_auth import resolve_antigravity_runtime_credentials
+
+    creds = resolve_antigravity_runtime_credentials()
+    token = str(creds.get("api_key", "") or "").strip()
+    project = str(creds.get("project_id", "") or "").strip() or None
+    base_url = str(creds.get("base_url", "") or "").strip()
+    return token, project, base_url
+
+
+def _antigravity_fetch_quota_summary(**kwargs: Any) -> Optional[list[AccountUsageWindow]]:
+    """Indirection seam over the adapter's quota fetch (mocked in tests)."""
+    from agent.gemini_cloudcode_adapter import fetch_quota_summary
+
+    return fetch_quota_summary(**kwargs)
+
+
+def _fetch_antigravity_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Build the ``/usage`` snapshot for the Google Antigravity subscription.
+
+    The project is resolved first (explicitly stored, else discovered via the
+    same ``:loadCodeAssist`` path the transport uses) because
+    ``:retrieveUserQuotaSummary`` requires it. When the summary is
+    unavailable — unsupported plan, control-plane error, malformed body — the
+    snapshot reports "unavailable" rather than fabricating full or empty
+    quota.
+    """
+    from agent.gemini_cloudcode_adapter import (
+        CODE_ASSIST_BASE_URL,
+        resolve_project_context,
+    )
+
+    token, project, base_url = _resolve_antigravity_usage_credentials()
+    if not token:
+        return None
+    base_url = base_url or CODE_ASSIST_BASE_URL
+
+    if not project:
+        project = resolve_project_context(
+            access_token=token,
+            configured_project=None,
+            base_url=base_url,
+        )
+
+    windows = None
+    if project:
+        windows = _antigravity_fetch_quota_summary(
+            access_token=token,
+            project=project,
+            base_url=base_url,
+            timeout=10.0,
+        )
+
+    if not windows:
+        return AccountUsageSnapshot(
+            provider="google-antigravity",
+            source="quota_summary",
+            fetched_at=_utc_now(),
+            unavailable_reason=(
+                "Antigravity quota summary is unavailable for this account."
+            ),
+        )
+    return AccountUsageSnapshot(
+        provider="google-antigravity",
+        source="quota_summary",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -895,8 +1011,12 @@ def fetch_account_usage(
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
+        if normalized == "claude-p":
+            return _fetch_claude_p_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized in {"google-antigravity", "antigravity", "agy", "google-agy"}:
+            return _fetch_antigravity_account_usage()
     except Exception:
         return None
     return None

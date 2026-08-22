@@ -54,6 +54,20 @@ DEFAULT_CONFIG = {
         # implicit provider stale timeouts are capped to the remaining
         # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Optional usage-aware routing for the top-level interactive agent.
+        # Disabled by default; delegated workers use delegation.routing instead.
+        "orchestrator_usage_routing": {
+            "enabled": False,
+            "primary_provider": "",
+            "primary_model": "",
+            "fallback_provider": "",
+            "fallback_model": "",
+            "switch_at_remaining_percent": 10,
+            "restore_above_remaining_percent": 10,
+            "usage_ttl_seconds": 900,
+            "usage_stale_seconds": 7200,
+            "primary_usage_window_prefixes": ["Session", "Weekly"],
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

@@ -69,6 +69,21 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_provider_project_change_different_signature(self):
+        from gateway.run import GatewayRunner
+
+        base = {
+            "api_key": "same-token",
+            "base_url": "https://daily-cloudcode-pa.googleapis.com",
+            "provider": "google-antigravity",
+            "api_mode": "chat_completions",
+        }
+        rt1 = {**base, "provider_project_id": "project-one"}
+        rt2 = {**base, "provider_project_id": "project-two"}
+        sig1 = GatewayRunner._agent_config_signature("gemini-3.1-pro-high", rt1, [], "")
+        sig2 = GatewayRunner._agent_config_signature("gemini-3.1-pro-high", rt2, [], "")
+        assert sig1 != sig2
+
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)

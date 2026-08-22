@@ -2496,6 +2496,39 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "google-antigravity":
+        from agent.gemini_cloudcode_adapter import CodeAssistClient
+
+        safe_kwargs = {
+            k: v
+            for k, v in client_kwargs.items()
+            if k
+            in {
+                "api_key",
+                "base_url",
+                "default_headers",
+                "timeout",
+                "http_client",
+                "project",
+                "project_id",
+            }
+        }
+        if "project_id" in safe_kwargs and "project" not in safe_kwargs:
+            safe_kwargs["project"] = safe_kwargs.pop("project_id")
+        if "http_client" not in safe_kwargs:
+            keepalive_http = agent._build_keepalive_http_client(
+                str(safe_kwargs.get("base_url", "") or ""), verify=httpx_verify,
+            )
+            if keepalive_http is not None:
+                safe_kwargs["http_client"] = keepalive_http
+        client = CodeAssistClient(**safe_kwargs)
+        _ra().logger.info(
+            "Antigravity Code Assist client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

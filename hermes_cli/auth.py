@@ -276,6 +276,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
+    "google-antigravity": ProviderConfig(
+        id="google-antigravity",
+        name="Google Antigravity",
+        auth_type="oauth_external",
+        inference_base_url="https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal",
+    ),
     "qwen-oauth": ProviderConfig(
         id="qwen-oauth",
         name="Qwen OAuth",
@@ -7196,6 +7202,11 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
+    if target == "google-antigravity":
+        from hermes_cli.antigravity_auth import (
+            get_antigravity_auth_status as _get_antigravity_status,
+        )
+        return _get_antigravity_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":

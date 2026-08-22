@@ -515,6 +515,7 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
+    provider_project_id: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
     command: str = None,
@@ -1445,6 +1446,8 @@ def init_agent(
             if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
                 raise
         
+        if provider_project_id:
+            client_kwargs["project_id"] = str(provider_project_id)
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
         # Enable fine-grained tool streaming for Claude on OpenRouter.

@@ -479,6 +479,7 @@ def _run_agent(
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
+            provider_project_id=runtime.get("project_id"),
             model=effective_model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,

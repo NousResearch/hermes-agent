@@ -790,6 +790,65 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     else:
         print("No change.")
 
+def _model_flow_antigravity(_config, current_model="", *, args=None):
+    """Google Antigravity OAuth: ensure login, fetch entitlement, pick model."""
+    from providers import get_provider_profile
+    from hermes_cli.antigravity_auth import (
+        ANTIGRAVITY_BASE_URL,
+        _OAUTH_CALLBACK_TIMEOUT_SECONDS,
+        get_antigravity_auth_status,
+        run_pkce_login,
+    )
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+
+    status = get_antigravity_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into Google Antigravity. Starting OAuth login...")
+        print()
+        try:
+            run_pkce_login(
+                open_browser=not bool(getattr(args, "no_browser", False)),
+                timeout_seconds=float(
+                    getattr(args, "timeout", None)
+                    or _OAUTH_CALLBACK_TIMEOUT_SECONDS
+                ),
+            )
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    profile = get_provider_profile("google-antigravity")
+    if profile is None:
+        print("Google Antigravity provider profile is unavailable.")
+        return
+    models = profile.fetch_models(timeout=30.0) or list(
+        profile.fallback_models or ()
+    )
+    if not models:
+        print("No Google Antigravity Gemini models are available.")
+        return
+
+    default = current_model if current_model in models else models[0]
+    selected = _prompt_model_selection(
+        models,
+        current_model=default,
+        confirm_provider="google-antigravity",
+        confirm_base_url=ANTIGRAVITY_BASE_URL,
+    )
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider(
+            "google-antigravity", ANTIGRAVITY_BASE_URL
+        )
+        print(f"Default model set to: {selected} (via Google Antigravity)")
+    else:
+        print("No change.")
+
+
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.main import _DEFAULT_QWEN_PORTAL_MODELS

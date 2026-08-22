@@ -45,6 +45,7 @@ __all__ = [
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
     "bounded_probe_run",
+    "kill_process_tree",
     "noninteractive_git_env",
 ]
 
@@ -448,6 +449,7 @@ def bounded_probe_run(
     *,
     timeout: float,
     errors: str = "replace",
+    env: Mapping[str, str] | None = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
     for fail-open probe call sites. Returns a ``CompletedProcess`` when the
@@ -473,7 +475,9 @@ def bounded_probe_run(
     ``"ignore"``), and the hidden-window ``creationflags`` on Windows only. On
     POSIX the child is placed in its own process group (``process_group=0``,
     Python ≥3.11) so timeout cleanup can take down descendants with the
-    launcher instead of orphaning them.
+    launcher instead of orphaning them.  ``env`` is optional and preserves the
+    historical inherited-environment behavior when omitted; security-sensitive
+    probes can pass an explicit minimal projection.
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
@@ -485,6 +489,7 @@ def bounded_probe_run(
             text=True,
             encoding="utf-8",
             errors=errors,
+            env=dict(env) if env is not None else None,
             **_popen_kwargs,
         )
     except Exception:

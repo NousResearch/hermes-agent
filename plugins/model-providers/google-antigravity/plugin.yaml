@@ -1,0 +1,5 @@
+name: google-antigravity-provider
+kind: model-provider
+version: 1.0.0
+description: Google Antigravity subscription (OAuth, Code Assist)
+author: Nous Research

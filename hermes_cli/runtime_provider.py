@@ -1858,6 +1858,25 @@ def resolve_runtime_provider(
     # the project ID + region. The token is re-minted per call (5-min refresh
     # margin) by get_vertex_config(); mid-session expiry is additionally
     # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
+    if requested_provider in ("google-antigravity", "antigravity", "agy", "google-agy"):
+        # OAuth-minted bearer token: bypass the api-key credential pool the
+        # generic tail uses. Never logged — the token only travels in the
+        # returned dict to the client constructor.
+        from hermes_cli.antigravity_auth import (
+            resolve_antigravity_runtime_credentials,
+        )
+
+        creds = resolve_antigravity_runtime_credentials()
+        return {
+            "provider": "google-antigravity",
+            "api_mode": "chat_completions",
+            "base_url": creds["base_url"].rstrip("/"),
+            "api_key": creds["api_key"],
+            "project_id": creds.get("project_id"),
+            "source": creds.get("source", "hermes-auth-store"),
+            "requested_provider": requested_provider,
+        }
+
     if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
         from agent.vertex_adapter import get_vertex_config
 

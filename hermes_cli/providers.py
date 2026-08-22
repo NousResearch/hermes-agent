@@ -76,6 +76,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "google-antigravity": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal",
+        base_url_env_var="HERMES_ANTIGRAVITY_BASE_URL",
+    ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_external",

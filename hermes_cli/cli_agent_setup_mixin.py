@@ -21,6 +21,20 @@ from rich.markup import escape as _escape
 from utils import base_url_host_matches
 
 
+def _agent_route_signature(model: str, runtime: dict) -> tuple:
+    """Canonical CLI agent identity used for both build and reuse checks."""
+    return (
+        model,
+        runtime.get("provider"),
+        runtime.get("requested_provider"),
+        runtime.get("base_url"),
+        runtime.get("api_mode"),
+        runtime.get("command"),
+        tuple(runtime.get("args") or ()),
+        runtime.get("project_id"),
+    )
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -89,6 +103,7 @@ class CLIAgentSetupMixin:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_provider_project_id = runtime.get("project_id")
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
@@ -136,11 +151,14 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
+            or resolved_provider_project_id
+            != getattr(self, "provider_project_id", None)
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
+        self.provider_project_id = resolved_provider_project_id
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
         self.api_key = api_key
@@ -291,13 +309,17 @@ class CLIAgentSetupMixin:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Always uses the session's primary model/provider, EXCEPT when
+        ``agent.orchestrator_usage_routing`` is enabled and the cached
+        primary-provider usage crosses its configured threshold — see
+        ``_apply_orchestrator_usage_routing``, which may retarget ``model``/
+        ``runtime`` to the configured Agy fallback (or back) before the
+        `/fast` overrides below are computed, so those overrides always
+        apply to whichever model actually ends up selected.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        model = self.model
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,
@@ -309,19 +331,23 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "project_id": getattr(self, "provider_project_id", None),
         }
+
+        # Guarded via getattr rather than a direct call: several existing
+        # tests exercise this method bound onto a bare SimpleNamespace
+        # stand-in for HermesCLI (no real MRO), so a sibling mixin method is
+        # simply absent there rather than inherited. Falling through with
+        # the base model/runtime unchanged keeps this a no-op for those
+        # stand-ins instead of an AttributeError.
+        apply_routing = getattr(self, "_apply_orchestrator_usage_routing", None)
+        if callable(apply_routing):
+            model, runtime = apply_routing(model, runtime)
+
         route = {
-            "model": self.model,
+            "model": model,
             "runtime": runtime,
-            "signature": (
-                self.model,
-                runtime["provider"],
-                runtime["requested_provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
-            ),
+            "signature": _agent_route_signature(model, runtime),
         }
 
         service_tier = getattr(self, "service_tier", None)
@@ -335,6 +361,54 @@ class CLIAgentSetupMixin:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _apply_orchestrator_usage_routing(self, model: str, runtime: dict) -> tuple:
+        """Apply cached usage routing at the safe pre-turn boundary."""
+        from agent.orchestrator_usage_runtime import (
+            apply_orchestrator_usage_routing,
+        )
+
+        active_agent = getattr(self, "agent", None)
+        if active_agent is None:
+            return apply_orchestrator_usage_routing(model=model, runtime=runtime)
+
+        current_provider = (
+            getattr(active_agent, "provider", None) or runtime.get("provider")
+        )
+        current_runtime = {
+            "api_key": getattr(active_agent, "api_key", None),
+            "base_url": getattr(active_agent, "base_url", None),
+            "provider": current_provider,
+            "requested_provider": getattr(
+                active_agent, "requested_provider", current_provider
+            ),
+            "api_mode": getattr(active_agent, "api_mode", None),
+            "command": getattr(
+                active_agent,
+                "acp_command",
+                getattr(active_agent, "command", None),
+            ),
+            "args": list(
+                getattr(
+                    active_agent,
+                    "acp_args",
+                    getattr(active_agent, "args", None),
+                )
+                or []
+            ),
+            "credential_pool": getattr(active_agent, "_credential_pool", None),
+            "project_id": getattr(
+                active_agent,
+                "provider_project_id",
+                runtime.get("project_id"),
+            ),
+        }
+        return apply_orchestrator_usage_routing(
+            model=model,
+            runtime=runtime,
+            current_model=getattr(active_agent, "model", None) or model,
+            current_runtime=current_runtime,
+        )
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
@@ -486,6 +560,7 @@ class CLIAgentSetupMixin:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "project_id": getattr(self, "provider_project_id", None),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -495,6 +570,7 @@ class CLIAgentSetupMixin:
                 provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
+                provider_project_id=runtime.get("project_id"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
@@ -566,14 +642,9 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-            self._active_agent_route_signature = (
+            self._active_agent_route_signature = _agent_route_signature(
                 effective_model,
-                runtime.get("provider"),
-                runtime.get("requested_provider"),
-                runtime.get("base_url"),
-                runtime.get("api_mode"),
-                runtime.get("command"),
-                tuple(runtime.get("args") or ()),
+                runtime,
             )
 
             # Force-create DB row on /title intent, then apply title.

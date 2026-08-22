@@ -23,6 +23,7 @@ from agent.model_metadata import (
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
+    fetch_endpoint_model_metadata,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
@@ -686,6 +687,32 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    @patch("agent.model_metadata.requests.get")
+    def test_uses_litellm_key_fallback_when_api_key_missing(self, mock_get):
+        """When api_key is empty, fall back to LITELLM_KEY env var so the
+        /models request is authenticated via LiteLLM proxy credentials."""
+        import os
+        import agent.model_metadata as mm
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "test/model", "context_length": 32768, "name": "Test Model"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with patch.dict(os.environ, {"LITELLM_KEY": "litellm-secret"}, clear=False):
+            result = mm.fetch_endpoint_model_metadata(
+                "https://example.test/v1",
+                api_key="",
+                force_refresh=True,
+            )
+
+        assert "test/model" in result
+        assert mock_get.call_count == 1
+        assert mock_get.call_args.args[0] == "https://example.test/v1/models"
+        assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer litellm-secret"
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
@@ -1238,10 +1265,6 @@ class TestFetchModelMetadata:
         assert "anthropic/claude-3.5-sonnet:beta" in result
         assert "anthropic/claude-3.5-sonnet" in result
         assert result["anthropic/claude-3.5-sonnet"]["context_length"] == 200000
-
-
-
-
 
 # =========================================================================
 # Context probe tiers

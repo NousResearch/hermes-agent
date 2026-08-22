@@ -55,6 +55,42 @@ def _confirm_prompt(prompt: str) -> bool:
         return False
 
 
+def _format_route(model, provider) -> str:
+    """Render a ``model (provider)`` label, tolerating a missing half."""
+    model_s = str(model or "").strip()
+    provider_s = str(provider or "").strip()
+    if model_s and provider_s:
+        return f"{model_s} ({provider_s})"
+    return model_s or provider_s or "unknown"
+
+
+def _print_fallback_warnings(sessions) -> None:
+    """Name every listed session that ran a model nobody asked for.
+
+    The listing columns are model-free, so the divergence gets its own block
+    under the table instead of a column nobody would notice. Only rows carrying
+    the sticky ``fallback_activated`` flag are reported: comparing requested vs
+    served strings would both cry wolf (an alias rewrite makes them differ with
+    no fallback) and stay silent (a fallback chain whose entry equals the
+    primary makes them match despite one).
+    """
+    flagged = [s for s in sessions if s.get("fallback_activated")]
+    if not flagged:
+        return
+    noun = "session" if len(flagged) == 1 else "sessions"
+    print()
+    print(
+        f"⚠ {len(flagged)} {noun} ran a model other than the one requested "
+        "(provider fallback):"
+    )
+    for s in flagged:
+        requested = _format_route(
+            s.get("requested_model"), s.get("requested_provider")
+        )
+        served = _format_route(s.get("model"), s.get("billing_provider"))
+        print(f"   {s['id']}  requested {requested} → served {served}")
+
+
 #: Default age floor for `hermes sessions prune --never-active`.  Deliberately
 #: generous: the rows are worthless but harmless, and a young never-active row
 #: may simply be a chat that nobody has replied to yet.
@@ -377,6 +413,7 @@ def cmd_sessions(args, sessions_parser=None):
                 else:
                     preview = s.get("preview", "")[:36]
                     print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+            _print_fallback_warnings(sessions)
             return
 
         if has_titles:
@@ -399,6 +436,7 @@ def cmd_sessions(args, sessions_parser=None):
             else:
                 sid = s["id"]
                 print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+        _print_fallback_warnings(sessions)
 
     elif action == "export":
         from hermes_cli.session_filters import (

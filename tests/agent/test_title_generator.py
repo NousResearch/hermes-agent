@@ -9,6 +9,8 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _title_response_format,
+    _TITLE_RESPONSE_FORMAT,
 )
 from hermes_state import SessionDB
 
@@ -597,3 +599,35 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestTitleResponseFormat:
+    """Unit tests for _title_response_format()."""
+
+    def test_explicit_deepseek_provider_uses_json_object(self):
+        cfg = {"auxiliary": {"title_generation": {"provider": "deepseek"}}}
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            assert _title_response_format() == {"type": "json_object"}
+
+    def test_auto_provider_falls_back_to_main_model_provider(self):
+        cfg = {
+            "auxiliary": {"title_generation": {"provider": "auto"}},
+            "model": {"provider": "deepseek"},
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            assert _title_response_format() == {"type": "json_object"}
+
+    def test_non_deepseek_provider_keeps_json_schema(self):
+        cfg = {
+            "auxiliary": {"title_generation": {"provider": "auto"}},
+            "model": {"provider": "anthropic"},
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            assert _title_response_format() == _TITLE_RESPONSE_FORMAT
+
+    def test_config_error_falls_back_to_json_schema(self):
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=RuntimeError("bad config"),
+        ):
+            assert _title_response_format() == _TITLE_RESPONSE_FORMAT

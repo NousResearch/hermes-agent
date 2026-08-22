@@ -223,6 +223,29 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
     mm.flush_pending.assert_called_once_with(timeout=10)
 
 
+def test_run_cleanup_swallows_second_interrupt_during_memory_flush(tmp_path):
+    """A repeated Ctrl+C during cleanup must not print a shutdown traceback."""
+    import cli as _cli_mod
+
+    agent = MagicMock()
+    mm = MagicMock()
+    mm.flush_pending.side_effect = KeyboardInterrupt
+    agent._memory_manager = mm
+    agent._session_messages = []
+
+    old_ref = _cli_mod._active_agent_ref
+    _cli_mod._active_agent_ref = agent
+    _cli_mod._cleanup_done = False
+    try:
+        _cli_mod._run_cleanup(notify_session_finalize=False)
+    finally:
+        _cli_mod._cleanup_done = True
+        _cli_mod._active_agent_ref = old_ref
+
+    mm.flush_pending.assert_called_once_with(timeout=10)
+    agent.shutdown_memory_provider.assert_called_once_with([])
+
+
 
 
 
@@ -295,5 +318,4 @@ def test_new_session_with_title(capsys):
 
     captured = capsys.readouterr()
     assert "My Test Session" in captured.out
-
 

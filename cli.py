@@ -1257,7 +1257,11 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 if _mm is not None and hasattr(_mm, 'flush_pending'):
                     try:
                         _mm.flush_pending(timeout=10)
-                    except Exception:
+                    except (Exception, KeyboardInterrupt):
+                        # A second shutdown signal can arrive while the bounded
+                        # memory drain is waiting. The signal handler raises
+                        # KeyboardInterrupt (a BaseException, not Exception), so
+                        # continue the already-started cleanup without a traceback.
                         pass
                 # Forward the agent's own transcript so memory providers'
                 # on_session_end hooks see the real conversation instead of

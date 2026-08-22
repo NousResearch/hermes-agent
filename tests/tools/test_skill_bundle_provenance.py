@@ -139,6 +139,50 @@ def test_lock_file_persists_scan_provenance(tmp_path):
     assert lock.get_installed("demo")["scan_provenance"] == provenance
 
 
+def test_full_content_hash_frames_file_records(tmp_path):
+    from tools.skills_guard import full_content_hash
+
+    one_file = tmp_path / "one-file"
+    one_file.mkdir()
+    (one_file / "a").write_bytes(b"Xb\x00Y")
+
+    two_files = tmp_path / "two-files"
+    two_files.mkdir()
+    (two_files / "a").write_bytes(b"X")
+    (two_files / "b").write_bytes(b"Y")
+
+    assert full_content_hash(one_file) != full_content_hash(two_files)
+
+
+def test_scan_cache_separates_origin_marker_policy(tmp_path):
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Demo\n")
+    cache = tmp_path / "cache"
+
+    allowed, allowed_provenance = scan_skill_cached(
+        skill,
+        source="official",
+        allow_origin_markers=True,
+        cache_dir=cache,
+    )
+    denied, denied_provenance = scan_skill_cached(
+        skill,
+        source="official",
+        allow_origin_markers=False,
+        cache_dir=cache,
+    )
+
+    assert allowed.trust_level == "builtin"
+    assert denied.trust_level == "community"
+    assert allowed_provenance["allow_origin_markers"] is True
+    assert denied_provenance["allow_origin_markers"] is False
+    assert allowed_provenance["hash_scheme"] == "sha256-tree-v2"
+    assert denied_provenance["hash_scheme"] == "sha256-tree-v2"
+    assert allowed_provenance["fresh"] is True
+    assert denied_provenance["fresh"] is True
+
+
 def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path):
     from hermes_cli.skills_hub import do_install
     import tools.skills_hub as hub
@@ -163,6 +207,14 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True
+    assert entry["install_attestation"] == {
+        "version": 2,
+        "hash_scheme": "sha256-tree-v2",
+        "source": "url",
+        "identifier": url,
+        "trust_level": "community",
+        "bundle_hash": entry["scan_provenance"]["bundle_hash"],
+    }
     assert "Scan provenance: fresh" in sink.getvalue()
 
 

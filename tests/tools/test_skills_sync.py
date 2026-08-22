@@ -938,6 +938,799 @@ class TestUpdateBackupRecovery:
         assert result2["user_modified"] == []
 
 
+class TestRestoreOfficialOptionalSkill:
+    def test_restore_all_refuses_nontransactional_bulk_mutation(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        for name in ("one", "two"):
+            source = optional_dir / "devops" / name
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text(f"# {name}\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "one"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing one\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda _identity, identifier: {
+                "SKILL.md": f"# Verified {identifier}\n".encode()
+            },
+        )
+
+        result = ss.restore_official_optional_skill("all", restore=True)
+
+        assert result["ok"] is False
+        assert "one at a time" in result["message"].lower()
+        assert (installed / "SKILL.md").read_text() == "# Existing one\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_restore_failure_keeps_existing_skill_active(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(
+            ss,
+            "_write_restored_bundle",
+            lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert (existing / "SKILL.md").read_text() == "# Existing modified\n"
+
+    def test_restore_supports_configured_profile_root_redirect(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        real_skills = tmp_path / "real-skills"
+        existing = real_skills / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+        skills_link = tmp_path / "profile" / "skills"
+        skills_link.parent.mkdir()
+        try:
+            skills_link.symlink_to(real_skills, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_link)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (existing / "SKILL.md").read_text() == "# Verified\n"
+
+    def test_restore_migrates_registered_skill_to_canonical_category(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "newcat" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        old = skills_dir / "oldcat" / "demo"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("# Existing modified\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        hub.HubLockFile(path=lock_path).record_install(
+            name="demo",
+            source="official",
+            identifier="official/oldcat/demo",
+            trust_level="builtin",
+            scan_verdict="safe",
+            skill_hash="old",
+            install_path="oldcat/demo",
+            files=["SKILL.md"],
+        )
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert not old.exists()
+        canonical = skills_dir / "newcat" / "demo"
+        assert (canonical / "SKILL.md").read_text() == "# Verified\n"
+        entry = hub.HubLockFile(path=lock_path).get_installed("demo")
+        assert entry is not None
+        assert entry["install_path"] == "newcat/demo"
+        assert entry["identifier"] == "official/newcat/demo"
+
+    def test_restore_removes_new_target_when_lock_commit_fails(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "newcat" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_hash",
+            lambda *_args: __import__("tools.skills_guard", fromlist=["full_content_hash_for_files"]).full_content_hash_for_files({"SKILL.md": b"# Verified\n"}),
+        )
+        calls = []
+
+        def _fail_lock_write(*_args, **_kwargs):
+            calls.append(True)
+            raise OSError("lock write failed")
+
+        monkeypatch.setattr(hub.HubLockFile, "record_install", _fail_lock_write)
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert calls == [True]
+        assert result["ok"] is False
+        assert not (skills_dir / "newcat" / "demo").exists()
+
+    def test_restore_reports_backup_when_publish_cleanup_blocks_rollback(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_guard as guard
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        original_hash = guard.full_content_hash
+
+        def _mismatch_after_publish(path):
+            path = Path(path)
+            if path == existing and (path / "SKILL.md").read_text() == "# Verified\n":
+                return "post-publish-mismatch"
+            return original_hash(path)
+
+        monkeypatch.setattr(guard, "full_content_hash", _mismatch_after_publish)
+        monkeypatch.setattr(
+            hub,
+            "_rmtree_bound",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("sharing violation")
+            ),
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert "rollback incomplete" in result["message"].lower()
+        assert result["backed_up"] == ["devops/demo"]
+        backup_dir = Path(result["backup_dir"])
+        assert (backup_dir / "devops" / "demo" / "SKILL.md").read_text() == (
+            "# Existing modified\n"
+        )
+
+    def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "evil" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Payload\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: "")
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert "verified" in result["message"].lower()
+        assert (installed / "SKILL.md").read_text() == "# Existing\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_restore_writes_authoritative_origin_bytes_not_worktree(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Racing worktree payload\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing\n")
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda _identity, _identifier: {
+                "SKILL.md": b"# Verified commit bytes\n",
+                "scripts/run.py": b"print('ok')\n",
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (installed / "SKILL.md").read_bytes() == b"# Verified commit bytes\n"
+        assert (installed / "scripts" / "run.py").read_bytes() == b"print('ok')\n"
+
+    def test_restore_rejects_redirected_destination_parent(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "skills"
+        outside = tmp_path / "outside"
+        outside_demo = outside / "demo"
+        outside_demo.mkdir(parents=True)
+        (outside_demo / "SKILL.md").write_text("# Outside\n")
+        skills_dir.mkdir()
+        try:
+            (skills_dir / "devops").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert (outside_demo / "SKILL.md").read_text() == "# Outside\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_restore_never_publishes_through_parent_swapped_after_final_check(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "skills"
+        category = skills_dir / "devops"
+        category.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        original_resolve = hub._resolve_lock_install_path
+        resolve_calls = 0
+        outside_publish_attempted = False
+
+        def _swap_after_final_check(*args, **kwargs):
+            nonlocal resolve_calls
+            resolved = original_resolve(*args, **kwargs)
+            resolve_calls += 1
+            if resolve_calls == 2:
+                category.rename(skills_dir / "devops-original")
+                try:
+                    category.symlink_to(outside, target_is_directory=True)
+                except OSError as exc:
+                    pytest.skip(f"directory symlinks unavailable: {exc}")
+            return resolved
+
+        original_move = ss.shutil.move
+
+        def _observe_move(source_path, destination_path, *args, **kwargs):
+            nonlocal outside_publish_attempted
+            destination = Path(destination_path)
+            if destination.is_absolute() and destination.parent.resolve() == outside:
+                outside_publish_attempted = True
+            return original_move(source_path, destination_path, *args, **kwargs)
+
+        monkeypatch.setattr(hub, "_resolve_lock_install_path", _swap_after_final_check)
+        monkeypatch.setattr(ss.shutil, "move", _observe_move)
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert outside_publish_attempted is False
+        assert not (outside / "demo").exists()
+
+    def test_restore_matches_using_verified_frontmatter_not_worktree(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: victim\n---\nPayload\n")
+        skills_dir = tmp_path / "skills"
+        victim = skills_dir / "custom" / "victim"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("---\nname: victim\n---\nKeep me\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {
+                "SKILL.md": b"---\nname: demo\n---\nVerified\n"
+            },
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (victim / "SKILL.md").read_text().endswith("Keep me\n")
+        assert result["backed_up"] == []
+
+
+class TestOptionalProvenanceAttestation:
+    @pytest.fixture(autouse=True)
+    def _verified_optional_root(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_sync._optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "e" * 40,
+        )
+
+        def _authoritative_hash(_origin_identity, identifier):
+            import tools.skills_guard as guard
+            import tools.skills_sync as ss
+
+            rel = identifier.split("/", 1)[1]
+            return guard.full_content_hash(ss._get_optional_dir() / rel)
+
+        monkeypatch.setattr(
+            "tools.skills_sync._official_origin_bundle_hash",
+            _authoritative_hash,
+        )
+
+    def test_safe_relative_path_rejects_intermediate_redirect(self, tmp_path):
+        import tools.skills_sync as ss
+
+        skills_dir = tmp_path / "skills"
+        real_category = skills_dir / "real"
+        (real_category / "demo").mkdir(parents=True)
+        alias = skills_dir / "alias"
+        try:
+            alias.symlink_to(real_category, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        with pytest.raises(ValueError, match="redirect"):
+            ss._safe_rel_install_path(alias / "demo", skills_dir)
+
+    def test_backfill_compares_installed_bytes_to_authoritative_origin(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_guard as guard
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Temporary payload\n")
+        official_hash = guard.full_content_hash(source)
+        payload_hash = guard.full_content_hash(installed)
+
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_hash",
+            lambda *_args: official_hash,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            guard,
+            "full_content_hash",
+            lambda _path: payload_hash,
+        )
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        assert not (skills_dir / ".hub" / "lock.json").exists()
+
+    def test_backfill_rejects_origin_change_during_scan(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        identities = iter(
+            [
+                "git:NousResearch/hermes-agent@" + "a" * 40,
+                "git:NousResearch/hermes-agent@" + "b" * 40,
+            ]
+        )
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+                patch(
+                    "tools.skills_sync._optional_root_identity",
+                    side_effect=lambda _path: next(identities),
+                ):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        assert not (skills_dir / ".hub" / "lock.json").exists()
+
+    def test_backfill_does_not_attest_unverified_optional_root(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch(
+                    "tools.skills_sync._optional_root_identity",
+                    return_value="",
+                ), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        lock_path = skills_dir / ".hub" / "lock.json"
+        assert not lock_path.exists()
+
+    def test_backfill_records_full_install_attestation(self, tmp_path):
+        import tools.skills_sync as ss
+        from tools.skills_guard import full_content_hash
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        entry = lock["installed"]["demo"]
+        assert entry["install_attestation"] == {
+            "version": 2,
+            "hash_scheme": "sha256-tree-v2",
+            "source": "official",
+            "identifier": "official/devops/demo",
+            "trust_level": "builtin",
+            "origin_identity": "git:NousResearch/hermes-agent@" + "e" * 40,
+            "bundle_hash": full_content_hash(installed),
+        }
+
+    def test_backfill_preserves_concurrent_install_record(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+        from tools.skills_hub import HubLockFile
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        identity = "git:NousResearch/hermes-agent@" + "e" * 40
+        identity_calls = 0
+
+        def _identity_with_concurrent_install(_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 2:
+                HubLockFile(path=lock_path).record_install(
+                    name="concurrent",
+                    source="community",
+                    identifier="owner/repo/concurrent",
+                    trust_level="community",
+                    scan_verdict="safe",
+                    skill_hash="concurrent",
+                    install_path="concurrent",
+                    files=["SKILL.md"],
+                )
+            return identity
+
+        monkeypatch.setattr(ss, "_optional_root_identity", _identity_with_concurrent_install)
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        entries = HubLockFile(path=lock_path).load()["installed"]
+        assert set(entries) == {"demo", "concurrent"}
+
+    def test_backfill_repairs_malformed_installed_mapping(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({"version": 1, "installed": 7}))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        data = json.loads(lock_path.read_text())
+        assert set(data["installed"]) == {"demo"}
+
+    def test_backfill_upgrades_matching_legacy_official_entry(self, tmp_path):
+        import tools.skills_sync as ss
+        from tools.skills_guard import full_content_hash
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "demo": {
+                    "source": "official",
+                    "identifier": "official/devops/demo",
+                    "trust_level": "builtin",
+                    "install_path": "devops/demo",
+                }
+            },
+        }))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        entry = json.loads(lock_path.read_text())["installed"]["demo"]
+        assert entry["install_attestation"]["bundle_hash"] == full_content_hash(installed)
+
+    def test_backfill_rejects_existing_lock_path_escape(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        outside = tmp_path / "outside" / "demo"
+        outside.mkdir(parents=True)
+        (outside / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "demo": {
+                    "source": "official",
+                    "identifier": "official/devops/demo",
+                    "trust_level": "builtin",
+                    "install_path": "../../outside/demo",
+                }
+            },
+        }))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        entry = json.loads(lock_path.read_text())["installed"]["demo"]
+        assert "install_attestation" not in entry
+
+    def test_backfill_refuses_redirected_active_copy(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        target = tmp_path / "target.md"
+        target.write_text("# Demo\n")
+        try:
+            (installed / "SKILL.md").symlink_to(target)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        lock_path = skills_dir / ".hub" / "lock.json"
+        assert not lock_path.exists() or "demo" not in json.loads(lock_path.read_text()).get(
+            "installed", {}
+        )
+
+    def test_backfill_rejects_legacy_hash_tree_collision(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        (source / "references").mkdir(parents=True)
+        official_text = b"# Official\n"
+        payload = b"payload\n"
+        (source / "SKILL.md").write_bytes(official_text)
+        (source / "references" / "payload.md").write_bytes(payload)
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_bytes(
+            official_text + b"references/payload.md" + payload
+        )
+
+        assert ss._dir_hash(source) == ss._dir_hash(installed)
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        lock_path = skills_dir / ".hub" / "lock.json"
+        assert not lock_path.exists() or "demo" not in json.loads(lock_path.read_text()).get(
+            "installed", {}
+        )
+
+
 class TestCallTimeDirResolution:
     """Regression for #65828: skills_sync bound SKILLS_DIR/MANIFEST_FILE/
     HERMES_HOME at import, so a long-lived dashboard/TUI process serving a

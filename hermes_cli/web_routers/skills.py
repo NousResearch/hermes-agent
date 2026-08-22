@@ -320,7 +320,10 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     def _run():
         import shutil as _shutil
 
-        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from hermes_cli.skills_hub import (
+            _resolve_source_meta_and_bundle,
+            _scan_provenance_for_source,
+        )
         from tools.skills_hub import create_source_router, quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
@@ -330,20 +333,23 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
         if not bundle:
             return None
 
-        if bundle.source == "official":
-            scan_source = "official"
-        else:
-            scan_source = (
-                getattr(bundle, "identifier", "")
-                or getattr(meta, "identifier", "")
-                or ident
-            )
+        scan_source, allow_origin_markers = _scan_provenance_for_source(
+            bundle.source,
+            getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
+            ident,
+            origin_verified=getattr(bundle, "origin_verified", False),
+            origin_identity=getattr(bundle, "origin_identity", ""),
+        )
 
         q_path = None
         tier1 = None
         try:
             q_path = quarantine_bundle(bundle)
-            result = scan_skill(q_path, source=scan_source)
+            result = scan_skill(
+                q_path,
+                source=scan_source,
+                allow_origin_markers=allow_origin_markers,
+            )
             # Advisory SkillEvaluator Tier 1 second opinion (same contract
             # as the CLI installer: optional binary, never blocks, errors
             # degrade to no data).

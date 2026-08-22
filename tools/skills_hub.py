@@ -14,16 +14,23 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
 import hashlib
+import io
 import json
 import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
+import sys
+import tarfile
+import tempfile
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -35,12 +42,60 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, content_hash, TRUSTED_REPOS,
+    ScanResult, build_install_attestation, content_hash,
+    full_content_hash, full_content_hash_for_files, TRUSTED_REPOS,
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _exclusive_file_lock(path: Path, timeout: float = 30.0):
+    """Cross-process advisory lock used for install and lockfile updates."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for lock: {path}")
+                time.sleep(0.02)
+        yield
+    finally:
+        if acquired:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                logger.warning("Could not release lock %s", path, exc_info=True)
+        handle.close()
 
 
 # ---------------------------------------------------------------------------
@@ -54,14 +109,38 @@ logger = logging.getLogger(__name__)
 INDEX_CACHE_TTL = 3600  # 1 hour
 
 
+class _ResolvedDynamicPath(Path):
+    """Path marker returned by ``__getattr__`` for legacy dynamic constants.
+
+    ``monkeypatch`` and ``mock.patch`` restore the exact object returned by
+    ``getattr``.  Marking that object lets ``_override`` distinguish cleanup
+    from a caller's deliberate real-Path override.
+    """
+
+    # Python <3.12 requires concrete Path subclasses to provide the platform
+    # flavour. Python 3.13 removed ``_flavour`` from concrete Path classes
+    # because ``Path`` itself is subclassable, so only copy it when present.
+    _path_flavour = getattr(type(Path()), "_flavour", None)
+    if _path_flavour is not None:
+        _flavour = _path_flavour
+
+
 # _override lets a test-injected real module attribute (patch.object/monkeypatch
 # on SKILLS_DIR etc.) win over dynamic resolution; None means resolve live.
 def _override(name: str):
-    return globals().get(name)
+    value = globals().get(name)
+    if isinstance(value, _ResolvedDynamicPath):
+        # A patch helper restored the dynamic value it observed before setting
+        # its override. Remove the materialized attribute so future profile
+        # switches continue through __getattr__ instead of freezing that path.
+        globals().pop(name, None)
+        return None
+    return value
 
 
 def _hermes_home() -> Path:
-    return get_hermes_home()
+    forced = _override("HERMES_HOME")
+    return Path(forced) if forced is not None else get_hermes_home()
 
 
 def _skills_dir() -> Path:
@@ -116,7 +195,7 @@ def __getattr__(name: str):
     active profile override; a test's patch.object-set real attribute shadows it."""
     resolver = _DYNAMIC_PATH_RESOLVERS.get(name)
     if resolver is not None:
-        return resolver()
+        return _ResolvedDynamicPath(resolver())
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
@@ -150,6 +229,472 @@ class SkillBundle:
     identifier: str
     trust_level: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    origin_verified: bool = False
+    origin_identity: str = ""
+
+
+def _nix_store_optional_identity(
+    path: Path,
+    *,
+    store_root: Path = Path("/nix/store"),
+) -> str:
+    """Return a package identity for an immutable Nix optional-skill root."""
+    try:
+        resolved = path.resolve()
+        root = store_root.resolve()
+        relative = resolved.relative_to(root)
+        if path.absolute() != resolved:
+            return ""
+        parts = relative.parts
+        if (
+            len(parts) != 4
+            or not re.fullmatch(
+                r"[0-9abcdfghijklmnpqrsvwxyz]{32}-.+",
+                parts[0],
+            )
+            or parts[1:] != ("share", "hermes-agent", "optional-skills")
+        ):
+            return ""
+        store_item = root / parts[0]
+        package_dirs = (
+            store_item,
+            store_item / "share",
+            store_item / "share" / "hermes-agent",
+            resolved,
+        )
+        for directory in package_dirs:
+            if (
+                _is_path_redirect(directory)
+                or not directory.is_dir()
+                or directory.stat().st_mode & 0o222
+            ):
+                return ""
+        for entry in resolved.rglob("*"):
+            if _is_path_redirect(entry) or entry.lstat().st_mode & 0o222:
+                return ""
+        return f"nix-store:{parts[0]}"
+    except (OSError, ValueError):
+        return ""
+
+
+def _trusted_git_environment() -> Dict[str, str]:
+    """Return a Git environment without caller-controlled object/config hooks."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    return env
+
+
+def _trusted_git_executable() -> Path:
+    """Return Git from a fixed OS installation path, never caller ``PATH``."""
+    if os.name == "nt":
+        drive = Path(sys.executable).drive or "C:"
+        candidates = (
+            Path(f"{drive}/Program Files/Git/cmd/git.exe"),
+            Path(f"{drive}/Program Files/Git/bin/git.exe"),
+        )
+    else:
+        candidates = (Path("/usr/bin/git"), Path("/usr/local/bin/git"))
+    for candidate in candidates:
+        try:
+            if (
+                candidate.is_file()
+                and not _is_path_redirect(candidate)
+                and stat.S_ISREG(candidate.lstat().st_mode)
+            ):
+                return candidate
+        except OSError:
+            continue
+    raise FileNotFoundError("No trusted system Git executable is available")
+
+
+def _run_trusted_git(repo_root: Path, *args: str, **kwargs):
+    executable = _trusted_git_executable()
+    env = _trusted_git_environment()
+    env["PATH"] = str(executable.parent)
+    return subprocess.run(
+        [
+            str(executable),
+            "--no-replace-objects",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+            str(repo_root),
+            *args,
+        ],
+        env=env,
+        **kwargs,
+    )
+
+
+def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
+    """Return the exact clean Git commit that owns a checkout's optional tree."""
+    try:
+        resolved = path.resolve()
+        repo_root = repo_root.resolve()
+        expected = (repo_root / "optional-skills").resolve()
+        if resolved != expected or _is_path_redirect(path):
+            return ""
+        for entry in resolved.rglob("*"):
+            if _is_path_redirect(entry):
+                return ""
+        top = _run_trusted_git(
+            repo_root,
+            "rev-parse",
+            "--show-toplevel",
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if Path(top).resolve() != repo_root:
+            return ""
+        status = _run_trusted_git(
+            repo_root,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "optional-skills",
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        if status:
+            return ""
+        ignored_untracked = _run_trusted_git(
+            repo_root,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+            "optional-skills",
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        ignored_paths = [
+            PurePosixPath(raw.decode("utf-8", errors="surrogateescape"))
+            for raw in ignored_untracked.split(b"\0")
+            if raw
+        ]
+        if any(_optional_bundle_file_is_included(path) for path in ignored_paths):
+            return ""
+        remote_output = _run_trusted_git(
+            repo_root,
+            "remote",
+            "-v",
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        official_urls = {
+            "https://github.com/NousResearch/hermes-agent",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "git@github.com:NousResearch/hermes-agent.git",
+            "ssh://git@github.com/NousResearch/hermes-agent.git",
+        }
+        official_fetch_remotes = {
+            parts[0]
+            for line in remote_output.splitlines()
+            if (parts := line.split())
+            and len(parts) >= 3
+            and parts[1] in official_urls
+            and parts[2] == "(fetch)"
+        }
+        if not official_fetch_remotes:
+            return ""
+        head_tree = _run_trusted_git(
+            repo_root,
+            "rev-parse",
+            "HEAD:optional-skills",
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        for remote in sorted(official_fetch_remotes):
+            try:
+                revision = _run_trusted_git(
+                    repo_root,
+                    "rev-parse",
+                    f"{remote}/main^{{commit}}",
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip()
+                remote_tree = _run_trusted_git(
+                    repo_root,
+                    "rev-parse",
+                    f"{remote}/main:optional-skills",
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip()
+            except subprocess.SubprocessError:
+                continue
+            if (
+                remote_tree == head_tree
+                and re.fullmatch(r"[0-9a-f]{40}", revision)
+                and _github_commit_is_official(revision)
+            ):
+                return f"git:NousResearch/hermes-agent@{revision}"
+        return ""
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+
+
+def optional_skills_root_identity(path: Path) -> str:
+    """Return a verified package/runtime identity for an optional-skill root."""
+    nix_identity = _nix_store_optional_identity(path)
+    if nix_identity:
+        return nix_identity
+    try:
+        repo_root = path.resolve().parent
+    except OSError:
+        return ""
+    return _git_checkout_optional_identity(path, repo_root)
+
+
+def optional_skills_root_is_authoritative(path: Path) -> bool:
+    """Whether ``path`` has a runtime/package-bound official identity.
+
+    ``HERMES_OPTIONAL_SKILLS`` remains a discovery/package-layout override,
+    but an arbitrary environment path is not an official-origin authority.
+    Clean source checkouts are bound to their exact Git commit; the separately
+    shipped Nix tree is bound to an immutable, content-addressed store item.
+    """
+    return bool(optional_skills_root_identity(path))
+
+
+@lru_cache(maxsize=128)
+def _github_commit_is_official(revision: str) -> bool:
+    """Bind a commit identity to GitHub's NousResearch repository over TLS."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return False
+    url = (
+        "https://api.github.com/repos/NousResearch/hermes-agent/commits/"
+        f"{revision}"
+    )
+    try:
+        # Ignore proxy/config environment variables: HERMES_OPTIONAL_SKILLS is
+        # explicitly attacker-controlled in this trust decision, so adjacent
+        # environment settings must not redirect the authority lookup either.
+        with httpx.Client(
+            trust_env=False,
+            follow_redirects=False,
+            timeout=10,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "hermes-agent-skills-origin-verifier",
+            },
+        ) as client:
+            response = client.get(url)
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("sha") == revision
+
+
+def _optional_bundle_file_is_included(path: PurePosixPath) -> bool:
+    return (
+        bool(path.parts)
+        and not path.name.startswith(".")
+        and "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
+    )
+
+
+def _git_origin_commit_is_official(repo_root: Path, revision: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return False
+    official_urls = {
+        "https://github.com/NousResearch/hermes-agent",
+        "https://github.com/NousResearch/hermes-agent.git",
+        "git@github.com:NousResearch/hermes-agent.git",
+        "ssh://git@github.com/NousResearch/hermes-agent.git",
+    }
+    try:
+        remote_output = _run_trusted_git(
+            repo_root,
+            "remote",
+            "-v",
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    remotes = {
+        parts[0]
+        for line in remote_output.splitlines()
+        if (parts := line.split())
+        and len(parts) >= 3
+        and parts[1] in official_urls
+        and parts[2] == "(fetch)"
+    }
+    for remote in sorted(remotes):
+        try:
+            result = _run_trusted_git(
+                repo_root,
+                "merge-base",
+                "--is-ancestor",
+                revision,
+                f"{remote}/main",
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return _github_commit_is_official(revision)
+    return False
+
+
+def _git_optional_skill_files(
+    repo_root: Path,
+    skill_rel: str,
+    origin_identity: str,
+) -> Optional[Dict[str, Union[str, bytes]]]:
+    """Read an official skill from the immutable Git commit, not its worktree."""
+    match = re.fullmatch(
+        r"git:NousResearch/hermes-agent@([0-9a-f]{40})",
+        origin_identity,
+    )
+    if not match:
+        return None
+    if not _git_origin_commit_is_official(repo_root, match.group(1)):
+        return None
+    try:
+        safe_rel = _normalize_bundle_path(
+            skill_rel,
+            field_name="optional skill path",
+            allow_nested=True,
+        )
+        prefix = f"optional-skills/{safe_rel}"
+        archive = _run_trusted_git(
+            repo_root,
+            "archive",
+            "--format=tar",
+            match.group(1),
+            "--",
+            prefix,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout
+        if len(archive) > 64 * 1024 * 1024:
+            return None
+        files: Dict[str, Union[str, bytes]] = {}
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            for member in tar.getmembers():
+                name = member.name.rstrip("/")
+                if name == prefix or member.isdir():
+                    continue
+                if not name.startswith(f"{prefix}/") or not member.isfile():
+                    return None
+                rel_path = _validate_bundle_rel_path(name[len(prefix) + 1 :])
+                posix_path = PurePosixPath(rel_path)
+                if not _optional_bundle_file_is_included(posix_path):
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return None
+                files[rel_path] = extracted.read()
+        return files or None
+    except (OSError, subprocess.SubprocessError, tarfile.TarError, ValueError):
+        return None
+
+
+def official_origin_bundle_files(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[Dict[str, Union[str, bytes]]]:
+    """Resolve official bytes independently of mutable worktree/lock state."""
+    if not identifier.startswith("official/"):
+        return None
+    try:
+        skill_rel = _normalize_bundle_path(
+            identifier.split("/", 1)[1],
+            field_name="official identifier",
+            allow_nested=True,
+        )
+    except ValueError:
+        return None
+
+    from hermes_constants import get_optional_skills_dir
+
+    optional_root = get_optional_skills_dir(
+        Path(__file__).parent.parent / "optional-skills"
+    )
+    if origin_identity.startswith("github:NousResearch/hermes-agent@"):
+        origin_identity = "git:" + origin_identity[len("github:") :]
+    if origin_identity.startswith("git:NousResearch/hermes-agent@"):
+        return _git_optional_skill_files(
+            optional_root.resolve().parent,
+            skill_rel,
+            origin_identity,
+        )
+    if not origin_identity.startswith("nix-store:"):
+        return None
+    if optional_skills_root_identity(optional_root) != origin_identity:
+        return None
+    try:
+        source_path = (optional_root / Path(*skill_rel.split("/"))).resolve()
+        if not source_path.is_relative_to(optional_root.resolve()):
+            return None
+        files: Dict[str, Union[str, bytes]] = {}
+        total_size = 0
+        for entry in sorted(source_path.rglob("*")):
+            if _is_path_redirect(entry):
+                return None
+            if entry.is_dir():
+                continue
+            if not entry.is_file():
+                return None
+            rel_path = PurePosixPath(entry.relative_to(source_path).as_posix())
+            if not _optional_bundle_file_is_included(rel_path):
+                continue
+            data = entry.read_bytes()
+            total_size += len(data)
+            if total_size > 64 * 1024 * 1024:
+                return None
+            files[rel_path.as_posix()] = data
+    except (OSError, ValueError):
+        return None
+    if optional_skills_root_identity(optional_root) != origin_identity:
+        return None
+    return files or None
+
+
+def official_origin_bundle_hash(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[str]:
+    """Hash official bytes independently of the same-user lock record."""
+    files = official_origin_bundle_files(origin_identity, identifier)
+    return full_content_hash_for_files(files) if files else None
 
 
 _ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
@@ -265,10 +810,24 @@ def _is_path_redirect(path: Path) -> bool:
     redirect a subsequent ``rmtree`` to content outside it. ``is_junction``
     only exists on Python 3.12+ Windows; gate with ``hasattr``.
     """
-    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        if path.is_symlink() or (is_junction and is_junction()):
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
-def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
+def _resolve_lock_install_path(
+    install_path: str,
+    skill_name: str,
+    *,
+    skills_dir: Optional[Path] = None,
+) -> Path:
     """Resolve a lock-file install path without allowing escapes from ``SKILLS_DIR``.
 
     Two layers of defence on top of the existing ``is_relative_to`` check
@@ -282,7 +841,7 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
        and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
     """
     normalized = _normalize_lock_install_path(install_path, skill_name)
-    skills_dir = _skills_dir()
+    skills_dir = Path(skills_dir) if skills_dir is not None else _skills_dir()
     skills_root = skills_dir.resolve()
 
     target = skills_dir
@@ -295,6 +854,130 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     if target == skills_root or not target.is_relative_to(skills_root):
         raise ValueError(f"Unsafe install path: {install_path}")
     return target
+
+
+def _target_install_lock_path(
+    install_path: str,
+    skill_name: str,
+    *,
+    skills_dir: Optional[Path] = None,
+) -> Path:
+    _normalize_lock_install_path(install_path, skill_name)
+    safe_name = _validate_skill_name(skill_name)
+    # Lock by logical lockfile key, not category path: the same hub skill can
+    # move categories across an update but must remain one serialized target.
+    lock_key = hashlib.sha256(safe_name.casefold().encode("utf-8")).hexdigest()
+    lock_root = Path(skills_dir) / ".hub" if skills_dir is not None else _hub_dir()
+    return lock_root / "install-locks" / f"{lock_key}.lock"
+
+
+@contextmanager
+def _target_install_lock(
+    install_path: str,
+    skill_name: str,
+    *,
+    skills_dir: Optional[Path] = None,
+):
+    target_path = _target_install_lock_path(
+        install_path,
+        skill_name,
+        skills_dir=skills_dir,
+    )
+    namespace_path = target_path.parent / ".namespace.lock"
+    # Serialize namespace mutations as well as logical-skill mutations. This
+    # prevents a category path (cat/a) racing a top-level skill named cat.
+    with _exclusive_file_lock(namespace_path):
+        with _exclusive_file_lock(target_path):
+            yield
+
+
+@contextmanager
+def _bound_directory(path: Path):
+    """Hold a directory identity across rename operations.
+
+    POSIX callers receive a directory FD used with ``*at`` operations. On
+    Windows the open handle denies delete/rename sharing, preventing a parent
+    junction from being swapped until the transaction completes.
+    """
+    path = Path(path)
+    try:
+        path_is_exact = path.absolute() == path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        path_is_exact = False
+    if not path_is_exact or _is_path_redirect(path) or not path.is_dir():
+        raise ValueError(f"Unsafe directory binding: {path}")
+    if os.name == "nt":
+        import win32con
+        import win32file
+
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.FILE_READ_ATTRIBUTES,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None,
+            win32con.OPEN_EXISTING,
+            win32con.FILE_FLAG_BACKUP_SEMANTICS
+            | win32con.FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        try:
+            if (
+                path.absolute() != path.resolve(strict=True)
+                or _is_path_redirect(path)
+                or not path.is_dir()
+            ):
+                raise ValueError(f"Unsafe directory binding: {path}")
+            yield handle
+        finally:
+            handle.Close()
+        return
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        opened = os.fstat(fd)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"Directory changed during binding: {path}")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _directory_binding_matches(path: Path, binding: Any) -> bool:
+    if os.name == "nt":
+        return not _is_path_redirect(path) and path.is_dir()
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        opened = os.fstat(binding)
+    except OSError:
+        return False
+    return (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+
+
+def _replace_bound_directory_entry(
+    source: Path,
+    destination: Path,
+    source_binding: Any,
+    destination_binding: Any,
+) -> None:
+    if os.name == "nt":
+        os.replace(source, destination)
+        return
+    os.replace(
+        source.name,
+        destination.name,
+        src_dir_fd=source_binding,
+        dst_dir_fd=destination_binding,
+    )
+
+
+def _rmtree_bound(parent: Path, name: str, binding: Any) -> None:
+    if os.name == "nt":
+        shutil.rmtree(parent / name)
+        return
+    shutil.rmtree(name, dir_fd=binding)
 
 
 def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
@@ -594,6 +1277,9 @@ class GitHubSource(SkillSource):
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
         self._tree_revisions: Dict[str, str] = {}
+        self._trusted_tree_cache: Dict[
+            str, Tuple[str, List[dict], str]
+        ] = {}
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -831,10 +1517,36 @@ class GitHubSource(SkillSource):
         except (httpx.HTTPError, ValueError):
             return None
 
-        # Fetch recursive tree
+        # Resolve the branch to one immutable commit and its root tree.  The
+        # Git Trees endpoint returns a tree-object SHA, which is not a valid
+        # commit provenance identity for later Contents API `ref=` reads.
         try:
             resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                f"https://api.github.com/repos/{repo}/commits/{default_branch}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            commit_data = resp.json()
+            revision = commit_data.get("sha")
+            tree_revision = (
+                commit_data.get("commit", {}).get("tree", {}).get("sha")
+            )
+            if not (
+                isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", revision)
+                and isinstance(tree_revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", tree_revision)
+            ):
+                return None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+
+        # Fetch the recursive tree belonging to that exact commit.
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{tree_revision}",
                 params={"recursive": "1"},
                 headers=headers, timeout=30, follow_redirects=True,
             )
@@ -849,11 +1561,89 @@ class GitHubSource(SkillSource):
             return None
 
         entries = tree_data.get("tree", [])
-        revision = tree_data.get("sha")
-        if isinstance(revision, str) and revision:
-            self._tree_revisions[repo] = revision
+        self._tree_revisions[repo] = revision
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
+
+    @staticmethod
+    def _trusted_github_get(
+        url: str,
+        *,
+        params: Optional[Dict] = None,
+        accept: str = "application/vnd.github+json",
+        timeout: float = 15.0,
+    ) -> Optional["httpx.Response"]:
+        """Fetch official GitHub data without env proxies or redirects."""
+        try:
+            with httpx.Client(
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
+                headers={
+                    "Accept": accept,
+                    "User-Agent": "hermes-agent-skills-origin-verifier",
+                },
+            ) as client:
+                return client.get(url, params=params)
+        except httpx.HTTPError:
+            return None
+
+    def _get_trusted_repo_tree(
+        self,
+        repo: str,
+    ) -> Optional[Tuple[str, List[dict], str]]:
+        """Resolve an official tree and commit through hardened GitHub calls."""
+        if repo != "NousResearch/hermes-agent":
+            return None
+        cached = self._trusted_tree_cache.get(repo)
+        if cached is not None:
+            return cached
+        repo_url = f"https://api.github.com/repos/{repo}"
+        response = self._trusted_github_get(repo_url)
+        if response is None or response.status_code != 200:
+            return None
+        try:
+            default_branch = response.json().get("default_branch", "main")
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(default_branch, str) or not default_branch:
+            return None
+        commit_response = self._trusted_github_get(
+            f"{repo_url}/commits/{default_branch}"
+        )
+        if commit_response is None or commit_response.status_code != 200:
+            return None
+        try:
+            commit_data = commit_response.json()
+            revision = commit_data.get("sha")
+            tree_revision = commit_data.get("commit", {}).get("tree", {}).get("sha")
+        except (ValueError, AttributeError):
+            return None
+        if not (
+            isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision)
+            and isinstance(tree_revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", tree_revision)
+            and _github_commit_is_official(revision)
+        ):
+            return None
+        tree_response = self._trusted_github_get(
+            f"{repo_url}/git/trees/{tree_revision}",
+            params={"recursive": "1"},
+            timeout=30.0,
+        )
+        if tree_response is None or tree_response.status_code != 200:
+            return None
+        try:
+            tree_data = tree_response.json()
+        except ValueError:
+            return None
+        entries = tree_data.get("tree", [])
+        if tree_data.get("truncated") or not isinstance(entries, list):
+            return None
+        result = (default_branch, entries, revision)
+        self._trusted_tree_cache[repo] = result
+        return result
 
     def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
         """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
@@ -1077,13 +1867,33 @@ class GitHubSource(SkillSource):
         except UnicodeDecodeError:
             return None
 
-    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
+    def _fetch_file_bytes(
+        self,
+        repo: str,
+        path: str,
+        *,
+        revision: str = "",
+        trusted: bool = False,
+    ) -> Optional[bytes]:
         """Fetch exact file bytes from GitHub without text decoding."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
-        resp = self._github_get(
-            url,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
+        if trusted:
+            if (
+                repo != "NousResearch/hermes-agent"
+                or not _github_commit_is_official(revision)
+            ):
+                return None
+            resp = self._trusted_github_get(
+                url,
+                params={"ref": revision},
+                accept="application/vnd.github.v3.raw",
+            )
+        else:
+            resp = self._github_get(
+                url,
+                params={"ref": revision} if revision else None,
+                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+            )
         if resp is not None and resp.status_code == 200:
             return resp.content
         return None
@@ -3354,7 +4164,11 @@ class OptionalSkillSource(SkillSource):
         return "official"
 
     def trust_level_for(self, identifier: str) -> str:
-        return "builtin"
+        return (
+            "builtin"
+            if optional_skills_root_is_authoritative(self._optional_dir)
+            else "community"
+        )
 
     # -- search -----------------------------------------------------------
 
@@ -3423,32 +4237,49 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
-        files: Dict[str, Union[str, bytes]] = {}
-        for f in skill_dir.rglob("*"):
-            if (
-                f.is_file()
-                and not f.name.startswith(".")
-                and "__pycache__" not in f.parts
-                and f.suffix != ".pyc"
-            ):
-                rel_path = str(f.relative_to(skill_dir))
-                try:
-                    files[rel_path] = f.read_bytes()
-                except OSError:
-                    continue
+        origin_identity_before = optional_skills_root_identity(self._optional_dir)
+        skill_rel = skill_dir.resolve().relative_to(optional_root).as_posix()
+        if origin_identity_before.startswith("git:NousResearch/hermes-agent@"):
+            files = _git_optional_skill_files(
+                optional_root.parent,
+                skill_rel,
+                origin_identity_before,
+            )
+            if files is None:
+                return None
+            origin_identity = origin_identity_before
+        else:
+            files = {}
+            for f in skill_dir.rglob("*"):
+                rel_path = PurePosixPath(f.relative_to(skill_dir).as_posix())
+                if f.is_file() and _optional_bundle_file_is_included(rel_path):
+                    try:
+                        files[rel_path.as_posix()] = f.read_bytes()
+                    except OSError:
+                        continue
 
-        if not files:
-            return None
+            if not files:
+                return None
+
+            origin_identity_after = optional_skills_root_identity(self._optional_dir)
+            origin_identity = (
+                origin_identity_after
+                if origin_identity_before
+                and origin_identity_before == origin_identity_after
+                else ""
+            )
 
         # Determine category from directory structure
         name = skill_dir.name
-
+        origin_verified = bool(origin_identity)
         return SkillBundle(
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
-            trust_level="builtin",
+            identifier=f"official/{skill_rel}",
+            trust_level="builtin" if origin_verified else "community",
+            origin_verified=origin_verified,
+            origin_identity=origin_identity,
         )
 
     # -- inspect ----------------------------------------------------------
@@ -3524,10 +4355,16 @@ class OptionalSkillSource(SkillSource):
         # install scripts, LICENSE, tests/). GitHubSource.fetch() would only
         # pull SKILL.md + referenced support dirs, silently dropping files the
         # local-checkout path preserves.
-        tree = github._get_repo_tree(self.OFFICIAL_REPO)
+        tree = github._get_trusted_repo_tree(self.OFFICIAL_REPO)
         if tree is None:
             return None
-        _branch, entries = tree
+        _branch, entries, revision = tree
+        verified_revision = (
+            revision
+            if isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision)
+            else ""
+        )
         prefix = f"{repo_path}/"
         files: Dict[str, Union[str, bytes]] = {}
         for item in entries:
@@ -3540,7 +4377,12 @@ class OptionalSkillSource(SkillSource):
             base = rel_file.rsplit("/", 1)[-1]
             if base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_file.split("/"):
                 continue
-            content = github._fetch_file_bytes(self.OFFICIAL_REPO, item_path)
+            content = github._fetch_file_bytes(
+                self.OFFICIAL_REPO,
+                item_path,
+                revision=revision,
+                trusted=True,
+            )
             if content is None:
                 logger.warning("Live-repo optional skill fetch failed for %s", item_path)
                 return None
@@ -3555,7 +4397,13 @@ class OptionalSkillSource(SkillSource):
             files=files,
             source="official",
             identifier=f"official/{rel}",
-            trust_level="builtin",
+            trust_level="builtin" if verified_revision else "community",
+            origin_verified=bool(verified_revision),
+            origin_identity=(
+                f"github:{self.OFFICIAL_REPO}@{verified_revision}"
+                if verified_revision
+                else ""
+            ),
         )
 
     def _list_remote_skill_dirs(self) -> Dict[str, bool]:
@@ -3575,9 +4423,9 @@ class OptionalSkillSource(SkillSource):
             return cached
 
         dirs: Dict[str, bool] = {}
-        tree = self._get_github()._get_repo_tree(self.OFFICIAL_REPO)
+        tree = self._get_github()._get_trusted_repo_tree(self.OFFICIAL_REPO)
         if tree is not None:
-            _branch, entries = tree
+            _branch, entries, _revision = tree
             prefix = f"{self.OPTIONAL_SKILLS_PREFIX}/"
             suffix = "/SKILL.md"
             for item in entries:
@@ -3617,6 +4465,7 @@ class OptionalSkillSource(SkillSource):
             return []
 
         results: List[SkillMeta] = []
+        local_trust_level = self.trust_level_for("official")
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
             if is_excluded_skill_path(
                 skill_md.relative_to(self._optional_dir), root=self._optional_dir
@@ -3646,7 +4495,7 @@ class OptionalSkillSource(SkillSource):
                 description=desc[:200],
                 source="official",
                 identifier=f"official/{rel_path}",
-                trust_level="builtin",
+                trust_level=local_trust_level,
                 repo=self.OFFICIAL_REPO,
                 # The centralized skills index consumes repo-root-relative paths.
                 path=f"optional-skills/{rel_path}",
@@ -3735,17 +4584,44 @@ class HubLockFile:
     def __init__(self, path: Optional[Path] = None):
         self.path = path if path is not None else _lock_file()
 
-    def load(self) -> dict:
+    @property
+    def mutex_path(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.lock")
+
+    def _load_unlocked(self) -> dict:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
+        if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
+            return {"version": 1, "installed": {}}
+        return data
+
+    def load(self) -> dict:
+        return self._load_unlocked()
+
+    def _save_unlocked(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw_tmp = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            dir=self.path.parent,
+        )
+        tmp_path = Path(raw_tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        with _exclusive_file_lock(self.mutex_path):
+            self._save_unlocked(data)
 
     def record_install(
         self,
@@ -3759,6 +4635,7 @@ class HubLockFile:
         files: List[str],
         metadata: Optional[Dict[str, Any]] = None,
         scan_provenance: Optional[Dict[str, Any]] = None,
+        install_attestation: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Validate both the skill name and the install path SHAPE before
         # writing into lock.json. A poisoned lock entry is the precondition
@@ -3766,26 +4643,29 @@ class HubLockFile:
         # write time so the file never carries the bad state.
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
-        data = self.load()
-        data["installed"][safe_name] = {
-            "source": source,
-            "identifier": identifier,
-            "trust_level": trust_level,
-            "scan_verdict": scan_verdict,
-            "content_hash": skill_hash,
-            "install_path": safe_install_path,
-            "files": files,
-            "metadata": metadata or {},
-            "scan_provenance": scan_provenance or {},
-            "installed_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.save(data)
+        with _exclusive_file_lock(self.mutex_path):
+            data = self._load_unlocked()
+            data["installed"][safe_name] = {
+                "source": source,
+                "identifier": identifier,
+                "trust_level": trust_level,
+                "scan_verdict": scan_verdict,
+                "content_hash": skill_hash,
+                "install_path": safe_install_path,
+                "files": files,
+                "metadata": metadata or {},
+                "scan_provenance": scan_provenance or {},
+                "install_attestation": install_attestation or {},
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._save_unlocked(data)
 
     def record_uninstall(self, name: str) -> None:
-        data = self.load()
-        data["installed"].pop(name, None)
-        self.save(data)
+        with _exclusive_file_lock(self.mutex_path):
+            data = self._load_unlocked()
+            data["installed"].pop(name, None)
+            self._save_unlocked(data)
 
     def get_installed(self, name: str) -> Optional[dict]:
         data = self.load()
@@ -3878,8 +4758,23 @@ def ensure_hub_dirs() -> None:
     hub_dir.mkdir(parents=True, exist_ok=True)
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
-    if not lock_file.exists():
-        lock_file.write_text('{"version": 1, "installed": {}}\n', encoding="utf-8")
+    lock_mutex = lock_file.with_name(f".{lock_file.name}.lock")
+    with _exclusive_file_lock(lock_mutex):
+        if not lock_file.exists():
+            fd, raw_tmp = tempfile.mkstemp(
+                prefix=f".{lock_file.name}.",
+                suffix=".tmp",
+                dir=lock_file.parent,
+            )
+            tmp_path = Path(raw_tmp)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write('{"version": 1, "installed": {}}\n')
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, lock_file)
+            finally:
+                tmp_path.unlink(missing_ok=True)
     if not audit_log.exists():
         audit_log.touch()
     if not taps_file.exists():
@@ -3895,10 +4790,12 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = _quarantine_dir() / skill_name
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
+    dest = Path(
+        tempfile.mkdtemp(
+            prefix=f"{skill_name}-",
+            dir=str(_quarantine_dir()),
+        )
+    )
 
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
@@ -3952,6 +4849,17 @@ def install_from_quarantine(
     quarantine_root = _quarantine_dir().resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
+
+    expected_scan_hash = ""
+    if isinstance(scan_provenance, dict):
+        value = scan_provenance.get("bundle_hash")
+        if isinstance(value, str):
+            expected_scan_hash = value
+    if (
+        expected_scan_hash
+        and full_content_hash(quarantine_path) != expected_scan_hash
+    ):
+        raise ValueError("Quarantine content changed after security scan")
 
     if safe_category:
         install_rel_path = f"{safe_category}/{safe_skill_name}"
@@ -4007,7 +4915,9 @@ def install_from_quarantine(
                     f"{', '.join(sorted(skill_dirs_in))}. "
                     f"Use a different --name or install into a subcategory."
                 )
-        shutil.rmtree(install_dir)
+        # Replacement is deferred until every scan/staging check has passed.
+        # The publish transaction below renames the old install to a private
+        # backup and restores it on any failure.
 
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
@@ -4040,28 +4950,233 @@ def install_from_quarantine(
             f"Installed skill contains symlinks, which is not allowed: {rel}"
         )
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    if (
+        expected_scan_hash
+        and full_content_hash(quarantine_path) != expected_scan_hash
+    ):
+        raise ValueError("Quarantine content changed after security scan")
 
-    # Record in lock file
-    lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-    )
+    if expected_scan_hash:
+        # Do not install from the shared filesystem object that was scanned.
+        # Re-materialize from the original in-memory bundle into a fresh,
+        # unpredictable directory and bind those bytes to the scanner hash.
+        if full_content_hash_for_files(bundle.files) != expected_scan_hash:
+            raise ValueError("Fetched bundle differs from security scan input")
+        scanned_path = quarantine_path
+        quarantine_path = quarantine_bundle(bundle)
+        if full_content_hash(quarantine_path) != expected_scan_hash:
+            shutil.rmtree(quarantine_path, ignore_errors=True)
+            raise ValueError("Verified install staging differs from security scan")
+        shutil.rmtree(scanned_path, ignore_errors=True)
+
+    # The configured skills root itself may be a supported junction (for
+    # example a redirected profile directory). Bind publication to the
+    # already-resolved quarantine directory while still rejecting redirects
+    # in any skill/category component through the destination resolver.
+    quarantine_path = quarantine_path.resolve(strict=True)
+    if not quarantine_path.is_relative_to(quarantine_root):
+        raise ValueError("Quarantine staging escaped its verified root")
+
+    backup_dir: Optional[Path] = None
+    published = False
+    with _target_install_lock(install_rel_path, safe_skill_name):
+        final_install_dir = _resolve_lock_install_path(
+            install_rel_path,
+            safe_skill_name,
+        )
+        if final_install_dir != install_dir:
+            raise ValueError("Install destination changed during verification")
+
+        # Re-check all destructive destination assumptions while holding the
+        # per-target lock. Earlier checks are advisory only because another
+        # installer may have completed while this bundle was being scanned.
+        ancestor = final_install_dir.parent
+        while ancestor != skills_root and ancestor.is_relative_to(skills_root):
+            if (ancestor / "SKILL.md").is_file():
+                raise ValueError(
+                    f"Refusing to install into '{ancestor.name}': it is an "
+                    "existing skill directory, not a category. Choose a "
+                    "different category."
+                )
+            ancestor = ancestor.parent
+        if final_install_dir.exists():
+            if not final_install_dir.is_dir():
+                raise ValueError(
+                    f"Refusing to install: '{final_install_dir.name}' already "
+                    "exists and is not a directory. Remove it or choose a "
+                    "different skill name."
+                )
+            if not (final_install_dir / "SKILL.md").exists():
+                nested = _category_skill_dirs(final_install_dir)
+                if nested:
+                    raise ValueError(
+                        f"Refusing to overwrite category directory "
+                        f"'{final_install_dir}' which contains {len(nested)} "
+                        f"skill(s): {', '.join(sorted(nested))}."
+                    )
+
+        final_install_dir.parent.mkdir(parents=True, exist_ok=True)
+        rebound_install_dir = _resolve_lock_install_path(
+            install_rel_path,
+            safe_skill_name,
+        )
+        if rebound_install_dir != final_install_dir:
+            raise ValueError("Install destination changed before publish")
+
+        with _bound_directory(quarantine_path.parent) as source_binding, \
+                _bound_directory(final_install_dir.parent) as destination_binding:
+            if not _directory_binding_matches(
+                final_install_dir.parent, destination_binding
+            ):
+                raise ValueError("Install destination changed before publish")
+            if final_install_dir.exists():
+                backup_dir = final_install_dir.with_name(
+                    f".{safe_skill_name}.previous-{os.getpid()}-{time.time_ns()}"
+                )
+                _replace_bound_directory_entry(
+                    final_install_dir,
+                    backup_dir,
+                    destination_binding,
+                    destination_binding,
+                )
+            try:
+                _replace_bound_directory_entry(
+                    quarantine_path,
+                    final_install_dir,
+                    source_binding,
+                    destination_binding,
+                )
+                published = True
+                with _bound_directory(final_install_dir) as installed_binding:
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before verification")
+                    if not _directory_binding_matches(
+                        final_install_dir.parent, destination_binding
+                    ):
+                        raise ValueError("Install destination changed after publish")
+                    if (
+                        expected_scan_hash
+                        and full_content_hash(final_install_dir) != expected_scan_hash
+                    ):
+                        raise ValueError("Installed content changed after security scan")
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed during verification")
+                    if not _directory_binding_matches(
+                        final_install_dir.parent, destination_binding
+                    ):
+                        raise ValueError("Install destination changed during verification")
+
+                    installed_content_hash = content_hash(final_install_dir)
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before commit")
+                    install_attestation = build_install_attestation(
+                        final_install_dir,
+                        source=bundle.source,
+                        identifier=bundle.identifier,
+                        trust_level=scan_result.trust_level,
+                        origin_identity=getattr(bundle, "origin_identity", ""),
+                    )
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed during attestation")
+                    if (
+                        expected_scan_hash
+                        and full_content_hash(final_install_dir) != expected_scan_hash
+                    ):
+                        raise ValueError("Installed content changed after attestation")
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before lock commit")
+                    lock = HubLockFile()
+                    lock.record_install(
+                        name=safe_skill_name,
+                        source=bundle.source,
+                        identifier=bundle.identifier,
+                        trust_level=bundle.trust_level,
+                        scan_verdict=scan_result.verdict,
+                        skill_hash=installed_content_hash,
+                        install_path=(
+                            final_install_dir.resolve()
+                            .relative_to(_skills_dir().resolve())
+                            .as_posix()
+                        ),
+                        files=list(bundle.files.keys()),
+                        metadata=bundle.metadata,
+                        scan_provenance=(
+                            scan_provenance
+                            or getattr(scan_result, "scan_provenance", None)
+                        ),
+                        install_attestation=install_attestation,
+                    )
+            except Exception as install_exc:
+                cleanup_error: Optional[Exception] = None
+                if published:
+                    try:
+                        _rmtree_bound(
+                            final_install_dir.parent,
+                            final_install_dir.name,
+                            destination_binding,
+                        )
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        cleanup_error = exc
+                if cleanup_error is not None:
+                    if backup_dir is not None:
+                        raise ValueError(
+                            "Install rollback incomplete; the failed version remains "
+                            f"active and the previous version remains at {backup_dir}"
+                        ) from install_exc
+                    raise ValueError(
+                        "Install rollback incomplete; the failed installation remains "
+                        f"at {final_install_dir}"
+                    ) from install_exc
+                if backup_dir is not None:
+                    try:
+                        _replace_bound_directory_entry(
+                            backup_dir,
+                            final_install_dir,
+                            destination_binding,
+                            destination_binding,
+                        )
+                    except Exception as restore_exc:
+                        raise ValueError(
+                            "Install rollback incomplete; the previous version remains "
+                            f"at {backup_dir}"
+                        ) from restore_exc
+                raise ValueError(
+                    f"Install failed and the previous state was restored: {install_exc}"
+                ) from install_exc
+            else:
+                if backup_dir is not None:
+                    try:
+                        _rmtree_bound(
+                            backup_dir.parent,
+                            backup_dir.name,
+                            destination_binding,
+                        )
+                    except OSError:
+                        logger.warning(
+                            "Installed %s successfully but could not remove backup %s",
+                            safe_skill_name,
+                            backup_dir,
+                            exc_info=True,
+                        )
+
+    install_dir = final_install_dir
 
     append_audit_log(
         "INSTALL", safe_skill_name, bundle.source,
         bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
+        installed_content_hash,
     )
 
     try:
@@ -4085,27 +5200,45 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    # Validate the lock entry's install_path against the skill name. This is
-    # the destructive boundary — anything that falls through to the rmtree
-    # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
-    # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
-    # _resolve_lock_install_path enforces a relative path ending in
-    # <skill_name>, rejects absolute/traversal paths, and walks the path
-    # component-by-component refusing symlink/junction redirects.
+    install_rel_path = entry.get("install_path", "")
     try:
-        install_path = _resolve_lock_install_path(
-            entry.get("install_path", ""), skill_name
-        )
-    except ValueError as exc:
+        with _target_install_lock(install_rel_path, skill_name):
+            # Reload only after taking the same target lock used by install.
+            # Otherwise a concurrent reinstall could publish a new version
+            # between this read and the destructive removal below.
+            entry = lock.get_installed(skill_name)
+            if not entry:
+                return False, f"'{skill_name}' is no longer hub-installed"
+            install_rel_path = entry.get("install_path", "")
+            install_path = _resolve_lock_install_path(
+                install_rel_path,
+                skill_name,
+            )
+            if install_path.exists():
+                with _bound_directory(install_path.parent) as parent_binding:
+                    if not _directory_binding_matches(
+                        install_path.parent, parent_binding
+                    ):
+                        raise ValueError("Uninstall destination changed")
+                    _rmtree_bound(
+                        install_path.parent,
+                        install_path.name,
+                        parent_binding,
+                    )
+            # Lock order is target lock -> lock.json mutex, matching install.
+            lock.record_uninstall(skill_name)
+    except (OSError, TimeoutError, ValueError) as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
 
-    if install_path.exists():
-        shutil.rmtree(install_path)
-
-    lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
-
-    return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
+    append_audit_log(
+        "UNINSTALL",
+        skill_name,
+        entry["source"],
+        entry["trust_level"],
+        "n/a",
+        "user_request",
+    )
+    return True, f"Uninstalled '{skill_name}' from {install_rel_path}"
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
@@ -4119,14 +5252,12 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     installed skill reported ``update_available`` forever on Windows
     (#62310). Normalize to POSIX separators before sorting/hashing.
     """
-    h = hashlib.sha256()
     normalized = {
         rel_path.replace("\\", "/"): content
         for rel_path, content in bundle.files.items()
     }
+    h = hashlib.sha256()
     for rel_path in sorted(normalized):
-        # Include the path so swapping file contents between two paths
-        # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
         content = normalized[rel_path]

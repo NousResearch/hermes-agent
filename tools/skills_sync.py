@@ -22,12 +22,15 @@ Update logic:
 The manifest lives at ~/.hermes/skills/.bundled_manifest.
 """
 
+import copy
 import hashlib
 import json
 import logging
 import os
 import shutil
+import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -47,7 +50,7 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from utils import atomic_replace, atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -117,6 +120,47 @@ def _get_bundled_dir() -> Path:
 def _get_optional_dir() -> Path:
     """Locate the official optional-skills/ directory."""
     return get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+
+
+def _optional_root_identity(path: Path) -> str:
+    from tools.skills_hub import optional_skills_root_identity
+
+    return optional_skills_root_identity(path)
+
+
+def _official_origin_bundle_hash(origin_identity: str, identifier: str) -> Optional[str]:
+    from tools.skills_hub import official_origin_bundle_hash
+
+    return official_origin_bundle_hash(origin_identity, identifier)
+
+
+def _official_origin_bundle_files(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[Dict[str, Any]]:
+    from tools.skills_hub import official_origin_bundle_files
+
+    return official_origin_bundle_files(origin_identity, identifier)
+
+
+def _write_restored_bundle(files: Dict[str, Any], destination: Path) -> None:
+    """Materialize already verified bundle bytes without dereferencing a source tree."""
+    from tools.skills_hub import _validate_bundle_rel_path
+
+    validated = []
+    for rel_path, content in files.items():
+        safe_rel = _validate_bundle_rel_path(rel_path)
+        validated.append((safe_rel, content))
+    if not any(rel_path == "SKILL.md" for rel_path, _content in validated):
+        raise ValueError("Official bundle has no root SKILL.md")
+    destination.mkdir(parents=True)
+    for rel_path, content in validated:
+        target = destination.joinpath(*rel_path.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(str(content), encoding="utf-8")
 
 
 def _build_external_skill_index() -> Set[str]:
@@ -229,6 +273,11 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
         content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
     except OSError:
         return fallback
+    return _read_skill_name_content(content, fallback)
+
+
+def _read_skill_name_content(content: str, fallback: str) -> str:
+    """Read a frontmatter name from already trusted in-memory content."""
     in_frontmatter = False
     for line in content.split("\n"):
         stripped = line.strip()
@@ -292,6 +341,25 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
+def _path_is_redirect(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        return True
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _tree_has_redirect(directory: Path) -> bool:
+    try:
+        if _path_is_redirect(directory) or not directory.is_dir():
+            return True
+        return any(_path_is_redirect(path) for path in directory.rglob("*"))
+    except OSError:
+        return True
+
+
 def _safe_rel_install_path(path: Path, base: Path) -> str:
     """Return a normalized relative POSIX path, rejecting traversal/absolute paths."""
     rel = path.relative_to(base)
@@ -300,6 +368,14 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
     parts = [part for part in pure.parts if part not in {"", "."}]
     if pure.is_absolute() or not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe optional skill path: {posix}")
+    current = base
+    try:
+        for part in parts:
+            current = current / part
+            if _path_is_redirect(current):
+                raise ValueError(f"Unsafe optional skill path contains redirect: {posix}")
+    except OSError as exc:
+        raise ValueError(f"Unsafe optional skill path: {posix}") from exc
     return "/".join(parts)
 
 
@@ -353,9 +429,18 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     return index
 
 
-def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
-    """Move an existing skill directory into a restore backup, preserving rel path."""
-    rel = path.relative_to(_skills_dir())
+def _move_to_restore_backup(
+    path: Path,
+    backup_root: Path,
+) -> Tuple[str, Path]:
+    """Move one active skill to a handle-bound restore backup path."""
+    from tools.skills_hub import (
+        _bound_directory,
+        _directory_binding_matches,
+        _replace_bound_directory_entry,
+    )
+
+    rel = path.relative_to(_skills_dir().resolve())
     target = backup_root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -363,8 +448,34 @@ def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
         while target.with_name(f"{target.name}-{suffix}").exists():
             suffix += 1
         target = target.with_name(f"{target.name}-{suffix}")
-    shutil.move(str(path), str(target))
-    return rel.as_posix()
+    with _bound_directory(path.parent) as source_binding, \
+            _bound_directory(target.parent) as target_binding:
+        if not _directory_binding_matches(path.parent, source_binding):
+            raise ValueError(f"Active skill path changed: {path}")
+        _replace_bound_directory_entry(
+            path,
+            target,
+            source_binding,
+            target_binding,
+        )
+    return rel.as_posix(), target
+
+
+def _restore_from_backup(backup: Path, original: Path) -> None:
+    from tools.skills_hub import (
+        _bound_directory,
+        _replace_bound_directory_entry,
+    )
+
+    original.parent.mkdir(parents=True, exist_ok=True)
+    with _bound_directory(backup.parent) as source_binding, \
+            _bound_directory(original.parent) as target_binding:
+        _replace_bound_directory_entry(
+            backup,
+            original,
+            source_binding,
+            target_binding,
+        )
 
 
 def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict:
@@ -374,6 +485,26 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     repairs already-mutated/reorganized skills by backing up matching active
     copies and copying the official optional source into its canonical path.
     """
+    if restore and name in {"all", "*"}:
+        return {
+            "ok": False,
+            "message": (
+                "Bulk restore is not atomic; restore official skills one at a time."
+            ),
+            "restored": [],
+            "backfilled": [],
+            "backed_up": [],
+        }
+    optional_dir = _get_optional_dir()
+    origin_identity = _optional_root_identity(optional_dir)
+    if not origin_identity:
+        return {
+            "ok": False,
+            "message": "No verified official optional skills source found.",
+            "restored": [],
+            "backfilled": [],
+            "backed_up": [],
+        }
     index = _optional_skill_index()
     if not index:
         return {"ok": False, "message": "No official optional skills directory found.", "restored": [], "backfilled": [], "backed_up": []}
@@ -385,19 +516,74 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             return {"ok": False, "message": f"Official optional skill not found: {name}", "restored": [], "backfilled": [], "backed_up": []}
         targets = [target]
 
+    from tools.skills_hub import (
+        HubLockFile,
+        _bound_directory,
+        _directory_binding_matches,
+        _replace_bound_directory_entry,
+        _resolve_lock_install_path,
+        _rmtree_bound,
+        _target_install_lock,
+    )
+
+    verified_targets = []
+    for folder_name, install_path, src in targets:
+        identifier = f"official/{install_path}"
+        files = _official_origin_bundle_files(origin_identity, identifier)
+        if not files:
+            return {
+                "ok": False,
+                "message": f"Could not verify official source bytes for: {folder_name}",
+                "restored": [],
+                "backfilled": [],
+                "backed_up": [],
+            }
+
+        try:
+            dest = _resolve_lock_install_path(
+                install_path,
+                folder_name,
+                skills_dir=_skills_dir(),
+            )
+        except (OSError, ValueError):
+            return {
+                "ok": False,
+                "message": f"Unsafe restore destination for: {folder_name}",
+                "restored": [],
+                "backfilled": [],
+                "backed_up": [],
+            }
+        verified_targets.append((folder_name, install_path, dest, files))
+
     restored: List[str] = []
     backed_up: List[str] = []
+    skills_root = _skills_dir().resolve()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup_root = _skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
+    backup_root = skills_root / ".restore-backups" / f"official-optional-{timestamp}"
 
-    for folder_name, install_path, src in targets:
-        dest = _skills_dir() / Path(*install_path.split("/"))
-        src_hash = _dir_hash(src)
-        canonical_ok = dest.exists() and _dir_hash(dest) == src_hash
+    from tools.skills_guard import (
+        build_install_attestation,
+        content_hash,
+        full_content_hash,
+        full_content_hash_for_files,
+    )
+
+    for folder_name, install_path, dest, files in verified_targets:
+        authoritative_hash = full_content_hash_for_files(files)
+        canonical_ok = (
+            dest.exists()
+            and full_content_hash(dest) == authoritative_hash
+        )
 
         # Find already-active copies of this official skill by frontmatter name
         # or folder slug, even if curator moved it into another category.
-        src_frontmatter = _read_skill_name(src / "SKILL.md", folder_name)
+        skill_md_content = files.get("SKILL.md", b"")
+        if isinstance(skill_md_content, bytes):
+            skill_md_content = skill_md_content.decode("utf-8", errors="replace")
+        src_frontmatter = _read_skill_name_content(
+            str(skill_md_content)[:4000],
+            folder_name,
+        )
         matches: List[Path] = []
         if _skills_dir().exists():
             for skill_md in sorted(_skills_dir().rglob("SKILL.md")):
@@ -405,25 +591,196 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     continue
                 candidate = skill_md.parent
                 try:
-                    candidate.relative_to(_skills_dir())
-                except ValueError:
+                    candidate_resolved = candidate.resolve(strict=True)
+                    _safe_rel_install_path(candidate_resolved, skills_root)
+                except (OSError, ValueError):
                     continue
                 candidate_name = _read_skill_name(skill_md, candidate.name)
-                if candidate == dest:
+                if candidate_resolved == dest:
                     continue
                 if candidate.name == folder_name or candidate_name in {folder_name, src_frontmatter}:
-                    matches.append(candidate)
+                    matches.append(candidate_resolved)
 
         if restore:
-            for match in matches:
-                if match.exists():
-                    backed_up.append(_move_to_restore_backup(match, backup_root))
-            if dest.exists() and not canonical_ok:
-                backed_up.append(_move_to_restore_backup(dest, backup_root))
-            if not dest.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest)
-                restored.append(folder_name)
+            stage_context = None
+            staged: Optional[Path] = None
+            if not canonical_ok:
+                try:
+                    stage_context = tempfile.TemporaryDirectory(
+                        prefix=".restore-stage-",
+                        dir=str(skills_root),
+                    )
+                    staged_path = Path(stage_context.name) / folder_name
+                    _write_restored_bundle(files, staged_path)
+                    if full_content_hash(staged_path) != authoritative_hash:
+                        raise ValueError("Restore staging differs from verified bytes")
+                    staged = staged_path
+                except (OSError, ValueError):
+                    if stage_context is not None:
+                        stage_context.cleanup()
+                    return {
+                        "ok": False,
+                        "message": f"Could not stage restore for: {folder_name}",
+                        "restored": restored,
+                        "backfilled": [],
+                        "backed_up": backed_up,
+                    }
+
+            moved: List[Tuple[Path, Path, str]] = []
+            published = False
+            try:
+                with _target_install_lock(
+                    install_path,
+                    folder_name,
+                    skills_dir=skills_root,
+                ):
+                    final_dest = _resolve_lock_install_path(
+                        install_path,
+                        folder_name,
+                        skills_dir=skills_root,
+                    )
+                    if final_dest != dest:
+                        raise ValueError("Restore destination changed")
+                    canonical_now = (
+                        dest.exists()
+                        and full_content_hash(dest) == authoritative_hash
+                    )
+                    for match in matches:
+                        if not match.exists():
+                            continue
+                        _safe_rel_install_path(match, skills_root)
+                        rel, backup = _move_to_restore_backup(match, backup_root)
+                        moved.append((match, backup, rel))
+                    if dest.exists() and not canonical_now:
+                        _safe_rel_install_path(dest, skills_root)
+                        rel, backup = _move_to_restore_backup(dest, backup_root)
+                        moved.append((dest, backup, rel))
+                    if not canonical_now:
+                        if staged is None:
+                            raise ValueError("Verified restore staging is missing")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with _bound_directory(staged.parent) as source_binding, \
+                                _bound_directory(dest.parent) as destination_binding:
+                            try:
+                                if not _directory_binding_matches(
+                                    dest.parent, destination_binding
+                                ):
+                                    raise ValueError(
+                                        "Restore destination changed before publish"
+                                    )
+                                _replace_bound_directory_entry(
+                                    staged,
+                                    dest,
+                                    source_binding,
+                                    destination_binding,
+                                )
+                                published = True
+                                if (
+                                    not _directory_binding_matches(
+                                        dest.parent, destination_binding
+                                    )
+                                    or full_content_hash(dest) != authoritative_hash
+                                ):
+                                    raise ValueError(
+                                        "Restored bytes or destination changed"
+                                    )
+                            except Exception:
+                                if published:
+                                    _rmtree_bound(
+                                        dest.parent,
+                                        dest.name,
+                                        destination_binding,
+                                    )
+                                    published = False
+                                raise
+                        with _bound_directory(dest) as installed_binding:
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed")
+                            if full_content_hash(dest) != authoritative_hash:
+                                raise ValueError("Restored bytes changed before lock commit")
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
+                            installed_content_hash = content_hash(dest)
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed during attestation")
+                            install_attestation = build_install_attestation(
+                                dest,
+                                source="official",
+                                identifier=f"official/{install_path}",
+                                trust_level="builtin",
+                                origin_identity=origin_identity,
+                            )
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
+                            if full_content_hash(dest) != authoritative_hash:
+                                raise ValueError("Restored bytes changed after attestation")
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
+                            HubLockFile(path=skills_root / ".hub" / "lock.json").record_install(
+                                name=folder_name,
+                                source="official",
+                                identifier=f"official/{install_path}",
+                                trust_level="builtin",
+                                scan_verdict="restored",
+                                skill_hash=installed_content_hash,
+                                install_path=install_path,
+                                files=sorted(files),
+                                metadata={"restored_from": "official-optional"},
+                                install_attestation=install_attestation,
+                            )
+                        if not canonical_now:
+                            restored.append(folder_name)
+            except (OSError, TimeoutError, ValueError):
+                rollback_failures: List[str] = []
+                available_backups: List[str] = []
+                if published and dest.exists():
+                    try:
+                        with _bound_directory(dest.parent) as destination_binding:
+                            if not _directory_binding_matches(
+                                dest.parent, destination_binding
+                            ):
+                                raise ValueError("Restore destination changed during rollback")
+                            _rmtree_bound(dest.parent, dest.name, destination_binding)
+                        published = False
+                    except (OSError, ValueError):
+                        rollback_failures.append(install_path)
+                for original, backup, rel in reversed(moved):
+                    if not backup.exists():
+                        continue
+                    if original.exists():
+                        rollback_failures.append(rel)
+                        available_backups.append(rel)
+                        continue
+                    try:
+                        _restore_from_backup(backup, original)
+                    except (OSError, ValueError):
+                        rollback_failures.append(rel)
+                        available_backups.append(rel)
+                if stage_context is not None:
+                    stage_context.cleanup()
+                reported_backups = list(
+                    dict.fromkeys([*backed_up, *available_backups])
+                )
+                if rollback_failures:
+                    message = (
+                        f"Official restore rollback incomplete for: {folder_name}; "
+                        "one or more restored targets remain active or require recovery."
+                    )
+                else:
+                    message = f"Official restore rolled back for: {folder_name}"
+                return {
+                    "ok": False,
+                    "message": message,
+                    "restored": restored,
+                    "backfilled": [],
+                    "backed_up": reported_backups,
+                    "backup_dir": str(backup_root) if reported_backups else "",
+                }
+            else:
+                backed_up.extend(rel for _original, _backup, rel in moved)
+            finally:
+                if stage_context is not None:
+                    stage_context.cleanup()
         elif not canonical_ok:
             continue
 
@@ -491,13 +848,33 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     optional_dir = _get_optional_dir()
     if not optional_dir.exists():
         return []
+    origin_identity = _optional_root_identity(optional_dir)
+    if not origin_identity:
+        logger.debug(
+            "Skipping official provenance backfill for unverified optional root %s",
+            optional_dir,
+        )
+        return []
+
+    from tools.skills_guard import build_install_attestation, full_content_hash
+    from tools.skills_hub import (
+        HubLockFile,
+        _exclusive_file_lock,
+        _resolve_lock_install_path,
+    )
 
     lock_path = _skills_dir() / ".hub" / "lock.json"
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {"version": 1, "installed": {}}
-    except (json.JSONDecodeError, OSError):
-        data = {"version": 1, "installed": {}}
-    installed = data.setdefault("installed", {})
+    hub_lock = HubLockFile(path=lock_path)
+    data = hub_lock.load()
+    installed_value = data.get("installed")
+    installed: Dict[str, Dict[str, Any]]
+    if isinstance(installed_value, dict):
+        installed = installed_value
+    else:
+        installed = {}
+        data["installed"] = installed
+    original_installed = copy.deepcopy(installed)
+
     existing_paths = {
         entry.get("install_path")
         for entry in installed.values()
@@ -516,8 +893,46 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         except ValueError as e:
             logger.debug("Skipping optional skill with unsafe path %s: %s", src, e)
             continue
+        identifier = f"official/{install_path}"
+        authoritative_hash = _official_origin_bundle_hash(
+            origin_identity,
+            identifier,
+        )
+        if authoritative_hash is None:
+            continue
         lock_name = src.name
-        if lock_name in installed or install_path in existing_paths:
+        existing_entry = installed.get(lock_name)
+        if isinstance(existing_entry, dict):
+            existing_install_path = str(existing_entry.get("install_path") or "")
+            try:
+                existing_dest = _resolve_lock_install_path(
+                    existing_install_path,
+                    lock_name,
+                    skills_dir=_skills_dir(),
+                )
+            except (OSError, ValueError):
+                continue
+            if (
+                not existing_entry.get("install_attestation")
+                and existing_entry.get("source") == "official"
+                and existing_entry.get("trust_level") == "builtin"
+                and existing_dest.is_dir()
+                and not _tree_has_redirect(existing_dest)
+                and full_content_hash(existing_dest) == authoritative_hash
+            ):
+                existing_entry["identifier"] = identifier
+                existing_entry["install_attestation"] = build_install_attestation(
+                    existing_dest,
+                    source="official",
+                    identifier=identifier,
+                    trust_level="builtin",
+                    origin_identity=origin_identity,
+                )
+                existing_entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+                backfilled.append(lock_name)
+                changed = True
+            continue
+        if install_path in existing_paths:
             continue
         dest = _skills_dir() / Path(*install_path.split("/"))
         if not dest.exists() or not dest.is_dir():
@@ -541,53 +956,84 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
                 continue
         if install_path in existing_paths:
             continue
-        if _dir_hash(dest) != _dir_hash(src):
+        if (
+            _tree_has_redirect(dest)
+            or full_content_hash(dest) != authoritative_hash
+        ):
             continue
 
         timestamp = datetime.now(timezone.utc).isoformat()
         installed[lock_name] = {
             "source": "official",
-            "identifier": f"official/{install_path}",
+            "identifier": identifier,
             "trust_level": "builtin",
             "scan_verdict": "backfilled",
             "content_hash": _content_hash(dest),
             "install_path": install_path,
             "files": _skill_file_list(dest),
             "metadata": {"backfilled_from": "optional-skills"},
+            "install_attestation": build_install_attestation(
+                dest,
+                source="official",
+                identifier=identifier,
+                trust_level="builtin",
+                origin_identity=origin_identity,
+            ),
             "installed_at": timestamp,
             "updated_at": timestamp,
         }
         existing_paths.add(install_path)
         backfilled.append(lock_name)
         changed = True
-        if not quiet:
-            print(f"  = {lock_name} (official optional provenance backfilled)")
 
     if changed:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write so a crash mid-write can't silently wipe all provenance
-        # via the JSONDecodeError fallback above (which resets `installed` to
-        # an empty dict).
-        import tempfile
+        if _optional_root_identity(optional_dir) != origin_identity:
+            logger.debug(
+                "Skipping official provenance backfill because optional-root "
+                "identity changed during verification: %s",
+                optional_dir,
+            )
+            return []
 
-        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(lock_path.parent),
-            prefix=".lock_",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, lock_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        committed: List[str] = []
+        with _exclusive_file_lock(hub_lock.mutex_path):
+            latest = hub_lock._load_unlocked()
+            latest_value = latest.get("installed")
+            if isinstance(latest_value, dict):
+                latest_installed = latest_value
+            else:
+                latest_installed = {}
+                latest["installed"] = latest_installed
+            latest_paths = {
+                entry.get("install_path")
+                for entry in latest_installed.values()
+                if isinstance(entry, dict)
+            }
+            for lock_name in backfilled:
+                proposed = installed.get(lock_name)
+                if not isinstance(proposed, dict):
+                    continue
+                proposed_path = proposed.get("install_path")
+                if lock_name in original_installed:
+                    if latest_installed.get(lock_name) != original_installed[lock_name]:
+                        continue
+                elif (
+                    lock_name in latest_installed
+                    or proposed_path in latest_paths
+                ):
+                    continue
+                latest_installed[lock_name] = proposed
+                latest_paths.add(proposed_path)
+                committed.append(lock_name)
+            if committed:
+                hub_lock._save_unlocked(latest)
+        backfilled = committed
+        if not quiet:
+            for lock_name in backfilled:
+                print(
+                    f"  = {lock_name} "
+                    "(official optional provenance backfilled)"
+                )
     return backfilled
 
 

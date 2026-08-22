@@ -29,10 +29,11 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterable, List, Mapping, Tuple, Union
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
+TREE_HASH_SCHEME = "sha256-tree-v2"
 
 
 
@@ -637,7 +638,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    allow_origin_markers: bool = True,
+) -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
 
@@ -657,12 +663,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
         source: Source identifier for trust level resolution (e.g. "openai/skills")
+        allow_origin_markers: Whether reserved provenance markers such as
+            ``official`` and ``agent-created`` may elevate trust.
 
     Returns:
         ScanResult with verdict, findings, and trust metadata
     """
     skill_name = skill_path.name
-    trust_level = _resolve_trust_level(source)
+    trust_level = _resolve_trust_level(
+        source,
+        allow_origin_markers=allow_origin_markers,
+    )
 
     all_findings: List[Finding] = []
 
@@ -696,6 +707,21 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     )
 
 
+def _framed_tree_digest(records: Iterable[Tuple[str, bytes]]) -> str:
+    """Hash a file tree with unambiguous length-prefixed record framing."""
+    normalized = sorted(records, key=lambda record: record[0])
+    h = hashlib.sha256()
+    h.update(b"hermes-skill-tree\x00\x02")
+    h.update(len(normalized).to_bytes(8, "big"))
+    for rel, content in normalized:
+        path_bytes = rel.encode("utf-8")
+        h.update(len(path_bytes).to_bytes(8, "big"))
+        h.update(path_bytes)
+        h.update(len(content).to_bytes(8, "big"))
+        h.update(content)
+    return h.hexdigest()
+
+
 def _content_digest(skill_path: Path) -> str:
     """Canonical SHA-256 over relative paths and exact file bytes.
 
@@ -723,9 +749,58 @@ def _content_digest(skill_path: Path) -> str:
     return h.hexdigest()
 
 
+def _framed_content_digest(skill_path: Path) -> str:
+    if skill_path.is_dir():
+        entries = (
+            (file_path.relative_to(skill_path).as_posix(), file_path.read_bytes())
+            for file_path in skill_path.rglob("*")
+            if file_path.is_file()
+        )
+        return _framed_tree_digest(entries)
+    return _framed_tree_digest((("", skill_path.read_bytes()),))
+
+
 def full_content_hash(skill_path: Path) -> str:
-    """Full canonical digest used to bind scanner attestations."""
-    return f"sha256:{_content_digest(skill_path)}"
+    """Full v2 canonical digest used to bind scanner attestations."""
+    return f"sha256:{_framed_content_digest(skill_path)}"
+
+
+def full_content_hash_for_files(
+    files: Mapping[str, Union[str, bytes]],
+) -> str:
+    """Full v2 digest for an immutable in-memory bundle tree."""
+    records = (
+        (path, content if isinstance(content, bytes) else content.encode("utf-8"))
+        for path, content in files.items()
+    )
+    return f"sha256:{_framed_tree_digest(records)}"
+
+
+def build_install_attestation(
+    skill_path: Path,
+    *,
+    source: str,
+    identifier: str,
+    trust_level: str,
+    origin_identity: str = "",
+) -> dict:
+    """Create the content-bound install record used by audit.
+
+    This is deliberately non-cryptographic metadata in the same-user lockfile:
+    it detects content drift and preserves scanner-assigned origin, but it is
+    not protection against a process that can rewrite both the skill and lock.
+    """
+    attestation = {
+        "version": 2,
+        "hash_scheme": TREE_HASH_SCHEME,
+        "source": source,
+        "identifier": identifier,
+        "trust_level": trust_level,
+        "bundle_hash": full_content_hash(skill_path),
+    }
+    if origin_identity:
+        attestation["origin_identity"] = origin_identity
+    return attestation
 
 
 def _finding_dict(finding: Finding) -> dict:
@@ -738,13 +813,16 @@ def scan_skill_cached(
     skill_path: Path,
     source: str = "community",
     *,
+    allow_origin_markers: bool = True,
     source_url: str = "",
     cache_dir: Path | None = None,
 ) -> Tuple[ScanResult, dict]:
     """Return a scan plus attestation, caching only exact current content."""
     bundle_hash = full_content_hash(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    source_identity = hashlib.sha256(
+        f"{source}\0{int(allow_origin_markers)}\0{source_url}".encode("utf-8")
+    ).hexdigest()[:16]
     cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}-{source_identity}.json"
     try:
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -752,8 +830,10 @@ def scan_skill_cached(
         cached = None
     if (isinstance(cached, dict)
             and cached.get("bundle_hash") == bundle_hash
+            and cached.get("hash_scheme") == TREE_HASH_SCHEME
             and cached.get("scanner_version") == SCANNER_VERSION
             and cached.get("source") == source
+            and cached.get("allow_origin_markers", True) == allow_origin_markers
             and cached.get("source_url") == source_url):
         result = ScanResult(
             skill_name=skill_path.name, source=source,
@@ -766,10 +846,18 @@ def scan_skill_cached(
         result.scan_provenance = provenance
         return result, provenance
 
-    result = scan_skill(skill_path, source=source)
+    result = scan_skill(
+        skill_path,
+        source=source,
+        allow_origin_markers=allow_origin_markers,
+    )
     findings = [_finding_dict(item) for item in result.findings]
     provenance = {
-        "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
+        "source": source,
+        "allow_origin_markers": allow_origin_markers,
+        "source_url": source_url,
+        "bundle_hash": bundle_hash,
+        "hash_scheme": TREE_HASH_SCHEME,
         "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
         "trust_level": result.trust_level, "findings": findings,
         "rules": sorted({item["pattern_id"] for item in findings}),
@@ -1120,7 +1208,7 @@ def _load_skill_ignore(skill_dir: Path):
     return ignore
 
 
-def _resolve_trust_level(source: str) -> str:
+def _resolve_trust_level(source: str, *, allow_origin_markers: bool = True) -> str:
     """Map a source identifier to a trust level."""
     prefix_aliases = (
         "skills-sh/",
@@ -1135,11 +1223,11 @@ def _resolve_trust_level(source: str) -> str:
             break
 
     # Agent-created skills get their own permissive trust level
-    if normalized_source == "agent-created":
+    if allow_origin_markers and normalized_source == "agent-created":
         return "agent-created"
     # Official optional skills must be identified by source provenance, not by
     # user-controlled GitHub identifiers such as "official/<repo>".
-    if normalized_source == "official":
+    if allow_origin_markers and normalized_source == "official":
         return "builtin"
     # Check if source matches any trusted repo exactly, or a skill path inside
     # that repo. Do not trust sibling repositories that merely share a prefix.

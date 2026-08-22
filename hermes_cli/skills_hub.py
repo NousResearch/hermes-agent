@@ -14,6 +14,8 @@ import json
 import logging
 import re
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,9 +44,156 @@ def _display_source(r) -> str:
     return r.source
 
 
+def _scan_provenance_for_source(
+    source: str,
+    identifier: str = "",
+    fallback: str = "",
+    *,
+    origin_verified: bool = False,
+    origin_identity: str = "",
+) -> tuple[str, bool]:
+    """Return scan identity and whether reserved origin markers may elevate."""
+    if source == "agent-created":
+        return source, True
+    if source == "official":
+        if origin_verified and _audit_origin_identity_is_valid(origin_identity):
+            return "official", True
+        return "community", False
+    return identifier or fallback or "community", False
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
+
+def _audit_path_is_redirect(path: Path) -> bool:
+    """Return True for symlinks and Windows directory junctions."""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if is_junction and is_junction():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except OSError:
+        return True
+
+
+def _audit_fallback_source(entry: Dict[str, Any]) -> str:
+    identifier = str(entry.get("identifier") or "community")
+    if entry.get("source") == "official" or identifier == "official":
+        return "community"
+    return identifier
+
+
+def _audit_tree_has_redirect(skill_path: Path) -> bool:
+    try:
+        if _audit_path_is_redirect(skill_path) or not skill_path.is_dir():
+            return True
+        return any(_audit_path_is_redirect(path) for path in skill_path.rglob("*"))
+    except OSError:
+        return True
+
+
+def _audit_install_attestation(
+    entry: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    attestation = entry.get("install_attestation")
+    if isinstance(attestation, dict) and attestation:
+        return attestation
+    return None
+
+
+def _audit_origin_identity_is_valid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return bool(
+        re.fullmatch(
+            r"git:NousResearch/hermes-agent@[0-9a-f]{40}", value
+        )
+        or re.fullmatch(
+            r"nix-store:[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+",
+            value,
+        )
+        or re.fullmatch(
+            r"github:NousResearch/hermes-agent@[0-9a-f]{40}",
+            value,
+        )
+    )
+
+
+def _audit_scan_identity_for_lock_entry(
+    entry: Dict[str, Any], skill_path: Path
+) -> tuple[str, bool]:
+    """Replay scanner origin from a matching v2 install-content record.
+
+    The record is same-user metadata, not a cryptographic package signature.
+    """
+    from tools.skills_guard import TREE_HASH_SCHEME, full_content_hash
+    from tools.skills_hub import official_origin_bundle_hash
+
+    identifier = str(entry.get("identifier") or "")
+    if (
+        entry.get("source") == "agent-created"
+        and entry.get("trust_level") == "agent-created"
+        and identifier == "agent-created"
+    ):
+        return "agent-created", True
+
+    attestation = _audit_install_attestation(entry)
+    if (
+        entry.get("source") == "official"
+        and entry.get("trust_level") == "builtin"
+        and identifier.startswith("official/")
+        and isinstance(attestation, dict)
+        and attestation.get("version") == 2
+        and attestation.get("hash_scheme") == TREE_HASH_SCHEME
+        and attestation.get("source") == "official"
+        and attestation.get("identifier") == identifier
+        and attestation.get("trust_level") == "builtin"
+        and _audit_origin_identity_is_valid(attestation.get("origin_identity"))
+        and not _audit_tree_has_redirect(skill_path)
+        and attestation.get("bundle_hash")
+        == official_origin_bundle_hash(
+            str(attestation.get("origin_identity")),
+            identifier,
+        )
+        and attestation.get("bundle_hash") == full_content_hash(skill_path)
+    ):
+        return "official", True
+    return _audit_fallback_source(entry), False
+
+
+def _scan_skill_for_audit(
+    entry: Dict[str, Any],
+    skill_path: Path,
+    scan_skill: Any,
+    ast_scan_path: Any = None,
+):
+    """Scan one immutable private snapshot with attested source identity."""
+    if _audit_tree_has_redirect(skill_path):
+        raise OSError("installed skill path contains a redirect")
+    with tempfile.TemporaryDirectory(prefix="hermes-skills-audit-") as directory:
+        snapshot_path = Path(directory) / skill_path.name
+        shutil.copytree(skill_path, snapshot_path, symlinks=True)
+        if _audit_tree_has_redirect(skill_path):
+            raise OSError("installed skill path changed to a redirect during snapshot")
+        from tools.skills_guard import full_content_hash
+
+        if full_content_hash(skill_path) != full_content_hash(snapshot_path):
+            raise OSError("installed skill changed while the audit snapshot was created")
+        source, allow_origin_markers = _audit_scan_identity_for_lock_entry(
+            entry, snapshot_path
+        )
+        result = scan_skill(
+            snapshot_path,
+            source=source,
+            allow_origin_markers=allow_origin_markers,
+        )
+        ast_result = ast_scan_path(snapshot_path) if ast_scan_path else None
+        return result, ast_result
+
 
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
@@ -537,7 +686,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
                name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None,
+               replace_existing: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -553,6 +703,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     identifier cannot be fuzzy-resolved to a same-named skill in a different
     registry. Skill names are not namespaced across registries, so an
     unconstrained resolve can silently change a skill's provenance.
+
+    ``replace_existing`` allows an update to replace its current installation
+    without treating replacement as ``--force``. Scan policy and confirmation
+    remain active unless the caller explicitly passes ``force=True``.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -675,7 +829,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     existing = lock.get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not force and not replace_existing:
             c.print("Use --force to reinstall.\n")
             return
 
@@ -695,18 +849,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    if bundle.source == "official":
-        scan_source = "official"
-    else:
-        scan_source = (
-            getattr(bundle, "identifier", "")
-            or getattr(meta, "identifier", "")
-            or identifier
-        )
+    scan_source, allow_origin_markers = _scan_provenance_for_source(
+        bundle.source,
+        getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
+        identifier,
+        origin_verified=getattr(bundle, "origin_verified", False),
+        origin_identity=getattr(bundle, "origin_identity", ""),
+    )
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(
         q_path,
         source=scan_source,
+        allow_origin_markers=allow_origin_markers,
         source_url=source_url_for_bundle(bundle),
         cache_dir=HUB_DIR / "scan-cache",
     )
@@ -780,7 +934,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Install
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        install_dir = install_from_quarantine(
+            q_path,
+            bundle.name,
+            category,
+            bundle,
+            result,
+            scan_provenance,
+        )
     except ValueError as exc:
         c.print(f"[bold red]Installation blocked:[/] {exc}\n")
         shutil.rmtree(q_path, ignore_errors=True)
@@ -1157,9 +1318,10 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         do_install(
             entry["identifier"],
             category=category,
-            force=True,
+            force=force,
             console=c,
             source_id=entry.get("source", "") or None,
+            replace_existing=True,
         )
 
     updated_count = len(updates) - len(skipped_local)
@@ -1181,7 +1343,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
     files (review aid only — not a security gate; skills_guard.py verdicts
     are unchanged).
     """
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import HubLockFile, _resolve_lock_install_path
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
@@ -1201,20 +1363,45 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
+    ast_scan_path = None
+    format_ast_report = None
     if deep:
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
     for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
+        try:
+            skill_path = _resolve_lock_install_path(
+                entry.get("install_path", ""), entry["name"]
+            )
+        except (OSError, ValueError):
+            c.print(
+                f"[yellow]Warning:[/] {entry['name']} — invalid install path; "
+                "audit skipped."
+            )
+            continue
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+        try:
+            result, ast_result = _scan_skill_for_audit(
+                entry,
+                skill_path,
+                scan_skill,
+                ast_scan_path if deep else None,
+            )
+        except (OSError, ValueError, shutil.Error):
+            c.print(
+                f"[yellow]Warning:[/] {entry['name']} — private audit snapshot "
+                "could not be created; audit skipped."
+            )
+            c.print()
+            continue
         c.print(format_scan_report(result))
 
         if deep:
-            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+            assert format_ast_report is not None
+            c.print(format_ast_report(ast_result, skill_name=entry["name"]))
 
         c.print()
 

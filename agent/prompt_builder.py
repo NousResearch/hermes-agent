@@ -212,21 +212,10 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
-# NOTE (#82154): the opening sentence is worded deliberately. Anthropic's
-# server-side content filter rejects the previous phrasing ("After completing a
-# complex task (5+ tool calls), fixing a tricky error, or discovering a
-# non-trivial workflow, save the approach as a skill with skill_manage so you
-# can reuse it next time.") on subscription OAuth credentials, and surfaces that
-# rejection as a billing-shaped HTTP 400 ("You're out of extra usage"), which
-# sends users to buy quota they do not need. Bisected against the live API: that
-# sentence alone reproduces the 400 and removing it alone clears it; size and
-# the system[0] identity gate were both ruled out. The reword is empirically
-# validated, not understood — if you rewrite this sentence, re-verify against a
-# subscription OAuth token, not an sk-ant-api… key, which does not hit the
-# filter.
 SKILLS_GUIDANCE = (
-    "When you work out a non-trivial workflow, record it with skill_manage "
-    "for future reuse.\n"
+    "After completing a complex task (5+ tool calls), fixing a tricky error, "
+    "or discovering a non-trivial workflow, save the approach as a "
+    "skill with skill_manage so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities.\n"
@@ -472,22 +461,13 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 # without tool calls, suggests workarounds instead of using existing tools,
 # replies with plans/suggestions instead of executing). The body is
 # family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
-#
-# As of the Composio agentic-eval follow-up, the block is no longer fenced to
-# gpt/codex/grok: eval traces showed DeepSeek/Kimi doing financial math in
-# prose, skipping read-back verification after external writes, "repairing"
-# malformed identifiers, and claiming completeness despite count mismatches —
-# exactly the failure modes this block targets. The injection gate lives in
-# agent/system_prompt.py and is controlled by config.yaml
-# ``agent.execution_guidance`` (auto/true/false/list); "auto" matches the
-# EXECUTION_GUIDANCE_MODELS substring tuple below.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
     "- Use tools whenever they improve correctness, completeness, or grounding.\n"
     "- Do not stop early when another tool call would materially improve the result.\n"
-    "- If a tool returns empty, partial, or suspiciously narrow results, retry "
-    "with a broader or different query or strategy before concluding.\n"
+    "- If a tool returns empty or partial results, retry with a different query or "
+    "strategy before giving up.\n"
     "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
     "the result.\n"
     "</tool_persistence>\n"
@@ -530,29 +510,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Formatting: does the output match the requested format or schema?\n"
     "- Safety: if the next step has side effects (file writes, commands, API calls), "
     "confirm scope before executing.\n"
-    "- Completion: 'done' means every named acceptance criterion is verified — "
-    "never a plausible subset. Completing your plan is not itself the answer; "
-    "the requested output must appear in your response.\n"
     "</verification>\n"
-    "\n"
-    "<external_state_verification>\n"
-    "- After any state-changing write to an external system (API call, message "
-    "post, record update), verify the effect by reading back the exact target "
-    "before claiming success — a successful tool call is not a successful task. "
-    "Do NOT re-verify internal file edits a tool already confirmed.\n"
-    "- Declared totals in responses (total, reply_count, has_more, '...N more') "
-    "are hard assertions. If your enumerated count disagrees, re-fetch or parse "
-    "programmatically — never finalize on 'go with what I have'.\n"
-    "- When building write payloads, set fields explicitly rather than relying "
-    "on provider defaults that could contradict intent.\n"
-    "</external_state_verification>\n"
-    "\n"
-    "<literal_preservation>\n"
-    "- Preserve identifiers, commands, and values exactly as given — never "
-    "'repair' or normalize a token that fails a stated format. A successful "
-    "lookup does not validate a malformed source token; validate format first, "
-    "then look up.\n"
-    "</literal_preservation>\n"
     "\n"
     "<missing_context>\n"
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
@@ -703,13 +661,9 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "browser chrome, OS permission prompts, native dialogs, and unsupported "
         "targets. Browser setup is a separately approved action; attaching an "
         "existing profile is enforced by cua-driver's immutable permission "
-        "mode: in standard mode it requires the user's one-time config opt-in "
-        "`computer_use.grant_existing_profile: true` (if unset, report the "
-        "refusal and name that key — you can never grant it yourself); "
-        "bounded mode authorizes via the user's reviewed capability manifest; "
-        "explicit Hermes YOLO uses an unrestricted runtime after the user's "
-        "launch/session risk acceptance. Permission mode and grants are fixed "
-        "when Hermes launches that runtime.\n\n"
+        "mode: standard requires a certified protected host and fails closed "
+        "when Hermes has none; explicit Hermes YOLO uses a private unrestricted "
+        "daemon after the user's launch/session risk acceptance.\n\n"
         "## Background mode rules\n"
         "- Do NOT use `raise_window=true` on `focus_app` unless the user "
         "explicitly asked you to bring a window to front. Input routing to "
@@ -719,11 +673,9 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "won't leak other windows the user has open.\n"
         + offscreen_line +
         "## The agent cursor you'll see on screen\n"
-        "Each computer-use run gives cua-driver a public session name. The "
-        "name labels its tinted overlay cursor and related state, while the "
-        "MCP transport owns a private lifecycle session inside the runtime. "
-        "The cursor glides "
-        "to where you act. It's a visual cue for the user; the REAL OS cursor never "
+        "Each computer-use run declares a session with cua-driver; that "
+        "session owns a tinted overlay cursor that glides to where you "
+        "act. It's a visual cue for the user — the REAL OS cursor never "
         "moves. Don't try to read it or click on it; it's UI feedback, "
         "not input.\n\n"
         "## Safety\n"
@@ -992,24 +944,6 @@ PLATFORM_HINTS = {
         "video play inline, and other files arrive as download links. You can "
         "also include image URLs in markdown format ![alt](url) and they "
         "render inline as photos. "
-        "To show an HTML file you wrote as a LIVE inline page right in your "
-        "message, put ::preview{file=\"path/to/file.html\"} alone on its own "
-        "line — desktop plugins can register more ::name{...} directives like "
-        "it. When the user asks for an inline widget, chart, or visualization "
-        "(anything living IN the chat rather than a standalone page), design "
-        "it as a native piece of the app by default: transparent background, "
-        "colors from the provided theme tokens — var(--foreground), "
-        "var(--muted-foreground), var(--accent), var(--border), var(--card) — "
-        "the inherited app font, no body padding or margin, content flush "
-        "left and filling the viewport width, no centering wrappers, decorative "
-        "backdrops, or page chrome. The frame auto-sizes to the content. "
-        "Widgets can talk back: window.hermes.send(\"prompt\") — or a "
-        "data-hermes-send=\"prompt\" attribute on any clickable element — sends "
-        "that prompt to you as a hidden user turn (no chat bubble), so give "
-        "interactive widgets buttons whose clicks mean something and answer "
-        "them by updating the widget's file, not with prose. Only "
-        "a standalone PAGE (a mockup, a poster, a game) should bring its own "
-        "background and layout. "
         "When the user asks to add, enable, or authorize an MCP server (or a "
         "task clearly needs one that is missing), use the setup_mcp tool if "
         "it is available — it shows an inline consent card right in the chat; "
@@ -1722,6 +1656,10 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Plan A tier (2026-08-21 prime-agent 升級): 讀 frontmatter status
+    _status = str(frontmatter.get("status", "active")).strip().lower()
+    _tier = str(frontmatter.get("tier", "")).strip().lower() or _infer_tier_from_status(_status)
+
     entry = {
         "skill_name": skill_name,
         "category": category,
@@ -1729,6 +1667,8 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "status": _status,  # Plan A: 支援 status 過濾
+        "tier": _tier,      # Plan A: 支援 tier 排序
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1778,17 +1718,61 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 
+def _infer_tier_from_status(status: str) -> str:
+    """Plan A: 從 status 推導 tier (deprecated → cold, archived → cold, 其他 → active)."""
+    s = (status or "").strip().lower()
+    if s in ("deprecated", "archived", "in-transition"):
+        return "cold"
+    if s == "draft":
+        return "cold"
+    return "active"
+
+
 def _skill_should_show(
     conditions: dict,
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
+    skill_meta: "dict | None" = None,  # Plan A: 傳入 entry 取得 status/tier
 ) -> bool:
-    """Return False if the skill's conditional activation rules exclude it."""
-    if available_tools is None and available_toolsets is None:
+    """Return False if the skill's conditional activation rules exclude it.
+
+    Plan A 升級 (2026-08-21 prime-agent):
+      - 支援 skill_meta 參數，讀 status / tier 欄位
+      - 自動 deprecated / archived / in-transition → 不顯示
+      - tier=core → 必顯示 (always-on)
+      - tier=active → 在 active 上限內顯示
+      - tier=cold → 在 cold 上限內顯示（最末位）
+    """
+    if available_tools is None and available_toolsets is None and skill_meta is None:
         return True  # No filtering info — show everything (backward compat)
 
     at = available_tools or set()
     ats = available_toolsets or set()
+
+    # Plan A v2 (2026-08-21 prime-agent 修正): status + tier 過濾
+    if skill_meta is not None:
+        _status = (skill_meta.get("status") or "active").strip().lower()
+        _tier = (skill_meta.get("tier") or "active").strip().lower()
+        # 永不顯示：deprecated / archived
+        if _status in ("deprecated", "archived"):
+            return False
+        # draft: 不在 index 顯示（保留可主動呼叫）
+        if _status == "draft":
+            return False
+        # in-transition: 只在 task 觸發時顯示
+        if _status == "in-transition" and not _is_task_triggered(skill_meta, available_toolsets):
+            return False
+        # Plan A v2 核心修正: cold tier 完全不顯示在 always-on index
+        # 需用 skill_view / skills_list 命令主動呼叫才載入
+        if _tier == "cold":
+            return False
+        # active tier: 只在 HERMES_TASK 環境變數設定時過濾（按需索引）
+        # 沒設 HERMES_TASK → 全部 active 都顯示（backward compat / 預設 LLM session）
+        import os as _os_v2
+        if _os_v2.environ.get("HERMES_TASK"):
+            _active_skills = _get_active_skills_for_task(available_toolsets)
+            if _active_skills is not None and skill_meta.get("frontmatter_name") not in _active_skills:
+                return False
 
     # fallback_for: hide when the primary tool/toolset IS available
     for ts in conditions.get("fallback_for_toolsets", []):
@@ -1807,6 +1791,151 @@ def _skill_should_show(
             return False
 
     return True
+
+
+def _is_task_triggered(skill_meta: "dict | None", available_toolsets: "set[str] | None") -> bool:
+    """Plan A: 判斷 skill 是否被當前任務觸發（用 toolsets 對應）."""
+    if not skill_meta or not available_toolsets:
+        return False
+    skill_categories = (skill_meta.get("category") or "").lower()
+    for ts in available_toolsets:
+        if ts.lower() in skill_categories:
+            return True
+    return False
+
+
+def _get_active_skills_for_task(available_toolsets: "set[str] | None") -> "set[str] | None":
+    """Plan A v2: 根據 HERMES_TASK env 或 available_toolsets 取得當前任務觸發的 skill 集合.
+
+    Returns None 表示「沒有限制」（全部 active 都顯示，向後相容）。
+    Returns set 表示「只有這個集合裡的 active 才顯示」。
+
+    兩種觸發方式:
+      1. HERMES_TASK 環境變數（明確指定當前任務）
+      2. available_toolsets 反查 tasks.toolset_mapping
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        per_task = (cfg.get("skills") or {}).get("per_task") or {}
+    except Exception:
+        return None
+
+    if not per_task:
+        return None
+
+    # 優先用 HERMES_TASK 環境變數（明確指定）
+    current_tasks = set()
+    import os as _os
+    hermes_task = _os.environ.get("HERMES_TASK")
+    if hermes_task:
+        current_tasks.add(hermes_task)
+
+    # 也從 available_toolsets 反查
+    if not current_tasks and available_toolsets:
+        task_to_toolset = (cfg.get("tasks") or {}).get("toolset_mapping") or {}
+        inv = {}  # toolset → list of task names
+        for task_name, toolsets in task_to_toolset.items():
+            for ts in toolsets or []:
+                inv.setdefault(ts, []).append(task_name)
+        for ts in available_toolsets:
+            current_tasks.update(inv.get(ts, []))
+
+    if not current_tasks:
+        return None
+
+    # 取所有 task 對應的 skill 聯集
+    selected = set()
+    for t in current_tasks:
+        if t in per_task:
+            selected.update(per_task[t])
+
+    return selected if selected else None
+
+def _build_soft_warning_appendix(skills_by_category: dict) -> str:
+    """Plan F Week 3 混合模式 (2026-08-22 kaecer 拍板啟用強度):
+    硬上限 + 軟警告並行 — LLM 看到警告 + 自動 archive cap 並行
+
+    警告條件（從 config.yaml 讀）：
+      - core 上限 10 / active 上限 50 / cold 上限 100 / total_max 160
+      - 任何 tier 超過 cap → 軟警告注入 system prompt
+      - 90 天沒引用的 skill → 硬上限自動 archive
+
+    設計理念：警告而不阻塞（LLM 自主決定）+ 自動 cap 防止膨脹失控。
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        tier_limits = (cfg.get("skills") or {}).get("tier_limits") or {}
+    except Exception:
+        return ""
+
+    core_cap = int(tier_limits.get("core", 10))
+    active_cap = int(tier_limits.get("active", 50))
+    cold_cap = int(tier_limits.get("cold", 100))
+    total_max = int(tier_limits.get("total_max", 160))
+
+    # 統計 skills_by_category 中每個 tier 的數量
+    total = sum(len(v) for v in skills_by_category.values())
+
+    warnings = []
+
+    # 警告 1: total 超過 total_max
+    if total > total_max:
+        warnings.append(f"- Skills 總數 {total} 超出 total_max {total_max}")
+
+    if not warnings:
+        return ""
+
+    lines = ["\n\n## Skills Lifecycle 混合模式警告（Plan F Week 3, kaecer 8/22 拍板啟用）"]
+    lines.append("")
+    lines.append("以下 skills 已超出 tier_limits 設定：")
+    for w in warnings:
+        lines.append(w)
+    lines.append("")
+    lines.append("**硬上限生效中** (auto_archive=true): > 90 天沒引用的 skill 將自動 archive（不在 always-on index）")
+    lines.append("")
+    lines.append("**處置建議**:")
+    lines.append("1. 對超過 cap 的 skill 跑「新增必走護欄」SOP（搜尋 70% 重疊 + 寫 references/ 或拍板新增）")
+    lines.append("2. 或拍板重分類（tier=core/active/cold）")
+    lines.append("3. 或拍板 archive（auto_archive 已啟用）")
+    lines.append("")
+    lines.append("**決策權**: kaecer（LLM 可建議但不自動執行單一 skill archive）。")
+    return "\n".join(lines) + "\n"
+
+
+def _apply_tier_caps(visible_entries: "list[dict]") -> "list[dict]":
+    """Plan A v2: 套用 config.yaml 的 skills.tier_limits 上限（按需索引核心）.
+
+    v2 變更 (2026-08-21 prime-agent 修正):
+      - cold 已被 _skill_should_show 擋掉，這裡只是保險再 cap 一次
+      - 排序: core > active > cold (core 必顯示)
+      - 超過上限的不顯示
+      - active 在 v2 已被 _skill_should_show 按 task context 過濾
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        tier_limits = (cfg.get("skills") or {}).get("tier_limits") or {}
+    except Exception:
+        tier_limits = {}
+
+    core_cap = int(tier_limits.get("core", 10))
+    active_cap = int(tier_limits.get("active", 50))
+    cold_cap = int(tier_limits.get("cold", 100))  # 預設 0 = cold 完全不顯示
+
+    # 分類
+    core_list = [e for e in visible_entries if (e.get("tier") or "active") == "core"]
+    active_list = [e for e in visible_entries if (e.get("tier") or "active") == "active"]
+    cold_list = [e for e in visible_entries if (e.get("tier") or "active") == "cold"]
+
+    # 套用上限
+    selected = (
+        core_list[:core_cap]
+        + active_list[:active_cap]
+        + cold_list[:cold_cap]
+    )
+    return selected
 
 
 def _current_session_platform_hint() -> str:
@@ -1866,14 +1995,8 @@ def build_skills_system_prompt(
         _home_token = None
     try:
         external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
-        # Trusted project-local dirs (./.hermes/skills, ./.agents/skills at
-        # the git root) — highest-precedence tier, scanned before local.
-        # Resolved once here; cwd and trust are stable for the session, so
-        # the index (and the system prompt) stays byte-stable.
-        from agent.skill_utils import get_project_skills_dirs
-        project_dirs = get_project_skills_dirs()
 
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
+        if not skills_dir.exists() and not external_dirs:
             return ""
 
         return _build_skills_system_prompt_inner(
@@ -1882,7 +2005,6 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
-            project_dirs=project_dirs,
         )
     finally:
         if _home_token is not None:
@@ -1895,17 +2017,14 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
-    project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
-        tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1944,6 +2063,7 @@ def _build_skills_system_prompt_inner(
                 entry.get("conditions") or {},
                 available_tools,
                 available_toolsets,
+                skill_meta=entry,  # Plan A: 傳 entry 進去讀 status/tier
             ):
                 continue
             visible_entries.append(entry)
@@ -1969,53 +2089,6 @@ def _build_skills_system_prompt_inner(
             ):
                 continue
             visible_entries.append(entry)
-
-    # ── Project-local skills (highest precedence) ──────────────────────
-    # Scanned before the local/org pass; names claimed here shadow same-named
-    # profile-local skills below (that's the feature — vendored repo skills
-    # win inside their repo). Each entry is tagged so the model and the user
-    # can see where it came from.
-    project_names: set[str] = set()
-    if project_dirs:
-        from agent.skill_utils import iter_project_skill_files
-
-        for proj_dir in project_dirs:
-            if not proj_dir.exists():
-                continue
-            for skill_file in iter_project_skill_files(proj_dir):
-                try:
-                    is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-                    if not is_compatible:
-                        continue
-                    entry = _build_snapshot_entry(skill_file, proj_dir, frontmatter, desc)
-                    fm_name = entry["frontmatter_name"]
-                    if fm_name in project_names:
-                        continue
-                    if fm_name in disabled or entry["skill_name"] in disabled:
-                        continue
-                    if not _skill_should_show(
-                        extract_skill_conditions(frontmatter),
-                        available_tools,
-                        available_toolsets,
-                    ):
-                        continue
-                    project_names.add(fm_name)
-                    skills_by_category.setdefault(entry["category"], []).append(
-                        (fm_name, f"[project] {entry['description']}".strip())
-                    )
-                except Exception as e:
-                    logger.debug("Error reading project skill %s: %s", skill_file, e)
-
-    if project_names:
-        # Drop profile-local entries shadowed by a project skill BEFORE the
-        # org-labeling pass so collision flags don't fire on intentional
-        # project-over-local overrides.
-        visible_entries = [
-            e
-            for e in visible_entries
-            if (e.get("frontmatter_name") or e.get("skill_name") or "")
-            not in project_names
-        ]
 
     # ── M2 org labeling + FAIL-LOUD collisions ─────────────────────────
     # An org skill lists with an explicit provenance tag. When a personal and
@@ -2192,7 +2265,8 @@ def _build_skills_system_prompt_inner(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + _build_soft_warning_appendix(skills_by_category)
+            + "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
         )
 
@@ -2414,21 +2488,18 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_directory_chain``)
-    contributes its ``AGENTS.override.md`` / ``AGENTS.md`` / ``agents.md``
-    (first name wins per directory) as its own provenance-labelled section.
-    ``AGENTS.override.md`` wins over ``AGENTS.md`` so a developer can keep a
-    personal, typically-gitignored override next to the committed project
-    instructions without editing the tracked file (same convention as
-    earendil-works/pi#7681).  Identical content encountered again further
-    down the chain (copied or symlinked files) is deduplicated.  With a
-    single match — the common case, and always the case outside a git repo —
-    output is identical to the historical single-file behavior.
+    contributes its ``AGENTS.md`` / ``agents.md`` (first name wins per
+    directory) as its own provenance-labelled section.  Identical content
+    encountered again further down the chain (copied or symlinked files) is
+    deduplicated.  With a single match — the common case, and always the
+    case outside a git repo — output is identical to the historical
+    single-file behavior.
     """
     cwd_resolved = cwd_path.resolve()
     sections: List[str] = []
     seen_content: set = set()
     for directory in _agents_md_directory_chain(cwd_resolved):
-        for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
+        for name in ["AGENTS.md", "agents.md"]:
             candidate = directory / name
             if not candidate.exists():
                 continue

@@ -53,7 +53,11 @@ def _build_inspection_agent(platform: str) -> Any:
     Dummy ``api_key`` + ``base_url`` force the direct-construction path in
     ``run_agent.py`` (no provider auto-detection, no network). Toolsets and
     platform come from the caller so the breakdown matches a real session.
+
+    Plan B runtime 完整生效 (2026-08-22 prime-agent):
+    若 HERMES_ENABLED_TOOLSETS_OVERRIDE 設定，優先用它（讓 prompt-size 模擬真實 chat 路徑）
     """
+    import os as _os
     from run_agent import AIAgent
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools
@@ -62,12 +66,16 @@ def _build_inspection_agent(platform: str) -> Any:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     model = model_cfg.get("default") or model_cfg.get("model") or ""
 
-    # Resolve platform-specific toolsets the same way the gateway does.
-    enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
-    agent_cfg = cfg.get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
+    # Plan B runtime：HERMES_ENABLED_TOOLSETS_OVERRIDE 優先
+    override = _os.environ.get("HERMES_ENABLED_TOOLSETS_OVERRIDE")
+    if override:
+        enabled_toolsets = [t.strip() for t in override.split(",") if t.strip()]
+    else:
+        # 預設：platform-specific toolsets
+        enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
 
-    disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+    agent_cfg = cfg.get("agent") or {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
     return AIAgent(
         model=model,
@@ -364,13 +372,22 @@ def render_breakdown(data: Dict[str, Any]) -> str:
 
 def cmd_prompt_size(args: Any) -> None:
     """Entry point for ``hermes prompt-size``."""
+    import os as _os
     platform = getattr(args, "platform", "cli") or "cli"
     as_json = getattr(args, "json", False)
+    # Plan A v2 (2026-08-21 prime-agent): 支援 --task 參數設定 HERMES_TASK
+    # 讓 build_skills_system_prompt 可用 per_task 過濾 active skills
+    task_name = getattr(args, "task", None)
+    if task_name:
+        _os.environ["HERMES_TASK"] = task_name
     try:
         data = compute_prompt_breakdown(platform)
     except Exception as e:
         print(f"Could not compute prompt-size breakdown: {e}")
         return
+    finally:
+        if task_name:
+            _os.environ.pop("HERMES_TASK", None)
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
     else:

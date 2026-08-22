@@ -29,6 +29,11 @@ def build_prompt_size_parser(subparsers, *, cmd_prompt_size: Callable) -> None:
         help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
     )
     prompt_size_parser.add_argument(
+        "--task",
+        default=None,
+        help="指定當前任務 (e.g. task-coding, task-financial-judgment) — 用 per_task 過濾 active skills",
+    )
+    prompt_size_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the breakdown as JSON",

@@ -7,6 +7,7 @@ HERMES_HOME so the real suggestions.json is never touched.
 
 import importlib
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -121,6 +122,38 @@ class TestStore:
 
         assert store.list_pending() == []
         assert store.accept_suggestion(rec["id"]) is None
+
+    def test_concurrent_acceptance_creates_one_job(self, store):
+        rec = _add(store, key="concurrent", title="Concurrent Job")
+        created = []
+        creator_started = threading.Event()
+        release_creator = threading.Event()
+
+        def fake_create(**kwargs):
+            creator_started.set()
+            assert release_creator.wait(timeout=5)
+            job = {"id": f"job-{len(created) + 1}", **kwargs}
+            created.append(job)
+            return job
+
+        results = []
+
+        def accept():
+            results.append(store.accept_suggestion(rec["id"]))
+
+        with patch("cron.scheduler.create_job_with_scheduler_registration", fake_create):
+            first = threading.Thread(target=accept)
+            second = threading.Thread(target=accept)
+            first.start()
+            assert creator_started.wait(timeout=5)
+            second.start()
+            release_creator.set()
+            first.join(timeout=10)
+            second.join(timeout=10)
+
+        assert len(created) == 1
+        assert sum(result is not None for result in results) == 1
+        assert store.list_pending() == []
 
     def test_get_by_id_and_index_and_title(self, store):
         rec = _add(store, key="byref", title="Findable")

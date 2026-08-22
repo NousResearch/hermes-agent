@@ -240,6 +240,14 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+API_RUN_TARGET_KEYS = (
+    "target_profile",
+    "targetProfile",
+    "target_agent",
+    "targetAgent",
+    "agent_id",
+    "agentId",
+)
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 
@@ -7491,6 +7499,122 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    @staticmethod
+    def _json_safe_payload(value: Any) -> Any:
+        """Return a JSON-safe copy of plugin-facing data."""
+        try:
+            return json.loads(json.dumps(value))
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _api_run_urls(run_id: str) -> Dict[str, str]:
+        return {
+            "status_url": f"/v1/runs/{run_id}",
+            "events_url": f"/v1/runs/{run_id}/events",
+        }
+
+    @staticmethod
+    def _api_run_target_aliases(body: Dict[str, Any]) -> Dict[str, str]:
+        aliases: Dict[str, str] = {}
+        for key in API_RUN_TARGET_KEYS:
+            if key not in body or body.get(key) is None:
+                continue
+            value = body.get(key)
+            cleaned = value.strip() if isinstance(value, str) else str(value)
+            if cleaned:
+                aliases[key] = cleaned
+        return aliases
+
+    def _api_run_dispatch_capabilities(self) -> Dict[str, Any]:
+        return {
+            "object": "hermes.api_server.run_dispatch.capabilities",
+            "hook": "api_server_run_dispatch",
+            "default_local_run": True,
+            "accepted_run_status": "accepted",
+            "endpoints": {
+                "runs": {"method": "POST", "path": "/v1/runs"},
+                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+            },
+            "return_actions": {
+                "pass": ["pass", "allow", "continue"],
+                "accept": ["accept", "accepted", "handled", "handle", "routed", "route"],
+                "reject": ["reject", "rejected", "error", "block", "blocked"],
+            },
+        }
+
+    def _api_run_dispatch_payload(
+        self,
+        *,
+        body: Dict[str, Any],
+        raw_input: Any,
+        instructions: Any,
+        conversation_history: List[Dict[str, str]],
+        previous_response_id: Any,
+        session_id: str,
+        run_id: str,
+        agent_overrides: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        for key in ("metadata", "source"):
+            value = body.get(key)
+            if isinstance(value, dict):
+                metadata[key] = self._json_safe_payload(value)
+
+        target_aliases = self._api_run_target_aliases(body)
+        requested_model = agent_overrides.get("requested_model") or body.get("model") or self._model_name
+        return {
+            "run_id": run_id,
+            "session_id": session_id,
+            "input": self._json_safe_payload(raw_input),
+            "instructions": self._json_safe_payload(instructions),
+            "history": self._json_safe_payload(conversation_history),
+            "conversation_history": self._json_safe_payload(conversation_history),
+            "previous_response_id": self._json_safe_payload(previous_response_id),
+            "model": body.get("model") or self._model_name,
+            "requested_model": requested_model,
+            "requested_provider": agent_overrides.get("requested_provider"),
+            "target_aliases": target_aliases,
+            "target": dict(target_aliases),
+            "metadata": metadata,
+            "capabilities": self._api_run_dispatch_capabilities(),
+            **self._api_run_urls(run_id),
+        }
+
+    def _dispatch_api_run(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Give plugins first refusal for a sanitized /v1/runs dispatch payload."""
+        try:
+            from hermes_cli.lifecycle import invoke_hook
+        except Exception as exc:
+            logger.warning("[%s] API run dispatch hook unavailable: %s", self.name, exc)
+            return None
+
+        results = invoke_hook("api_server_run_dispatch", **payload)
+        for result in results:
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or result.get("status") or "").strip().lower()
+            if action in {"pass", "allow", "continue"}:
+                continue
+            if action in {"accept", "accepted", "handled", "handle", "routed", "route"}:
+                dispatch = result.get("dispatch") or result.get("decision") or result.get("routing")
+                return {
+                    "action": "accepted",
+                    "dispatch": self._json_safe_payload(dispatch) if dispatch is not None else {},
+                }
+            if action in {"reject", "rejected", "error", "block", "blocked"}:
+                return {
+                    "action": "rejected",
+                    "status": result.get("status_code", result.get("status", 400)),
+                    "error": str(result.get("error") or result.get("message") or "Run dispatch rejected"),
+                }
+        return None
+
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
@@ -7580,6 +7704,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
+        dispatch_payload = self._api_run_dispatch_payload(
+            body=body,
+            raw_input=raw_input,
+            instructions=instructions,
+            conversation_history=conversation_history,
+            previous_response_id=previous_response_id,
+            session_id=session_id,
+            run_id=run_id,
+            agent_overrides=agent_overrides,
+        )
+        dispatch_decision = self._dispatch_api_run(dispatch_payload)
+        if dispatch_decision and dispatch_decision.get("action") == "rejected":
+            try:
+                status_code = int(dispatch_decision.get("status", 400))
+            except (TypeError, ValueError):
+                status_code = 400
+            if status_code < 400 or status_code > 599:
+                status_code = 400
+            return web.json_response(
+                _openai_error(str(dispatch_decision.get("error") or "Run dispatch rejected")),
+                status=status_code,
+            )
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple
@@ -7624,6 +7770,38 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             model=body.get("model", self._model_name),
         )
+
+        if dispatch_decision and dispatch_decision.get("action") == "accepted":
+            dispatch = dispatch_decision.get("dispatch") or {}
+            accepted_event = {
+                "event": "run.dispatch_accepted",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "dispatch": dispatch,
+            }
+            q.put_nowait(accepted_event)
+            q.put_nowait(None)
+            self._run_approval_sessions.pop(run_id, None)
+            self._set_run_status(
+                run_id,
+                "accepted",
+                session_id=session_id,
+                dispatch=dispatch,
+                last_event="run.dispatch_accepted",
+            )
+            response_headers = (
+                {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+            )
+            return web.json_response(
+                {
+                    "run_id": run_id,
+                    "status": "accepted",
+                    **self._api_run_urls(run_id),
+                    "dispatch": dispatch,
+                },
+                status=202,
+                headers=response_headers,
+            )
 
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.

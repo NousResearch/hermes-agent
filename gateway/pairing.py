@@ -146,7 +146,7 @@ def _user_ids_match(platform: str, left: str, right: str) -> bool:
     return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
 
 
-def _read_allowlist_env(env_var: str) -> str:
+def _read_allowlist_env(env_var: str, *, home: Optional[Path] = None) -> str:
     """Read a platform allowlist env var through the profile secret scope.
 
     Under multiplexing the process env may hold ANOTHER profile's allowlist
@@ -155,11 +155,18 @@ def _read_allowlist_env(env_var: str) -> str:
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.
 
-    TODO(profile-secrets): the grant mirror below still WRITES through
-    ``hermes_cli.config.save_env_value`` / ``remove_env_value``, which target
-    the root ``.env`` — those writes need a profile-aware counterpart before
-    pairing grants can be mirrored correctly under multiplexing.
+    When ``home`` is explicit, read that profile's file directly. A named
+    ``PairingStore`` can be called from an unscoped dashboard/admin path, so
+    neither the current task's secret scope nor ``os.environ`` identifies the
+    target profile reliably.
     """
+    if home is not None:
+        try:
+            from agent.secret_scope import load_env_file
+
+            return (load_env_file(Path(home) / ".env").get(env_var) or "").strip()
+        except Exception:
+            return ""
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
 
@@ -172,7 +179,9 @@ def _read_allowlist_env(env_var: str) -> str:
     return (os.getenv(env_var) or "").strip()
 
 
-def _sync_allowlist_add(platform: str, user_id: str) -> None:
+def _sync_allowlist_add(
+    platform: str, user_id: str, *, home: Optional[Path] = None
+) -> None:
     """Add ``user_id`` to the platform allowlist env var IF one is configured.
 
     Option (i): only materialize the grant into the allowlist when the operator
@@ -184,7 +193,7 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    current = _read_allowlist_env(env_var, home=home)
     if not current:
         return  # No allowlist configured — leave the gateway open (option i).
     ids = _split_allowlist(current)
@@ -194,15 +203,18 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     try:
         from hermes_cli.config import save_env_value
 
-        save_env_value(env_var, ",".join(ids))
+        if home is None:
+            save_env_value(env_var, ",".join(ids))
+        else:
+            save_env_value(env_var, ",".join(ids), home=home)
     except Exception:
         # Best-effort: the pairing store grant still authorizes via the union,
         # so a failure here degrades to "grant recorded but not mirrored".
         pass
 
 
-def _iter_live_gateway_adapters():
-    """Yield adapters from the in-process GatewayRunner, if one is running."""
+def _iter_live_gateway_adapters(profile: Optional[str] = None):
+    """Yield live adapters, optionally restricted to one multiplex profile."""
     try:
         from gateway.run import _gateway_runner_ref
 
@@ -212,10 +224,30 @@ def _iter_live_gateway_adapters():
     if runner is None:
         return
     adapters = getattr(runner, "adapters", None) or {}
+    profile_adapters = getattr(runner, "_profile_adapters", None) or {}
+
+    if profile:
+        mapping = profile_adapters.get(profile)
+        if mapping is not None:
+            for adapter in mapping.values():
+                if adapter is not None:
+                    yield adapter
+            return
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            active = get_active_profile_name() or "default"
+        except Exception:
+            active = ""
+        if profile == active:
+            for adapter in adapters.values():
+                if adapter is not None:
+                    yield adapter
+        return
+
     for adapter in adapters.values():
         if adapter is not None:
             yield adapter
-    profile_adapters = getattr(runner, "_profile_adapters", None) or {}
     for mapping in profile_adapters.values():
         for adapter in (mapping or {}).values():
             if adapter is not None:
@@ -258,7 +290,9 @@ def _purge_allowlist_entries(entries, platform: str, user_id: str):
     return entries
 
 
-def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
+def _sync_live_adapter_allowlist_remove(
+    platform: str, user_id: str, *, profile: Optional[str] = None
+) -> None:
     """Clear revoked principals from in-process adapter allowlist snapshots.
 
     ``WhatsAppAdapter`` (and Cloud) snapshot ``_allow_from`` at construction.
@@ -269,7 +303,7 @@ def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
     platform_name = (platform or "").strip().lower()
     if not platform_name or not str(user_id or "").strip():
         return
-    for adapter in _iter_live_gateway_adapters():
+    for adapter in _iter_live_gateway_adapters(profile):
         if _adapter_platform_name(adapter) != platform_name:
             continue
         if hasattr(adapter, "_allow_from"):
@@ -289,7 +323,13 @@ def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
                 pass
 
 
-def _sync_allowlist_remove(platform: str, user_id: str) -> None:
+def _sync_allowlist_remove(
+    platform: str,
+    user_id: str,
+    *,
+    home: Optional[Path] = None,
+    profile: Optional[str] = None,
+) -> None:
     """Remove ``user_id`` (and WhatsApp alias equivalents) from the allowlist.
 
     Matching must mirror PairingStore / authz WhatsApp alias rules: approve
@@ -304,7 +344,7 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    current = _read_allowlist_env(env_var, home=home)
     if not current:
         return  # No allowlist configured — do not touch config-only snapshots.
     ids = _split_allowlist(current)
@@ -319,12 +359,17 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
         from hermes_cli.config import save_env_value, remove_env_value
 
         if remaining:
-            save_env_value(env_var, ",".join(remaining))
-        else:
+            if home is None:
+                save_env_value(env_var, ",".join(remaining))
+            else:
+                save_env_value(env_var, ",".join(remaining), home=home)
+        elif home is None:
             remove_env_value(env_var)
+        else:
+            remove_env_value(env_var, home=home)
     except Exception:
         pass
-    _sync_live_adapter_allowlist_remove(platform, user_id)
+    _sync_live_adapter_allowlist_remove(platform, user_id, profile=profile)
 
 
 def _load_json_file(path: Path) -> dict:
@@ -433,8 +478,12 @@ class PairingStore:
                 "pairing",
                 home=profile_home,
             )
+            # Every explicit profile store uses file-scoped env I/O. Only
+            # PairingStore() keeps the legacy process-env synchronization.
+            self._env_home = profile_home
         else:
             self._dir = PAIRING_DIR
+            self._env_home = None
         self._dir.mkdir(parents=True, exist_ok=True)
         if profile:
             # Explicit stores must resolve exactly as a standalone
@@ -552,7 +601,9 @@ class PairingStore:
         # Mirror the grant into the operator's allowlist when one is configured
         # (option i), so the pairing store and the allowlist stay a single
         # visible source of truth. No-op on open gateways.
-        _sync_allowlist_add(platform, normalized_user_id)
+        _sync_allowlist_add(
+            platform, normalized_user_id, home=self._env_home
+        )
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
@@ -571,7 +622,12 @@ class PairingStore:
                 # Keep the allowlist mirror in sync: revoking a paired user
                 # also removes the entry the approval added (option i). No-op if
                 # the user was added to the allowlist by other means.
-                _sync_allowlist_remove(platform, user_id)
+                _sync_allowlist_remove(
+                    platform,
+                    user_id,
+                    home=self._env_home,
+                    profile=self._profile,
+                )
                 return True
         return False
 

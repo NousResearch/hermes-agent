@@ -66,6 +66,56 @@ class TestGatewayLifecyclePattern:
         )
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
+    @pytest.mark.parametrize("text", [
+        # #80269: the shell resolves quote-splicing and backslash-escaping
+        # into a single literal word BEFORE the command runs, so
+        # `launchctl kick"start" ... ai.hermes.gateway` executes exactly as
+        # the blocked `kickstart` form. Raw-text matching sees the quote (or
+        # backslash) wedged between the verb's halves and misses it, leaving
+        # the bypassable approval layer as the only cover.
+        'launchctl kick"start" -k gui/501/ai.hermes.gateway',
+        "launchctl kick'start' -k gui/501/ai.hermes.gateway",
+        "launchctl kick\\start -k gui/501/ai.hermes.gateway",
+        'launchctl "kickstart" -k gui/501/ai.hermes.gateway',
+        # Splices on the newer/legacy unload spellings this PR added.
+        'launchctl boot"out" gui/501/ai.hermes.gateway',
+        "launchctl dis\\able gui/501/ai.hermes.gateway",
+        # The gateway identifier itself can be spliced just as easily.
+        'launchctl bootout gui/501/ai.hermes."gateway"',
+        # Same class on the systemctl and hermes-CLI branches.
+        'systemctl re"start" hermes-gateway',
+        'hermes gateway re"start"',
+    ])
+    def test_shell_token_spliced_lifecycle_verbs(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_spliced_verb_inside_shell_c_payload_is_blocked(self):
+        # A splice nested in a `sh -c` payload resolves one level deeper than
+        # the flat scan: POSIX single quotes preserve the inner double quotes
+        # verbatim, so the outer tokenization yields the payload with the
+        # splice still intact. The recursion re-scans that payload through the
+        # same choke point, where it collapses to `kickstart`. This is the
+        # entry point terminal_tool.py calls in gateway sessions, so it is the
+        # boundary that matters.
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        command = 'sh -c \'launchctl kick"start" -k gui/501/ai.hermes.gateway\''
+        assert contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    @pytest.mark.parametrize("text", [
+        # The tokenizing pass must not widen the blast radius: prose and
+        # non-gateway services stay allowed even though tokenization now
+        # strips their quotes too.
+        'echo "restart the payment gateway"',
+        'launchctl kick"start" -k gui/501/ai.hermes.update-checker',
+        'systemctl re"start" hermes-meta.service',
+        "Summarize how the API gateway handles a restart after rate limiting",
+    ])
+    def test_tokenizing_pass_does_not_overmatch(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
 
     @pytest.mark.parametrize("text", [
         "restart the server application",

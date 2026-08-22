@@ -368,6 +368,24 @@ class TestImport:
 
         assert not calls
 
+    def test_mixed_wrapped_and_root_entries_do_not_collide(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "hermes/config.yaml": "wrapped\n",
+            "config.yaml": "root\n",
+        })
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (hermes_home / "config.yaml").read_text() == "root\n"
+        assert (hermes_home / "hermes" / "config.yaml").read_text() == "wrapped\n"
+
     def test_import_survives_service_layer_import_failure(self, tmp_path, monkeypatch, capsys):
         """If the service helpers can't even be reached, import still completes
         and prints the manual fallback."""
@@ -572,6 +590,18 @@ class TestValidation:
         assert ok
 
 
+
+    def test_detect_prefix_none_with_mixed_root_and_wrapper_entries(self):
+        import io
+        from hermes_cli.backup import _detect_prefix
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("hermes/config.yaml", "wrapped")
+            zf.writestr("config.yaml", "root")
+        buf.seek(0)
+        with zipfile.ZipFile(buf, "r") as zf:
+            assert _detect_prefix(zf) == ""
 
     def test_detect_prefix_only_dirs(self):
         """Prefix detection returns empty for zip with only directory entries."""

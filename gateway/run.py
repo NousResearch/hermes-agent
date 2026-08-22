@@ -22928,13 +22928,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_name,
         )
         try:
-            renamed = await rename_thread(
-                target_thread_id,
-                thread_name,
-                prefer_connector_created=use_connector_guard,
-                only_if_current_name=guard_name,
-                parent_chat_id=parent_chat_id,
-            )
+            # The relay connector adapter accepts prefer_connector_created /
+            # parent_chat_id; the native Discord plugin adapter does NOT
+            # (its rename_thread signature only has only_if_current_name).
+            # Passing the connector kwargs unconditionally TypeErrors on the
+            # native lane and silently kills every native thread rename —
+            # the exception is swallowed by the except below without ever
+            # logging the "rename result" line. Gate them to the relay lane.
+            if use_connector_guard:
+                renamed = await rename_thread(
+                    target_thread_id,
+                    thread_name,
+                    prefer_connector_created=True,
+                    parent_chat_id=parent_chat_id,
+                )
+            else:
+                renamed = await rename_thread(
+                    target_thread_id,
+                    thread_name,
+                    only_if_current_name=guard_name,
+                )
             logger.info(
                 "discord auto-thread rename result: thread=%s applied=%s",
                 target_thread_id,

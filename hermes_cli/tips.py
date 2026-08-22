@@ -28,7 +28,7 @@ TIPS = [
     "/model lets you switch models mid-session — try /model sonnet or /model gpt-5.",
     "/model --global changes your default model permanently.",
     "/personality pirate sets a fun personality — 14 built-in options from kawaii to shakespeare.",
-    "/skin changes the CLI theme — try ares, mono, slate, poseidon, or charizard.",
+    "/skin changes the CLI theme — try ares, hades, mono, slate, poseidon, or charizard.",
     "/statusbar toggles a persistent bar showing model, tokens, context fill %, cost, and duration.",
     "/tools disable browser temporarily removes browser tools for the current session.",
     "/browser connect attaches browser tools to your running Chromium-family browser via CDP.",

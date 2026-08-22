@@ -1,6 +1,73 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, hadesTheme } from './presets'
+
+const DESKTOP_COLOR_KEYS = [
+  'background',
+  'foreground',
+  'card',
+  'cardForeground',
+  'muted',
+  'mutedForeground',
+  'popover',
+  'popoverForeground',
+  'primary',
+  'primaryForeground',
+  'secondary',
+  'secondaryForeground',
+  'accent',
+  'accentForeground',
+  'border',
+  'input',
+  'ring',
+  'midground',
+  'midgroundForeground',
+  'composerRing',
+  'destructive',
+  'destructiveForeground',
+  'sidebarBackground',
+  'sidebarBorder',
+  'userBubble',
+  'userBubbleBorder'
+] as const
+
+const TERMINAL_COLOR_KEYS = [
+  'foreground',
+  'cursor',
+  'selectionBackground',
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite'
+] as const
+
+describe('Hades desktop theme completeness', () => {
+  it('sets every base and dark desktop color explicitly', () => {
+    for (const key of DESKTOP_COLOR_KEYS) {
+      expect(hadesTheme.colors[key], `hades.colors.${key}`).toMatch(/^#[0-9A-F]{6}$/i)
+      expect(hadesTheme.darkColors?.[key], `hades.darkColors.${key}`).toBe(hadesTheme.colors[key])
+    }
+  })
+
+  it('sets every integrated-terminal ANSI color for light and dark terminal modes', () => {
+    for (const key of TERMINAL_COLOR_KEYS) {
+      expect(hadesTheme.terminal?.[key], `hades.terminal.${key}`).toMatch(/^#[0-9A-F]{6}$/i)
+      expect(hadesTheme.darkTerminal?.[key], `hades.darkTerminal.${key}`).toBe(hadesTheme.terminal?.[key])
+    }
+  })
+})
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on

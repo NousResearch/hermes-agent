@@ -663,6 +663,115 @@ export const emberTheme: DesktopTheme = {
   }
 }
 
+
+/** Deep underworld blue-violet. Matches the CLI Hades skin. */
+export const hadesTheme: DesktopTheme = {
+  name: 'hades',
+  label: 'Hades',
+  description: 'Deep underworld blue-violet with cool accents',
+  colors: {
+    background: '#0F172A',
+    foreground: '#DCEBFF',
+    card: '#111827',
+    cardForeground: '#DCEBFF',
+    muted: '#1E293B',
+    mutedForeground: '#93A4BC',
+    popover: '#111827',
+    popoverForeground: '#DCEBFF',
+    primary: '#7EB8F6',
+    primaryForeground: '#0F172A',
+    secondary: '#1E3A8A',
+    secondaryForeground: '#DCEBFF',
+    accent: '#1D4ED8',
+    accentForeground: '#DCEBFF',
+    border: '#334155',
+    input: '#334155',
+    ring: '#60A5FA',
+    midground: '#60A5FA',
+    midgroundForeground: '#786678',
+    composerRing: '#9932CC',
+    destructive: '#F87171',
+    destructiveForeground: '#1F0A0A',
+    sidebarBackground: '#0B1220',
+    sidebarBorder: '#1E3A8A',
+    userBubble: '#172554',
+    userBubbleBorder: '#2563EB'
+  },
+  darkColors: {
+    background: '#0F172A',
+    foreground: '#DCEBFF',
+    card: '#111827',
+    cardForeground: '#DCEBFF',
+    muted: '#1E293B',
+    mutedForeground: '#93A4BC',
+    popover: '#111827',
+    popoverForeground: '#DCEBFF',
+    primary: '#7EB8F6',
+    primaryForeground: '#0F172A',
+    secondary: '#1E3A8A',
+    secondaryForeground: '#DCEBFF',
+    accent: '#1D4ED8',
+    accentForeground: '#DCEBFF',
+    border: '#334155',
+    input: '#334155',
+    ring: '#60A5FA',
+    midground: '#60A5FA',
+    midgroundForeground: '#786678',
+    composerRing: '#9932CC',
+    destructive: '#F87171',
+    destructiveForeground: '#1F0A0A',
+    sidebarBackground: '#0B1220',
+    sidebarBorder: '#1E3A8A',
+    userBubble: '#172554',
+    userBubbleBorder: '#2563EB'
+  },
+  terminal: {
+    foreground: '#DCEBFF',
+    cursor: '#60A5FA',
+    selectionBackground: '#1E3A8A',
+    black: '#0F172A',
+    red: '#F87171',
+    green: '#4ADE80',
+    yellow: '#FBBF24',
+    blue: '#60A5FA',
+    magenta: '#9932CC',
+    cyan: '#7DD3FC',
+    white: '#DCEBFF',
+    brightBlack: '#64748B',
+    brightRed: '#F87171',
+    brightGreen: '#4ADE80',
+    brightYellow: '#FBBF24',
+    brightBlue: '#7EB8F6',
+    brightMagenta: '#8EA8FF',
+    brightCyan: '#93C5FD',
+    brightWhite: '#FFFFFF'
+  },
+  darkTerminal: {
+    foreground: '#DCEBFF',
+    cursor: '#60A5FA',
+    selectionBackground: '#1E3A8A',
+    black: '#0F172A',
+    red: '#F87171',
+    green: '#4ADE80',
+    yellow: '#FBBF24',
+    blue: '#60A5FA',
+    magenta: '#9932CC',
+    cyan: '#7DD3FC',
+    white: '#DCEBFF',
+    brightBlack: '#64748B',
+    brightRed: '#F87171',
+    brightGreen: '#4ADE80',
+    brightYellow: '#FBBF24',
+    brightBlue: '#7EB8F6',
+    brightMagenta: '#8EA8FF',
+    brightCyan: '#93C5FD',
+    brightWhite: '#FFFFFF'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 /** Clean grayscale. Matches the CLI mono skin and dashboard mono theme. */
 export const monoTheme: DesktopTheme = {
   name: 'mono',
@@ -777,6 +886,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   solarized: solarizedTheme,
   midnight: midnightTheme,
   ember: emberTheme,
+  hades: hadesTheme,
   mono: monoTheme,
   slate: slateTheme,
   cyberpunk: cyberpunkTheme

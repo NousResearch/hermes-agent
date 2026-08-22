@@ -385,3 +385,39 @@ class TestStaleToolMediaLeak:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ── normalize_command_padding (shared composer-padding rule) ────────────────
+
+import pytest  # noqa: E402
+
+from gateway.platforms.base import normalize_command_padding  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Bare command: composer padding is pure noise, strip it whole.
+        ("!reset\n", "!reset"),
+        ("!reset  \n\n", "!reset"),
+        ("/reset\n", "/reset"),
+        (" /status \n", "/status"),
+        ("!diff\r\n", "!diff"),
+        # Parameterized: only the line ending goes — argument whitespace is
+        # significant and callers rely on it being preserved.
+        ("/say hello world  \n", "/say hello world  "),
+        ("/say trailing space  ", "/say trailing space  "),
+        ("/echo a\nb\n", "/echo a\nb"),
+        # Degenerate input must not raise.
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_normalize_command_padding(raw, expected):
+    assert normalize_command_padding(raw) == expected
+
+
+def test_bare_and_parameterized_are_deliberately_different():
+    """Guard against a future 'simplification' into one strip()."""
+    assert normalize_command_padding("/say hi  ") == "/say hi  "
+    assert normalize_command_padding("/say  ") == "/say"

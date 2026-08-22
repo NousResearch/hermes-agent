@@ -167,6 +167,30 @@ def _reply_anchor_for_event(event) -> str | None:
     return getattr(event, "message_id", None)
 
 
+def normalize_command_padding(text: str) -> str:
+    """Strip composer padding from a command line without touching its args.
+
+    WYSIWYG message composers (Slack threads, and the Telegram/Discord
+    mobile clients) happily append newlines and spaces after a send. On a
+    BARE command that padding is pure noise, and leaving it on makes
+    ``!reset\n`` miss an exact-match dispatch — so it is stripped whole.
+
+    On a PARAMETERIZED command the trailing whitespace may be significant
+    (a deliberate trailing space, an argument ending in a newline), so only
+    the line ending itself is removed. The two cases are deliberately
+    different; do not collapse them into one ``strip()``.
+
+    Non-command text is returned unchanged — the caller decides what counts
+    as a command.
+    """
+    if not text:
+        return text
+    # 0 tokens (blank/whitespace-only) counts as bare: nothing to preserve.
+    if len(text.strip().split(maxsplit=1)) <= 1:
+        return text.strip()
+    return text.rstrip("\r\n")
+
+
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
     """Return True when a media file should use the platform's audio sender.
 

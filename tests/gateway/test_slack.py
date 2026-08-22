@@ -1288,14 +1288,27 @@ class TestBangPrefixCommands:
 
 
     @pytest.mark.asyncio
-    async def test_leading_space_slash_command_is_a_command(self, adapter):
-        """Users type `` /stop`` so Slack itself doesn't intercept the slash."""
-        await adapter._handle_slack_message(self._make_event(" /stop"))
+    @pytest.mark.parametrize(
+        "authored_text, expected_cmd",
+        [
+            ("!reset\n", "/reset"),
+            ("!reset  \n\n", "/reset"),
+            ("/reset\n", "/reset"),
+            (" /status \n", "/status"),
+            ("!diff\r\n", "/diff"),
+        ],
+    )
+    async def test_bare_thread_command_normalizes_composer_padding(
+        self, adapter, authored_text, expected_cmd
+    ):
+        """Bare commands typed in Slack thread composer strip trailing padding cleanly."""
+        await adapter._handle_slack_message(self._make_event(authored_text))
 
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "/stop"
+        assert msg_event.text == expected_cmd
         assert msg_event.message_type == MessageType.COMMAND
-        assert msg_event.get_command() == "stop"
+        assert msg_event.get_command() == expected_cmd.lstrip("/")
+        assert msg_event.get_command_args() == ""
 
 
     @pytest.mark.asyncio

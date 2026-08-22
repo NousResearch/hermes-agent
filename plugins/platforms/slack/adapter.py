@@ -52,6 +52,7 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy,
+    normalize_command_padding,
     resolve_proxy_url,
     safe_url_for_log,
     _ssrf_redirect_guard,
@@ -6694,8 +6695,11 @@ class SlackAdapter(BasePlatformAdapter):
         # normal messages. Commands are restored from canonical authored
         # input only: the gateway parser requires the command token at
         # character zero, and enrichment must never mutate a command's
-        # arguments.
+        # arguments. Trailing composer padding (newlines/spaces from Slack's
+        # WYSIWYG thread composer) is normalized on bare commands while
+        # preserving argument whitespace on parameterized commands.
         if is_command_text:
+            command_probe_text = normalize_command_padding(command_probe_text)
             text = command_probe_text
             msg_type = MessageType.COMMAND
 

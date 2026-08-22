@@ -676,8 +676,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                drop_stale_api_content(prev)
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                drop_stale_api_content(prev)
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first

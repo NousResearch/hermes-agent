@@ -891,6 +891,35 @@ class TestGatewaySystemServiceRouting:
 
         assert gateway_cli._systemd_restart_wait_timeout() == 155.0
 
+    def test_wait_records_a_short_lived_failed_replacement(self, monkeypatch):
+        ticks = iter((0.0, 0.0, 2.0))
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {
+                "ActiveState": "failed",
+                "MainPID": "0",
+            },
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 777, "gateway_state": "startup_failed"},
+        )
+        replacement_observed = []
+
+        result = gateway_cli._wait_for_systemd_service_restart(
+            previous_pid=654,
+            timeout=1.0,
+            replacement_observed=replacement_observed,
+        )
+
+        assert result is False
+        assert replacement_observed == [True]
+
 
 
 

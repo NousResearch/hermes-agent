@@ -1271,18 +1271,27 @@ def _wait_for_systemd_service_restart(
             new_pid = None
         if not new_pid:
             new_pid = _systemd_main_pid_from_props(props)
+
+        runtime_state = _read_gateway_runtime_status()
+        try:
+            runtime_pid = int((runtime_state or {}).get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            runtime_pid = 0
         if (
-            new_pid
-            and previous_pid is not None
-            and new_pid != previous_pid
+            previous_pid is not None
             and replacement_observed is not None
             and not replacement_observed
+            and any(
+                candidate_pid > 0 and candidate_pid != previous_pid
+                for candidate_pid in (new_pid or 0, runtime_pid)
+            )
         ):
             replacement_observed.append(True)
 
         if active_state == "active":
             if new_pid and (previous_pid is None or new_pid != previous_pid):
-                runtime_state = _gateway_runtime_status_for_pid(new_pid)
+                if runtime_pid != new_pid:
+                    runtime_state = _gateway_runtime_status_for_pid(new_pid)
                 gateway_state = (runtime_state or {}).get("gateway_state")
                 if gateway_state == "running":
                     print(f"✓ {scope_label} service restarted (PID {new_pid})")

@@ -836,6 +836,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    payload_type: str = "text/markdown",
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -868,6 +869,7 @@ async def _send_via_adapter(
                     metadata["thread_id"] = thread_id
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
+                metadata["payload_type"] = payload_type
                 if not metadata:
                     metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
@@ -895,6 +897,7 @@ async def _send_via_adapter(
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                payload_type=payload_type,
             )
         except asyncio.CancelledError:
             raise
@@ -922,7 +925,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None, payload_type: str = "text/markdown"):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1004,6 +1007,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            payload_type=payload_type,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1241,6 +1245,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
                 force_document=force_document,
+                payload_type=payload_type,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1309,6 +1314,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                payload_type=payload_type,
             )
 
         if isinstance(result, dict) and result.get("error"):
@@ -1331,35 +1337,29 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, payload_type: str = "text/markdown"):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.  If the message
-    already contains HTML tags, it is sent with ``parse_mode='HTML'``
-    instead, bypassing MarkdownV2 conversion.
+    so that bold, links, and headers render correctly.  A declared
+    ``payload_type == "text/html"`` bypasses MarkdownV2 conversion entirely
+    and sends the raw content with ``parse_mode='HTML'``.  Anything else
+    (missing/unknown payload_type) takes the MarkdownV2 path.
     """
     try:
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
-
-        if _has_html:
-            formatted = message
-            send_parse_mode = ParseMode.HTML
-        else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
-            try:
-                from plugins.platforms.telegram.adapter import TelegramAdapter
-                _adapter = TelegramAdapter.__new__(TelegramAdapter)
-                formatted = _adapter.format_message(message)
-            except Exception:
-                # Fallback: send as-is if formatting unavailable
-                formatted = message
-            send_parse_mode = ParseMode.MARKDOWN_V2
+        # Resolve (text, parse_mode_name) via the single contract in
+        # TelegramAdapter._resolve_send_format — no content sniffing.
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        _adapter = TelegramAdapter.__new__(TelegramAdapter)
+        formatted, send_parse_mode_name = _adapter._resolve_send_format(
+            message, {"payload_type": payload_type}
+        )
+        send_parse_mode = (
+            ParseMode.HTML if send_parse_mode_name == "HTML" else ParseMode.MARKDOWN_V2
+        )
 
         # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
         # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
@@ -1483,7 +1483,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             send_parse_mode,
                             _sanitize_error_text(md_error),
                         )
-                        if not _has_html:
+                        if send_parse_mode_name != "HTML":
                             try:
                                 from plugins.platforms.telegram.adapter import _strip_mdv2
                                 plain = _strip_mdv2(chunk)
@@ -1605,7 +1605,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             )
                             f.seek(0)
                             media_kwargs.pop("parse_mode", None)
-                            if not _has_html and media_kwargs.get("caption"):
+                            if send_parse_mode_name != "HTML" and media_kwargs.get("caption"):
                                 try:
                                     from plugins.platforms.telegram.adapter import _strip_mdv2
                                     media_kwargs["caption"] = _strip_mdv2(media_kwargs["caption"])

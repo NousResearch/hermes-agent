@@ -717,9 +717,9 @@ class TestSendToPlatformWhatsapp:
         assert _call.args[2] == "hello from hermes"
 
 
-class TestSendTelegramHtmlDetection:
-    """Verify that messages containing HTML tags are sent with parse_mode=HTML
-    and that plain / markdown messages use MarkdownV2."""
+class TestSendTelegramPayloadType:
+    """Verify that _send_telegram resolves parse mode from payload_type,
+    not from content sniffing (TKT-0033, Option 1)."""
 
     def _make_bot(self):
         bot = MagicMock()
@@ -731,7 +731,21 @@ class TestSendTelegramHtmlDetection:
         bot.send_document = AsyncMock()
         return bot
 
-    def test_html_message_uses_html_parse_mode(self, monkeypatch):
+    def test_html_payload_type_uses_html_parse_mode(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "<b>Hello</b> world", payload_type="text/html")
+        )
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "HTML"
+        assert kwargs["text"] == "<b>Hello</b> world"
+
+    def test_default_payload_type_uses_markdownv2(self, monkeypatch):
+        """Content with <b> but no declared payload_type must go MarkdownV2."""
         bot = self._make_bot()
         _install_telegram_mock(monkeypatch, bot)
 
@@ -741,8 +755,8 @@ class TestSendTelegramHtmlDetection:
 
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
-        assert kwargs["parse_mode"] == "HTML"
-        assert kwargs["text"] == "<b>Hello</b> world"
+        assert kwargs["parse_mode"] == "MarkdownV2"
+        assert kwargs["text"] != "<b>Hello</b> world"  # MarkdownV2-escaped
 
 
     def test_transient_bad_gateway_retries_text_send(self, monkeypatch):
@@ -1679,7 +1693,7 @@ class TestSendViaAdapterStandaloneFallback:
         assert result == {"success": True, "message_id": "ntfy-id"}
         assert recorded["chat_id"] == "alerts-channel"
         assert recorded["content"] == "done"
-        assert recorded["metadata"] == {"publish_topic": "alerts-channel"}
+        assert recorded["metadata"] == {"publish_topic": "alerts-channel", "payload_type": "text/markdown"}
 
 
     @pytest.mark.asyncio

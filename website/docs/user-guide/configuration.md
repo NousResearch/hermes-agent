@@ -306,6 +306,8 @@ Edge cases worth knowing:
 
 Parallel subagents spawned via `delegate_task(tasks=[...])` share this one container — concurrent `cd`, env mutations, and writes to the same path will collide. If a subagent needs an isolated sandbox, it must register a per-task image override via `register_task_env_overrides()`, which RL and benchmark environments (TerminalBench2, HermesSweEnv, etc.) do automatically for their per-task Docker images.
 
+**Per-subagent sandbox isolation (`delegate_task(sandbox=True)`):** when parallel workstreams must not touch each other's filesystem or env, pass `sandbox=True` to `delegate_task` (top-level, or per-task inside `tasks=[...]`). Each sandboxed subagent gets its OWN fresh container — isolated filesystem, environment, and working directory — using the same configured image as the parent, so the environment is identical, just separate. The container is created on the subagent's first terminal/file/`execute_code` call and removed when the subagent finishes. Requires a container terminal backend (`docker`, `singularity`, `modal`, `daytona`); on `local`/`ssh` the call fails loudly rather than silently sharing the parent's process. Default is `false` — children share the parent's sandbox, preserving the long-lived-container contract above.
+
 **Security hardening:**
 - `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back
 - `--security-opt no-new-privileges`

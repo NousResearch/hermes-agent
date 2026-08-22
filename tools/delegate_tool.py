@@ -57,6 +57,15 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+# Terminal backends that support per-subagent sandbox isolation via
+# register_task_env_overrides(). Mirrors terminal_tool's
+# _ISOLATION_OVERRIDE_KEYS coverage: each of these backends has a per-task
+# image key, so a task_id with registered overrides resolves to its own
+# container instead of collapsing to the parent's. local/ssh/vercel_sandbox
+# cannot provide per-task sandboxes — sandbox=True on those backends fails
+# loudly rather than silently degrading to the shared sandbox (issue #4271).
+_SANDBOXABLE_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -2423,12 +2432,135 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _normalize_sandbox(value: Any, default: bool) -> bool:
+    """Coerce a sandbox flag from any caller surface to a bool.
+
+    Single owner of sandbox truthiness: ``None`` falls back to *default*
+    (top-level default False; per-task default is the normalized top-level
+    value), string values use the shared truthy parser so a model-emitted
+    ``"false"`` behaves correctly.
+    """
+    return is_truthy_value(value, default=default)
+
+
+def _register_child_sandbox_overrides(
+    child_task_id: str,
+    parent_task_id: Optional[str] = None,
+) -> None:
+    """Give *child_task_id* its own terminal sandbox (per-subagent isolation).
+
+    Registers env overrides (active backend + its configured image) so the
+    child's task_id no longer collapses to the parent's container key — its
+    first terminal/file/execute_code call creates a fresh container instead
+    of joining the parent's (issue #4271). The child gets a clean filesystem
+    and env: no shared ``/workspace``, no inherited ``cd``s, no packages
+    installed by a sibling bleeding across parallel workstreams. The fresh
+    container reuses the parent's image (a per-task image registered on the
+    parent session wins over the process-level config), so the environment is
+    identical — just isolated.
+
+    Raises ``ValueError`` when the active backend cannot provide per-task
+    sandboxes (local/ssh/vercel_sandbox). Callers must fail loudly rather
+    than silently degrade to the shared sandbox: an explicit ``sandbox=True``
+    that lands in the parent's filesystem is a false isolation guarantee.
+
+    The override is removed at child teardown via ``clear_task_env_overrides``
+    (see ``_clear_child_sandbox``), and the container itself is removed by the
+    child's own ``close()`` → ``cleanup_vm`` path.
+    """
+    from tools.terminal_tool import (
+        _get_env_config,
+        register_task_env_overrides,
+        resolve_task_overrides,
+    )
+
+    config = _get_env_config()
+    env_type = config.get("env_type", "local")
+    if env_type not in _SANDBOXABLE_BACKENDS:
+        raise ValueError(
+            "sandbox isolation requires a container terminal backend "
+            f"(docker, singularity, modal, daytona); current backend is {env_type!r}. "
+            "Set terminal.backend in config.yaml to a container backend."
+        )
+    # A per-task image registered on the PARENT session (RL/benchmark
+    # rollouts, ACP workspace sessions) must win over the process-level
+    # config: the child's fresh container should mirror the parent's actual
+    # environment, not the default image.
+    parent_overrides = resolve_task_overrides(parent_task_id) if parent_task_id else {}
+    overrides: Dict[str, Any] = {"env_type": env_type}
+    image_key = f"{env_type}_image"
+    image = parent_overrides.get(image_key) or config.get(image_key)
+    if image:
+        overrides[image_key] = image
+    register_task_env_overrides(child_task_id, overrides)
+
+
+def _clear_child_sandbox(child_task_id: Optional[str]) -> None:
+    """Drop a sandboxed child's env overrides after the delegation ends.
+
+    Best-effort: the registry must not leak per-task override entries (and
+    the child's container key must stop resolving after the child is gone).
+    A missing/empty task id is a no-op.
+    """
+    if not child_task_id:
+        return
+    try:
+        from tools.terminal_tool import clear_task_env_overrides
+
+        clear_task_env_overrides(child_task_id)
+    except Exception:
+        logger.debug("Failed to clear child sandbox overrides for %s", child_task_id, exc_info=True)
+
+
+def _seed_child_terminal_env(
+    child_task_id: str,
+    parent_task_id: Optional[str],
+    sandbox: bool,
+) -> None:
+    """Wire a child's task_id into the terminal backend at spawn.
+
+    Shared path (default): seed the child's session-cwd record from the
+    parent's and register a container alias so the child resolves to the
+    PARENT's container (one bash, one /workspace, one set of installed
+    packages). Seeding the cwd preserves the parent's starting directory
+    while keeping the child's subsequent ``cd``s isolated in its own record
+    (a child's cd no longer bleeds back into the parent).
+
+    Sandbox path: register per-task env overrides so the child's task_id
+    resolves to its OWN fresh container (issue #4271). Raises ``ValueError``
+    on backends that cannot isolate — the spawn site must propagate it, not
+    swallow it: an explicit ``sandbox=True`` that silently lands in the
+    parent's filesystem is a false isolation guarantee.
+
+    The seeded cwd is not a stale record: the fresh container's working
+    directory is derived from it (``get_session_cwd(task_id)`` feeds the
+    container's ``-w``), so the record and the container state agree by
+    construction.
+    """
+    from tools.terminal_tool import (
+        get_session_cwd,
+        record_session_cwd,
+        register_container_alias,
+    )
+
+    record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+    if not sandbox:
+        # Per-session container isolation (docker + container_persistent:
+        # false) keys containers by session task_id. The child must share
+        # the PARENT's container — register the alias so the child's
+        # task_id resolves to the parent's container key.
+        register_container_alias(child_task_id, parent_task_id)
+        return
+    _register_child_sandbox_overrides(child_task_id, parent_task_id)
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
     child=None,
     parent_agent=None,
     *,
+    sandbox: Optional[bool] = None,
     owner_session_id: Optional[str] = None,
     owner_transport: Any = None,
     owner_session_record: Any = None,
@@ -2667,6 +2799,9 @@ def _run_single_child(
                     ),
                 }
 
+    # Set before the try below so the finally block can safely reference it
+    # even when the heartbeat thread fails to start before assignment.
+    child_task_id: Optional[str] = None
     try:
         _heartbeat_thread.start()
         if child_progress_cb:
@@ -2683,27 +2818,18 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
-        # Seed the child's session-cwd record from the parent's (cwd rearch):
-        # children share the parent's container, and today they inherit the
-        # parent's live env.cwd implicitly. Seeding at spawn preserves that
-        # starting directory while keeping the child's subsequent `cd`s
-        # isolated in its own record (a child's cd no longer bleeds back into
-        # the parent once readers flip to the record store).
-        try:
-            from tools.terminal_tool import (
-                get_session_cwd,
-                record_session_cwd,
-                register_container_alias,
-            )
-
-            record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
-            # Per-session container isolation (docker + container_persistent:
-            # false) keys containers by session task_id. The child must share
-            # the PARENT's container — register the alias so the child's
-            # task_id resolves to the parent's container key.
-            register_container_alias(child_task_id, parent_task_id)
-        except Exception as e:
-            logger.debug("Child cwd seed failed: %s", e)
+        if sandbox:
+            # Per-subagent sandbox isolation (issue #4271). Loud path: an
+            # explicit sandbox request must never silently degrade to the
+            # shared parent sandbox — a failure here surfaces in the child's
+            # result entry instead of being swallowed by the best-effort
+            # seeding guard below.
+            _seed_child_terminal_env(child_task_id, parent_task_id, True)
+        else:
+            try:
+                _seed_child_terminal_env(child_task_id, parent_task_id, False)
+            except Exception as e:
+                logger.debug("Child cwd seed failed: %s", e)
 
         # Opt-in worktree isolation (delegation.worktree_isolation, inspired
         # by Muse Code's --subagent-worktree-isolation): give this child its
@@ -2745,7 +2871,6 @@ def _run_single_child(
                 from tools.subagent_worktree import build_worktree_context_note
 
                 goal = goal + build_worktree_context_note(_worktree_info)
-
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -3345,6 +3470,13 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        # Per-subagent sandbox: drop the child's env overrides so the
+        # registry doesn't leak entries and the child's container key stops
+        # resolving after teardown (issue #4271). The container itself is
+        # removed by the child's close() → cleanup_vm path above.
+        if sandbox:
+            _clear_child_sandbox(child_task_id)
+
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
         # a scope while a timed-out child worker is still unwinding.
@@ -3605,6 +3737,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    sandbox: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3655,6 +3788,11 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+
+    # Per-subagent terminal sandbox isolation (issue #4271). Per-task
+    # `sandbox` beats the top-level value; both default to False (children
+    # share the parent's sandbox, the documented contract).
+    sandbox = _normalize_sandbox(sandbox, False)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
@@ -3733,6 +3871,8 @@ def delegate_task(
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
         if output_schema is not None:
             single_task["output_schema"] = output_schema
+        if sandbox:
+            single_task["sandbox"] = True
         task_list = [single_task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -3748,6 +3888,22 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Per-subagent sandbox isolation requires a container terminal backend.
+    # Fail fast BEFORE spawning any child: sandbox=True on local/ssh/vercel
+    # cannot be honored, and silently ignoring it would hand the caller a
+    # false isolation guarantee (shared filesystem/env blast radius).
+    if sandbox or any(_normalize_sandbox(t.get("sandbox"), False) for t in task_list):
+        from tools.terminal_tool import _get_env_config as _terminal_env_config
+
+        _env_type = _terminal_env_config().get("env_type", "local")
+        if _env_type not in _SANDBOXABLE_BACKENDS:
+            return tool_error(
+                "delegate_task(sandbox=True) requires a container terminal "
+                f"backend (docker, singularity, modal, daytona); current "
+                f"backend is {_env_type!r}. Set terminal.backend in "
+                "config.yaml to a container backend."
+            )
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -3905,6 +4061,7 @@ def delegate_task(
                 _t["goal"],
                 child,
                 parent_agent,
+                sandbox=_normalize_sandbox(_t.get("sandbox"), sandbox),
                 owner_session_id=_origin_ui_session_id or None,
                 owner_transport=_origin_owner_transport,
                 owner_session_record=_origin_owner_session_record,
@@ -3930,6 +4087,7 @@ def delegate_task(
                         goal=t["goal"],
                         child=child,
                         parent_agent=parent_agent,
+                        sandbox=_normalize_sandbox(t.get("sandbox"), sandbox),
                         owner_session_id=_origin_ui_session_id or None,
                         owner_transport=_origin_owner_transport,
                         owner_session_record=_origin_owner_session_record,
@@ -4789,6 +4947,19 @@ DELEGATE_TASK_SCHEMA = {
                                 "require only fields you will actually read."
                             ),
                         },
+                        "sandbox": {
+                            "type": "boolean",
+                            "description": (
+                                "Per-task override of the top-level sandbox "
+                                "flag: run THIS subagent in its own isolated "
+                                "terminal sandbox (fresh container, isolated "
+                                "filesystem/env) instead of sharing the "
+                                "parent's. Requires a container terminal "
+                                "backend (docker, singularity, modal, "
+                                "daytona); errors on local/ssh. Default "
+                                "false."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -4852,6 +5023,23 @@ DELEGATE_TASK_SCHEMA = {
                     "and specific — the child sees it appended to its next "
                     "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
                     "and return early results\")."
+                ),
+            },
+            "sandbox": {
+                "type": "boolean",
+                "description": (
+                    "Optional per-subagent terminal sandbox isolation. When "
+                    "true, each subagent gets its OWN fresh container sandbox "
+                    "(isolated filesystem, environment, and working directory) "
+                    "instead of sharing the parent's terminal backend — "
+                    "parallel workstreams can no longer clobber each other's "
+                    "files, env mutations, or installed packages. The fresh "
+                    "container uses the same configured image as the parent, "
+                    "so the environment is identical, just isolated. Requires "
+                    "a container terminal backend (docker, singularity, modal, "
+                    "daytona); errors on local/ssh. Per-task sandbox in a "
+                    "batch overrides this top-level value. Default false "
+                    "(children share the parent's sandbox)."
                 ),
             },
         },
@@ -4918,6 +5106,7 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        sandbox=args.get("sandbox"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

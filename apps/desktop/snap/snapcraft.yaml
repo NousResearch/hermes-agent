@@ -42,7 +42,7 @@ apps:
       HERMES_HOME: "$HOME/.hermes"
       TMPDIR: "$XDG_RUNTIME_DIR"
     extensions:
-      - gnome-46-2404
+      - gnome
 
 parts:
   hermes-desktop:

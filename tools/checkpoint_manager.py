@@ -1090,7 +1090,7 @@ class CheckpointManager:
         self,
         working_dir: str,
         commit_hash: str,
-        file_path: str = None,
+        file_path: Optional[str] = None,
         safe: bool = False,
     ) -> Dict:
         """Restore files to a checkpoint state.
@@ -1452,10 +1452,10 @@ class CheckpointManager:
                 ["log", "--format=%s", "-1", sha], store, working_dir,
             )
             commit_msg = msg if ok_msg and msg else "checkpoint"
-            args = ["commit-tree", tree_sha, "-m", commit_msg, "--no-gpg-sign"]
+            args: List[str] = ["commit-tree", tree_sha]
             if new_parent is not None:
-                args = ["commit-tree", tree_sha, "-p", new_parent,
-                        "-m", commit_msg, "--no-gpg-sign"]
+                args.extend(["-p", new_parent])
+            args.extend(["-m", commit_msg, "--no-gpg-sign"])
             ok_commit, new_sha, _ = _run_git(args, store, working_dir)
             if not ok_commit or not new_sha:
                 return
@@ -1538,10 +1538,10 @@ class CheckpointManager:
                         ["log", "--format=%s", "-1", sha], store, str(store.parent),
                     )
                     commit_msg = msg if ok_msg and msg else "checkpoint"
-                    args = ["commit-tree", tree_sha, "-m", commit_msg, "--no-gpg-sign"]
+                    args: List[str] = ["commit-tree", tree_sha]
                     if new_parent is not None:
-                        args = ["commit-tree", tree_sha, "-p", new_parent,
-                                "-m", commit_msg, "--no-gpg-sign"]
+                        args.extend(["-p", new_parent])
+                    args.extend(["-m", commit_msg, "--no-gpg-sign"])
                     ok_commit, new_sha, _ = _run_git(args, store, str(store.parent))
                     if not ok_commit or not new_sha:
                         fail = True
@@ -1968,10 +1968,10 @@ def prune_checkpoints(
                             ["log", "--format=%s", "-1", sha], store, str(base),
                         )
                         msg = m if ok_m and m else "checkpoint"
-                        args = ["commit-tree", tsha, "-m", msg, "--no-gpg-sign"]
+                        args: List[str] = ["commit-tree", tsha]
                         if new_parent is not None:
-                            args = ["commit-tree", tsha, "-p", new_parent,
-                                    "-m", msg, "--no-gpg-sign"]
+                            args.extend(["-p", new_parent])
+                        args.extend(["-m", msg, "--no-gpg-sign"])
                         ok_cm, new_sha, _ = _run_git(args, store, str(base))
                         if not ok_cm or not new_sha:
                             fail = True

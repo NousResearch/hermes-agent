@@ -17527,6 +17527,37 @@ def mount_spa(application: FastAPI):
                 response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
             return response
 
+    @application.get("/audio/{file_path:path}")
+    async def serve_audio(file_path: str):
+        """Serve cached TTS audio files with path traversal protection."""
+        from hermes_constants import get_hermes_dir
+
+        audio_cache_dir = get_hermes_dir("cache/audio", "audio_cache")
+        requested_path = (audio_cache_dir / file_path).resolve()
+        if not requested_path.is_relative_to(audio_cache_dir.resolve()):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: path traversal attempt",
+            )
+        if not requested_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Audio file not found: {file_path}",
+            )
+
+        media_type_map = {
+            ".mp3": "audio/mpeg",
+            ".ogg": "audio/ogg",
+            ".wav": "audio/wav",
+            ".m4a": "audio/mp4",
+            ".webm": "audio/webm",
+        }
+        media_type = media_type_map.get(
+            requested_path.suffix.lower(),
+            "application/octet-stream",
+        )
+        return FileResponse(requested_path, media_type=media_type)
+
     application.mount(
         "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets"), name="assets"
     )

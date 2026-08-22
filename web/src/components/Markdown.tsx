@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
@@ -54,11 +54,21 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "media"; filePath: string }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A standalone ``MEDIA: <path>`` line. Kept identical to the TUI's
+ * MEDIA_LINE_RE (ui-tui/src/components/markdown.tsx) so the dashboard accepts
+ * the same forms the other surfaces do: leading indentation and an optional
+ * wrapping backtick/quote pair. The lazy ``\S+?`` lets the trailing quote be
+ * consumed by the closing group rather than captured as part of the path.
+ */
+const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/;
 
 function parseBlocks(text: string): BlockNode[] {
   const lines = text.split("\n");
@@ -130,11 +140,20 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // MEDIA directive - convert to audio player
+    const mediaMatch = line.match(MEDIA_LINE_RE);
+    if (mediaMatch) {
+      blocks.push({ type: "media", filePath: mediaMatch[1] });
+      i++;
+      continue;
+    }
+
     // Paragraph — collect consecutive non-empty, non-special lines
     const paraLines: string[] = [];
     while (
       i < lines.length &&
       lines[i].trim() !== "" &&
+      !lines[i].match(MEDIA_LINE_RE) &&
       !lines[i].match(/^```/) &&
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
@@ -217,6 +236,9 @@ function Block({
       );
     }
 
+    case "media":
+      return <MediaBlock block={block} caret={caret} />;
+
     case "paragraph":
       return (
         <p>
@@ -225,6 +247,56 @@ function Block({
         </p>
       );
   }
+}
+
+function MediaBlock({
+  block,
+  caret,
+}: {
+  block: Extract<BlockNode, { type: "media" }>;
+  caret?: ReactNode;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const attemptedSrcRef = useRef<string | null>(null);
+  const fileName = block.filePath.split("/").filter(Boolean).pop() ?? "";
+  const src = `/audio/${encodeURIComponent(fileName)}`;
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || attemptedSrcRef.current === src) {
+      return;
+    }
+
+    attemptedSrcRef.current = src;
+    audio.currentTime = 0;
+
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        // Browsers may block autoplay until the user interacts with the page.
+      });
+    }
+  }, [src]);
+
+  return (
+    <div className="flex items-center space-x-2 my-2">
+      <audio
+        ref={audioRef}
+        controls
+        autoPlay
+        preload="auto"
+        playsInline
+        src={src}
+        className="max-w-xs"
+      >
+        Your browser does not support the audio element.
+      </audio>
+      <span className="text-sm text-muted-foreground">
+        {fileName}
+      </span>
+      {caret}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */

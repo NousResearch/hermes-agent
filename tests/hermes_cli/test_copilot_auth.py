@@ -131,10 +131,16 @@ class TestRequestHeaders:
     """Copilot API header generation."""
 
     def test_default_headers_include_openai_intent(self):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from hermes_cli.copilot_auth import (
+            COPILOT_INTEGRATION_ID,
+            COPILOT_USER_AGENT,
+            copilot_request_headers,
+        )
         headers = copilot_request_headers()
         assert headers["Openai-Intent"] == "conversation-edits"
-        assert headers["User-Agent"] == "HermesAgent/1.0"
+        assert headers["User-Agent"] == COPILOT_USER_AGENT
+        assert headers["Copilot-Integration-Id"] == COPILOT_INTEGRATION_ID
+        assert COPILOT_INTEGRATION_ID == "copilot-developer-cli"
         assert "Editor-Version" in headers
 
 
@@ -142,6 +148,41 @@ class TestRequestHeaders:
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
+
+
+    def test_all_paths_present_same_copilot_integration_id(self):
+        """Inference, models.py default headers, and the token-exchange path
+        must advertise ONE coherent @github/copilot CLI identity.
+
+        Guards against the pre-fix drift where inference sent
+        Copilot-Integration-Id 'vscode-chat' while other paths sent an ad-hoc
+        'HermesAgent/1.0' User-Agent and 'vscode/1.104.1' Editor-Version.
+        """
+        from hermes_cli import copilot_auth
+        from hermes_cli.copilot_auth import (
+            COPILOT_EDITOR_VERSION,
+            COPILOT_INTEGRATION_ID,
+            COPILOT_USER_AGENT,
+            copilot_request_headers,
+        )
+        from hermes_cli.models import copilot_default_headers
+
+        assert COPILOT_INTEGRATION_ID == "copilot-developer-cli"
+
+        inference = copilot_request_headers()
+        default = copilot_default_headers()
+
+        # Inference and models.py default headers agree on all three identity
+        # fields.
+        for hdrs in (inference, default):
+            assert hdrs["Copilot-Integration-Id"] == COPILOT_INTEGRATION_ID
+            assert hdrs["User-Agent"] == COPILOT_USER_AGENT
+            assert hdrs["Editor-Version"] == COPILOT_EDITOR_VERSION
+
+        # The token-exchange path reuses the same User-Agent / Editor-Version
+        # constants, so it presents the same client identity too.
+        assert copilot_auth._EXCHANGE_USER_AGENT == COPILOT_USER_AGENT
+        assert copilot_auth._EDITOR_VERSION == COPILOT_EDITOR_VERSION
 
 
 class TestCopilotDefaultHeaders:

@@ -540,7 +540,17 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except FileNotFoundError:
+            # On POSIX, several Hermes processes may enter the stdlib backup
+            # rename chain together. A sibling can consume ``.1`` after our
+            # existence check but before ``os.rename(.1, .2)``. The stdlib has
+            # already closed our stream at that point; reopen the canonical
+            # base path so the current emit remains writable; a later emit can
+            # retry rotation without reporting this harmless backup race.
+            if self.stream is None and not self.delay:
+                self.stream = self._open()
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

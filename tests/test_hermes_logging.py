@@ -555,6 +555,36 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    @pytest.mark.linux_only
+    def test_rollover_recovers_when_a_sibling_moves_a_backup(self, tmp_path, monkeypatch):
+        """A POSIX sibling may consume ``.1`` during stdlib's rename chain."""
+        log_path = tmp_path / "errors.log"
+        backup = tmp_path / "errors.log.1"
+        log_path.write_text("current\n")
+        backup.write_text("sibling backup\n")
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=2, encoding="utf-8",
+        )
+        original_rename = hermes_logging.os.rename
+        moved = False
+
+        def sibling_wins(source, destination):
+            nonlocal moved
+            if source == str(backup) and not moved:
+                moved = True
+                backup.unlink()
+                raise FileNotFoundError(source)
+            return original_rename(source, destination)
+
+        try:
+            monkeypatch.setattr(hermes_logging.os, "rename", sibling_wins)
+            handler.doRollover()
+            self._emit(handler, "after sibling rollover")
+            assert log_path.exists()
+            assert "after sibling rollover" in log_path.read_text()
+        finally:
+            handler.close()
+
 
     def test_gateway_log_attached_after_external_rotation_then_re_setup(
         self, hermes_home,

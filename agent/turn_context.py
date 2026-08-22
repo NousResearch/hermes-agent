@@ -47,6 +47,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from hermes_time import current_date_line
 
 logger = logging.getLogger(__name__)
 
@@ -1317,6 +1318,16 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
+
+    # Current-date volatile tail: date-only, delivered on the current turn's
+    # user message (API copy only) via the api_content sidecar channel, so
+    # the system prompt stays byte-stable. Always last in the composed text.
+    _date_tail = current_date_line()
+    plugin_user_context = (
+        plugin_user_context + "\n\n" + _date_tail
+        if plugin_user_context
+        else _date_tail
+    )
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}

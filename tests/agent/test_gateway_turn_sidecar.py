@@ -12,6 +12,7 @@ cannot apply and the fact would otherwise silently drop.
 from __future__ import annotations
 
 import types
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -126,6 +127,8 @@ RESET_NOTE = (
     "This is a fresh conversation with no prior context.]"
 )
 VC_NOTE = "[Voice channel now: dev-vc (2 members)]"
+_MAY_17 = datetime(2026, 5, 17, 9, 30, tzinfo=timezone.utc)
+_DATE_SUNDAY = "Today's date: Sunday, May 17, 2026"
 
 
 class TestConsumeIsOneShot:
@@ -151,11 +154,13 @@ class TestStringContentSidecarDelivery:
         bytes (replay keeps them byte-stable in history)."""
         agent = _FakeAgent()
         agent._gateway_turn_context_notes = RESET_NOTE
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=[]
+        ):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
-        assert msg["api_content"] == "hello\n\n" + RESET_NOTE
+        assert msg["api_content"] == "hello\n\n" + RESET_NOTE + "\n\n" + _DATE_SUNDAY
         # The composed bytes match what conversation_loop would send.
         assert msg["api_content"] == compose_user_api_content(
             "hello", ctx.ext_prefetch_cache, ctx.plugin_user_context
@@ -166,19 +171,28 @@ class TestStringContentSidecarDelivery:
     def test_notes_append_after_plugin_context(self):
         agent = _FakeAgent()
         agent._gateway_turn_context_notes = VC_NOTE
-        with patch(
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX\n\n" + VC_NOTE
+        assert (
+            msg["api_content"]
+            == "hello\n\nPLUGIN-CTX\n\n" + VC_NOTE + "\n\n" + _DATE_SUNDAY
+        )
 
-    def test_no_notes_means_no_stamp(self):
+    def test_plain_turn_stamps_only_the_date_tail(self):
+        """Every string turn gets the date tail — the only per-turn injection
+        when there is no plugin context or gateway note."""
         agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_time.now", return_value=_MAY_17), patch(
+            "hermes_cli.plugins.invoke_hook", return_value=[]
+        ):
             ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"] == "hello"
+        assert msg["api_content"] == "hello\n\n" + _DATE_SUNDAY
 
 
 class TestMultimodalFallback:

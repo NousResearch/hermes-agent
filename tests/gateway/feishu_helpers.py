@@ -59,6 +59,11 @@ def install_dedup_state(adapter: Any, seen: Optional[dict] = None) -> None:
     adapter._dedup_lock = threading.Lock()
     adapter._dedup_state_path = None
     adapter._persist_seen_message_ids = lambda: None
+    # Skeleton adapters exercise admission/dispatch, not cross-profile dedup —
+    # mark the shared store already-resolved-to-None so _is_duplicate stays on
+    # the in-memory gate and no sqlite file is created for these tests.
+    adapter._shared_dedup = None
+    adapter._shared_dedup_ready = True
 
 
 def stub_mention(adapter: Any, mentions_self: bool) -> None:

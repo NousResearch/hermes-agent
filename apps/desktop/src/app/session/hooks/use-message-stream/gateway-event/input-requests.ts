@@ -13,7 +13,15 @@ import type { GatewayEventContext } from './types'
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, updateSessionState, upsertToolCall } = deps
+  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  // Stop/delete marks the runtime interrupted before awaiting the backend.
+  // Drop any blocking-input event already queued on the transport during that
+  // window — otherwise it would re-create its overlay and native notification
+  // after the conversation has been stopped or removed (#75616).
+  if (sessionId && sessionInterrupted(sessionId)) {
+    return true
+  }
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on

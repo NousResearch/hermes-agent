@@ -7849,10 +7849,10 @@ def run_conversation(
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             agent._empty_content_retries = 0
-                            agent._buffer_status(
-                                f"↻ Switched to fallback: {agent.model} "
-                                f"({agent.provider})"
-                            )
+                            # No switch line buffered here: try_activate_fallback
+                            # already emitted the switch immediately, and the
+                            # buffer is flushed on terminal failure — buffering
+                            # would show the same switch twice.
                             logger.info(
                                 "Fallback activated after empty responses: "
                                 "now using %s on %s",
@@ -7951,11 +7951,9 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — surface the one-shot fallback
-                # switch notice (if a fallback activated this turn) before
-                # dropping the noisy retry buffer, so a provider/model switch
-                # stays visible even when the fallback succeeds.
-                agent._emit_pending_fallback_notice()
+                # The fallback switch, if any, was already surfaced at the
+                # moment of the switch, so there is nothing to hold back here
+                # — only the noisy retry chatter is dropped.
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import (

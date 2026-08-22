@@ -2814,17 +2814,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
-        )
-        # The buffered line above is dropped on successful recovery, but a
-        # provider/model switch is a durable state change operators must see
-        # even when the fallback succeeds.  Record a one-shot notice that the
-        # success path surfaces exactly once via _emit_pending_fallback_notice
-        # (see run_agent.py); it is discarded on terminal failure since the
-        # buffered line is flushed instead.  See fallback-observability fix.
-        agent._pending_fallback_notice = (
+        # Emitted here, at the switch, rather than deferred to the first
+        # successful content: a notice that can only arrive *after* the
+        # fallback's answer cannot warn anyone against acting on it.
+        # Nothing is buffered alongside it — the buffer is flushed on terminal
+        # failure, so a buffered copy would show the switch twice; emitting
+        # once here keeps "seen exactly once" in both outcomes.  _emit_status
+        # swallows its own exceptions, so this cannot fall into the `except`
+        # below and cascade down the fallback chain.
+        agent._emit_status(
             f"🔄 Switched to fallback model: {old_model} via {old_provider} "
             f"→ {fb_model} via {fb_provider}"
         )

@@ -1,13 +1,15 @@
 """Tests for the retry/fallback status buffer helpers on AIAgent.
 
-These helpers defer noisy retry chatter (rate-limit retries, fallback
-switches, compression attempts) so users only see the trace when
-everything ultimately fails.  On successful recovery the buffer is
-silently dropped.
+These helpers defer noisy retry chatter (rate-limit retries, compression
+attempts) so users only see the trace when everything ultimately fails.
+On successful recovery the buffer is silently dropped.  A provider/model
+switch is not chatter: it is emitted at the moment it happens, so it is
+never buffered and never deferred.
 """
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 
@@ -124,66 +126,89 @@ def test_mixed_kinds_replay_through_correct_channels():
     assert warns == ["warn-1"]
 
 
-def test_pending_fallback_notice_emitted_once_on_success():
-    """On successful recovery the one-shot fallback notice is surfaced even
-    though the noisy retry buffer is dropped."""
-    agent = _make_bare_agent()
+def _make_fallback_agent(fallback_model):
+    """Real AIAgent with a fallback chain, so the switch path is exercised
+    rather than simulated."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=fallback_model,
+        )
+        agent.client = MagicMock()
+        return agent
+
+
+def _mock_client():
+    mock = MagicMock()
+    mock.base_url = "https://openrouter.ai/api/v1"
+    mock.api_key = "fb-key"
+    return mock
+
+
+def _switch_lines(emitted):
+    return [m for m in emitted if "Switched to fallback model:" in m]
+
+
+def test_switch_notice_emitted_at_the_switch_not_after_the_response():
+    """The switch is announced while it happens, before any content exists.
+
+    A notice that can only arrive after the fallback's answer cannot warn
+    anyone against acting on that answer.
+    """
+    agent = _make_fallback_agent([{"provider": "openai", "model": "gpt-4o"}])
     emitted = []
     agent._emit_status = lambda msg: emitted.append(msg)
 
-    # Simulate try_activate_fallback: buffer the noisy switch line AND record
-    # the durable one-shot notice.
-    agent._buffer_status("🔄 Primary model failed — switching to fallback: m2 via p2")
-    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+    with patch("agent.auxiliary_client.resolve_provider_client",
+               return_value=(_mock_client(), "gpt-4o")):
+        assert agent._try_activate_fallback() is True
 
-    # Success path order: emit pending notice, then drop the buffer.
-    agent._emit_pending_fallback_notice()
-    agent._clear_status_buffer()
-
-    # The durable notice was shown exactly once; the buffered retry noise was
-    # silently dropped.
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
-    assert agent._retry_status_buffer == []
-    # Notice is cleared so it cannot re-emit on a later turn.
-    assert agent._pending_fallback_notice is None
-
-    # A second success path with no new fallback emits nothing.
-    agent._emit_pending_fallback_notice()
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    # Emitted by the time the switch call returns — no content has been
+    # requested from the fallback model yet, let alone produced.
+    assert len(_switch_lines(emitted)) == 1
+    assert "gpt-4o" in _switch_lines(emitted)[0]
+    # And nothing about the switch is left sitting in the retry buffer, which
+    # is what used to delay it.
+    assert _switch_lines(
+        [msg for _kind, msg in getattr(agent, "_retry_status_buffer", [])]
+    ) == []
 
 
-def test_pending_fallback_notice_noop_when_unset():
-    """No fallback this turn → no notice emitted on the success path."""
-    agent = _make_bare_agent()
+def test_switch_seen_exactly_once_on_success():
+    """Success path: the retry noise is dropped, the switch stays seen once."""
+    agent = _make_fallback_agent([{"provider": "openai", "model": "gpt-4o"}])
     emitted = []
     agent._emit_status = lambda msg: emitted.append(msg)
 
-    # No _pending_fallback_notice attribute set at all.
-    agent._emit_pending_fallback_notice()
-    assert emitted == []
+    with patch("agent.auxiliary_client.resolve_provider_client",
+               return_value=(_mock_client(), "gpt-4o")):
+        assert agent._try_activate_fallback() is True
+    agent._clear_status_buffer()          # success path
+
+    assert len(_switch_lines(emitted)) == 1
 
 
-def test_flush_discards_pending_fallback_notice():
-    """On terminal failure the flushed buffer already carries the switch line,
-    so the one-shot notice is discarded to avoid a stale duplicate later."""
-    agent = _make_bare_agent()
+def test_switch_seen_exactly_once_on_terminal_failure():
+    """Terminal failure flushes the retry trace — it must not repeat the
+    switch that was already announced at the moment it happened."""
+    agent = _make_fallback_agent([{"provider": "openai", "model": "gpt-4o"}])
     emitted = []
     agent._emit_status = lambda msg: emitted.append(msg)
 
-    agent._buffer_status("🔄 Primary model failed — switching to fallback: m2 via p2")
-    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+    with patch("agent.auxiliary_client.resolve_provider_client",
+               return_value=(_mock_client(), "gpt-4o")):
+        assert agent._try_activate_fallback() is True
+    agent._flush_status_buffer()          # terminal-failure path
 
-    # Terminal failure flushes the buffered trace...
-    agent._flush_status_buffer()
-    assert emitted == ["🔄 Primary model failed — switching to fallback: m2 via p2"]
-    # ...and discards the pending notice so it won't re-emit on a later turn.
-    assert agent._pending_fallback_notice is None
-
-    emitted.clear()
-    agent._emit_pending_fallback_notice()
-    assert emitted == []
-
-
+    assert len(_switch_lines(emitted)) == 1
 
 
 def test_flush_swallows_callback_exceptions():
@@ -205,3 +230,51 @@ def test_flush_swallows_callback_exceptions():
     assert seen == ["first", "second"]
     # Buffer drained regardless of failures.
     assert agent._retry_status_buffer == []
+
+
+def test_terminal_trace_ends_on_the_model_that_failed():
+    """The switch lines are live now rather than buffered, so the flushed
+    trace — all a client reconnecting after the failure gets — would otherwise
+    carry no model identity at all."""
+    agent = _make_bare_agent()
+    agent.model = "gpt-4o"
+    agent.provider = "openai"
+    emitted = []
+    agent._emit_status = lambda msg: emitted.append(msg)
+
+    agent._buffer_status("⏳ Retrying...")
+    agent._flush_status_buffer()
+
+    assert emitted[-1] == "⏹ Ended on gpt-4o via openai"
+
+
+def test_no_identity_line_when_there_is_no_trace_to_end():
+    """An empty buffer means the turn never degraded — nothing to close."""
+    agent = _make_bare_agent()
+    agent.model = "gpt-4o"
+    agent.provider = "openai"
+    emitted = []
+    agent._emit_status = lambda msg: emitted.append(msg)
+
+    agent._flush_status_buffer()
+
+    assert emitted == []
+
+
+def test_emit_status_swallows_its_own_exceptions():
+    """Load-bearing for the switch notice: ``try_activate_fallback`` emits it
+    with no guard of its own, on the argument that ``_emit_status`` cannot
+    raise. If it could, a status hiccup would land in that function's ``except``
+    and cascade down the rest of the fallback chain.
+    """
+    agent = _make_bare_agent()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated status failure")
+
+    agent._vprint = boom          # CLI channel fails
+    agent.status_callback = boom  # gateway channel fails too
+
+    # Both channels raising, and still nothing escapes.
+    agent._emit_status("🔄 Switched to fallback model: a via p → b via q")
+

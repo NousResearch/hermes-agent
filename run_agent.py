@@ -1169,40 +1169,14 @@ class AIAgent:
         except Exception:
             pass
 
-    def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery.
-
-        A provider/model switch is a durable state change operators must see,
-        unlike transient retry chatter that ``_clear_status_buffer`` drops.
-        ``try_activate_fallback`` records the switch in
-        ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
-        ``_flush_status_buffer`` — so the user always sees the switch once.
-        """
-        try:
-            notice = getattr(self, "_pending_fallback_notice", None)
-            if notice:
-                # Clear before emitting so a (swallowed) callback error can't
-                # leave the notice set for a stale re-emit on a later turn.
-                self._pending_fallback_notice = None
-                self._emit_status(notice)
-        except Exception:
-            # Never break the conversation loop on a notice hiccup.
-            pass
-
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
         Surfaces the full retry/fallback trace so the user can see what
-        was tried before the turn gave up.
+        was tried before the turn gave up, and closes it by naming the
+        model the turn actually died on.
         """
         try:
-            # The buffered trace already carries the fallback switch line, so
-            # drop any one-shot fallback notice to avoid a stale duplicate
-            # leaking into a later successful turn.
-            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -1219,6 +1193,16 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}{msg}", force=True)
                 except Exception:
                     pass
+            # Switch lines are emitted live at the switch, not buffered, so
+            # without this the flushed trace — the only post-mortem a client
+            # reconnecting after the failure gets — would never name the model
+            # the turn ended on. End the record with that identity.
+            model = getattr(self, "model", None)
+            provider = getattr(self, "provider", None)
+            if model:
+                self._emit_status(
+                    f"⏹ Ended on {model}" + (f" via {provider}" if provider else "")
+                )
         except Exception:
             pass
 

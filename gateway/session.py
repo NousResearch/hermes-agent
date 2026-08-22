@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -185,6 +186,12 @@ class SessionSource:
     # Transport-local fail-closed signal for an explicit profile route whose
     # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Internal, wire-invisible discriminator used when a messaging turn is
+    # detached from its chat lane.  The running turn keeps the original key;
+    # new inbound messages receive this suffix and therefore get an isolated
+    # foreground session.  Adapters derive it from trusted routing metadata --
+    # it is never accepted from platform payloads or persisted in ``origin``.
+    session_route_id: Optional[str] = field(default=None, repr=False, compare=False)
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -1087,6 +1094,12 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+# Stored on the physical Telegram routing entry when a running turn is
+# detached.  BasePlatformAdapter reads this before session keying so later
+# messages enter the fresh routed lane while the original turn finishes.
+TELEGRAM_FOREGROUND_ROUTE_METADATA = "telegram_foreground_route"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -1126,6 +1139,18 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     ns = _session_key_namespace(profile)
+
+    def _routed(key: str) -> str:
+        route_id = str(getattr(source, "session_route_id", None) or "").strip()
+        if not route_id:
+            return key
+        # Route ids are gateway-generated, but validate again at the key
+        # boundary so corrupted local metadata cannot inject separators or
+        # path-sensitive material into a logical session key.
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", route_id) is None:
+            logger.warning("Ignoring invalid internal session route id")
+            return key
+        return f"{key}:route:{route_id}"
     platform = source.platform.value
     slack_scope_id = (
         str(source.scope_id)
@@ -1144,7 +1169,7 @@ def build_session_key(
             dm_parts.append(dm_chat_id)
             if source.thread_id:
                 dm_parts.append(source.thread_id)
-            return ":".join(str(part) for part in dm_parts)
+            return _routed(":".join(str(part) for part in dm_parts))
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -1161,10 +1186,10 @@ def build_session_key(
             dm_parts.append(str(dm_participant_id))
             if source.thread_id:
                 dm_parts.append(source.thread_id)
-            return ":".join(str(part) for part in dm_parts)
+            return _routed(":".join(str(part) for part in dm_parts))
         if source.thread_id:
             dm_parts.append(source.thread_id)
-        return ":".join(str(part) for part in dm_parts)
+        return _routed(":".join(str(part) for part in dm_parts))
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -1208,7 +1233,7 @@ def build_session_key(
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
 
-    return ":".join(str(part) for part in key_parts)
+    return _routed(":".join(str(part) for part in key_parts))
 
 
 class _SessionFlight:

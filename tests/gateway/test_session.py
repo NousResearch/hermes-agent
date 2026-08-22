@@ -56,6 +56,19 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_id == "cli"
         assert restored.chat_type == "dm"  # default value preserved
 
+    def test_internal_route_id_is_not_serialized(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            session_route_id="fg_deadbeef",
+        )
+
+        payload = source.to_dict()
+        restored = SessionSource.from_dict(payload)
+
+        assert "session_route_id" not in payload
+        assert restored.session_route_id is None
+
 
 class TestSessionSourceDescription:
     def test_local_cli(self):
@@ -709,6 +722,28 @@ class TestWhatsAppSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:dm:99"
+
+    def test_internal_route_id_isolates_detached_foreground_lane(self):
+        physical = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+        )
+        routed = replace(physical, session_route_id="fg_deadbeef")
+
+        assert build_session_key(physical) == "agent:main:telegram:dm:99"
+        assert build_session_key(routed) == (
+            "agent:main:telegram:dm:99:route:fg_deadbeef"
+        )
+
+    def test_invalid_internal_route_id_is_ignored(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            session_route_id="../../another-session",
+        )
+
+        assert build_session_key(source) == "agent:main:telegram:dm:99"
 
     def test_distinct_dm_chat_ids_get_distinct_session_keys(self):
         """Different DM chats must not collapse into one shared session."""
@@ -1642,5 +1677,4 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
 

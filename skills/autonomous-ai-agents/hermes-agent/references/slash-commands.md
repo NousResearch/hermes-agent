@@ -18,7 +18,9 @@ it. New commands land often; `/help` in-session is always authoritative.
 /rollback [N]            List/restore filesystem checkpoints
 /diff [mode] [--stat]    Git changes in cwd (staged|all|session modes)
 /snapshot [sub]          Create/restore Hermes config+state snapshots (CLI)
-/background (/bg) <p>    Run prompt in background
+/background (/bg) [p]    Run prompt; bare mid-turn detaches on Telegram
+/back <session-id>        Background a live Telegram agent from /agents
+/front <session-id>       Foreground a live Telegram agent from /agents
 /queue (/q) <prompt>     Queue prompt for next turn
 /steer <prompt>          Inject a message after the next tool call
 /agents (/tasks)         Show active agents and running tasks

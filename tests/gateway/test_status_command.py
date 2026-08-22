@@ -228,6 +228,7 @@ async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     result = await runner._handle_message(_make_event("/agents"))
 
     assert "**Active agents:** 1" in result
+    assert "foreground" in result
     assert "**Running background processes:** 1" in result
     assert "proc-1" in result
     running_agent.interrupt.assert_not_called()

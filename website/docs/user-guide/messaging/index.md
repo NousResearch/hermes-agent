@@ -210,7 +210,9 @@ platform network disconnect as an event-loop failure.
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/background [prompt]` | Run a new background prompt; on Telegram, omit the prompt mid-turn to detach the running agent |
+| `/back <session-id>` | Move a live Telegram agent from `/agents` into the background |
+| `/front <session-id>` | Move a live Telegram agent from `/agents` into the foreground |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -513,6 +515,16 @@ Each `/background` prompt spawns a **separate agent instance** that runs asynchr
 - **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
 - **Non-blocking** — your main chat stays fully interactive. Send messages, run other commands, or start more background tasks while it works.
 - **Result delivery** — when the task finishes, the result is sent back to the **same chat or channel** where you issued the command, prefixed with "✅ Background task complete". If it fails, you'll see "❌ Background task failed" with the error.
+
+### Detach the current Telegram turn
+
+While a Telegram agent is running, send bare `/background` or `/bg` to move that exact turn into the background. Hermes keeps the agent, transcript target, and work in progress unchanged, then opens a fresh foreground session for new messages. The detached turn posts its result back to the same chat when it finishes.
+
+This bare form is Telegram-only and only works while an agent is running. `/background <prompt>` keeps its existing behavior on every messaging platform: it starts a new isolated agent with the supplied prompt.
+
+`/agents` lists each controllable live agent's session ID. Use `/back <session-id>` to detach the currently foregrounded agent, and `/front <session-id>` to select any other live agent from the same Telegram chat. Moving an agent changes only the chat route: it does not restart, clone, interrupt, or migrate the agent's transcript.
+
+The **Gateway async jobs** count in `/agents` covers internal watcher and delivery coroutines. Those are not agent conversations and cannot be moved; only IDs listed under **Active agents** are accepted by `/back` and `/front`.
 
 ### Background Process Notifications
 

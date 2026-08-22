@@ -7829,6 +7829,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """True for the main Telegram DM (or General topic) when topic mode has made it a lobby."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return False
+        # A detached foreground route is already an explicit isolated lane.
+        # Do not fold it back into the physical topic lobby.
+        if getattr(source, "session_route_id", None):
+            return False
         if not self._telegram_topic_mode_enabled(source):
             return False
         tid = str(source.thread_id or "")
@@ -7837,6 +7841,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
         """True for a user-created Telegram private-chat topic lane."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        # Topic bindings are one-to-one. Resolving a detached foreground
+        # route through the physical topic binding would immediately switch it
+        # back onto the still-running session it was created to escape.
+        if getattr(source, "session_route_id", None):
             return False
         if not self._telegram_topic_mode_enabled(source):
             return False
@@ -16350,6 +16359,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "new": self._busy_new_command,
                 "queue": self._busy_queue_command,
                 "steer": self._busy_steer_command,
+                "background": self._busy_background_command,
                 "egress": self._busy_egress_command,
                 "goal": self._busy_goal_command,
                 "loop": self._busy_loop_command,
@@ -16369,6 +16379,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "deny": self._handle_deny_command,
                 "pause": self._handle_pause_command,
                 "agents": self._handle_agents_command,
+                "back": self._handle_back_command,
+                "front": self._handle_front_command,
                 "background": self._handle_background_command,
                 "kanban": self._handle_kanban_command,
                 "subgoal": self._handle_subgoal_command,
@@ -16433,6 +16445,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # interrupt, no queued text.
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
+
+    async def _busy_background_command(
+        self, event: MessageEvent, quick_key: str, source: SessionSource
+    ) -> str:
+        """Detach a live Telegram turn, or preserve ``/bg <prompt>``.
+
+        The live agent cannot be moved onto another key after it starts: its
+        generation guards, turn lease, transcript target, and adapter owner
+        all intentionally close over the original key.  Instead, keep that
+        exact turn untouched and durably route subsequent Telegram input to a
+        fresh key.  The old turn therefore completes and delivers normally,
+        while the chat can immediately start independent foreground turns.
+        """
+        prompt = event.get_command_args().strip()
+        if prompt or source.platform != Platform.TELEGRAM:
+            return await self._handle_background_command(event)
+
+        state = self._peek_session_state(quick_key)
+        running_agent = state.turn.agent if state is not None else None
+        if running_agent is None:
+            return t("gateway.background.usage")
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            return (
+                "⏳ The agent is still starting. Try `/bg` again once it is "
+                "shown as running."
+            )
+
+        return await self._detach_live_telegram_agent(
+            event, quick_key, running_agent
+        )
 
     async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
         from hermes_cli.proxy_cli import format_status_text
@@ -17536,6 +17578,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "back":
+            return await self._handle_back_command(event)
+
+        if canonical == "front":
+            return await self._handle_front_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)

@@ -36,6 +36,7 @@ from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_c
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
+    TELEGRAM_FOREGROUND_ROUTE_METADATA,
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
@@ -1279,6 +1280,9 @@ class GatewaySlashCommandsMixin:
 
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
+        current_physical_key, _current_route = self._split_detached_route_key(
+            current_session_key
+        )
 
         running_agents: dict = getattr(self, "_running_agents", {}) or {}
         running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
@@ -1323,14 +1327,33 @@ class GatewaySlashCommandsMixin:
         if agent_rows:
             for idx, row in enumerate(agent_rows[:12], 1):
                 current = t("gateway.agents.this_chat") if row["session_key"] == current_session_key else ""
+                row_physical_key, _row_route = self._split_detached_route_key(
+                    row["session_key"]
+                )
+                placement = ""
+                if (
+                    event.source.platform == Platform.TELEGRAM
+                    and row_physical_key == current_physical_key
+                ):
+                    placement = (
+                        " · foreground"
+                        if row["session_key"] == current_session_key
+                        else " · background"
+                    )
                 sid = f" · `{row['session_id']}`" if row["session_id"] else ""
                 model = f" · `{row['model']}`" if row["model"] else ""
                 lines.append(
                     f"{idx}. `{row['session_key']}` · {row['state']} · "
-                    f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"
+                    f"{format_uptime_short(row['elapsed'])}{sid}{model}"
+                    f"{placement}{current}"
                 )
             if len(agent_rows) > 12:
                 lines.append(t("gateway.agents.more", count=len(agent_rows) - 12))
+            if event.source.platform == Platform.TELEGRAM:
+                lines.append(
+                    "Use `/back <session-id>` or `/front <session-id>` to "
+                    "change which live agent owns this chat."
+                )
 
         lines.extend(
             [
@@ -1356,6 +1379,11 @@ class GatewaySlashCommandsMixin:
                 t("gateway.agents.async_jobs", count=len(background_tasks)),
             ]
         )
+        if background_tasks:
+            lines.append(
+                "Gateway async jobs are internal watcher/delivery tasks; "
+                "only IDs listed under Active agents can be moved."
+            )
 
         # Background (async) delegations — delegate_task(background=true).
         # Live per-child activity comes from the registry's progress sampler
@@ -1422,6 +1450,128 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.agents.none"))
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _split_detached_route_key(session_key: str) -> tuple[str, str]:
+        """Return ``(physical_key, route_id)`` for a routed agent key."""
+        physical, marker, route_id = str(session_key or "").rpartition(":route:")
+        if not marker:
+            return str(session_key or ""), ""
+        return physical, route_id
+
+    def _live_agent_by_session_id(self, session_id: str) -> tuple[str, Any] | None:
+        """Resolve one exact live gateway-agent id without prefix ambiguity."""
+        wanted = str(session_id or "").strip()
+        if not wanted:
+            return None
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        for session_key, agent in (getattr(self, "_running_agents", {}) or {}).items():
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
+            if str(getattr(agent, "session_id", "") or "") == wanted:
+                return session_key, agent
+        return None
+
+    def _physical_key_for_source(self, source: SessionSource) -> str:
+        physical_source = dataclasses.replace(source, session_route_id=None)
+        return self.session_store._generate_session_key(physical_source)
+
+    async def _detach_live_telegram_agent(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        running_agent: Any,
+    ) -> str:
+        """Keep ``running_agent`` intact and route Telegram to a fresh lane."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM:
+            return "`/back` is currently available only on Telegram."
+
+        physical_key = self._physical_key_for_source(source)
+        target_physical, _target_route = self._split_detached_route_key(session_key)
+        if target_physical != physical_key:
+            return "⚠️ That agent belongs to a different chat."
+
+        route_id = f"fg_{os.urandom(6).hex()}"
+        routed_source = dataclasses.replace(source, session_route_id=route_id)
+        try:
+            routed_entry = await self.async_session_store.get_or_create_session(
+                routed_source
+            )
+            stored = await self.async_session_store.set_session_metadata(
+                physical_key,
+                TELEGRAM_FOREGROUND_ROUTE_METADATA,
+                route_id,
+            )
+        except Exception:
+            logger.exception("Failed to detach Telegram foreground route")
+            return "⚠️ Could not move the agent. It is still running normally."
+        if not stored:
+            return "⏳ The session is still initializing. Try again in a moment."
+
+        self._cache_session_source(routed_entry.session_key, routed_source)
+        detached_session_id = str(
+            getattr(running_agent, "session_id", None) or "current turn"
+        )
+        return (
+            f"↗️ `{detached_session_id}` is now running in the background.\n\n"
+            "It will post its result here. New messages use fresh foreground "
+            f"session `{routed_entry.session_id}`."
+        )
+
+    async def _handle_back_command(self, event: MessageEvent) -> str:
+        """Handle ``/back <session-id>`` for a live Telegram agent."""
+        session_id = event.get_command_args().strip()
+        if not session_id:
+            return "Usage: `/back <session-id>` — copy the ID from `/agents`."
+        target = self._live_agent_by_session_id(session_id)
+        if target is None:
+            return f"No live agent found with ID `{session_id}`. Use `/agents`."
+        target_key, agent = target
+        current_key = self._session_key_for_source(event.source)
+        physical_key = self._physical_key_for_source(event.source)
+        target_physical, _route_id = self._split_detached_route_key(target_key)
+        if target_physical != physical_key:
+            return "⚠️ That agent belongs to a different chat."
+        if target_key != current_key:
+            return f"`{session_id}` is already in the background."
+        return await self._detach_live_telegram_agent(event, target_key, agent)
+
+    async def _handle_front_command(self, event: MessageEvent) -> str:
+        """Handle ``/front <session-id>`` by routing Telegram back to it."""
+        if event.source.platform != Platform.TELEGRAM:
+            return "`/front` is currently available only on Telegram."
+        session_id = event.get_command_args().strip()
+        if not session_id:
+            return "Usage: `/front <session-id>` — copy the ID from `/agents`."
+        target = self._live_agent_by_session_id(session_id)
+        if target is None:
+            return f"No live agent found with ID `{session_id}`. Use `/agents`."
+        target_key, _agent = target
+        physical_key = self._physical_key_for_source(event.source)
+        target_physical, target_route_id = self._split_detached_route_key(target_key)
+        if target_physical != physical_key:
+            return "⚠️ That agent belongs to a different chat."
+        current_key = self._session_key_for_source(event.source)
+        if current_key == target_key:
+            return f"`{session_id}` is already in the foreground."
+        try:
+            stored = await self.async_session_store.set_session_metadata(
+                physical_key,
+                TELEGRAM_FOREGROUND_ROUTE_METADATA,
+                target_route_id,
+            )
+        except Exception:
+            logger.exception("Failed to foreground Telegram agent route")
+            return "⚠️ Could not move the agent to the foreground."
+        if not stored:
+            return "⚠️ The Telegram session route no longer exists."
+        return (
+            f"↙️ `{session_id}` is now in the foreground. New messages will "
+            "follow the normal busy-input behavior for that live turn; the "
+            "previous foreground agent keeps running in the background."
+        )
 
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.

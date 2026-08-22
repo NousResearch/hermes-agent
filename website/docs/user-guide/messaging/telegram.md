@@ -840,6 +840,8 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 - Root-lobby reminders are rate-limited to one message per 30 seconds per chat — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies
 - BotFather setup screenshots are rate-limited to one send per 5 minutes per chat — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
 - `/background <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
+- Bare `/background` or `/bg` during a running turn detaches that exact agent and opens a fresh foreground route. The routed session deliberately bypasses the physical topic binding so it cannot be switched back onto the still-running transcript
+- `/agents` shows controllable live session IDs; `/back <session-id>` and `/front <session-id>` move same-chat agents between the background and foreground without restarting or interrupting them. The aggregate Gateway async-job count is internal work, not movable agents
 - `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
 
 ### Disabling multi-session mode

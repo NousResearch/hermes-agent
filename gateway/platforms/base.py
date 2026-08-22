@@ -577,7 +577,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import (
+    TELEGRAM_FOREGROUND_ROUTE_METADATA,
+    SessionSource,
+    build_session_key,
+)
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -3689,6 +3693,53 @@ class BasePlatformAdapter(ABC):
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
 
+    def _apply_persisted_session_route(self, event: MessageEvent) -> None:
+        """Move external Telegram input onto a detached foreground lane.
+
+        A bare mid-run ``/background`` stores a trusted route id on the
+        physical chat entry.  Applying it at adapter ingress is essential:
+        both the adapter guard and GatewayRunner must see the routed key, or
+        new chat messages would remain queued behind the detached turn.
+
+        Strict/internal events keep their explicitly pinned route so process
+        notifications and recovery wakes for the detached session cannot leak
+        into the new foreground conversation.
+        """
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.TELEGRAM:
+            return
+        metadata = getattr(event, "metadata", None) or {}
+        if getattr(event, "internal", False) or metadata.get("gateway_session_key"):
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        physical_source = dataclasses.replace(source, session_route_id=None)
+        physical_key = build_session_key(
+            physical_source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+            profile=self._session_key_profile(physical_source),
+        )
+        try:
+            route_id = store.get_session_metadata(
+                physical_key, TELEGRAM_FOREGROUND_ROUTE_METADATA, ""
+            )
+        except Exception:
+            logger.debug("detached Telegram route lookup failed", exc_info=True)
+            return
+        route_id = str(route_id or "").strip()
+        if not route_id:
+            return
+        try:
+            event.source = dataclasses.replace(source, session_route_id=route_id)
+        except Exception:
+            logger.debug("detached Telegram route rewrite failed", exc_info=True)
+
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
@@ -6066,6 +6117,10 @@ class BasePlatformAdapter(ABC):
         )
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
+
+        # Apply after topic recovery so the persisted physical key is derived
+        # from the final Telegram topic lane.
+        self._apply_persisted_session_route(event)
 
         session_key = build_session_key(
             event.source,

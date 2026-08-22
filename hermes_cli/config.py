@@ -5476,7 +5476,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    # display.tool_progress is runtime-defaulted and therefore absent from
+    # DEFAULT_CONFIG, but "off" is still an enum string rather than a boolean.
+    if key != "display.tool_progress" and not isinstance(_default_value_for_key(key), str):
         _stripped = value.strip()
         _lower = _stripped.lower()
         if _lower in {'true', 'yes', 'on'}:

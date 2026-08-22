@@ -190,6 +190,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "config": {
+        "description": (
+            "Operator-enabled config editor for explicitly reviewed, non-secret "
+            "display, compression, and voice preference leaves."
+        ),
+        "tools": ["hermes_config_set"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

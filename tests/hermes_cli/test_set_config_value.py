@@ -32,6 +32,16 @@ def _read_config(tmp_path):
     return config_path.read_text() if config_path.exists() else ""
 
 
+def test_runtime_defaulted_tool_progress_off_stays_a_string(_isolated_hermes_home):
+    """The canonical writer must preserve the runtime-defaulted enum value."""
+    import yaml
+
+    set_config_value("display.tool_progress", "off")
+
+    parsed = yaml.safe_load(_read_config(_isolated_hermes_home))
+    assert parsed["display"]["tool_progress"] == "off"
+
+
 # ---------------------------------------------------------------------------
 # Explicit allowlist keys → .env
 # ---------------------------------------------------------------------------

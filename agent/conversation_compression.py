@@ -3336,10 +3336,16 @@ def compress_context(
         # can predate mid-session memory writes the in-memory snapshot has
         # already absorbed. External providers can change their own prompt
         # block during on_pre_compress(), so they retain the rebuild path.
+        # AGENTS.md:19-23 carves out context compression as the one place
+        # the system prompt may change mid-conversation. That makes this
+        # gate the only correct spot to act on SOUL.md identity drift.
+        from agent.system_prompt import stored_identity_is_stale
+
         if (
             cached_system_prompt is not None
             and getattr(agent, "_memory_manager", None) is None
             and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
+            and not stored_identity_is_stale(agent, cached_system_prompt)
         ):
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt

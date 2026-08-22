@@ -271,6 +271,76 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
     block = format_system_prompt_sections(selected)
     return [block] if block else []
 
+def _resolve_context_length(agent: Any) -> Optional[int]:
+    """Resolve the model context window used for context-file caps.
+
+    Stable for the life of the conversation (see the caller's note), so it
+    does not threaten prompt caching. None falls back to the historical flat
+    default inside the loaders."""
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None:
+        _cc_len = getattr(_cc, "context_length", None)
+        if isinstance(_cc_len, int) and _cc_len > 0:
+            return _cc_len
+    return None
+
+
+def resolve_identity_block(agent: Any) -> Dict[str, Any]:
+    """Resolve the identity block (slot #1) exactly as the prompt builder does.
+
+    Returns ``{"text": str, "from_soul": bool, "checkable": bool}``.
+
+    ``from_soul`` preserves the builder's ``_soul_loaded`` semantics (it
+    controls whether SOUL.md is injected again as project context), and it is
+    provenance, not text comparison — a user's SOUL.md that happens to equal
+    ``DEFAULT_AGENT_IDENTITY`` still counts as loaded.
+
+    ``checkable`` is for staleness judgements at the compaction keep-prompt
+    gate (#68563, see ``stored_identity_is_stale``):
+    ``load_soul_md`` returns None for an absent SOUL.md, for a readable but
+    empty one, AND for one that exists but cannot be read (it swallows
+    IO/decoding errors). The first two are legitimate "use the default
+    personality" states (emptying SOUL.md is the documented way to reset —
+    see default_soul.py); a failed SOUL.md read, or HERMES_HOME itself being
+    absent/unmounted, is no basis to declare the stored prompt stale, so
+    those two cases set ``checkable`` False and callers must fail open to
+    reuse."""
+    text = None
+    from_soul = False
+    checkable = True
+    if agent.load_soul_identity or not agent.skip_context_files:
+        # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
+        # ambient resolution on a thread that lost the HERMES_HOME ContextVar
+        # reads the launch profile's SOUL.md instead (#50233).
+        _home = _agent_home(agent)
+        _soul_content = _ra().load_soul_md(
+            _resolve_context_length(agent), home_override=_home
+        )
+        if _soul_content:
+            text = _soul_content
+            from_soul = True
+        else:
+            try:
+                _probe_home = _home or get_hermes_home()
+                if not _probe_home.exists():
+                    # The agent's home itself is absent/unmounted: nothing
+                    # here can confirm what identity applies, so this is NOT
+                    # checkable (distinct from the home existing with no
+                    # SOUL.md inside it, handled in the branch below).
+                    checkable = False
+                else:
+                    _soul_path = _probe_home / "SOUL.md"
+                    if _soul_path.exists():
+                        # Distinguish readable-empty from unreadable: a read
+                        # that succeeds here means the None above was the
+                        # deliberate empty-file state, which IS checkable.
+                        _soul_path.read_text(encoding="utf-8")
+            except Exception:
+                checkable = False
+    if text is None:
+        text = DEFAULT_AGENT_IDENTITY
+    return {"text": text, "from_soul": from_soul, "checkable": checkable}
+
 
 def _agent_home(agent: Any) -> Optional[Path]:
     """The agent's OWN profile home.
@@ -362,34 +432,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Resolve the model's context window once so context-file caps can scale
     # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
-    # None falls back to the historical flat default. This value is stable for
-    # the life of the conversation, so it does not threaten prompt caching.
-    _ctx_len: Optional[int] = None
-    _cc = getattr(agent, "context_compressor", None)
-    if _cc is not None:
-        _cc_len = getattr(_cc, "context_length", None)
-        if isinstance(_cc_len, int) and _cc_len > 0:
-            _ctx_len = _cc_len
+    _ctx_len: Optional[int] = _resolve_context_length(agent)
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
-    # Try SOUL.md as primary identity unless the caller explicitly skipped it.
-    # Some execution modes (cron) still want HERMES_HOME persona while keeping
-    # cwd project instructions disabled.
-    _soul_loaded = False
-    if agent.load_soul_identity or not agent.skip_context_files:
-        # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
-        # ambient resolution on a thread that lost the HERMES_HOME ContextVar
-        # reads the launch profile's SOUL.md instead (#50233).
-        _soul_content = _r.load_soul_md(_ctx_len, home_override=_agent_home(agent))
-        if _soul_content:
-            stable_parts.append(_soul_content)
-            _soul_loaded = True
-
-    if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+    # Identity (SOUL.md or the hardcoded fallback) via the shared resolver —
+    # the compaction keep-prompt gate's staleness check (#68563, see
+    # stored_identity_is_stale) uses the same function, so the two can never
+    # disagree about what identity a fresh build would use.
+    _identity = resolve_identity_block(agent)
+    stable_parts.append(_identity["text"])
+    _soul_loaded = _identity["from_soul"]
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
@@ -939,6 +993,55 @@ def invalidate_system_prompt(agent: Any) -> None:
     agent._cached_system_prompt_static = None
     if agent._memory_store:
         agent._memory_store.load_from_disk()
+
+
+def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
+    """Return True when ``stored_prompt`` no longer opens with this agent's
+    identity block.
+
+    Session restore's runtime check only rejects Model/Provider/cwd/Platform
+    drift, so identity CONTENT drift — SOUL.md edited, created or deleted
+    since the prompt was persisted — used to keep being reused verbatim for
+    the rest of the session (issue #68563). Restore itself never rebuilds on
+    identity drift (AGENTS.md:19-23 only exempts context compression from
+    the "no mid-conversation system-prompt rewrite" rule), so this function's
+    only caller is the Hermes-native compaction keep-prompt gate in
+    agent/conversation_compression.py — the boundary where a rebuild is
+    actually allowed to happen and to persist. This lives next to
+    ``resolve_identity_block`` so the comparison and the resolver it
+    compares against stay in step.
+
+    The comparison is anchored: identity is slot #1 and
+    ``HERMES_AGENT_HELP_GUIDANCE`` always follows it in the stable tier, so
+    requiring the pair as the prompt prefix supplies the boundary a bare
+    substring check lacks (deleting the TAIL of SOUL.md would otherwise still
+    "match"). Cost is one file read plus a truncation — no probes, no tier
+    assembly.
+
+    Fails open to reuse: ``checkable=False`` (SOUL.md exists but is
+    temporarily unreadable, or HERMES_HOME itself is absent/unmounted), a
+    resolver crash, or ``stored_prompt`` never carrying the help-guidance
+    anchor anywhere at all, is no basis to call the stored identity stale.
+    That last case is a stored prompt that was never built through the
+    normal stable-tier layout (a legacy shape, or a hand-built value in a
+    test fixture) — the detector's contract is to report True only when it
+    can confidently say slot #1 changed, and it cannot locate slot #1 at
+    all here, so this is undetermined rather than a confirmed mismatch.
+    Rebuilding on either kind of fail-open would persist a
+    DEFAULT_AGENT_IDENTITY downgrade over a healthy custom identity.
+    """
+    try:
+        identity = resolve_identity_block(agent)
+        if not (identity["checkable"] and identity["text"]):
+            return False
+        help_anchor = HERMES_AGENT_HELP_GUIDANCE.strip()
+        if help_anchor not in stored_prompt:
+            return False
+        anchored = identity["text"].strip() + "\n\n" + help_anchor
+        return not stored_prompt.startswith(anchored)
+    except Exception:
+        logger.debug("identity staleness check failed", exc_info=True)
+        return False
 
 
 def reconstruct_static_prefix(

@@ -1122,6 +1122,11 @@ agent:
 #   platform_toolsets:
 #     discord: [web, vision, skills, todo]
 #
+#   # Deny all model-callable tools for CLI, Desktop, and TUI sessions:
+#   # (an explicit empty list is fail-closed, including MCP and GUI tools)
+#   platform_toolsets:
+#     cli: []
+#
 # If not set, defaults are:
 #   cli:           hermes-cli            (everything + cronjob management)
 #   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)

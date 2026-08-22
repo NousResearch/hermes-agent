@@ -2430,6 +2430,14 @@ def _get_platform_tools(
     # Normalise to str so downstream sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
+    # An explicitly saved empty list is a deliberate deny-all policy, not an
+    # incomplete platform configuration. It must win over every later recovery
+    # path (default plugins, MCP servers, and non-configurable native toolsets),
+    # otherwise a persisted zero-tool selection can silently grow a callable
+    # schema after a restart.
+    if explicitly_configured and not toolset_names:
+        return set()
+
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
@@ -2691,19 +2699,21 @@ def _get_platform_tools(
         from toolsets import validate_toolset
 
         _named = [str(t) for t in _explicit if isinstance(t, str) and t]
-        if (
-            _named
-            and not any(validate_toolset(t) for t in _named)
-            and platform not in _warned_invalid_platform_toolsets
-        ):
-            _warned_invalid_platform_toolsets.add(platform)
-            logger.warning(
-                "platform '%s' has no valid toolsets configured (unknown "
-                "name(s): %s) - tools will be unavailable. Run `hermes tools` "
-                "to reconfigure. See issue #38798.",
-                platform,
-                ", ".join(_named),
-            )
+        invalid_selection = _named and not any(
+            validate_toolset(t) or t in enabled_mcp_servers or t == "no_mcp"
+            for t in _named
+        )
+        if invalid_selection:
+            if platform not in _warned_invalid_platform_toolsets:
+                _warned_invalid_platform_toolsets.add(platform)
+                logger.warning(
+                    "platform '%s' has no valid toolsets configured (unknown "
+                    "name(s): %s) - tools will be unavailable. Run `hermes tools` "
+                    "to reconfigure. See issue #38798.",
+                    platform,
+                    ", ".join(_named),
+                )
+            return set()
 
     return enabled_toolsets
 

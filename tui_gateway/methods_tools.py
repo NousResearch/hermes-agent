@@ -152,7 +152,7 @@ def _(rid, params: dict) -> dict:
                 # user just enabled in config this session is picked up.
                 refresh_agent_mcp_tools(
                     agent,
-                    enabled_override=_load_enabled_toolsets(),
+                    enabled_override=_load_enabled_toolsets(_session_source(session)),
                     quiet_mode=True,
                 )
             except Exception as _exc:
@@ -1497,11 +1497,12 @@ def _(rid, params: dict) -> dict:
         from toolsets import get_all_toolsets, get_toolset_info
 
         session = _sessions.get(params.get("session_id", ""))
-        enabled = (
-            set(getattr(session["agent"], "enabled_toolsets", []) or [])
+        enabled_toolsets = (
+            getattr(session["agent"], "enabled_toolsets", None)
             if session
-            else set(_load_enabled_toolsets() or [])
+            else _load_enabled_toolsets()
         )
+        enabled = set(enabled_toolsets or [])
 
         items = []
         for name in sorted(get_all_toolsets().keys()):
@@ -1513,7 +1514,7 @@ def _(rid, params: dict) -> dict:
                     "name": name,
                     "description": info["description"],
                     "tool_count": info["tool_count"],
-                    "enabled": name in enabled if enabled else True,
+                    "enabled": name in enabled if enabled_toolsets is not None else True,
                     "tools": info["resolved_tools"],
                 }
             )
@@ -1640,11 +1641,12 @@ def _(rid, params: dict) -> dict:
         from toolsets import get_all_toolsets, get_toolset_info
 
         session = _sessions.get(params.get("session_id", ""))
-        enabled = (
-            set(getattr(session["agent"], "enabled_toolsets", []) or [])
+        enabled_toolsets = (
+            getattr(session["agent"], "enabled_toolsets", None)
             if session
-            else set(_load_enabled_toolsets() or [])
+            else _load_enabled_toolsets()
         )
+        enabled = set(enabled_toolsets or [])
 
         items = []
         for name in sorted(get_all_toolsets().keys()):
@@ -1656,7 +1658,7 @@ def _(rid, params: dict) -> dict:
                     "name": name,
                     "description": info["description"],
                     "tool_count": info["tool_count"],
-                    "enabled": name in enabled if enabled else True,
+                    "enabled": name in enabled if enabled_toolsets is not None else True,
                 }
             )
         return _ok(rid, {"toolsets": items})

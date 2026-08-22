@@ -46,10 +46,11 @@ def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     config = {"platform_toolsets": {"cli": ["hermes"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
-        _get_platform_tools(config, "cli")
+        enabled = _get_platform_tools(config, "cli")
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("#38798" in m and "hermes" in m for m in warnings), warnings
+    assert enabled == set()
 
 
 def test_valid_platform_toolsets_no_runtime_warning(caplog):
@@ -72,6 +73,17 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
         _get_platform_tools(config, "cli")
 
     assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
+def test_explicit_empty_platform_toolsets_disable_all_recovery_paths():
+    """A saved empty list is a durable deny-all policy, not a fallback cue."""
+    enabled = _get_platform_tools(
+        {"platform_toolsets": {"cli": []}},
+        "cli",
+        include_default_mcp_servers=True,
+    )
+
+    assert enabled == set()
 
 
 

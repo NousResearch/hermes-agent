@@ -7332,6 +7332,12 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # Providers that reject image parts inside tool-role messages
+                # (e.g. Console Go) get the deferred native-vision image parts
+                # as a user-role message now that the whole tool batch is
+                # appended (role alternation: tool..tool, user).
+                agent._append_pending_tool_images_as_user_message(messages)
+
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
                     # the in-memory result back to the model or project any

@@ -215,6 +215,12 @@ opencode_go = OpenCodeGoProfile(
     base_url="https://opencode.ai/zen/go/v1",
     default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # Console Go accepts multimodal USER messages (verified 2026-08-08) but
+    # rejects image_url parts inside tool-role messages with HTTP 400
+    # ("Upstream request failed: [400] Provider returned error"). Hermes
+    # defers those image parts to a follow-up user-role message instead.
+    supports_vision_tool_messages=False,
+    supports_vision_user_messages=True,
 )
 
 register_provider(opencode_zen)

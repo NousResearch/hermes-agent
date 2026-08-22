@@ -7226,6 +7226,26 @@ class AIAgent:
             pass
         return True  # default: assume compatible
 
+    def _provider_supports_vision_user_messages(self) -> bool:
+        """Return True if the active provider accepts multimodal USER messages.
+
+        Some providers (e.g. opencode-go / Console Go) reject ``image_url``
+        parts inside tool-role messages but accept them in user-role
+        messages.  When True, deferred image parts are appended as a
+        user-role message after the tool batch instead of downgrading the
+        whole tool result to a text summary.  This checks the provider
+        profile's ``supports_vision_user_messages`` field.
+        """
+        try:
+            from providers import get_provider_profile
+            provider = (getattr(self, "provider", "") or "").strip()
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                return getattr(profile, "supports_vision_user_messages", False)
+        except Exception:
+            pass
+        return False  # default: assume no multimodal user-message support
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
@@ -7366,15 +7386,45 @@ class AIAgent:
 
         if self._model_supports_vision():
             # Vision-capable on paper — but if the provider rejects list-type
-            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"), or if
-            # we've already learned this lesson in-session, short-circuit to
+            # tool content (e.g. Xiaomi MiMo's 400 "text is not set", Console
+            # Go's 400 on image_url in tool-role messages), or if we've
+            # already learned this lesson in-session, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
             if not self._provider_supports_vision_tool_messages():
                 logger.debug(
                     "Tool %s: provider %s does not accept list-type tool "
-                    "content — sending text summary",
+                    "content — deferring image parts to a user-role message",
                     tool_name, getattr(self, "provider", ""),
                 )
+                # Providers like Console Go (opencode-go) accept multimodal
+                # USER messages but reject image_url parts inside tool-role
+                # messages. Keep the text for the tool message and defer the
+                # image parts to a follow-up user-role message (appended by
+                # _append_pending_tool_images_as_user_message after the whole
+                # tool batch), so a vision-capable model still sees the
+                # pixels natively. Providers that do not declare multimodal
+                # user-message support (e.g. Xiaomi MiMo) keep the safe
+                # text-summary downgrade.
+                image_parts = [
+                    p for p in content
+                    if isinstance(p, dict) and p.get("type") in {"image_url", "input_image"}
+                ]
+                if (
+                    image_parts
+                    and self._model_supports_vision()
+                    and self._provider_supports_vision_user_messages()
+                ):
+                    pending = list(
+                        getattr(self, "_pending_tool_image_parts", None) or []
+                    )
+                    pending.extend(image_parts)
+                    self._pending_tool_image_parts = pending
+                    text_parts = [
+                        p for p in content
+                        if not (isinstance(p, dict) and p.get("type") in {"image_url", "input_image"})
+                    ]
+                    if text_parts:
+                        return text_parts
                 return _multimodal_text_summary(result)
             key = (
                 (getattr(self, "provider", "") or "").strip().lower(),
@@ -7410,6 +7460,29 @@ class AIAgent:
             self.model,
         )
         return summary
+
+    def _append_pending_tool_images_as_user_message(self, messages: list) -> None:
+        """Append deferred native-vision image parts as a user-role message.
+
+        Providers like Console Go (opencode-go) accept multimodal user
+        messages but reject ``image_url`` parts inside tool-role messages
+        (HTTP 400). ``_tool_result_content_for_active_model`` collects those
+        parts in ``self._pending_tool_image_parts``; call this once after
+        tool execution finished so the user message is appended after ALL
+        tool messages of the batch (OpenAI role alternation: tool..tool, user).
+        """
+        pending = getattr(self, "_pending_tool_image_parts", None)
+        if not pending:
+            return
+        self._pending_tool_image_parts = None
+        text = (
+            "Native image(s) from the preceding tool result — use your "
+            "built-in vision to inspect them and answer accordingly."
+        )
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": text}] + pending,
+        })
 
     def _try_shrink_image_parts_in_messages(
         self,

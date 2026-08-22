@@ -8,6 +8,7 @@ from hermes_cli.moa_config import (
     build_moa_turn_prompt,
     decode_moa_turn,
     exact_moa_preset_name,
+    list_moa_presets,
     normalize_moa_config,
     resolve_moa_preset,
     set_active_moa_preset,
@@ -181,3 +182,180 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 
 
+
+
+# ── Unknown-key diagnostic (#65110) ─────────────────────────────────────────
+
+
+@pytest.fixture
+def moa_warnings(caplog):
+    """Capture moa_config warnings with the process-lifetime dedup set cleared.
+
+    ``_MOA_NORMALIZE_WARNED`` persists for the process, so without an explicit
+    reset the first test to warn would suppress every later one.
+    """
+    import logging
+
+    from hermes_cli import moa_config
+
+    moa_config._MOA_NORMALIZE_WARNED.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.moa_config"):
+        yield caplog
+    moa_config._MOA_NORMALIZE_WARNED.clear()
+
+
+def _warning_texts(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "hermes_cli.moa_config"
+    ]
+
+
+def test_unknown_preset_key_warns_with_preset_name_and_key(moa_warnings):
+    """#65110: `reasoning_effort` at the preset level is dropped — say so."""
+    normalize_moa_config(_preset(reasoning_effort="high"))
+
+    messages = _warning_texts(moa_warnings)
+    assert messages == [
+        "moa.presets.p: unknown config keys ignored: reasoning_effort"
+    ]
+
+
+def test_unknown_reference_slot_key_warns_with_index(moa_warnings):
+    """A slot warning must name WHICH reference model carries the bad key."""
+    cfg = {
+        "default_preset": "p",
+        "presets": {
+            "p": {
+                "reference_models": [
+                    {"provider": "openrouter", "model": "a"},
+                    {"provider": "openrouter", "model": "b"},
+                    {"provider": "openrouter", "model": "c", "temperature": 0.4},
+                ],
+                "aggregator": {"provider": "openrouter", "model": "agg"},
+            },
+        },
+    }
+
+    normalize_moa_config(cfg)
+
+    assert _warning_texts(moa_warnings) == [
+        "moa.presets.p.reference_models[2]: unknown config keys ignored: temperature"
+    ]
+
+
+def test_unknown_aggregator_slot_key_warns(moa_warnings):
+    normalize_moa_config(
+        _preset(aggregator={"provider": "openrouter", "model": "agg", "effort": "high"})
+    )
+
+    assert _warning_texts(moa_warnings) == [
+        "moa.presets.p.aggregator: unknown config keys ignored: effort"
+    ]
+
+
+def test_unknown_key_warning_is_emitted_once_per_process(moa_warnings):
+    """normalize_moa_config runs on every model switch — one warning, not N."""
+    cfg = _preset(reasoning_effort="high")
+    for _ in range(5):
+        normalize_moa_config(cfg)
+    resolve_moa_preset(cfg, "p")
+    list_moa_presets(cfg)
+
+    assert len(_warning_texts(moa_warnings)) == 1
+
+
+def test_legacy_flat_moa_block_does_not_warn(moa_warnings):
+    """Negative control — the legacy flat shape must stay silent.
+
+    In the flat shape the whole ``moa`` block IS the default preset, so its own
+    legitimate top-level keys (save_traces, trace_dir, default_preset,
+    active_preset, privacy_filter) would every one of them look "unknown" to a
+    preset allow-list. Warning here would fire on valid configs.
+    """
+    flat = {
+        "save_traces": True,
+        "trace_dir": "/custom/traces",
+        "default_preset": "default",
+        "active_preset": "",
+        "privacy_filter": "display",
+        "reference_models": [{"provider": "openrouter", "model": "a"}],
+        "aggregator": {"provider": "openrouter", "model": "agg"},
+        "max_tokens": 4096,
+        "enabled": True,
+    }
+
+    cfg = normalize_moa_config(flat)
+
+    assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
+    assert _warning_texts(moa_warnings) == []
+
+
+def test_fully_populated_valid_preset_does_not_warn(moa_warnings):
+    """Negative control — every documented knob, plus a GUI-written config.
+
+    ``enabled`` on the AGGREGATOR slot is the load-bearing case: _clean_slot
+    only honors it for reference slots, but web_server's MoaModelSlot writes it
+    into the aggregator on every dashboard save, so it must not warn.
+    """
+    cfg = {
+        "default_preset": "p",
+        "active_preset": "p",
+        "privacy_filter": "full",
+        "presets": {
+            "p": {
+                "enabled": True,
+                "reference_models": [
+                    {
+                        "provider": "openrouter",
+                        "model": "a",
+                        "reasoning_effort": "high",
+                        "max_tokens": 600,
+                        "enabled": True,
+                    },
+                ],
+                "aggregator": {
+                    "provider": "openrouter",
+                    "model": "agg",
+                    "reasoning_effort": "high",
+                    "enabled": True,
+                },
+                "reference_temperature": 0.6,
+                "aggregator_temperature": 0.4,
+                "reference_timeout": 120,
+                "degraded_reference_policy": "silent",
+                "max_tokens": 4096,
+                "reference_max_tokens": 600,
+                "fanout": "per_iteration",
+            },
+        },
+    }
+
+    normalize_moa_config(cfg)
+
+    assert _warning_texts(moa_warnings) == []
+
+
+def test_unknown_keys_do_not_change_normalized_output(moa_warnings):
+    """The diagnostic is a warning only — normalization is byte-for-byte equal."""
+    with_unknown = normalize_moa_config(
+        _preset(
+            reasoning_effort="high",
+            reference_models=[
+                {"provider": "openrouter", "model": "a", "temperature": 0.4},
+            ],
+            aggregator={"provider": "openrouter", "model": "agg", "effort": "high"},
+        )
+    )
+    expected = normalize_moa_config(
+        _preset(
+            reference_models=[{"provider": "openrouter", "model": "a"}],
+            aggregator={"provider": "openrouter", "model": "agg"},
+        )
+    )
+
+    assert with_unknown == expected
+    # ...and it did warn (preset + reference slot + aggregator), so the
+    # equality above is not vacuously comparing two silent runs.
+    assert len(_warning_texts(moa_warnings)) == 3

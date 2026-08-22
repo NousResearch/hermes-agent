@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 from copy import deepcopy
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
@@ -191,9 +194,87 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return bool(value)
 
 
-def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
+# ``normalize_moa_config`` runs on every ``resolve_moa_preset`` /
+# ``list_moa_presets`` / ``exact_moa_preset_name`` call — i.e. on every model
+# switch and every MoA turn — so an undeduplicated warning would fire dozens of
+# times for the same static config.yaml. Deduplicate per (scope, signature) for
+# the process lifetime, mirroring ``_warn_once_per_provider`` in
+# ``hermes_cli/config.py``.
+_MOA_NORMALIZE_WARNED: set = set()
+
+
+def _warn_once(scope: str, signature: str, msg: str, *args: Any) -> None:
+    """Emit ``logger.warning(msg, *args)`` at most once per (scope, signature)."""
+    dedup_key = (scope or "?", signature)
+    if dedup_key in _MOA_NORMALIZE_WARNED:
+        return
+    _MOA_NORMALIZE_WARNED.add(dedup_key)
+    logger.warning(msg, *args)
+
+
+# Keys ``_normalize_preset`` actually reads off a preset mapping — one entry per
+# ``raw.get(...)`` call in that function. Nothing downstream can see any other
+# key, because ``_normalize_preset`` returns a freshly built dict and every
+# consumer (agent/moa_loop.py, hermes_cli/moa_cmd.py, the dashboard) reads the
+# NORMALIZED preset. A new preset knob must therefore be added here alongside
+# the reader that consumes it, or configs setting it warn spuriously.
+_KNOWN_PRESET_KEYS = frozenset({
+    "enabled",
+    "reference_models",
+    "aggregator",
+    "reference_temperature",
+    "aggregator_temperature",
+    "reference_timeout",
+    "degraded_reference_policy",
+    "max_tokens",
+    "reference_max_tokens",
+    "fanout",
+})
+
+# Keys ``_clean_slot`` actually reads off a reference/aggregator slot.
+# ``enabled`` is listed unconditionally even though ``_clean_slot`` only honors
+# it for reference slots (``include_enabled=True``): Hermes' own writer emits it
+# into the aggregator slot too (``MoaModelSlot`` in ``hermes_cli/web_server.py``
+# declares ``enabled: bool = True``, and ``_slot_dict`` keeps every non-None
+# field), so warning about it there would fire on every GUI-saved config.
+_KNOWN_SLOT_KEYS = frozenset({
+    "provider",
+    "model",
+    "reasoning_effort",
+    "max_tokens",
+    "enabled",
+})
+
+
+def _warn_unknown_keys(scope: str, mapping: dict[str, Any], known: frozenset) -> None:
+    """Warn once about keys in ``mapping`` that no reader consumes.
+
+    ``scope`` is the dotted config path being normalized (e.g.
+    ``moa.presets.fast.reference_models[1]``); it doubles as the dedup bucket.
+    Keys are stringified before sorting because hand-edited YAML can yield
+    non-string mapping keys, which are not mutually orderable.
+    """
+    unknown = sorted(str(key) for key in mapping if key not in known)
+    if not unknown:
+        return
+    _warn_once(
+        scope, "unknown:" + ",".join(unknown),
+        "%s: unknown config keys ignored: %s",
+        scope, ", ".join(unknown),
+    )
+
+
+def _clean_slot(
+    slot: Any, *, include_enabled: bool = False, warn_scope: str | None = None
+) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
+    # Warn before the validity checks below: whether the slot survives is a
+    # separate axis (validate_moa_payload owns that on the write path), and a
+    # user whose slot was dropped for an unrelated reason should still learn
+    # that they misspelled a key.
+    if warn_scope:
+        _warn_unknown_keys(warn_scope, slot, _KNOWN_SLOT_KEYS)
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
     if not provider or not model:
@@ -310,9 +391,22 @@ def _default_preset() -> dict[str, Any]:
     }
 
 
-def _normalize_preset(raw: Any) -> dict[str, Any]:
+def _normalize_preset(raw: Any, *, warn_scope: str | None = None) -> dict[str, Any]:
+    """Build a preset from ``raw``, dropping anything no reader consumes.
+
+    ``warn_scope`` (the dotted config path, e.g. ``moa.presets.fast``) opts this
+    call into the unknown-key diagnostic asked for in #65110. It is supplied
+    ONLY by the real per-preset loop in ``normalize_moa_config``: the legacy
+    flat-config fallback passes the whole ``moa`` block here, whose legitimate
+    top-level keys (``save_traces``, ``trace_dir``, ``default_preset``,
+    ``active_preset``, ``privacy_filter``, ``presets``) are not preset keys and
+    would every one of them be reported as unknown.
+    """
     if not isinstance(raw, dict):
         raw = {}
+
+    if warn_scope:
+        _warn_unknown_keys(warn_scope, raw, _KNOWN_PRESET_KEYS)
 
     raw_refs = raw.get("reference_models")
     # reference_models may be a JSON string (hand-edited config.yaml) or a list.
@@ -326,12 +420,24 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # defaults instead of crashing the iteration, mirroring the tolerance
         # for the scalar fields below (reference_temperature / max_tokens).
         raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
-    refs = [_clean_slot(item, include_enabled=True) for item in raw_refs]
+    refs = [
+        _clean_slot(
+            item,
+            include_enabled=True,
+            # Index into the RAW list so the path in the warning matches what
+            # the user wrote, even when an earlier slot is dropped.
+            warn_scope=f"{warn_scope}.reference_models[{index}]" if warn_scope else None,
+        )
+        for index, item in enumerate(raw_refs)
+    ]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = _default_reference_models()
 
-    aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
+    aggregator = _clean_slot(
+        raw.get("aggregator"),
+        warn_scope=f"{warn_scope}.aggregator" if warn_scope else None,
+    ) or deepcopy(DEFAULT_MOA_AGGREGATOR)
 
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
@@ -384,9 +490,13 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         for name, preset in presets_raw.items():
             clean_name = str(name or "").strip()
             if clean_name:
-                presets[clean_name] = _normalize_preset(preset)
+                presets[clean_name] = _normalize_preset(
+                    preset, warn_scope=f"moa.presets.{clean_name}"
+                )
 
-    # Legacy flat config becomes the default preset.
+    # Legacy flat config becomes the default preset. No warn_scope: ``raw`` is
+    # the whole ``moa`` block here, and its own top-level keys are not preset
+    # keys — warning would fire on every valid legacy config.
     if not presets:
         presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(raw)
 
@@ -497,6 +607,9 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
     except Exception:
         return message, None
     prompt = str(payload.get("prompt") or "")
+    # No warn_scope: the payload carries an ALREADY-normalized preset produced
+    # by encode_moa_turn, not user-authored YAML — there is nothing here the
+    # user could have misspelled, and the source config was already checked.
     return prompt, _normalize_preset(payload.get("config") or {})
 
 

@@ -16,10 +16,10 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
-| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
+| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. By default, all messages in these channels are answered inline. Set `discord.ignore_other_user_mentions: true` to stay silent when someone mentions another human without also mentioning Hermes. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
-| **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
+| **Messages mentioning other users** | In normal server channels, `DISCORD_IGNORE_NO_MENTION=true` (the default) keeps Hermes silent if a message @mentions other users but not the bot. Free-response channels intentionally bypass that legacy gate; opt in to `discord.ignore_other_user_mentions` if they should stay silent too. DMs are never filtered. |
 
 :::tip
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
@@ -299,7 +299,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
-| `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
+| `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent in normal server channels if a message `@mentions` other users but does **not** mention the bot. Free-response channels bypass this legacy gate; DMs are unaffected. |
+| `DISCORD_IGNORE_OTHER_USER_MENTIONS` | No | `false` | Environment override for `discord.ignore_other_user_mentions`. Prefer the `config.yaml` setting documented below. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
@@ -335,6 +336,7 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  ignore_other_user_mentions: false  # Opt-in: stay silent when another human is mentioned without Hermes
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
@@ -401,6 +403,23 @@ discord:
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
 Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+
+#### `discord.ignore_other_user_mentions`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, Hermes ignores a server-channel or thread message that `@mentions` another human anywhere in the message without also mentioning Hermes. This gate also overrides `free_response_channels`, making it useful in busy mention-free channels where Hermes should answer ambient chat but not interrupt messages directed at another person.
+
+Direct messages are unaffected because mentions there are references inside an existing conversation with Hermes. If Hermes and another person are both mentioned, the message is processed normally.
+
+```yaml
+discord:
+  free_response_channels:
+    - 1234567890
+  ignore_other_user_mentions: true
+```
+
+This is separate from the legacy `DISCORD_IGNORE_NO_MENTION` gate: that setting defaults on for normal server channels but intentionally yields to free-response channels. `ignore_other_user_mentions` is the explicit opt-in that applies the human-mention filter there as well.
 
 #### `discord.auto_thread`
 
@@ -927,5 +946,4 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 

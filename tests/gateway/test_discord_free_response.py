@@ -1,13 +1,14 @@
 """Tests for Discord free-response defaults and mention gating."""
 
+import os
+import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -116,19 +117,22 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_IGNORE_NO_MENTION",
+        "DISCORD_IGNORE_OTHER_USER_MENTIONS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999, bot=True))
+    adapter._is_allowed_user = MagicMock(return_value=True)
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
 
 
 def make_message(*, channel, content: str, mentions=None, msg_type=None):
-    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza", bot=False)
     return SimpleNamespace(
         id=123,
         content=content,
@@ -305,6 +309,116 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+def test_ignore_other_user_mentions_defaults_off(adapter):
+    assert adapter._discord_ignore_other_user_mentions() is False
+
+
+def test_ignore_other_user_mentions_env_overrides_config(adapter, monkeypatch):
+    adapter.config.extra["ignore_other_user_mentions"] = False
+    monkeypatch.setenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", "true")
+
+    assert adapter._discord_ignore_other_user_mentions() is True
+
+
+def test_free_response_allows_other_human_mentions_by_default(adapter):
+    adapter.config.extra["free_response_channels"] = "789"
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@111> this is for you",
+        mentions=[other_human],
+    )
+
+    admitted, _ = adapter._discord_message_admission(message, claim=False)
+
+    assert admitted is True
+
+
+def test_free_response_ignores_other_human_mentions_when_opted_in(adapter):
+    adapter.config.extra.update(
+        free_response_channels="789",
+        ignore_other_user_mentions=True,
+    )
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@111> this is for you",
+        mentions=[other_human],
+    )
+
+    admitted, _ = adapter._discord_message_admission(message, claim=False)
+
+    assert admitted is False
+
+
+def test_other_human_mention_is_allowed_when_hermes_is_also_mentioned(adapter):
+    adapter.config.extra.update(
+        free_response_channels="789",
+        ignore_other_user_mentions=True,
+    )
+    bot_user = adapter._client.user
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=f"<@{bot_user.id}> can you help <@111>?",
+        mentions=[bot_user, other_human],
+    )
+
+    admitted, _ = adapter._discord_message_admission(message, claim=False)
+
+    assert admitted is True
+
+
+def test_ignore_other_user_mentions_does_not_filter_dms(adapter):
+    adapter.config.extra["ignore_other_user_mentions"] = True
+    other_human = SimpleNamespace(id=111, bot=False)
+    message = make_message(
+        channel=FakeDMChannel(),
+        content="tell <@111> about the project",
+        mentions=[other_human],
+    )
+
+    admitted, _ = adapter._discord_message_admission(message, claim=False)
+
+    assert admitted is True
+
+
+def test_config_bridges_discord_ignore_other_user_mentions(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "discord:\n  ignore_other_user_mentions: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.DISCORD].extra["ignore_other_user_mentions"] is True
+    assert os.environ["DISCORD_IGNORE_OTHER_USER_MENTIONS"] == "true"
+
+
+def test_ignore_other_user_mentions_env_wins_over_yaml(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "discord:\n  ignore_other_user_mentions: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("DISCORD_IGNORE_OTHER_USER_MENTIONS", "false")
+
+    config = load_gateway_config()
+    adapter = DiscordAdapter(config.platforms[Platform.DISCORD])
+
+    assert adapter._discord_ignore_other_user_mentions() is False
 
 
 @pytest.mark.asyncio
@@ -825,5 +939,3 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     assert event.channel_context == (
         "[Context around the replied-to message]\n[Hermes [bot]] earlier answer"
     )
-
-

@@ -9929,6 +9929,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if self._session_db:
                 try:
+                    from run_agent import _launch_cwd_for_session
+
                     self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
@@ -9938,6 +9940,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        cwd=_launch_cwd_for_session("cli"),
                     )
                     self.agent._session_db_created = True
                 except Exception:

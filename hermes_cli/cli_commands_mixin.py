@@ -1417,6 +1417,8 @@ class CLICommandsMixin:
         # /sessions even after the parent is reopened and re-ended with a
         # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
+            from run_agent import _launch_cwd_for_session
+
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -1427,6 +1429,7 @@ class CLICommandsMixin:
                     "_branched_from": parent_session_id,
                 },
                 parent_session_id=parent_session_id,
+                cwd=_launch_cwd_for_session("cli"),
             )
         except Exception as e:
             _cprint(f"  Failed to create branch session: {e}")

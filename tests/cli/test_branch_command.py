@@ -65,9 +65,17 @@ def cli_instance(tmp_path, session_db):
 class TestBranchCommandCLI:
     """Test the /branch command logic for the CLI."""
 
-    def test_branch_creates_new_session(self, cli_instance, session_db):
+    def test_branch_creates_new_session(
+        self, cli_instance, session_db, tmp_path, monkeypatch
+    ):
         """Branching should create a new session in the DB."""
         from cli import HermesCLI
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        monkeypatch.chdir(workspace)
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "desktop")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
 
         # Call the real method on the mock, using the real implementation
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -76,6 +84,8 @@ class TestBranchCommandCLI:
         assert cli_instance.session_id != "20260403_120000_abc123"
         new_session = session_db.get_session(cli_instance.session_id)
         assert new_session is not None
+        assert new_session["source"] == "desktop"
+        assert new_session["cwd"] == str(workspace)
 
     def test_branch_copies_history(self, cli_instance, session_db):
         """Branching should copy all messages to the new session."""

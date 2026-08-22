@@ -149,7 +149,14 @@ def _reset_session_id_context():
     _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
 
-def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path):
+def test_new_command_creates_real_fresh_session_and_resets_agent_state(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "desktop")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
     cli = _prepare_cli_with_active_session(tmp_path)
     old_session_id = cli.session_id
     old_session_start = cli.session_start
@@ -164,6 +171,8 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
     new_session = cli._session_db.get_session(cli.session_id)
     assert new_session is not None
+    assert new_session["source"] == "desktop"
+    assert new_session["cwd"] == str(workspace)
 
     cli._session_db.append_message(cli.session_id, role="user", content="next turn")
 

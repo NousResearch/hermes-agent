@@ -66,7 +66,7 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
-def _launch_cwd_for_session(source: str) -> Optional[str]:
+def _launch_cwd_for_session(platform: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
     Only local CLI sessions get a recorded cwd: the directory the process was
@@ -78,7 +78,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     a non-"local" backend (docker/ssh/modal/...) means the host cwd is
     irrelevant to the agent's tools, so we skip it there too.
     """
-    if source != "cli":
+    if platform != "cli":
         return None
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
     if backend and backend != "local":
@@ -669,7 +669,11 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
-                cwd=_launch_cwd_for_session(source),
+                # Workspace locality belongs to the runtime surface, not the
+                # durable source label. ``--source`` / HERMES_SESSION_SOURCE
+                # may relabel a local CLI row (for example as ``desktop`` or
+                # ``tool``), but it does not make its launch cwd remote.
+                cwd=_launch_cwd_for_session(self.platform or "cli"),
                 profile_name=_profile_for_session,
             )
             self._session_db_created = True

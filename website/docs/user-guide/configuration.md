@@ -1712,6 +1712,24 @@ The injected block covers:
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
 
+## Guarded Prompt Mode
+
+For smaller local coding models, guarded prompt mode replaces redundant long-form coaching with a compact contract that retains the current-worktree rule, tool grounding, permission checks, verification before completion, skill loading, and deferred tool discovery. It does **not** change tool-side permission enforcement or hide any skill.
+
+It is disabled by default and requires `coding_context: focus`, a detected coding workspace, and an exact provider/model route pair. This makes the mode reversible and prevents it from silently affecting another model.
+
+```yaml
+agent:
+  coding_context: focus
+  guarded_prompt_mode:
+    enabled: true
+    routes:
+      - provider: ollama-launch
+        model: hermes-qwen3-fast
+```
+
+Every route is matched as a pair: `ollama-launch + gpt-5.4`, for example, does not activate merely because each value appears elsewhere in the list. In guarded sessions all skill names remain visible, but their descriptions are loaded on demand with `skill_view`.
+
 ## Tool-Loop Guardrails
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.

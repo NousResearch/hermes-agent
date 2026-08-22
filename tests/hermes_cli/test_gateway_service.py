@@ -1490,7 +1490,6 @@ class TestProfileArg:
             "mybot",
             "gateway",
             "run",
-            "--replace",
             "--external-supervisor",
         ]
 
@@ -2147,6 +2146,44 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+
+class TestServiceTakeoverGovernance:
+    """Supervised service definitions must never arm ``--replace`` takeover.
+
+    Regression for #79048: two launchd-supervised profile gateways sharing
+    one platform token (e.g. the same Discord bot) entered an endless
+    mutual-eviction loop because the generated plist armed ``--replace`` on
+    every KeepAlive respawn: each revived process was authorized to terminate
+    the sibling holding the shared token, and launchd immediately revived the
+    victim. The systemd unit already runs ``gateway run`` without
+    ``--replace``; the launchd plist must match so a supervised restart can
+    never evict a legitimate cross-profile lock holder. Bounded replacement
+    stays the lifecycle commands' job (kickstart -k / drain / bootout).
+    """
+
+    def test_launchd_plist_does_not_arm_takeover(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        # The whole bug class: no --replace anywhere in the supervised argv.
+        assert "--replace" not in plist
+        # It still runs the plain gateway command under KeepAlive.
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+        assert "<key>KeepAlive</key>" in plist
+        assert "<true/>" in plist
+
+    def test_systemd_unit_does_not_arm_takeover(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        exec_starts = [l for l in unit.splitlines() if l.startswith("ExecStart=")]
+        assert exec_starts, "unit has no ExecStart line"
+        # The safe service posture the launchd plist now mirrors.
+        assert "--replace" not in exec_starts[0]
 
 
 class TestLaunchctlBootstrapEioRetry:

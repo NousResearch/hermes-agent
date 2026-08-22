@@ -13,6 +13,8 @@ from gateway.becky_loops import (
 )
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
 
 
 class EmptyDB:
@@ -147,6 +149,11 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
             return SimpleNamespace(
                 session_key="agent:main:telegram:group:-1004476874933:3964",
                 session_id=session_id,
+                origin=SimpleNamespace(
+                    user_id="8837347581",
+                    user_name="Cory",
+                    user_id_alt=None,
+                ),
             )
 
     class FakeSessionDB:
@@ -175,12 +182,35 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
         {
             "chat_id": "-1004476874933",
             "thread_id": "3964",
-            "user_id": "",
+            "user_id": "8837347581",
             "session_key": "agent:main:telegram:group:-1004476874933:3964",
             "session_id": "session-1",
         }
     ]
     assert adapter.event.text == "Please turn on the porch light."
+    assert adapter.event.reply_to_message_id == "101"
+    assert adapter.event.source.user_id == "8837347581"
+    assert adapter.event.source.user_name == "Cory"
+
+
+@pytest.mark.asyncio
+async def test_internal_dashboard_reply_is_not_dropped_by_busy_auth_gate() -> None:
+    runner = object.__new__(GatewayRunner)
+    runner._is_user_authorized = lambda _source: False
+
+    event = MessageEvent(
+        text="follow up",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        internal=True,
+    )
+
+    assert await runner._handle_active_session_busy_message(event, "session-1") is False
 
 
 @pytest.mark.asyncio

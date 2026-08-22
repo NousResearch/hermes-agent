@@ -748,6 +748,17 @@ class TestByteLayerBinaryDetection:
         # Error near the end but the prefix itself is not clean UTF-8.
         assert file_ops._is_likely_binary_bytes(b"\xff\xfe" + b"a" * 10 + b"\xe4") is True
 
+    def test_invalid_start_byte_at_boundary_is_binary(self, file_ops):
+        # 0xFF cannot begin a code point at all, so it is not the "incomplete
+        # multibyte sequence" the trailing allowance is for. Unlike the
+        # garbage-tail case above, the prefix here is clean ASCII — position
+        # alone would wave it through and mojibake a read-edit-write cycle.
+        assert file_ops._is_likely_binary_bytes(b"a" * 999 + b"\xff") is True
+
+    def test_invalid_continuation_byte_at_boundary_is_binary(self, file_ops):
+        # A stray continuation byte is likewise invalid, not truncated.
+        assert file_ops._is_likely_binary_bytes(b"a" * 999 + b"\x80") is True
+
     # --- transport: _sample_file_bytes ------------------------------------
 
     def test_sample_decodes_base64_transport(self, mock_env):

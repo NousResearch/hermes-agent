@@ -1023,7 +1023,10 @@ class ShellFileOperations(FileOperations):
         except UnicodeDecodeError as exc:
             # UTF-8 sequences are at most 4 bytes: an error starting in the
             # last 3 bytes with a clean prefix is a boundary cut, not binary.
-            if exc.start >= len(sample) - 3:
+            if (
+                exc.reason == "unexpected end of data"
+                and exc.start >= len(sample) - 3
+            ):
                 try:
                     sample[: exc.start].decode("utf-8")
                     return False

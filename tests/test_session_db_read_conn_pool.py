@@ -231,6 +231,49 @@ def test_checkout_seam_is_the_single_acquisition_point(db):
     assert calls, "_read_ctx must route acquisition through _checkout_read_conn"
 
 
+def test_database_error_discards_pooled_read_conn(db, monkeypatch):
+    """A query DatabaseError must close the reader, not return it to the pool."""
+    import sqlite3
+
+    class _Broken:
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.DatabaseError("file is not a database")
+
+    fake = _Broken()
+    closed = []
+    returned = []
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: fake)
+    monkeypatch.setattr(db, "_close_read_conn", lambda conn: closed.append(conn))
+    monkeypatch.setattr(db._read_pool, "put_nowait", lambda conn: returned.append(conn))
+
+    with pytest.raises(sqlite3.DatabaseError, match="file is not a database"):
+        with db._read_ctx() as conn:
+            conn.execute("SELECT 1")
+
+    assert closed == [fake]
+    assert returned == []
+
+
+def test_successful_read_still_returns_conn_to_pool(db, monkeypatch):
+    """Healthy readers must still be recycled."""
+    class _Ok:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+    fake = _Ok()
+    closed = []
+    returned = []
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: fake)
+    monkeypatch.setattr(db, "_close_read_conn", lambda conn: closed.append(conn))
+    monkeypatch.setattr(db._read_pool, "put_nowait", lambda conn: returned.append(conn))
+
+    with db._read_ctx() as conn:
+        conn.execute("SELECT 1")
+
+    assert returned == [fake]
+    assert closed == []
+
+
 def test_fallback_to_locked_writer_when_read_conn_unavailable(db, monkeypatch):
     """With no read connection available, reads still work under self._lock.
 

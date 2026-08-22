@@ -142,12 +142,23 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
 @router.delete("/api/mcp/servers/{name}")
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _remove_mcp_server
+    from hermes_cli.mcp_config import _remove_mcp_server, _remove_mcp_token_files
 
     def _run():
         with _profile_scope(profile):
             with _CONFIG_MUTATION_LOCK:
-                return _remove_mcp_server(name)
+                removed = _remove_mcp_server(name)
+                # _remove_mcp_server also cleans token files, but if the
+                # server wasn't in config (orphan state) it still won't
+                # have been removed — heal the orphan so a later re-add
+                # of the same server can't pick up stale OAuth state
+                # (#81050).
+                if not removed:
+                    _remove_mcp_token_files(name)
+                    # Re-check: token files may have just been cleaned but
+                    # config never had the server, so it's still a 404.
+                    # We deliberately do NOT create a server here.
+                return removed
 
     removed = await asyncio.to_thread(_run)
     if not removed:

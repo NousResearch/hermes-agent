@@ -262,6 +262,12 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
+# Most recent Tool Search assembly result (when progressive disclosure
+# activated). Captured so downstream dispatch gates can tell whether MCP /
+# plugin tools were deferred behind the tool_search bridge for the current
+# session without re-running the assembly (see has_deferrable_tools).
+_last_tool_search_assembly: Optional["AssemblyResult"] = None
+
 
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
@@ -645,11 +651,68 @@ def _compute_tool_definitions(
                     f"MCP/plugin tools deferred (~{assembly.deferred_tokens} tokens) behind "
                     f"tool_search/describe/call — {_forms.get(assembly.listing_form, assembly.listing_form)}."
                 )
+            # Remember the assembly outcome so has_deferrable_tools() can
+            # cheaply tell the conversation-loop dispatch gate whether the
+            # deferred (MCP/plugin) catalog must be unioned into the valid
+            # tool-name universe (#84772).
+            global _last_tool_search_assembly
+            _last_tool_search_assembly = assembly if assembly.activated else None
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
     return filtered_tools
+
+
+def has_deferrable_tools() -> bool:
+    """True when the current session's tool assembly deferred MCP / plugin
+    tools behind the tool_search bridge (progressive disclosure active).
+
+    Cheap gate for the conversation-loop dispatch: when False, the
+    post-assembly ``valid_tool_names`` already covers every callable tool and
+    unioning the pre-assembly catalog is a no-op. When True, the deferred
+    catalog must be added so direct ``mcp__<server>__<tool>`` calls validate
+    (#84772). Falls back to the tool_search config probe when no assembly
+    has run yet in this process.
+    """
+    asm = _last_tool_search_assembly
+    if asm is not None:
+        return bool(getattr(asm, "activated", False))
+    try:
+        from tools.tool_search import load_config as _load_ts_config
+        return _load_ts_config().enabled != "off"
+    except Exception:
+        return False
+
+
+def get_session_tool_names(
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+) -> set:
+    """Pre-assembly tool-name universe for the given toolset scope.
+
+    Reads the same catalog the tool_search / tool_describe / tool_call bridge
+    uses (``skip_tool_search_assembly=True``), so the conversation-loop
+    dispatch gate and the bridge share one source of truth. Deferred MCP /
+    plugin tools hidden behind the bridge in the post-assembly list are
+    present here, which is what makes direct ``mcp__<server>__<tool>`` calls
+    pass the dispatch validation (#84772).
+
+    Returns:
+        Set of tool names in the session's full (pre-assembly) catalog.
+        Empty set on any failure — callers treat it as "no deferred names".
+    """
+    try:
+        defs = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        return {t["function"]["name"] for t in defs if t.get("function")}
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("get_session_tool_names failed: %s", e)
+        return set()
 
 
 def _resolve_active_context_length() -> int:

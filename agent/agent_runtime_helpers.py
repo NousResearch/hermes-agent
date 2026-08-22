@@ -4431,6 +4431,42 @@ def force_close_tcp_sockets(client: Any) -> int:
     return shutdown_count
 
 
+def dispatch_valid_tool_names(agent) -> set:
+    """Effective valid tool-name universe for the conversation-loop gate.
+
+    With tool_search progressive disclosure active, ``agent.valid_tool_names``
+    only holds the post-assembly surface (core tools + the
+    tool_search/describe/call bridge). MCP and plugin tools are deferred
+    behind the bridge; unioning the session's pre-assembly catalog into the
+    gate lets the model call ``mcp__<server>__<tool>`` directly instead of
+    being rejected with "Tool does not exist" (#84772).
+
+    The pre-assembly catalog is the same source the bridge reads
+    (``model_tools.get_session_tool_names`` →
+    ``get_tool_definitions(skip_tool_search_assembly=True)``), so the main
+    dispatch and the tool_call bridge stay in sync by construction. When
+    progressive disclosure is inactive the union is a no-op (pre-assembly ==
+    post-assembly) and this returns ``agent.valid_tool_names`` unchanged.
+
+    Returns:
+        Set of tool names accepted by the dispatch gate.
+    """
+    names = set(getattr(agent, "valid_tool_names", None) or ())
+    try:
+        from model_tools import get_session_tool_names, has_deferrable_tools
+
+        if has_deferrable_tools():
+            names |= get_session_tool_names(
+                getattr(agent, "enabled_toolsets", None),
+                getattr(agent, "disabled_toolsets", None),
+            )
+    except Exception:
+        # Never break dispatch on a gate-computation failure: fall back to
+        # the post-assembly names (pre-fix behavior).
+        pass
+    return names
+
+
 
 __all__ = [
     "convert_to_trajectory_format",
@@ -4457,6 +4493,7 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "dispatch_valid_tool_names",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

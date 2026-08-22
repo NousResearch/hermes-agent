@@ -6931,17 +6931,29 @@ def run_conversation(
                 # call/result pair per id. See _uniquify_tool_call_ids.
                 agent._uniquify_tool_call_ids(assistant_message.tool_calls)
 
+                # ── Effective dispatch tool-name universe ─────────────
+                # agent.valid_tool_names holds the post-assembly surface
+                # (core + bridge). With tool_search progressive disclosure
+                # active, MCP/plugin tools are deferred behind the bridge —
+                # union the session's pre-assembly catalog (the same source
+                # the tool_call bridge reads) so direct mcp__<server>__<tool>
+                # calls validate instead of being rejected as "Tool does not
+                # exist" (#84772). Computed once per tool turn.
+                from agent.agent_runtime_helpers import dispatch_valid_tool_names
+
+                _dispatch_valid_names = dispatch_valid_tool_names(agent)
+
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
+                    if tc.function.name not in _dispatch_valid_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
-                    if tc.function.name not in agent.valid_tool_names
+                    if tc.function.name not in _dispatch_valid_names
                 ]
                 # Mixed batch: at least one valid call alongside the invalid
                 # one(s). Degrading models (observed with gpt-5.6 at very
@@ -6955,7 +6967,7 @@ def run_conversation(
                 # model still halts at 3 while a mostly-coherent one keeps
                 # working.
                 _mixed_invalid_batch = bool(invalid_tool_calls) and any(
-                    tc.function.name in agent.valid_tool_names
+                    tc.function.name in _dispatch_valid_names
                     for tc in assistant_message.tool_calls
                 )
                 if _mixed_invalid_batch:
@@ -6964,7 +6976,7 @@ def run_conversation(
                     invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                     _n_valid = sum(
                         1 for tc in assistant_message.tool_calls
-                        if tc.function.name in agent.valid_tool_names
+                        if tc.function.name in _dispatch_valid_names
                     )
                     agent._buffer_vprint(
                         f"⚠️  Unknown tool '{invalid_preview}' in batch — erroring that call, "
@@ -7003,11 +7015,11 @@ def run_conversation(
                     append_message(messages, assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
-                        if _tc_name not in agent.valid_tool_names:
+                        if _tc_name not in _dispatch_valid_names:
                             # See _invalid_tool_name_error_content for the
                             # blank-name anti-priming rationale (#47967).
                             content = _invalid_tool_name_error_content(
-                                _tc_name, agent.valid_tool_names
+                                _tc_name, _dispatch_valid_names
                             )
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
@@ -7041,7 +7053,7 @@ def run_conversation(
                     except json.JSONDecodeError as e:
                         if (
                             _mixed_invalid_batch
-                            and tc.function.name not in agent.valid_tool_names
+                            and tc.function.name not in _dispatch_valid_names
                         ):
                             # This call never executes — it gets an
                             # invalid-name error result below. Don't let its
@@ -7143,7 +7155,7 @@ def run_conversation(
                 if _mixed_invalid_batch:
                     _invalid_batch_calls = [
                         tc for tc in assistant_message.tool_calls
-                        if tc.function.name not in agent.valid_tool_names
+                        if tc.function.name not in _dispatch_valid_names
                     ]
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -7268,12 +7280,12 @@ def run_conversation(
                             "name": tc.function.name,
                             "tool_call_id": tc.id,
                             "content": _invalid_tool_name_error_content(
-                                tc.function.name, agent.valid_tool_names
+                                tc.function.name, _dispatch_valid_names
                             ),
                         })
                     assistant_message.tool_calls = [
                         tc for tc in assistant_message.tool_calls
-                        if tc.function.name in agent.valid_tool_names
+                        if tc.function.name in _dispatch_valid_names
                     ]
 
                 _tool_turn_persisted = None

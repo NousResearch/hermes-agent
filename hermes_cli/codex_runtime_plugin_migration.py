@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.delegation_context import KANBAN_ENV_KEYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,6 +124,37 @@ _KEYS_DROPPED_WITH_WARNING = {
     # Hermes' sampling subsection — codex MCP has no equivalent
     "sampling",
 }
+
+# Env vars the kanban dispatcher stamps onto worker subprocesses at dispatch
+# time (hermes_cli/kanban_db.py::_default_spawn), plus the worker's runtime
+# identity. They materialize AFTER this migration has written
+# ~/.codex/config.toml, so they can never be captured from os.environ here —
+# codex must forward them BY NAME from its own process env (see
+# _build_hermes_tools_mcp_entry). KANBAN_ENV_KEYS is the dispatcher-identity
+# set delegation_context scrubs from non-worker children; sharing the
+# constant keeps the two in lockstep. (The import is eager, unlike the lazy
+# agent.transports import below: agent.delegation_context is stdlib-only at
+# module scope, so it can't fail the way a codex-transport dependency can.)
+#
+# Deliberately NOT listed: HERMES_KANBAN_ROOT. The dispatcher never stamps
+# it — agent/transports/codex_app_server.py:108 reads it (as a kanban-dir
+# fallback) from the codex subprocess' own env, which already inherits it
+# via hermes_subprocess_env(); the hermes-tools MCP child never consumes it.
+_KANBAN_WORKER_ENV_VARS: frozenset[str] = frozenset(
+    {
+        *KANBAN_ENV_KEYS,
+        # Additional dispatcher stamps KANBAN_ENV_KEYS doesn't scrub
+        # (they carry no dispatcher identity): worktree branch hint,
+        # goal-loop mode, and the profile kanban_comment attributes to.
+        "HERMES_KANBAN_BRANCH",
+        "HERMES_KANBAN_GOAL_MODE",
+        "HERMES_KANBAN_GOAL_MAX_TURNS",
+        "HERMES_PROFILE",
+        # Worker session identity — lifecycle writes stamp the worker's
+        # session id onto board rows when it's present.
+        "HERMES_SESSION_ID",
+    }
+)
 
 
 def _translate_one_server(
@@ -562,7 +595,11 @@ def _build_hermes_tools_mcp_entry() -> dict:
     The command runs the worktree's Python via the current sys.executable
     so a hermes installed under /opt/, /usr/local/, or a venv all work.
     HERMES_HOME and PYTHONPATH are passed through so the spawned process
-    sees the same config + module layout the user is running."""
+    sees the same config + module layout the user is running. Dynamic
+    HERMES_* runtime vars (dispatcher-stamped kanban worker env, session
+    identity, launcher-injected context) are forwarded BY NAME via
+    ``env_vars`` so codex copies them from its own process env when it
+    spawns the MCP subprocess."""
     import sys
 
     env: dict[str, str] = {}
@@ -593,12 +630,74 @@ def _build_hermes_tools_mcp_entry() -> dict:
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
 
+    # Dispatch-time env forwarding (#92282). Codex's MCP client builds the
+    # hermes-tools subprocess env from the static `env` table plus the vars
+    # NAMED in `env_vars` — codex copies each name's value from ITS OWN
+    # process env at spawn time. The kanban dispatcher stamps HERMES_KANBAN_*
+    # onto workers only when it spawns them (after this migration already
+    # wrote config.toml), so without env_vars the hermes-tools subprocess
+    # never sees them, kanban tools fail their availability check, and a
+    # codex-runtime worker loses its entire lifecycle tool surface.
+    #  1. _KANBAN_WORKER_ENV_VARS — the dispatcher-owned set, forwarded by
+    #     name so it propagates no matter when the worker is dispatched.
+    #  2. Every other HERMES_* var present in this process at migration
+    #     time — launcher-injected runtime context (session, tenant, etc.)
+    #     that would otherwise need a code change per variable. Names
+    #     already pinned in the static `env` table are skipped (the static
+    #     values are the authoritative ones; listing them twice is
+    #     redundant either way).
+    env_vars: set[str] = set(_KANBAN_WORKER_ENV_VARS)
+    # The snapshot must honor the repo's strip-by-default spawn hygiene:
+    # hermes_cli.config.reload_env() injects ~/.hermes/.env (integration
+    # credentials like HERMES_<SLUG>_API_KEY) into os.environ, so a raw
+    # HERMES_* scan here would forward secret names that every other spawn
+    # site strips. Only names are ever written to config.toml, but codex
+    # copies their values from its own env at spawn time, and the MCP
+    # subprocess historically received only the curated static env — so
+    # apply the same classification the other spawn paths use.
+    try:
+        from tools.environments.local import (
+            _ALWAYS_STRIP_KEYS,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _is_hermes_internal_secret,
+        )
+    except Exception:  # pragma: no cover - fail OPEN, not closed
+        # Empty strip sets + an always-False classifier leave only the
+        # suffix heuristic below as the guard: blocklisted/internal-secret
+        # names would be forwarded until the import recovers. Kept fail-open
+        # deliberately — a missing tools module must not break codex runtime
+        # migration — but the trade-off belongs in the record.
+        _ALWAYS_STRIP_KEYS = frozenset()
+        _HERMES_PROVIDER_ENV_BLOCKLIST = frozenset()
+        _is_hermes_internal_secret = lambda _k: False  # noqa: E731
+    # Suffix heuristic for custom provider keys the static blocklist can't
+    # know (HERMES_CUSTOM_<slug>_API_KEY etc.).
+    _secret_name_suffixes = (
+        "_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD",
+        "_PRIVATE_KEY", "_CLIENT_SECRET",
+    )
+    for name in os.environ:
+        if not name.startswith("HERMES_"):
+            continue
+        upper = name.upper()
+        if name in env or upper in _ALWAYS_STRIP_KEYS:
+            continue
+        if upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            continue
+        if _is_hermes_internal_secret(upper):
+            continue
+        if upper.endswith(_secret_name_suffixes):
+            continue
+        env_vars.add(name)
+
     out: dict[str, Any] = {
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
     }
     if env:
         out["env"] = env
+    if env_vars:
+        out["env_vars"] = sorted(env_vars)
     # Generous timeouts — browser_navigate or delegate_task can take a
     # while; we don't want codex's MCP client to give up too early.
     out["startup_timeout_sec"] = 30.0

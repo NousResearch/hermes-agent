@@ -29,6 +29,7 @@ interface EndpointForm {
   baseUrl: string
   contextLength: string
   discoverModels: boolean
+  hasApiKey: boolean
   id: string
   makeDefault: boolean
   model: string
@@ -40,6 +41,7 @@ const EMPTY_FORM: EndpointForm = {
   baseUrl: '',
   contextLength: '',
   discoverModels: true,
+  hasApiKey: false,
   id: '',
   makeDefault: true,
   model: '',
@@ -52,6 +54,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
     discoverModels: endpoint.discover_models,
+    hasApiKey: endpoint.has_api_key,
     id: endpoint.id,
     makeDefault: Boolean(endpoint.is_current),
     model: endpoint.model,
@@ -351,7 +354,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               API Key
               <Input
                 onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
-                placeholder={form.id ? 'Leave blank to keep current key' : 'Optional'}
+                placeholder={form.id ? (form.hasApiKey ? 'Key saved — leave blank to keep it' : 'No key saved yet — enter one to store it') : 'Optional'}
                 type="password"
                 value={form.apiKey}
               />

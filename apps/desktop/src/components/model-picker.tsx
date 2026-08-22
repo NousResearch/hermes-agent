@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -57,6 +57,17 @@ export function ModelPickerDialog({
   // the `hermes model` CLI picker, which shows the curated list verbatim.
   const [search, setSearch] = useState('')
 
+  // cmdk pushes the selected item's `value` into a controlled CommandInput
+  // when the selection changes (cmdk 1.1.1 store.setState "value" branch),
+  // which would leave the box filled with `provider:model` and collapse the
+  // list to just the current model on reopen. Reset on every open — the same
+  // guard session-picker.tsx already carries.
+  useEffect(() => {
+    if (open) {
+      setSearch('')
+    }
+  }, [open])
+
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId),
     queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
@@ -79,6 +90,7 @@ export function ModelPickerDialog({
     : null
 
   const selectModel = (provider: ModelOptionProvider, model: string) => {
+    setSearch('')
     onSelect({ provider: provider.slug, model })
     onOpenChange(false)
   }

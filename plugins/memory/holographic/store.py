@@ -289,6 +289,23 @@ class MemoryStore:
 
             return results
 
+    def bump_retrieval(self, fact_ids: list[int]) -> None:
+        """Increment ``retrieval_count`` for the given facts.
+
+        Used by the agent tool path (search/probe/related), which retrieves
+        through ``FactRetriever`` rather than ``search_facts``.
+        """
+        if not fact_ids:
+            return
+        with self._lock:
+            placeholders = ", ".join("?" * len(fact_ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
+                f"WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self._conn.commit()
+
     def update_fact(
         self,
         fact_id: int,

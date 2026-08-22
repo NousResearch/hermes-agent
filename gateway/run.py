@@ -4007,6 +4007,115 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+# Recovery steps for a structurally corrupt state.db, shared by the two
+# places that hand them to a user: this module's cause-keyed turn-failure
+# messages and the gateway-startup home-channel warning.  They are one
+# string because the second is where the first's wording came from -- and a
+# copy of a message is exactly how the cause table desynchronized from
+# PERSISTENCE_ERROR_CAUSES in the first place.
+#
+# ``{state_db}`` and ``{backups}`` are placeholders resolved by
+# ``_with_state_db_paths`` at send time rather than baked in here.
+# ``HERMES_HOME`` is configurable, profile homes live at
+# ``<root>/profiles/<name>/``, and native-Windows installs sit under
+# ``%LOCALAPPDATA%\\hermes``, so a literal ``~/.hermes/state.db`` tells an
+# operator to salvage a file that is not the one that broke: on Windows it
+# does not exist at all, and on a multi-profile install it is a different,
+# healthy database.
+_CORRUPT_RECOVERY_STEPS = (
+    "1. Run `hermes doctor --fix`\n"
+    "2. Salvage with: sqlite3 \"{state_db}\" \".recover\" "
+    "(then replace that file)\n"
+    "3. Restore from a backup in {backups}\n"
+)
+
+
+def _with_state_db_paths(text: str) -> str:
+    """Resolve ``{state_db}``/``{backups}`` against this install's home.
+
+    ``get_hermes_home()`` is the documented single source of truth and it
+    re-reads the context override and ``HERMES_HOME`` on every call, so this
+    is the directory ``SessionDB()`` defaulted to for the process that just
+    failed -- not the developer's ``~/.hermes`` frozen at import time.
+
+    Substitution uses ``str.replace`` rather than ``str.format`` because
+    these strings are user-facing prose that may one day contain a literal
+    brace, and ``format`` would raise on it at the worst possible moment:
+    while reporting that the database is corrupt.
+    """
+    home = get_hermes_home()
+    return text.replace("{state_db}", str(home / "state.db")).replace(
+        "{backups}", str(home / "backups")
+    )
+
+
+# One recovery message per hermes_state.PERSISTENCE_ERROR_CAUSES bucket.
+#
+# That tuple's own comment requires consumers to iterate it rather than
+# hardcode causes, "so adding a bucket can never silently desynchronize
+# them" -- which is exactly what happened to the code below. The ``:disk``
+# special case predates the ``:corrupt`` bucket (#87853), so a structurally
+# corrupt state.db fell through to the generic transient text and told the
+# operator their message "should already be saved" and to "send it again in
+# a moment": permanent damage reported as busy storage, and a retry that can
+# only fail the same way. The `corrupt` wording here matches what run_agent's
+# turn explainer and this module's own session-DB-init handler already say,
+# so the CLI and the gateway stop disagreeing about the same failure.
+#
+# test_gateway_persistence_recovery.py iterates PERSISTENCE_ERROR_CAUSES and
+# fails if a bucket has no entry here, so the next bucket cannot desync too.
+_PERSISTENCE_RECOVERY_MESSAGES: dict[str, str] = {
+    "locked": (
+        "\u26a0\ufe0f Session storage was busy (another Hermes process was "
+        "writing to the state database), so this turn was stopped to protect "
+        "your conversation history. Your message should already be saved \u2014 "
+        "please send it again in a moment."
+    ),
+    "compression": (
+        "\u26a0\ufe0f This session was being compressed by another process, so "
+        "this turn was stopped to protect your conversation history. Your "
+        "message should already be saved \u2014 please send it again once "
+        "compression completes."
+    ),
+    "compression_closed": (
+        "\u26a0\ufe0f This session was rotated by context compression and its "
+        "live continuation could not be adopted, so this turn was stopped. The "
+        "storage itself is healthy \u2014 refresh the client so it picks up the "
+        "new session id, then send your message again."
+    ),
+    "turn_lease": (
+        "\u26a0\ufe0f Another Hermes process took over this session, so this "
+        "turn was stopped. Your reply was NOT saved \u2014 wait for the other "
+        "process to finish, then send your message again."
+    ),
+    "corrupt": (
+        "\u26a0\ufe0f The state database reported structural corruption, so "
+        "this turn was stopped (the transcript would have been lost on "
+        "restart). This will not clear on its own and freeing disk space will "
+        "not help. Recovery options:\n" + _CORRUPT_RECOVERY_STEPS +
+        "Then send your message again."
+    ),
+    "disk": (
+        "\u26a0\ufe0f Session storage was unavailable, so this turn was stopped "
+        "to protect your conversation history. Please check available disk "
+        "space and that the state database is writable, then send your message "
+        "again."
+    ),
+    "unknown": (
+        # The one bucket where the cause was not classified at all, so the
+        # reassurance the other transient causes earn is not available here:
+        # "should already be saved" is a claim about a write whose outcome we
+        # explicitly failed to identify.  Hedge instead.  A user who resends
+        # a message that did land posts a duplicate; a user who trusts a
+        # false "saved" loses the message.
+        "\u26a0\ufe0f Session storage was temporarily unavailable, so this turn "
+        "was stopped to protect your conversation history. Your message may "
+        "not have been saved \u2014 check the conversation, then send it "
+        "again in a moment."
+    ),
+}
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -4043,18 +4152,20 @@ def _normalize_empty_agent_response(
         if failure_reason.startswith("session_persistence_failed") or (
             "session storage" in error_str
         ):
-            if failure_reason.endswith(":disk") or "disk" in error_str:
-                return (
-                    "⚠️ Session storage was temporarily unavailable, so this "
-                    "turn was stopped to protect your conversation history. "
-                    "Please check available disk space, then send your "
-                    "message again."
+            cause = failure_reason.partition(":")[2].strip()
+            if not cause:
+                # Reached via the error-string fallback, or from an agent
+                # result predating structured causes. Classify the text with
+                # the canonical helper rather than an ad-hoc "disk" substring
+                # test: "database disk image is malformed" contains "disk",
+                # and that steal is the documented misdiagnosis on #77386.
+                from hermes_state import classify_persistence_error
+
+                cause = classify_persistence_error(error_detail)
+            return _with_state_db_paths(
+                _PERSISTENCE_RECOVERY_MESSAGES.get(
+                    cause, _PERSISTENCE_RECOVERY_MESSAGES["unknown"]
                 )
-            return (
-                "⚠️ Session storage was temporarily unavailable, so this "
-                "turn was stopped to protect your conversation history. "
-                "Your message should already be saved — please send it "
-                "again in a moment."
             )
         is_context_failure = any(
             p in error_str
@@ -24529,14 +24640,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cause = classify_persistence_error(error)
         hint = format_session_db_unavailable()
         if cause == "corrupt":
-            message = (
+            message = _with_state_db_paths(
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
-                "1. Run `hermes doctor --fix`\n"
-                "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
-                "(then replace state.db)\n"
-                "3. Restore from a backup in ~/.hermes/backups/\n"
-                f"Error: {error}"
+                + _CORRUPT_RECOVERY_STEPS
+                + f"Error: {error}"
             )
         else:
             message = (

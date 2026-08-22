@@ -45,6 +45,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  getCurrentModelSource,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -196,11 +197,21 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
   // profile handshake below can yield long enough for background config/model
   // refreshes to finish; reading atoms afterward would silently create the
   // session with a different selection than the one the user submitted.
+  // A 'default'-sourced selection is a MIRROR of the profile default, not a
+  // user override — shipping it as an explicit per-session model pins the new
+  // chat to whatever the composer happened to hold and makes Settings → Model
+  // look like it never took effect. Settings saves while a session is live
+  // deliberately leave $currentModel painted with the live agent's model
+  // (applySavedMainModel), so that stale value must not ride along here.
+  // Omitting model/provider lets the backend resolve model.default itself.
+  // Only a 'manual' pick is a real override.
+  const isManualSelection = getCurrentModelSource() === 'manual'
+
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
-    model: $currentModel.get().trim(),
-    provider: $currentProvider.get().trim()
+    model: isManualSelection ? $currentModel.get().trim() : '',
+    provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())

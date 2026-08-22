@@ -1578,16 +1578,44 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    binding_tool_defs = _ra().get_tool_definitions(
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    ) or []
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
-    
+
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
     if agent.tools:
         agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+        try:
+            bindings, binding_generation = (
+                _snapshot_registry.capture_bindings_with_generation(
+                    {
+                        tool["function"]["name"]
+                        for tool in binding_tool_defs
+                    }
+                )
+            )
+            if binding_generation == agent._tool_snapshot_generation:
+                agent._tool_registry_bindings = bindings
+            else:
+                # Registry mutation overlapped schema construction. Preserve
+                # the schema snapshot but fail closed at dispatch until the
+                # regular refresh path publishes one coherent surface.
+                agent._tool_registry_bindings = {
+                    name: None for name in bindings
+                }
+        except Exception:
+            agent._tool_registry_bindings = {
+                name: None for name in agent.valid_tool_names
+            }
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
@@ -1598,6 +1626,8 @@ def init_agent(
                 print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+    if not hasattr(agent, "_tool_registry_bindings"):
+        agent._tool_registry_bindings = {}
 
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban

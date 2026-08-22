@@ -7693,6 +7693,16 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 _agent_tools_lock = threading.Lock()
 
 
+def snapshot_agent_tool_surface(agent):
+    """Return one coherent live schema/binding snapshot for a provider request."""
+    with _agent_tools_lock:
+        return (
+            getattr(agent, "tools", None),
+            getattr(agent, "_tool_snapshot_generation", None),
+            dict(getattr(agent, "_tool_registry_bindings", {}) or {}),
+        )
+
+
 def has_registered_mcp_tools() -> bool:
     """True if any MCP server has actually registered tools into the registry.
 
@@ -7791,6 +7801,15 @@ def refresh_agent_mcp_tools(
     # Computed OUTSIDE the lock (get_tool_definitions can be slow); the diff and
     # publish below happen together in ONE critical section so two concurrent
     # callers can't torn-publish or compute overlapping ``added`` sets.
+    binding_defs = list(
+        get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        or []
+    )
     new_defs = list(
         get_tool_definitions(
             enabled_toolsets=enabled,
@@ -7810,6 +7829,14 @@ def refresh_agent_mcp_tools(
     # half-swap. ``staged_engine_names`` are the context-engine routing names
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    staged_bindings, binding_generation = registry.capture_bindings_with_generation(
+        {tool["function"]["name"] for tool in binding_defs}
+    )
+    if binding_generation != snapshot_generation:
+        # Registry mutation overlapped this rebuild. Publishing either the
+        # schemas or bindings would create a mixed-generation surface; leave
+        # the current snapshot intact so the next refresh can retry cleanly.
+        return set()
 
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
@@ -7824,17 +7851,31 @@ def refresh_agent_mcp_tools(
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()
+        current_tools = getattr(agent, "tools", None) or []
         current = {
             t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
+            for t in current_tools
         }
-        if new_names == current:
+        current_bindings = getattr(agent, "_tool_registry_bindings", {}) or {}
+        bindings_unchanged = (
+            current_bindings.keys() == staged_bindings.keys()
+            and all(
+                current_bindings.get(name) is entry
+                for name, entry in staged_bindings.items()
+            )
+        )
+        if (
+            new_names == current
+            and bindings_unchanged
+            and new_defs == current_tools
+        ):
             # No change → leave the live snapshot untouched (no churn), but
             # record the generation so an in-flight older caller can't clobber.
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
             return set()
         agent.tools = new_defs
         agent.valid_tool_names = new_names
+        agent._tool_registry_bindings = staged_bindings
         # Publish context-engine routing names atomically with the snapshot.
         engine_names = getattr(agent, "_context_engine_tool_names", None)
         if isinstance(engine_names, set):

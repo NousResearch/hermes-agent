@@ -400,6 +400,60 @@ class TestHandleFunctionCallIntegration:
         assert payload["api_request_id"] == "private-request"
         assert payload["tool_call_id"] == "private-call"
 
+    def test_tool_call_rejects_a_rebound_request_binding(self):
+        import model_tools
+        from tools.registry import registry
+
+        calls = []
+        name = "deferred_bridge_binding_probe"
+        schema = _td(name, "Deferred bridge binding probe")
+        registry.register(
+            name=name,
+            handler=lambda _args, **_kwargs: calls.append("A") or "A",
+            schema=schema,
+            toolset="deferred-bridge-test",
+        )
+        expected = registry.capture_bindings({name})[name]
+        registry.register(
+            name=name,
+            handler=lambda _args, **_kwargs: calls.append("B") or "B",
+            schema=schema,
+            toolset="deferred-bridge-test",
+        )
+
+        result = model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {}},
+            enabled_toolsets=["deferred-bridge-test"],
+            request_registry_bindings={name: expected},
+        )
+
+        assert calls == []
+        assert "stale_tool_binding" in result
+
+    def test_tool_call_rejects_a_binding_added_after_the_request(self):
+        import model_tools
+        from tools.registry import registry
+
+        calls = []
+        name = "deferred_bridge_late_probe"
+        registry.register(
+            name=name,
+            handler=lambda _args, **_kwargs: calls.append("late") or "late",
+            schema=_td(name, "Late deferred bridge probe"),
+            toolset="deferred-bridge-late-test",
+        )
+
+        result = model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {}},
+            enabled_toolsets=["deferred-bridge-late-test"],
+            request_registry_bindings={},
+        )
+
+        assert calls == []
+        assert "stale_tool_binding" in result
+
 
 class TestRegression_OpenClawCron84141:
     """Regression guard for the OpenClaw cron-tool-loss class of bug.

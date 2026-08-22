@@ -5020,10 +5020,19 @@ class AIAgent:
         """
         return _sanitize_uniquify_tool_call_ids(tool_calls)
 
-    def _repair_tool_call(self, tool_name: str) -> str | None:
+    def _repair_tool_call(
+        self,
+        tool_name: str,
+        *,
+        valid_tool_names=None,
+    ) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
         from agent.agent_runtime_helpers import repair_tool_call
-        return repair_tool_call(self, tool_name)
+        return repair_tool_call(
+            self,
+            tool_name,
+            valid_tool_names=valid_tool_names,
+        )
 
     def _invalidate_system_prompt(self):
         """Forwarder — see ``agent.system_prompt.invalidate_system_prompt``."""
@@ -8311,7 +8320,14 @@ class AIAgent:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
-    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+    def _execute_tool_calls(
+        self,
+        assistant_message,
+        messages: list,
+        effective_task_id: str,
+        api_call_count: int = 0,
+        request_registry_bindings=None,
+    ) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
         The segment planner splits the batch into maximal contiguous runs of
@@ -8323,13 +8339,21 @@ class AIAgent:
         while side-effect ordering is preserved.
         """
         tool_calls = assistant_message.tool_calls
+        if request_registry_bindings is None:
+            request_registry_bindings = getattr(
+                assistant_message, "_request_registry_bindings", None
+            )
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
+                    assistant_message,
+                    messages,
+                    effective_task_id,
+                    api_call_count,
+                    request_registry_bindings=request_registry_bindings,
                 )
 
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
@@ -8341,16 +8365,29 @@ class AIAgent:
                 kind = segments[0][0]
                 if kind == "parallel":
                     return self._execute_tool_calls_concurrent(
-                        assistant_message, messages, effective_task_id, api_call_count
+                        assistant_message,
+                        messages,
+                        effective_task_id,
+                        api_call_count,
+                        request_registry_bindings=request_registry_bindings,
                     )
                 return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
+                    assistant_message,
+                    messages,
+                    effective_task_id,
+                    api_call_count,
+                    request_registry_bindings=request_registry_bindings,
                 )
 
             from agent.tool_executor import execute_tool_calls_segmented
             return execute_tool_calls_segmented(
-                self, assistant_message, messages, effective_task_id, api_call_count,
+                self,
+                assistant_message,
+                messages,
+                effective_task_id,
+                api_call_count,
                 segments=segments,
+                request_registry_bindings=request_registry_bindings,
             )
         finally:
             self._executing_tools = False
@@ -8395,7 +8432,10 @@ class AIAgent:
                      pre_tool_block_checked: bool = False,
                      skip_tool_request_middleware: bool = False,
                      tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
-                     skip_tool_execution_middleware: bool = False) -> str:
+                     skip_tool_execution_middleware: bool = False,
+                     expected_registry_entry=None,
+                     enforce_registry_entry: bool = False,
+                     request_registry_bindings=None) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
@@ -8409,6 +8449,9 @@ class AIAgent:
             skip_tool_request_middleware,
             tool_request_middleware_trace,
             skip_tool_execution_middleware,
+            expected_registry_entry,
+            enforce_registry_entry,
+            request_registry_bindings,
         )
 
     @staticmethod
@@ -8436,15 +8479,45 @@ class AIAgent:
         body = ("\n" + indent).join(out_lines)
         return f"{indent}{label}{body}"
 
-    def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+    def _execute_tool_calls_concurrent(
+        self,
+        assistant_message,
+        messages: list,
+        effective_task_id: str,
+        api_call_count: int = 0,
+        *,
+        request_registry_bindings=None,
+    ) -> None:
         """Forwarder — see ``agent.tool_executor.execute_tool_calls_concurrent``."""
         from agent.tool_executor import execute_tool_calls_concurrent
-        return execute_tool_calls_concurrent(self, assistant_message, messages, effective_task_id, api_call_count)
+        return execute_tool_calls_concurrent(
+            self,
+            assistant_message,
+            messages,
+            effective_task_id,
+            api_call_count,
+            request_registry_bindings=request_registry_bindings,
+        )
 
-    def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+    def _execute_tool_calls_sequential(
+        self,
+        assistant_message,
+        messages: list,
+        effective_task_id: str,
+        api_call_count: int = 0,
+        *,
+        request_registry_bindings=None,
+    ) -> None:
         """Forwarder — see ``agent.tool_executor.execute_tool_calls_sequential``."""
         from agent.tool_executor import execute_tool_calls_sequential
-        return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
+        return execute_tool_calls_sequential(
+            self,
+            assistant_message,
+            messages,
+            effective_task_id,
+            api_call_count,
+            request_registry_bindings=request_registry_bindings,
+        )
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""

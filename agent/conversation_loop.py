@@ -1350,6 +1350,30 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
         am["tool_calls"] = new_tcs
 
 
+def request_tool_names(request_tools) -> set[str]:
+    """Return the tool names offered in one provider request."""
+    if not isinstance(request_tools, (list, tuple)):
+        return set()
+
+    return {
+        name
+        for tool in request_tools
+        if isinstance(tool, dict)
+        for function in [tool.get("function")]
+        if isinstance(function, dict)
+        for name in [function.get("name")]
+        if isinstance(name, str) and name
+    }
+
+
+def request_tool_bindings_are_stale(
+    agent,
+    request_tool_snapshot,
+) -> bool:
+    """True when the live executable surface changed after request assembly."""
+    return getattr(agent, "tools", None) is not request_tool_snapshot
+
+
 def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
     """Error-result content for a tool call whose name isn't a real tool.
 
@@ -2461,7 +2485,13 @@ def run_conversation(
         # exactly the point the breakpoints were meant to protect. Marking
         # last also keeps breakpoints off messages that the orphan sweep or
         # the thinking-only drop is about to remove or merge away.
-        tools_for_api = agent.tools
+        from tools.mcp_tool import snapshot_agent_tool_surface
+        (
+            request_tool_snapshot,
+            _request_tool_snapshot_generation,
+            request_registry_bindings,
+        ) = snapshot_agent_tool_surface(agent)
+        tools_for_api = request_tool_snapshot
         if agent._use_prompt_caching and agent.provider != "moa":
             _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
             _initial_cache_plan = build_prompt_cache_plan(
@@ -6931,18 +6961,56 @@ def run_conversation(
                 # call/result pair per id. See _uniquify_tool_call_ids.
                 agent._uniquify_tool_call_ids(assistant_message.tool_calls)
 
-                # Validate tool call names - detect model hallucinations
+                # Validate against the exact request schema snapshot. Keep this
+                # policy request-local: agent.tools / valid_tool_names are one
+                # atomically published live session snapshot and must not be
+                # rolled back when an older in-flight response arrives.
+                request_valid_tool_names = request_tool_names(tools_for_api)
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
+                    if tc.function.name not in request_valid_tool_names:
+                        repaired = agent._repair_tool_call(
+                            tc.function.name,
+                            valid_tool_names=request_valid_tool_names,
+                        )
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
-                    if tc.function.name not in agent.valid_tool_names
+                    if tc.function.name not in request_valid_tool_names
                 ]
+                if request_tool_bindings_are_stale(
+                    agent,
+                    request_tool_snapshot,
+                ):
+                    # A name offered by request A is not proof that its live
+                    # handler still has A's binding after snapshot B publishes.
+                    # Refuse all execution from A and let the next iteration
+                    # retry against B's schemas rather than dispatching a
+                    # removed or rebound tool with historical arguments.
+                    agent._invalid_tool_retries = 0
+                    assistant_msg = agent._build_assistant_message(
+                        assistant_message, finish_reason
+                    )
+                    append_message(messages, assistant_msg)
+                    for tc in assistant_message.tool_calls:
+                        if tc.function.name not in request_valid_tool_names:
+                            content = _invalid_tool_name_error_content(
+                                tc.function.name, request_valid_tool_names
+                            )
+                        else:
+                            content = (
+                                "Tool binding changed after this request was sent; "
+                                "the call was not executed. Retry using the current tool list."
+                            )
+                        append_message(messages, {
+                            "role": "tool",
+                            "name": tc.function.name,
+                            "tool_call_id": tc.id,
+                            "content": content,
+                        })
+                    continue
                 # Mixed batch: at least one valid call alongside the invalid
                 # one(s). Degrading models (observed with gpt-5.6 at very
                 # large context) emit batches like 6 named calls + 1
@@ -6955,7 +7023,7 @@ def run_conversation(
                 # model still halts at 3 while a mostly-coherent one keeps
                 # working.
                 _mixed_invalid_batch = bool(invalid_tool_calls) and any(
-                    tc.function.name in agent.valid_tool_names
+                    tc.function.name in request_valid_tool_names
                     for tc in assistant_message.tool_calls
                 )
                 if _mixed_invalid_batch:
@@ -6964,7 +7032,7 @@ def run_conversation(
                     invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                     _n_valid = sum(
                         1 for tc in assistant_message.tool_calls
-                        if tc.function.name in agent.valid_tool_names
+                        if tc.function.name in request_valid_tool_names
                     )
                     agent._buffer_vprint(
                         f"⚠️  Unknown tool '{invalid_preview}' in batch — erroring that call, "
@@ -7003,11 +7071,11 @@ def run_conversation(
                     append_message(messages, assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
-                        if _tc_name not in agent.valid_tool_names:
+                        if _tc_name not in request_valid_tool_names:
                             # See _invalid_tool_name_error_content for the
                             # blank-name anti-priming rationale (#47967).
                             content = _invalid_tool_name_error_content(
-                                _tc_name, agent.valid_tool_names
+                                _tc_name, request_valid_tool_names
                             )
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
@@ -7041,7 +7109,7 @@ def run_conversation(
                     except json.JSONDecodeError as e:
                         if (
                             _mixed_invalid_batch
-                            and tc.function.name not in agent.valid_tool_names
+                            and tc.function.name not in request_valid_tool_names
                         ):
                             # This call never executes — it gets an
                             # invalid-name error result below. Don't let its
@@ -7143,7 +7211,7 @@ def run_conversation(
                 if _mixed_invalid_batch:
                     _invalid_batch_calls = [
                         tc for tc in assistant_message.tool_calls
-                        if tc.function.name not in agent.valid_tool_names
+                        if tc.function.name not in request_valid_tool_names
                     ]
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -7268,12 +7336,12 @@ def run_conversation(
                             "name": tc.function.name,
                             "tool_call_id": tc.id,
                             "content": _invalid_tool_name_error_content(
-                                tc.function.name, agent.valid_tool_names
+                                tc.function.name, request_valid_tool_names
                             ),
                         })
                     assistant_message.tool_calls = [
                         tc for tc in assistant_message.tool_calls
-                        if tc.function.name in agent.valid_tool_names
+                        if tc.function.name in request_valid_tool_names
                     ]
 
                 _tool_turn_persisted = None
@@ -7330,7 +7398,18 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                # Keep dispatch ownership on the response object so the public
+                # executor call shape remains backward-compatible for plugins
+                # and test doubles while concurrent workers share this exact
+                # request-local map.
+                object.__setattr__(
+                    assistant_message,
+                    "_request_registry_bindings",
+                    request_registry_bindings,
+                )
+                agent._execute_tool_calls(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send

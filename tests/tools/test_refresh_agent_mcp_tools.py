@@ -155,6 +155,31 @@ def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
     assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
 
 
+def test_refresh_republishes_schema_only_changes(monkeypatch):
+    """Dynamic schema updates publish even when names and handlers are stable."""
+    from tools.registry import registry
+
+    agent = _agent(["schema_probe"])
+    agent.tools[0]["function"]["description"] = "old"
+    agent._tool_snapshot_generation = registry._generation
+    agent._tool_registry_bindings = registry.capture_bindings({"schema_probe"})
+    old_tools = agent.tools
+    new_defs = [_tool("schema_probe")]
+    new_defs[0]["function"]["description"] = "new"
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kwargs: list(new_defs),
+    )
+
+    assert mcp_tool.refresh_agent_mcp_tools(agent) == set()
+    assert agent.tools is not old_tools
+    assert agent.tools[0]["function"]["description"] == "new"
+    assert agent.valid_tool_names == {"schema_probe"}
+
+
 def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
     """Concurrent refreshes keep tools / valid_tool_names coherent.
 

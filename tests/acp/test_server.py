@@ -686,13 +686,20 @@ class TestRegisterSessionMcpServers:
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
-        mock_defs.assert_called_once_with(
+        assert mock_defs.call_count == 2
+        mock_defs.assert_any_call(
+            enabled_toolsets=["hermes-acp", "mcp-srv"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        mock_defs.assert_any_call(
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
+        assert state.agent.tools[:3] == fake_tools
         assert state.agent.tools[-1] == {
             "type": "function",
             "function": {
@@ -709,6 +716,64 @@ class TestRegisterSessionMcpServers:
         }
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_registered_deferred_tool_keeps_an_executable_binding(
+        self, agent, mock_manager
+    ):
+        """ACP schema publication includes the binding used by tool_call."""
+        import model_tools
+        from acp.schema import McpServerStdio
+        from tools.registry import registry
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent._tool_snapshot_generation = registry._generation
+        state.agent._tool_registry_bindings = {}
+        state.agent._memory_manager = None
+        state.agent._context_engine_tool_names = set()
+
+        name = "acp_deferred_execution_probe"
+        calls = []
+        schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "ACP deferred binding probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        registry.register(
+            name=name,
+            handler=lambda _args, **_kwargs: calls.append("A") or "A",
+            schema=schema,
+            toolset="mcp-srv",
+        )
+        server = McpServerStdio(
+            name="srv",
+            command="/bin/test",
+            args=[],
+            env=[],
+        )
+
+        with patch(
+            "tools.mcp_tool.register_mcp_servers", return_value=[name]
+        ), patch("model_tools.get_tool_definitions", return_value=[schema]):
+            await agent._register_session_mcp_servers(state, [server])
+            bindings = dict(state.agent._tool_registry_bindings)
+            result = model_tools.handle_function_call(
+                function_name="tool_call",
+                function_args={"name": name, "arguments": {}},
+                enabled_toolsets=["mcp-srv"],
+                request_registry_bindings=bindings,
+            )
+
+        assert bindings[name] is registry.get_entry(name)
+        assert calls == ["A"]
+        assert result == "A"
 
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):

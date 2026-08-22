@@ -543,6 +543,29 @@ class ToolRegistry:
         with self._lock:
             return self._merged_tools(scope).get(name)
 
+    def capture_bindings(
+        self,
+        names,
+        *,
+        scope: Optional[str] = None,
+    ) -> Dict[str, Optional[ToolEntry]]:
+        """Capture immutable entry identities for one request's tool names."""
+        bindings, _generation = self.capture_bindings_with_generation(
+            names, scope=scope
+        )
+        return bindings
+
+    def capture_bindings_with_generation(
+        self,
+        names,
+        *,
+        scope: Optional[str] = None,
+    ) -> tuple[Dict[str, Optional[ToolEntry]], int]:
+        """Capture entry identities and their registry generation atomically."""
+        with self._lock:
+            merged = self._merged_tools(scope)
+            return ({name: merged.get(name) for name in names}, self._generation)
+
     def snapshot_registration(
         self,
         name: str,
@@ -1131,6 +1154,8 @@ class ToolRegistry:
         args: dict,
         *,
         scope: Optional[str] = None,
+        expected_entry: Optional[ToolEntry] = None,
+        enforce_expected_entry: bool = False,
         **kwargs,
     ) -> str | dict:
         """Execute a tool handler by name.
@@ -1141,7 +1166,18 @@ class ToolRegistry:
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
-        entry = self.get_entry(name, scope=scope)
+        # Compare and capture under the mutation lock. If the entry is replaced
+        # after this block, dispatch still invokes captured binding A rather
+        # than looking up and executing a newer binding B.
+        with self._lock:
+            entry = self._merged_tools(scope).get(name)
+            if enforce_expected_entry and entry is not expected_entry:
+                return tool_error(
+                    "Tool binding changed after this request was sent; "
+                    "the call was not executed. Retry using the current tool list.",
+                    error_type="stale_tool_binding",
+                    tool=name,
+                )
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:

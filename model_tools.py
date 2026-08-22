@@ -1205,6 +1205,9 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    expected_registry_entry=None,
+    enforce_registry_entry: bool = False,
+    request_registry_bindings=None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1234,6 +1237,9 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    if request_registry_bindings is not None:
+        expected_registry_entry = request_registry_bindings.get(function_name)
+        enforce_registry_entry = True
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
@@ -1344,6 +1350,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                request_registry_bindings=request_registry_bindings,
             )
 
     _tool_original_args = dict(function_args)
@@ -1500,6 +1507,8 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
+                        expected_entry=expected_registry_entry,
+                        enforce_expected_entry=enforce_registry_entry,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
@@ -1508,6 +1517,8 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
+                        expected_entry=expected_registry_entry,
+                        enforce_expected_entry=enforce_registry_entry,
                     )
             if skip_tool_execution_middleware:
                 result = _dispatch(function_args)

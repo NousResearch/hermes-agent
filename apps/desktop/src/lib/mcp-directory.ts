@@ -42,7 +42,7 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     hosts: ['atlassian.net', 'atlassian.com', 'jira.com'],
     keywords: ['jira', 'confluence', 'atlassian', 'bitbucket'],
     name: 'atlassian',
-    url: 'https://mcp.atlassian.com/v1/sse'
+    url: 'https://mcp.atlassian.com/v1/mcp/authv2'
   },
   {
     description: 'Find, create, and update Linear issues and projects.',

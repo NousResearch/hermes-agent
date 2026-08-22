@@ -13,7 +13,7 @@ source: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassi
 # exchange, and refresh.
 transport:
   type: http
-  url: https://mcp.atlassian.com/v1/sse
+  url: https://mcp.atlassian.com/v1/mcp/authv2
 
 auth:
   type: oauth

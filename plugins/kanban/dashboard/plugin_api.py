@@ -36,6 +36,7 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import sqlite3
@@ -804,6 +805,82 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
             filename=att.filename,
             media_type=att.content_type or "application/octet-stream",
         )
+    finally:
+        conn.close()
+
+
+# Boards are multi-tenant: an uploader on one board must not be able to hand
+# another tenant's Desktop a document that executes in the preview surface.
+# Only inert, self-contained types are previewable; everything else (including
+# text/html and image/svg+xml, both of which carry script) is download-only.
+KANBAN_PREVIEWABLE_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "image/apng",
+        "image/bmp",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/csv",
+        "text/markdown",
+        "text/plain",
+    }
+)
+
+# Previews are base64-encoded into a JSON body, so the wire cost is ~4/3 the
+# blob. Keep the inline cap well under the 25 MB upload cap to keep the dialog
+# responsive; larger evidence stays available via the download endpoint.
+KANBAN_PREVIEW_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _preview_content_type(raw: Optional[str]) -> Optional[str]:
+    """Normalize a stored content type and return it only if previewable."""
+    if not raw:
+        return None
+    # Strip parameters (e.g. "text/plain; charset=utf-8") and normalize case.
+    base = raw.split(";", 1)[0].strip().lower()
+    return base if base in KANBAN_PREVIEWABLE_CONTENT_TYPES else None
+
+
+@router.get("/attachments/{attachment_id}/preview")
+def preview_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+    """Return a bounded data URL for inline Desktop evidence preview."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        att = kanban_db.get_attachment(conn, attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        content_type = _preview_content_type(att.content_type)
+        if content_type is None:
+            raise HTTPException(
+                status_code=415,
+                detail="attachment type cannot be previewed; download it instead",
+            )
+        root = kanban_db.attachments_root(board=board).resolve()
+        try:
+            stored = Path(att.stored_path).resolve()
+            stored.relative_to(root)
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="attachment file unavailable")
+        if not stored.is_file():
+            raise HTTPException(status_code=404, detail="attachment file missing on disk")
+        if stored.stat().st_size > KANBAN_PREVIEW_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"attachment exceeds the {KANBAN_PREVIEW_MAX_BYTES // (1024 * 1024)} MB "
+                    "preview limit; download it instead"
+                ),
+            )
+        data = stored.read_bytes()
+        return {
+            "content_type": content_type,
+            "filename": att.filename,
+            "data_url": f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}",
+        }
     finally:
         conn.close()
 

@@ -88,6 +88,7 @@ export interface KanbanEvent {
 export interface KanbanAttachment {
   id: number | string
   filename: string
+  content_type?: null | string
   size?: null | number
 }
 

@@ -2775,7 +2775,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
     if runs_exist:
-        with write_txn(conn):
+        # Schema-init/migration write: runs under the cross-process init
+        # lock and is idempotent + CAS-guarded, so it is allowed to proceed
+        # even in a delegated-child context (a child spawning `hermes kanban
+        # list` must be able to complete init before reading). See
+        # write_txn's allow_delegated docstring.
+        with write_txn(conn, allow_delegated=True):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
@@ -3041,7 +3046,12 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def write_txn(
+    conn: sqlite3.Connection,
+    *,
+    allow_nested: bool = False,
+    allow_delegated: bool = False,
+):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
@@ -3062,8 +3072,20 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
+
+    ``allow_delegated`` opts this particular write out of the
+    delegated-child fail-closed guard (``HERMES_DELEGATED_CHILD_CONTEXT``
+    set): use it ONLY for idempotent, cross-process-safe schema-init /
+    migration writes inside ``connect()``'s init path, which runs under
+    the cross-process init lock and which a child-spawned ``hermes kanban
+    list``/``stats`` MUST execute before it can report anything. Without
+    the opt-in, a delegated child shelling out to the CLI dies on the
+    init migration and every read command fails with the mutation
+    refusal. Ordinary task/board mutations keep the default fail-closed
+    behavior; there is no opt-in surface on the durable state itself.
     """
-    _assert_not_delegated_child_mutation()
+    if not allow_delegated:
+        _assert_not_delegated_child_mutation()
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(
@@ -4542,7 +4564,14 @@ def recompute_ready(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
-    with write_txn(conn):
+    # allow_delegated: recompute is an idempotent, transaction-scoped
+    # derived-state refresh that every `hermes kanban list` performs
+    # regardless of caller. A delegated child shelling out to the CLI must
+    # get the same read-path behavior as any other invocation; the
+    # fail-closed guard is for durable task/board mutations, not this
+    # recompute pass (which the dispatcher and CLI both run routinely, and
+    # SQLite's write lock serializes across processes).
+    with write_txn(conn, allow_delegated=True):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"

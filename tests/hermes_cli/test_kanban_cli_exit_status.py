@@ -58,3 +58,28 @@ def test_delegated_child_kanban_cli_refusal_returns_nonzero_exit_status(tmp_path
 
     assert refused.returncode == 1
     assert "delegate_task child contexts cannot mutate Kanban tasks via the CLI" in refused.stderr
+
+
+def test_delegated_child_can_still_read_kanban(tmp_path):
+    """A delegated child shelling out to the CLI must be able to read.
+
+    Regression for the board-list "(empty)" + "could not initialize
+    database" bug: `init_db()` runs an idempotent migration within
+    `connect()`'s init path, and `recompute_ready` runs inside `list` — both
+    are harmless writes that a child MUST be allowed to perform so read
+    commands return real data instead of failing on the mutation guard.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    seeded = _run_hermes(home, "kanban", "create", "seed for read", "--json")
+    assert seeded.returncode == 0, seeded.stderr
+
+    listed = _run_hermes(home, "kanban", "list", marker=True)
+    assert listed.returncode == 0, listed.stderr
+    assert "seed" in listed.stdout and "for" in listed.stdout
+
+    boards = _run_hermes(home, "kanban", "boards", "list", marker=True)
+    assert boards.returncode == 0, boards.stderr
+    assert "(empty)" not in boards.stdout
+    assert "ready=1" in boards.stdout

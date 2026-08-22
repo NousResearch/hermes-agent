@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -86,13 +87,15 @@ class _ScriptedCli:
     def __init__(self):
         self.responses = {}  # (group, cmd) -> list of (code, stdout, stderr)
         self.calls = []
+        self.timeouts = []  # (args, timeout kwarg) per call
 
     def script(self, group, cmd, payload, code=0, stderr=""):
         stdout = payload if isinstance(payload, str) else json.dumps(payload)
         self.responses.setdefault((group, cmd), []).append((code, stdout, stderr))
 
-    async def __call__(self, args, *, input_text=None):
+    async def __call__(self, args, *, input_text=None, timeout=None):
         self.calls.append((list(args), input_text))
+        self.timeouts.append((list(args), timeout))
         queue = self.responses.get((args[0], args[1]), [])
         if len(queue) > 1:
             return queue.pop(0)
@@ -464,6 +467,256 @@ class TestBuzzAdapterLifecycle:
         adapter._run_cli = cli
         assert await adapter.connect() is False
         assert adapter._lock_key is None
+        assert adapter._presence_task is None
+        assert _presence_calls(cli, "online") == []
+
+
+# ── Presence lifecycle ────────────────────────────────────────────────────
+#
+# The Buzz relay stores presence (ephemeral kind-20001, published via
+# ``buzz users set-presence``) in Redis with a 90-second TTL — documented
+# upstream as 3x the expected 30s client heartbeat — so an agent that never
+# refreshes its presence ages to offline even while the gateway is connected.
+# The adapter must publish
+# online on connect, refresh on a heartbeat, and best-effort publish offline
+# on graceful disconnect; presence failures are cosmetic and must never take
+# down an otherwise healthy adapter.
+
+
+def _presence_calls(cli, status):
+    return [
+        args for args, _ in cli.calls
+        if args[:2] == ["users", "set-presence"] and args[-1] == status
+    ]
+
+
+async def _wait_until(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.005)
+    return False
+
+
+def _connect_cli():
+    """Scripted CLI covering the full connect() conversation."""
+    cli = _ScriptedCli()
+    cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+    cli.script("channels", "list", [
+        {"channel_id": CHANNEL, "name": "general", "description": "General chat."},
+    ])
+    # messages get / dms list / users set-presence fall through to (0, "[]", "")
+    return cli
+
+
+class TestPresenceLifecycle:
+
+    @pytest.fixture
+    def connected(self, monkeypatch):
+        """Adapter wired for a full connect() with a scripted CLI."""
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(gateway_status, "acquire_scoped_lock", lambda p, k: True)
+        monkeypatch.setattr(gateway_status, "release_scoped_lock", lambda p, k: None)
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        adapter = _make_adapter({"transport": "poll", "channels": [CHANNEL]})
+        adapter.cli_path = "/fake/buzz"
+        cli = _connect_cli()
+        adapter._run_cli = cli
+        return adapter, cli
+
+    @pytest.mark.asyncio
+    async def test_connect_publishes_online_and_starts_heartbeat(self, connected):
+        adapter, cli = connected
+        try:
+            assert await adapter.connect() is True
+            assert await _wait_until(lambda: len(_presence_calls(cli, "online")) == 1)
+            online = _presence_calls(cli, "online")
+            assert online == [["users", "set-presence", "--status", "online"]]
+            # The private key must never be part of argv
+            assert all("nsec" not in arg for arg in online[0])
+            assert adapter._presence_task is not None
+            assert not adapter._presence_task.done()
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_wait_for_presence_and_disconnect_cancels_it(self, connected):
+        """Cosmetic presence must not consume the gateway connect timeout.
+
+        The heartbeat task owns the first publish. Teardown can therefore
+        cancel an in-flight online write before publishing offline, with no
+        late online write after disconnect returns.
+        """
+        adapter, cli = connected
+        online_started = asyncio.Event()
+        release_online = asyncio.Event()
+        online_completed = []
+
+        async def blocking_cli(args, *, input_text=None, timeout=None):
+            if args[:2] == ["users", "set-presence"] and args[-1] == "online":
+                cli.calls.append((list(args), input_text))
+                cli.timeouts.append((list(args), timeout))
+                online_started.set()
+                await release_online.wait()
+                online_completed.append(True)
+                return 0, "[]", ""
+            return await cli(args, input_text=input_text, timeout=timeout)
+
+        adapter._run_cli = blocking_cli
+        assert await asyncio.wait_for(adapter.connect(), timeout=0.5) is True
+        assert await asyncio.wait_for(online_started.wait(), timeout=0.5) is True
+        presence_task = adapter._presence_task
+        assert presence_task is not None and not presence_task.done()
+        assert cli.timeouts[-1][1] == _buzz_mod._PRESENCE_PUBLISH_TIMEOUT
+        assert (
+            2 * _buzz_mod._PRESENCE_HEARTBEAT_INTERVAL
+            + _buzz_mod._PRESENCE_PUBLISH_TIMEOUT
+            < _buzz_mod._PRESENCE_RELAY_TTL
+        )
+
+        await asyncio.wait_for(adapter.disconnect(), timeout=0.5)
+        assert presence_task.done()
+        assert online_completed == []
+        assert len(_presence_calls(cli, "offline")) == 1
+
+        release_online.set()
+        await asyncio.sleep(0)
+        assert online_completed == []
+        assert len(_presence_calls(cli, "offline")) == 1
+
+    @pytest.mark.asyncio
+    async def test_online_presence_failure_does_not_fail_connect(self, connected):
+        adapter, cli = connected
+        cli.script(
+            "users", "set-presence", "",
+            code=2, stderr='{"error":"relay_error","message":"presence down"}',
+        )
+        try:
+            assert await adapter.connect() is True
+            assert await _wait_until(lambda: len(_presence_calls(cli, "online")) == 1)
+            assert adapter.is_connected
+            # The heartbeat still starts so a transient failure self-heals.
+            assert adapter._presence_task is not None
+            assert not adapter._presence_task.done()
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_refreshes_online_presence(self, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_PRESENCE_HEARTBEAT_INTERVAL", 0.01)
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        try:
+            await adapter._start_presence()
+            # Initial publish plus at least one heartbeat refresh.
+            assert await _wait_until(lambda: len(_presence_calls(cli, "online")) >= 2)
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_stops_heartbeat_and_publishes_offline(self, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_PRESENCE_HEARTBEAT_INTERVAL", 0.01)
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        await adapter._start_presence()
+        task = adapter._presence_task
+        await adapter.disconnect()
+
+        assert adapter._presence_task is None
+        assert task.done()
+        assert len(_presence_calls(cli, "offline")) == 1
+        # No late writes: the heartbeat task is finished, so no further
+        # presence publish can happen after disconnect returns.
+        count = len(cli.calls)
+        await asyncio.sleep(0.05)
+        assert len(cli.calls) == count
+
+        # A second disconnect is a no-op — no duplicate offline publish.
+        await adapter.disconnect()
+        assert len(_presence_calls(cli, "offline")) == 1
+
+    @pytest.mark.asyncio
+    async def test_offline_publish_failure_does_not_break_disconnect(self):
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        cli = _ScriptedCli()
+        cli.script(
+            "users", "set-presence", "",
+            code=2, stderr='{"error":"relay_error","message":"gone"}',
+        )
+        adapter._run_cli = cli
+        await adapter._start_presence()
+        await adapter.disconnect()  # must not raise
+        assert adapter._presence_task is None
+
+    @pytest.mark.asyncio
+    async def test_presence_exception_does_not_break_lifecycle(self):
+        """A CLI that cannot even launch must not take down the adapter."""
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        attempts = []
+
+        async def broken_cli(args, *, input_text=None, timeout=None):
+            attempts.append(list(args))
+            raise OSError("no such binary")
+
+        adapter._run_cli = broken_cli
+        await adapter._start_presence()  # online publish fails — swallowed
+        assert await _wait_until(lambda: len(attempts) == 1)
+        await adapter.disconnect()  # offline publish fails — swallowed
+        assert adapter._presence_task is None
+        assert [args[-1] for args in attempts] == ["online", "offline"]
+
+    @pytest.mark.asyncio
+    async def test_repeated_start_does_not_duplicate_heartbeat(self):
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        try:
+            await adapter._start_presence()
+            first = adapter._presence_task
+            await adapter._start_presence()
+            second = adapter._presence_task
+            assert first is not second
+            assert first.done()  # the old loop was stopped, not leaked
+            assert not second.done()
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_lifecycle_single_heartbeat(self, connected):
+        """connect → disconnect → connect must end with exactly one live
+        heartbeat task and an offline publish per disconnect."""
+        adapter, cli = connected
+        try:
+            assert await adapter.connect() is True
+            assert await _wait_until(lambda: len(_presence_calls(cli, "online")) == 1)
+            await adapter.disconnect()
+            assert len(_presence_calls(cli, "offline")) == 1
+            assert await adapter.connect(is_reconnect=True) is True
+            assert await _wait_until(lambda: len(_presence_calls(cli, "online")) == 2)
+            assert len(_presence_calls(cli, "online")) == 2
+            assert adapter._presence_task is not None
+            assert not adapter._presence_task.done()
+        finally:
+            await adapter.disconnect()
+        assert len(_presence_calls(cli, "offline")) == 2
+
+    @pytest.mark.asyncio
+    async def test_disconnect_without_presence_publishes_nothing(self):
+        """An adapter that never went online must not shell out on teardown."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+        await adapter.disconnect()
+        assert cli.calls == []
 
 
 # ── Credentials / requirements ────────────────────────────────────────────

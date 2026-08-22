@@ -1416,6 +1416,42 @@ def _has_http_method_substring(text: str) -> bool:
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
+# Env-var name suffixes whose values are credentials.  The regex passes above
+# mask tokens by *shape* (vendor prefixes like ``sk-``); this list drives the
+# exact-value pass that masks opaque values with no recognizable prefix.
+_FORMATTER_CREDENTIAL_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_KEY",
+    "_PASSWORD",
+)
+
+
+def _mask_known_env_values(text: str) -> str:
+    """Mask the literal values of credential-named env vars wherever they appear.
+
+    Complements the shape-based regex passes: an opaque credential value
+    echoed into a log line (``MY_SERVICE_TOKEN=abc123randomstring``,
+    ``BWS_ACCESS_TOKEN``, a ``*_PASSWORD``) carries no vendor prefix, so only
+    an exact-value pass can catch it.  Values shorter than 6 chars are skipped
+    — masking ``KEY=true`` or ``TOKEN=1`` would mangle ordinary prose while
+    adding no real protection.  Best-effort: values not currently in the
+    process environment cannot be masked here (the regex passes still catch
+    prefix-shaped tokens).
+    """
+    if not text:
+        return text
+    for name, value in os.environ.items():
+        if (
+            value
+            and len(value) >= 6
+            and name.upper().endswith(_FORMATTER_CREDENTIAL_SUFFIXES)
+        ):
+            text = text.replace(value, "***")
+    return text
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
@@ -1424,4 +1460,17 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        # Shape-based regex first (vendor prefixes, headers, URLs), then the
+        # exact-value pass so opaque credential values with no recognizable
+        # prefix (e.g. MY_SERVICE_TOKEN=abc123randomstring, BWS_ACCESS_TOKEN)
+        # are masked from log output too.
+        redacted = redact_sensitive_text(original)
+        # The exact-value pass must honor the same global opt-out as
+        # redact_sensitive_text: with `security.redact_secrets: false` (or
+        # HERMES_REDACT_SECRETS=false) the documented contract is that logs
+        # are NOT redacted, so skip the env-value pass too instead of
+        # masking around a redact_sensitive_text that already returned the
+        # original text.
+        if _REDACT_ENABLED:
+            redacted = _mask_known_env_values(redacted)
+        return redacted

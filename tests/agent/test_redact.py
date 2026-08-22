@@ -338,6 +338,79 @@ class TestRedactingFormatter:
         assert "abc123def456" not in result
         assert "sk-pro" in result
 
+    def test_opaque_credential_value_masked_in_logs(self, monkeypatch):
+        """A credential value with no vendor prefix (opaque token) must be
+        masked in log output — the shape-based regex can't catch it, but the
+        exact-value pass can."""
+        monkeypatch.setenv("MY_SERVICE_TOKEN", "opaque-secret-value-xyz")
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="starting with opaque-secret-value-xyz configured",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "opaque-secret-value-xyz" not in result
+        assert "starting with *** configured" == result
+
+    def test_password_suffixed_value_masked_in_logs(self, monkeypatch):
+        monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="connstring uses db-pass-9f2c1a",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "db-pass-9f2c1a" not in result
+
+    def test_bws_access_token_masked_in_logs(self, monkeypatch):
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="bitwarden token 0.abc123.def456:xyz789 rejected",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "0.abc123.def456:xyz789" not in result
+        assert "rejected" in result
+
+    def test_disabled_setting_passes_opaque_value_through(self, monkeypatch):
+        """The `security.redact_secrets: false` opt-out must disable the
+        exact-value formatter pass too. `redact_sensitive_text` already
+        returns the original text when redaction is off; the opaque
+        credential-value pass must not mask around it — the documented
+        contract (configuration.md / environment-variables.md) is that this
+        setting controls logs as well."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        monkeypatch.setenv("MY_SERVICE_TOKEN", "opaque-secret-value-xyz")
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="starting with opaque-secret-value-xyz configured",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "opaque-secret-value-xyz" in result
+        assert result == "starting with opaque-secret-value-xyz configured"
+
 
 class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""

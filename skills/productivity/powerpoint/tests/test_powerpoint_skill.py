@@ -258,6 +258,54 @@ def test_help_flags():
 
 
 # ---------------------------------------------------------------------------
+# body-placeholder overflow detection (issue #91967): dense bullet content
+# silently overflows the ~4.95" body placeholder, so pptx_create.py must
+# report an "overflow" estimate for affected slides.
+# ---------------------------------------------------------------------------
+
+def test_create_dense_bullets_reports_overflow(workdir):
+    """18+ bullets on one body slide must be flagged in the overflow array."""
+    spec_path = workdir / "dense.json"
+    write_json(spec_path, {"slide_size": "16:9", "slides": [
+        {"layout": "title_content", "title": "Dense",
+         "bullets": ["Bullet number %d" % i for i in range(18)]}]})
+    out = workdir / "dense.pptx"
+    result = run("pptx_create.py", str(spec_path), str(out))
+    assert result["ok"]
+    assert any(entry["slide"] == 0 for entry in result["overflow"])
+    dense = next(entry for entry in result["overflow"]
+                 if entry["slide"] == 0)
+    # estimated need must exceed the ~4.95" body placeholder
+    assert dense["estimated_inches"] > dense["available_inches"]
+    assert dense["available_inches"] == pytest.approx(4.95, abs=0.05)
+
+
+def test_create_trimmed_bullets_no_overflow(workdir):
+    """A few terse bullets must produce an empty overflow list."""
+    spec_path = workdir / "trim.json"
+    write_json(spec_path, {"slide_size": "16:9", "slides": [
+        {"layout": "title_content", "title": "Trim",
+         "bullets": ["Short", "Terse", "One more"]}]})
+    out = workdir / "trim.pptx"
+    result = run("pptx_create.py", str(spec_path), str(out))
+    assert result["ok"]
+    assert result["overflow"] == []
+
+
+def test_create_overflow_is_backward_compatible(workdir):
+    """Output keeps ok/output/slides fields alongside the new overflow key."""
+    spec_path = workdir / "ok.json"
+    write_json(spec_path, {"slides": [
+        {"layout": "title_content", "title": "T", "bullets": ["x"]}]})
+    out = workdir / "ok.pptx"
+    result = run("pptx_create.py", str(spec_path), str(out))
+    assert result["ok"] is True
+    assert "output" in result and "slides" in result
+    assert "overflow" in result  # new field always present
+
+
+
+# ---------------------------------------------------------------------------
 # parity features: render, run-merge replace, chart ops, duplication,
 # polish (background/hyperlink/slide-number/footer), notes editing
 # ---------------------------------------------------------------------------

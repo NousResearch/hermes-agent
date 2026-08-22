@@ -1519,6 +1519,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             "Telegram caption-fallback send failed for missing media: %s",
                             _sanitize_error_text(_cap_err),
                         )
+                        warnings.append(
+                            "Telegram caption-fallback send failed for missing media: "
+                            f"{_sanitize_error_text(_cap_err)}"
+                        )
                 continue
 
             ext = os.path.splitext(media_path)[1].lower()
@@ -1618,6 +1622,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             elif ext in _VIDEO_EXTS:
                                 last_msg = await bot.send_video(
                                     chat_id=int_chat_id, video=f, **media_kwargs
+                                )
+                            elif ext in _VOICE_EXTS and is_voice:
+                                last_msg = await bot.send_voice(
+                                    chat_id=int_chat_id, voice=f, **media_kwargs
+                                )
+                            elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                                last_msg = await bot.send_audio(
+                                    chat_id=int_chat_id, audio=f, **media_kwargs
                                 )
                             else:
                                 last_msg = await bot.send_document(

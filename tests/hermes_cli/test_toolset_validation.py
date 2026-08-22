@@ -46,5 +46,14 @@ def test_mixed_valid_and_invalid_flags_only_the_invalid():
     assert "unknown toolset 'bogus'" in warnings[0]
 
 
+def test_registered_plugin_and_supported_sentinel_are_valid_passthroughs():
+    warnings = validate_platform_toolsets(
+        {"webhook": ["beca-webhook"], "cron": ["no_mcp"]},
+        _is_valid,
+        extra_valid_toolsets={"beca-webhook", "no_mcp"},
+    )
+
+    assert warnings == []
+
 
 

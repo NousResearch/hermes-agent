@@ -12,12 +12,14 @@ significant debugging to find. Surfacing invalid toolset names (and the
 zero-tools end state) loudly turns that silent failure into an actionable one.
 """
 
-from typing import Callable, List
+from typing import Callable, Iterable, List
 
 
 def validate_platform_toolsets(
     platform_toolsets: object,
     is_valid_toolset: Callable[[str], bool],
+    *,
+    extra_valid_toolsets: Iterable[str] = (),
 ) -> List[str]:
     """Return human-readable warnings for a ``platform_toolsets`` mapping.
 
@@ -43,6 +45,7 @@ def validate_platform_toolsets(
         A list of warning strings (empty when everything is valid).
     """
     warnings: List[str] = []
+    extra_valid = set(extra_valid_toolsets)
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
 
@@ -52,7 +55,7 @@ def validate_platform_toolsets(
         for name in names:
             if not isinstance(name, str) or not name:
                 continue
-            if is_valid_toolset(name):
+            if name in extra_valid or is_valid_toolset(name):
                 valid_count += 1
                 continue
             suggestion = f"hermes-{platform}"

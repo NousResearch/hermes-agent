@@ -1383,6 +1383,14 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
 
 @pytest.mark.asyncio
 async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
+    approval_surface = {
+        "subsystems": ["skills"],
+        "items": {"skills": ["abc12345"]},
+    }
+    monkeypatch.setattr(
+        "gateway.run.build_pending_surface",
+        lambda _subsystems: approval_surface,
+    )
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -1393,6 +1401,28 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+    session_key = "agent:main:telegram:group:-1001:17585"
+    entry = adapter._post_delivery_callbacks[session_key]
+    release = entry[1] if isinstance(entry, tuple) else entry
+    release()
+    for _ in range(20):
+        if adapter.sent:
+            break
+        await asyncio.sleep(0.01)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "-1001",
+            "content": "💾 Skill 'prospect-scanner' created.",
+            "reply_to": None,
+            "metadata": {
+                "_interim_send": True,
+                "thread_id": "17585",
+                "write_approval": approval_surface,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

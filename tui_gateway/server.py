@@ -11566,7 +11566,13 @@ def _run_prompt_submit(
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None
             with session["history_lock"]:
-                session["running"] = False
+                if not goal_followup:
+                    # Only release the turn guard when there is no followup
+                    # to chain.  When a goal continuation exists we keep
+                    # running=True so no other thread (notification poller,
+                    # concurrent prompt.submit) can steal the turn during the
+                    # gap between this finally and the followup dispatch below.
+                    session["running"] = False
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
@@ -11618,19 +11624,11 @@ def _run_prompt_submit(
         if _drain_queued_prompt(rid, sid, session):
             return
 
-        # Chain a goal-continuation turn if the judge said so. We do
-        # this AFTER the finally releases session["running"], so the
-        # nested _run_prompt_submit doesn't deadlock on the busy
-        # guard. A real user prompt that races us wins because
-        # prompt.submit sets running=True under the history_lock and
-        # we check that guard before re-firing.
+        # Chain a goal-continuation turn if the judge said so.  Because the
+        # finally block above intentionally kept running=True when a followup
+        # exists, there is no TOCTOU window — no other thread can sneak in
+        # and start a concurrent turn on this session.
         if goal_followup:
-            with session["history_lock"]:
-                if session.get("running"):
-                    # User already sent something — their turn wins,
-                    # the judge will re-run on the next turn anyway.
-                    return
-                session["running"] = True
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)

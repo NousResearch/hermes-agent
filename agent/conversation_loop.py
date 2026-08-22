@@ -43,6 +43,7 @@ from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
     compose_user_api_content,
+    prepare_api_content_for_replay,
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
@@ -2177,6 +2178,8 @@ def run_conversation(
             # It is bookkeeping, never a provider field — pop it from EVERY
             # outgoing copy.
             _api_content = api_msg.pop("api_content", None)
+            if isinstance(_api_content, str) and _api_content:
+                _api_content = prepare_api_content_for_replay(_api_content)
 
             # Display-only timeline metadata. Never a provider field — strip
             # from every outgoing copy so strict OpenAI-compatible backends

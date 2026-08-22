@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -1033,6 +1034,34 @@ else:
         print(f"Ares Desktop started from stable release {revision}")
 
 
+def _role_gate(request: Path) -> int:
+    """Invoke the canonical semantic role-authority gate as one consumer."""
+    gate_path = Path(__file__).resolve().parents[1] / "scripts" / "role_authority_gate.py"
+    if not gate_path.is_file():
+        raise AresLocalRuntimeError(f"canonical role gate unavailable: {gate_path}")
+
+    module_name = "_ares_canonical_role_authority_gate"
+    spec = importlib.util.spec_from_file_location(module_name, gate_path)
+    if spec is None or spec.loader is None:
+        raise AresLocalRuntimeError(f"canonical role gate cannot be loaded: {gate_path}")
+    gate = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = gate
+    try:
+        spec.loader.exec_module(gate)
+        exit_code = gate.main([str(request)])
+    except (OSError, ImportError, AttributeError) as exc:
+        raise AresLocalRuntimeError(f"canonical role gate failed to load: {exc}") from exc
+    finally:
+        sys.modules.pop(module_name, None)
+
+    if exit_code == 2:
+        print(
+            "ares role-gate consumer limitation: " + gate.UNCONNECTED_CONSUMER_NOTE,
+            file=sys.stderr,
+        )
+    return exit_code
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ares",
@@ -1068,6 +1097,11 @@ def _parser() -> argparse.ArgumentParser:
     desktop.add_argument("--rebuild", action="store_true", help="Build Desktop in the selected stable runtime first")
     subparsers.add_parser("tui", help="Launch the selected TUI")
     subparsers.add_parser("chat", help="Launch the selected Ares CLI")
+    role_gate = subparsers.add_parser(
+        "role-gate",
+        help="Evaluate one request with the canonical semantic role-authority gate",
+    )
+    role_gate.add_argument("--request", type=Path, required=True, help="JSON request file for the role-authority gate")
     gateway = subparsers.add_parser("gateway", help="Manage the selected Ares gateway service")
     gateway.add_argument("action", choices=("start", "stop", "restart", "status", "foreground"))
     parser.add_argument("--version", action="store_true", help="Print the selected stable runtime revision")
@@ -1117,6 +1151,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             runtime.tui(args.arguments)
         elif args.command == "chat":
             runtime.chat(args.arguments)
+        elif args.command == "role-gate":
+            raise SystemExit(_role_gate(args.request))
         elif args.command == "gateway":
             runtime.gateway(args.action)
         else:

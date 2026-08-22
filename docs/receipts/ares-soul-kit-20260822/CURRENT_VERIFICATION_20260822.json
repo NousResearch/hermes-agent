@@ -1,0 +1,42 @@
+{
+  "schema": "AresCurrentVerificationReceiptV1",
+  "version": 1,
+  "recorded_at_utc": "2026-08-22T10:29:49Z",
+  "source_identity": {
+    "root": "/home/sikmindz/Coding/Ares",
+    "branch": "sync-updated-live-skills-20260820",
+    "head": "e2a870a7e2c0b4028965735bad53e190473f673c",
+    "porcelain_entry_count": 20,
+    "scope_note": "Dirty checkout preserved; no runtime activation, gateway restart, credentials, or unrelated path reset."
+  },
+  "verified": [
+    {"command": "python3 -m pytest -q tests/ares_runtime/test_local_runtime.py tests/agent/test_ares_managed_identity.py tests/hermes_cli/test_config.py tests/hermes_cli/test_profiles.py", "status": "PASS", "passed": 157, "skipped": 2},
+    {"command": "python3 -m pytest -q tests/role_contracts tests/ares_runtime/test_local_runtime.py", "status": "PASS", "passed": 53},
+    {"command": "python3 scripts/validate_role_contracts.py docs/role-contracts/role-contracts.json", "status": "PASS", "output": "OK"},
+    {"command": "python3 -m py_compile ares_runtime/local_runtime.py hermes_cli/config.py hermes_cli/profiles.py agent/prompt_builder.py agent/system_prompt.py scripts/role_authority_gate.py tests/ares_runtime/test_local_runtime.py tests/hermes_cli/test_config.py tests/hermes_cli/test_profiles.py tests/agent/test_ares_managed_identity.py", "status": "PASS"},
+    {"command": "python3 -m ruff check ares_runtime/local_runtime.py hermes_cli/config.py hermes_cli/profiles.py agent/prompt_builder.py agent/system_prompt.py scripts/role_authority_gate.py tests/ares_runtime/test_local_runtime.py tests/hermes_cli/test_config.py tests/hermes_cli/test_profiles.py tests/agent/test_ares_managed_identity.py tests/role_contracts", "status": "PASS"},
+    {"command": "real subprocess role-gate allowed/rejected/malformed matrix", "status": "PASS", "exit_codes": [0,1,2], "scope": "explicit CLI consumer only"}
+  ],
+  "delivered_and_verified": [
+    "managed Ares fallback is selected only when no valid SOUL loads",
+    "explicit/custom/profile SOUL content remains primary",
+    "normal Hermes fallback remains the upstream identity",
+    "fresh managed root/profile creation does not seed upstream DEFAULT_SOUL_MD",
+    "role-gate loads scripts/role_authority_gate.py and preserves 0/1/2 semantics",
+    "consumer limitation remains printed and broad runtime/publication wiring is absent",
+    "canonical default home test now matches the Ares-owned ~/.ares source contract"
+  ],
+  "not_established": [
+    "active runtime promotion or gateway restart",
+    "mandatory role-gate wiring across every runtime/publication consumer",
+    "automatic dispatch enforcement",
+    "behavioral discriminant validity of role profiles",
+    "production authority enforcement"
+  ],
+  "changed_in_this_closeout": [
+    "tests/hermes_cli/test_config.py",
+    "docs/receipts/ares-soul-kit-20260822/CURRENT_VERIFICATION_20260822.json"
+  ],
+  "rollback": "Revert only the one-line ~/.ares expectation in tests/hermes_cli/test_config.py or remove the additive current-verification receipt. Do not reset the broader dirty checkout or activate a runtime.",
+  "completion": "focused_source_verified_with_runtime_promotion_and_broad_consumer_wiring_unverified"
+}

@@ -1,0 +1,68 @@
+{
+  "schema": "ChangeReceiptV1",
+  "version": 1,
+  "task_id": "ares-soul-kit-20260822",
+  "source_identity": {
+    "kit": "/home/sikmindz/Downloads/Ares_SOUL_Kit_2026-08-21.zip",
+    "kit_sha256": "7cbd9471d10830a1ad994bbdafb072890978c41cb7fd0144e134478697d62186",
+    "repository": "/home/sikmindz/Coding/Ares",
+    "branch": "sync-updated-live-skills-20260820",
+    "head_before_source_patch": "e2a870a7e2c0b4028965735bad53e190473f673c",
+    "active_runtime_revision": "48a88d5e6a361ebee13416a181aa31fe5df46fba"
+  },
+  "changed_paths": {
+    "source": [
+      "agent/prompt_builder.py",
+      "agent/system_prompt.py",
+      "agent/transports/codex.py",
+      "agent/codex_responses_adapter.py",
+      "hermes_cli/config.py",
+      "hermes_cli/profiles.py",
+      "tests/agent/test_ares_managed_identity.py",
+      "tests/agent/test_system_prompt.py",
+      "tests/hermes_cli/test_config.py",
+      "tests/hermes_cli/test_profiles.py"
+    ],
+    "operator_state": [
+      "/home/sikmindz/.ares/SOUL.md",
+      "/home/sikmindz/.ares/skills/strategy/ares-operating-modes/",
+      "/home/sikmindz/.ares/profiles/explorer/SOUL.md",
+      "/home/sikmindz/.ares/profiles/explorer/config.yaml",
+      "/home/sikmindz/.ares/profiles/public/SOUL.md",
+      "/home/sikmindz/.ares/profiles/public/config.yaml"
+    ],
+    "rollback_backups": [
+      "/home/sikmindz/.ares/kit-backups/ares-soul-kit-20260822T041947Z/",
+      "/home/sikmindz/.ares/profiles/explorer/config.yaml.before-codex-20260822T045102Z",
+      "/home/sikmindz/.ares/profiles/public/config.yaml.before-codex-20260822T045102Z"
+    ]
+  },
+  "specialist_cycle": {
+    "design": ["LongMemEval Bench", "ML Evaluation Researcher", "Statistician", "Cognitive Scientist", "Psychometrician", "Inbox Manager", "Explorer", "Public Evidence Editor"],
+    "implementation_owner": "LongMemEval Bench data/evidence profile",
+    "verification": ["ML Evaluation Researcher", "Statistician", "Cognitive Scientist", "Psychometrician", "Explorer", "Public Evidence Editor", "Inbox Manager"],
+    "generic_subagents_used_for_this_Ares_phase": false
+  },
+  "checks": {
+    "kit_manifest": "PASS",
+    "kit_validator_and_router_unit_tests": "PASS",
+    "identity_and_adapter_focused_tests": "PASS: 135 passed",
+    "fresh_seed_suppression_gate": "PASS: 14 focused tests",
+    "ruff_compile_diff": "PASS",
+    "broader_config_profile_suite": "FAIL: 135 passed, 2 skipped, 1 inherited Ares default-home expectation failed",
+    "active_runtime_promotion": "BLOCKED: not authorized and not performed",
+    "behavioral_held_out_evaluation": "NOT_RUN",
+    "router": "NOT_APPLICABLE: intentionally uninstalled",
+    "security_archive_remediation": "BLOCKED: credential-sensitive external actions not authorized"
+  },
+  "evidence_state": "source_verified_focused; active_runtime_blocked; behavioral_unverified",
+  "remaining_delta": [
+    "Decide and run a clean Ares runtime promotion if deployment is explicitly authorized.",
+    "Partition or repair the inherited .hermes versus .ares broader test expectation without weakening Ares behavior.",
+    "Run the kit's staged held-out behavioral evaluation before claiming benefit or routing quality.",
+    "Implement semantic role contracts and F→I→V artifacts as a separate phase; SOUL documents alone are not enforcement.",
+    "Handle the four credential-shaped tokens from the supplied archive through a separate credential-response operation."
+  ],
+  "rollback": "Restore the timestamped root SOUL backup; remove only the newly created Explorer/Public profiles and kit skill if explicitly directed; restore their profile config backups; revert only the scoped source patch. Do not reset unrelated dirty paths or delete existing specialist profiles.",
+  "complete": false
+}

@@ -1316,6 +1316,132 @@ def _abort_zip_update_if_dirty_tree() -> None:
     print("  Stash or commit your changes, then rerun `hermes update`.")
     print("  To inspect: git status --porcelain")
     _m().sys.exit(1)
+def _state_db_damage_is_fts_only(message: str) -> bool:
+    """True when *every* integrity-check finding blames the FTS5 index.
+
+    ``PRAGMA integrity_check`` reports FTS5 damage in the shape
+    ``malformed inverted index for FTS5 table main.messages_fts_trigram``
+    (#88252).  That names a *derived* structure: the search index is
+    rebuilt from the canonical ``messages`` rows, so this class of damage
+    costs the user their search index and nothing else.  Real page damage
+    reads very differently (``row N missing from index``, ``wrong # of
+    entries in index``, a bad header), which is why the caller only makes
+    the "your history is intact" claim for this class.
+
+    **The test is per finding, not per message.** ``integrity_check`` emits
+    one row per problem and ``verify_sqlite_integrity`` joins them with
+    ``"; "``, so a database damaged both ways arrives as a single string
+    holding an FTS phrase *and* a page-damage phrase.  Asking only whether
+    an FTS phrase appears anywhere answers yes there, and tells a user with
+    real b-tree loss that their messages are intact -- the precise false
+    reassurance this hint exists to prevent.  So the message is split back
+    into its findings and the claim is made only when every one is FTS.
+
+    A report that discloses omitted findings is refused for the same
+    reason: the finding that did not fit is exactly the one that could
+    contradict the ones that did.
+
+    Deliberately a text test rather than a reuse of
+    ``SessionDB._is_fts_write_corruption_error``: that classifier takes a
+    ``sqlite3.DatabaseError`` raised by a failed *write*, and here there is
+    no exception -- only the string ``verify_sqlite_integrity`` returned.
+    """
+    from hermes_cli.backup import INTEGRITY_CHECK_OMITTED_SUFFIX
+
+    lowered = message.lower()
+    if INTEGRITY_CHECK_OMITTED_SUFFIX in lowered:
+        return False
+
+    _, marker, tail = lowered.partition("integrity check failed:")
+    findings = [part.strip() for part in (tail if marker else lowered).split(";")]
+    findings = [part for part in findings if part]
+    if not findings:
+        return False
+
+    return all(
+        "fts5" in finding or "inverted index" in finding for finding in findings
+    )
+
+
+def _restore_state_db_from_snapshot(snap_state, state_path, label: str):
+    """Put a snapshot's state.db back when the post-update check found damage.
+
+    Both update flows reach the same dead end differently -- the git path
+    knows the id of the snapshot it took, the ZIP path scans every snapshot
+    newest-first -- but once either has a *candidate* file the remaining
+    work is identical: verify the candidate, copy it over, verify the
+    result, and say which of those happened.  That half was duplicated, and
+    it is the half that had to stay in step, since both copies re-verify
+    after the copy specifically so a bad snapshot cannot quietly replace a
+    bad database with another one.
+
+    The differing half is left where it is on purpose.  The two flows
+    genuinely disagree about which snapshot to trust and owe the user
+    different explanations when there is none, so folding them together
+    would mean inventing a strategy neither one has.
+
+    Returns None when *snap_state* is itself corrupt -- nothing was
+    attempted, so a caller working through several snapshots should keep
+    looking -- True when the copy landed and re-verified, and False when an
+    attempt was made and did not succeed.
+    """
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    if not verify_sqlite_integrity(
+        snap_state, check_header=True, run_pragma=True
+    ).get("valid"):
+        return None
+
+    try:
+        import shutil as _shutil
+
+        _shutil.copy2(snap_state, state_path)
+    except OSError as exc:
+        print(f"  ✗ Auto-restore file copy failed: {exc}")
+        return False
+
+    if verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True
+    ).get("valid"):
+        print(f"  ✓ Auto-restored from {label}")
+        return True
+
+    print(
+        "  ✗ Auto-restore FAILED — restored copy also failed integrity"
+    )
+    return False
+
+
+def _print_state_db_repair_hint(message: str) -> None:
+    """Name a concrete repair command for a state.db the update found corrupt.
+
+    Only reached once restoring from a snapshot turned out to be impossible
+    or to have failed, which is exactly the dead end #88252 reports: the
+    update announces that the database is corrupted, offers nothing, and the
+    user reasonably concludes their history is gone.  Usually it is not --
+    ``hermes sessions repair`` already fixes the dominant class in place,
+    via the FTS5 ``'rebuild'`` command, without touching a single message
+    row.
+
+    That command is also the right pointer for the other classes: it
+    re-probes with its own health check and declines to touch a database
+    that is actually fine, backs up before it changes anything, and
+    escalates least-destructive-first.  So this prints a pointer and never
+    repairs anything itself -- an update is the wrong place to acquire a
+    write lock on a database the user has not asked us to rewrite.
+    """
+    if _state_db_damage_is_fts_only(message):
+        print(
+            "  → This is the FTS5 search index, not your sessions or "
+            "messages — they are intact."
+        )
+        print("    Rebuild the index in place with:  hermes sessions repair")
+    else:
+        print("  → Try:  hermes sessions repair")
+        print(
+            "    It typically backs up first, re-checks the database before "
+            "acting, and tries the least destructive fix first."
+        )
 
 
 def _read_project_version() -> str | None:
@@ -1741,11 +1867,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                 _state_path, check_header=True, run_pragma=True
             )
             if not _state_ok.get("valid"):
+                _state_message = _state_ok.get("message", "unknown error")
+                _state_restored = False
                 print()
-                print(
-                    "⚠ state.db is corrupted after update: "
-                    + _state_ok.get("message", "unknown error")
-                )
+                print("⚠ state.db is corrupted after update: " + _state_message)
                 _snap_root = _quick_snapshot_root(get_hermes_home())
                 if _snap_root.exists():
                     _snap_dirs = sorted(
@@ -1755,35 +1880,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                     for _snap_dir in _snap_dirs:
                         _snap_state = _snap_dir / "state.db"
                         if _snap_state.exists():
-                            _snap_ok = verify_sqlite_integrity(
-                                _snap_state, check_header=True, run_pragma=True
+                            # None means that snapshot is corrupt too, so
+                            # keep walking back; anything else was an
+                            # attempt and settles it.
+                            _outcome = _restore_state_db_from_snapshot(
+                                _snap_state,
+                                _state_path,
+                                f"snapshot {_snap_dir.name}",
                             )
-                            if _snap_ok.get("valid"):
-                                try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
-                                        print(
-                                            "  ✓ Auto-restored from snapshot "
-                                            f"{_snap_dir.name}"
-                                        )
-                                    else:
-                                        print(
-                                            "  ✗ Auto-restore FAILED — restored "
-                                            "copy also failed integrity"
-                                        )
-                                    break
-                                except OSError as _exc:
-                                    print(
-                                        f"  ✗ Auto-restore file copy failed: {_exc}"
-                                    )
-                                    break
+                            if _outcome is not None:
+                                _state_restored = _outcome
+                                break
+                if not _state_restored:
+                    # Every branch above either restored the file or ran out
+                    # of options without telling the user what they can do
+                    # next (#88252).  Tell them.
+                    _print_state_db_repair_hint(_state_message)
     except Exception as exc:
         logger.debug(
             "Post-update state.db integrity check (zip path) failed: %s", exc
@@ -6632,11 +6744,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _state_ok.get("message"),
                     )
                 else:
+                    _state_message = _state_ok.get("message", "unknown error")
+                    _state_restored = False
                     print()
-                    print(
-                        "⚠ state.db is corrupted after update: "
-                        + _state_ok.get("message", "unknown error")
-                    )
+                    print("⚠ state.db is corrupted after update: " + _state_message)
                     _pre_snap_id = pre_update_snapshot_id
                     if _pre_snap_id:
                         _snap_state = (
@@ -6645,43 +6756,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             / "state.db"
                         )
                         if _snap_state.exists():
-                            _snap_ok = verify_sqlite_integrity(
-                                _snap_state, check_header=True, run_pragma=True
+                            _outcome = _restore_state_db_from_snapshot(
+                                _snap_state,
+                                _state_path,
+                                f"pre-update snapshot ({_pre_snap_id})",
                             )
-                            if _snap_ok.get("valid"):
-                                try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
-                                        print(
-                                            "  ✓ Auto-restored from pre-update "
-                                            f"snapshot ({_pre_snap_id})"
-                                        )
-                                    else:
-                                        print(
-                                            "  ✗ Auto-restore FAILED — restored "
-                                            "copy also failed integrity"
-                                        )
-                                except OSError as _exc:
-                                    print(
-                                        f"  ✗ Auto-restore file copy failed: {_exc}"
-                                    )
-                            else:
+                            if _outcome is None:
                                 print(
                                     "  ✗ Pre-update snapshot also failed integrity"
                                 )
+                            else:
+                                _state_restored = _outcome
                         else:
                             print(
                                 "  ⚠ Pre-update snapshot does not contain state.db"
                             )
                     else:
                         print("  ⚠ No pre-update snapshot was taken")
+                    if not _state_restored:
+                        # The reporter's exact dead end (#88252): corruption
+                        # announced, no snapshot to fall back on, and not a
+                        # word about the repair command that already exists.
+                        _print_state_db_repair_hint(_state_message)
                     print()
         except Exception as exc:
             logger.debug("Post-update state.db integrity check failed: %s", exc)

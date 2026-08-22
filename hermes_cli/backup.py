@@ -474,6 +474,23 @@ _SQLITE_HEADER = b"SQLite format 3\0"
 DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
 
 
+INTEGRITY_CHECK_MAX_REPORTED_ERRORS = 5
+"""How many ``PRAGMA integrity_check`` findings a failure message carries.
+
+``integrity_check`` returns one row per problem and a badly damaged file can
+return hundreds, so the message quotes a prefix.
+"""
+
+INTEGRITY_CHECK_OMITTED_SUFFIX = "more findings omitted"
+"""Words that disclose a quoted-prefix integrity report.
+
+Named because the message is *classified* downstream (see
+``hermes_cli.update_cmd._state_db_damage_is_fts_only``) and a truncated
+report cannot be classified honestly -- this suffix is what lets a reader
+tell "these are all the findings" from "these are the first few".
+"""
+
+
 def verify_sqlite_integrity(
     path: Path,
     *,
@@ -592,7 +609,19 @@ def verify_sqlite_integrity(
                 result["message"] = "integrity check passed"
                 return result
             errors = [str(r[0]) for r in rows]
-            result["message"] = f"integrity check failed: {'; '.join(errors[:5])}"
+            shown = errors[:INTEGRITY_CHECK_MAX_REPORTED_ERRORS]
+            omitted = len(errors) - len(shown)
+            # Say when the report is short rather than silently dropping
+            # findings: this string is classified downstream, and an omitted
+            # finding is exactly the one that could contradict the shown ones.
+            suffix = (
+                f"; ({omitted} {INTEGRITY_CHECK_OMITTED_SUFFIX})"
+                if omitted > 0
+                else ""
+            )
+            result["message"] = (
+                f"integrity check failed: {'; '.join(shown)}{suffix}"
+            )
             return result
         except sqlite3.DatabaseError as exc:
             result["message"] = f"cannot open database: {exc}"

@@ -495,6 +495,55 @@ def install_modify_other_keys_aliases() -> int:
     return changed
 
 
+def install_modified_cursor_key_aliases() -> int:
+    """Map kitty/xterm *modified cursor-key* sequences to plain arrows.
+
+    When the numpad is used for the arrow keys (or numpad Enter etc.), kitty
+    reports the arrow cluster in the ``CSI 1;<mod> <final>`` cursor-key form
+    *with* the keypad flag riding in the modifier suffix — e.g.
+    ``\\x1b[1;129A`` (Up), ``\\x1b[1;129B`` (Down), ``\\x1b[1;129C`` (Right),
+    ``\\x1b[1;129D`` (Left), where 129 = 0x80 keypad flag | 0x01. Stock
+    prompt_toolkit only maps the *bare* ``\\x1b[A/B/C/D`` forms, so any
+    modified/flagged variant falls through to literal character insertion —
+    the ``[1;129A[1;129C[1;129D[1;129B`` leak.
+
+    Modifier suffixes kitty emits for cursor keys follow the same bitmask
+    scheme as the CSI-u functional keys: base-2 bits for Shift/Alt/Ctrl/Super/
+    Hyper/Meta and combinations (1..16) plus the 0x80-keypad-flag OR range
+    (129..144). Home/End tickle the same path (``\\x1b[1;129H`` / ``\\x1b[1;129F``).
+    We register every variant of the final bytes ``A B C D H F`` and remap them
+    to the matching prompt_toolkit arrow / navigation key. ``setdefault`` so a
+    user or downstream mapping wins; plain sequences already present are left
+    untouched.
+
+    Returns the number of sequences whose mapping was newly installed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    targets = {
+        "A": Keys.Up,
+        "B": Keys.Down,
+        "C": Keys.Right,
+        "D": Keys.Left,
+        "H": Keys.Home,
+        "F": Keys.End,
+    }
+    changed = 0
+    for final, key_val in targets.items():
+        for m in list(range(1, 17)) + list(range(129, 145)):
+            seq = f"\x1b[1;{m}{final}"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key_val
+                changed += 1
+    if changed:
+        _clear_vt100_prefix_cache()
+    return changed
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
     are consumed by the VT100 parser before they reach key bindings or

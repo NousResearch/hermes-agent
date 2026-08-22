@@ -81,6 +81,7 @@ try:
         install_cmd_backspace_alias,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
+        install_modified_cursor_key_aliases,
         install_modify_other_keys_aliases,
         install_shift_enter_alias,
     )
@@ -88,8 +89,9 @@ try:
     install_ctrl_enter_alias()
     install_cmd_backspace_alias()
     install_modify_other_keys_aliases()
+    install_modified_cursor_key_aliases()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_ignored_terminal_sequences
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_modified_cursor_key_aliases, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading

@@ -166,6 +166,12 @@ Or if you have already opened a terminal in your running container (via Docker D
 
 The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host's `~/.hermes/` directory and contains:
 
+:::warning Mount persistent storage explicitly
+The image does not declare a Dockerfile `VOLUME`, because some hosted builders (including Railway) reject that instruction. Always mount durable storage at `/opt/data` when running Hermes: use `-v ~/.hermes:/opt/data` with `docker run`, keep the repository's Compose volume mapping, or attach a Railway Volume with `/opt/data` as its mount path.
+
+Without an explicit mount, Hermes writes to the container's writable layer. That data is lost when the container is replaced or redeployed.
+:::
+
 | Path | Contents |
 |------|----------|
 | `.env` | API keys and secrets |

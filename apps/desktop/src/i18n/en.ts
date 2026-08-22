@@ -210,6 +210,27 @@ export const en: Translations = {
     dismiss: 'Dismiss'
   },
 
+  sendDiagnostics: {
+    title: 'Send diagnostics to Nous',
+    privacyNotice:
+      'This uploads a debug bundle to Nous-internal storage (not a public paste). It includes system info (OS, versions, provider — never your API keys) and recent agent, gateway, and desktop logs, which may contain conversation content and file paths. Secrets are redacted before upload. Only Nous staff can view it, and it auto-deletes after 14 days.',
+    upload: 'Upload',
+    uploading: 'Uploading…',
+    cancel: 'Cancel',
+    close: 'Close',
+    copyLink: 'Copy link',
+    doneTitle: 'Diagnostics sent',
+    doneDescription: 'Your bundle was uploaded privately. Share the link below in your support thread so the team can see your logs.',
+    failedTitle: 'Upload failed',
+    failedHint: 'You can also run `hermes debug share --nous` from a terminal, or `hermes debug share --local` to print the report without uploading.',
+    handoffLead: 'Pick up the discussion in:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal Support',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -3103,6 +3124,7 @@ export const en: Translations = {
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
       errorCopyDiagnostics: 'Copy error details',
+      errorSendDiagnostics: 'Send diagnostics',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',
       readAloudFailed: 'Read aloud failed',

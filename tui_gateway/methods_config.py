@@ -125,7 +125,9 @@ def _(rid, params: dict) -> dict:
     try:
         with _profile_db(params) as db:
             if db is None:
-                return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+                return _ok(
+                    rid, {"projects": [], "active_id": None, "scoped_session_ids": []}
+                )
 
             tree, active_id = _build_project_tree(
                 db,
@@ -136,7 +138,11 @@ def _(rid, params: dict) -> dict:
             )
             return _ok(
                 rid,
-                {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
+                {
+                    "projects": tree["projects"],
+                    "active_id": active_id,
+                    "scoped_session_ids": tree["scoped_session_ids"],
+                },
             )
     except Exception as e:
         return _err(rid, 5061, str(e))
@@ -160,7 +166,10 @@ def _(rid, params: dict) -> dict:
             # Drill-in only needs the entered project (which has sessions), so skip
             # the zero-session discovery tier entirely.
             tree, _active = _build_project_tree(
-                db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
+                db,
+                preview_limit=0,
+                hydrate=True,
+                session_limit=int(params.get("session_limit") or 5000),
                 include_discovered=False,
             )
             proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
@@ -320,7 +329,15 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "theme":
         display = _load_cfg().get("display")
-        raw = str(display.get("tui_theme", "auto") if isinstance(display, dict) else "auto").strip().lower()
+        raw = (
+            str(
+                display.get("tui_theme", "auto")
+                if isinstance(display, dict)
+                else "auto"
+            )
+            .strip()
+            .lower()
+        )
         return _ok(rid, {"value": raw if raw in {"auto", "light", "dark"} else "auto"})
     if key == "statusbar":
         display = _load_cfg().get("display")
@@ -330,10 +347,17 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "focus":
         display = _load_cfg().get("display")
-        on = bool(display.get("focus_view", False)) if isinstance(display, dict) else False
+        on = (
+            bool(display.get("focus_view", False))
+            if isinstance(display, dict)
+            else False
+        )
         return _ok(
             rid,
-            {"value": "on" if on else "off", "tool_progress": _load_tool_progress_mode()},
+            {
+                "value": "on" if on else "off",
+                "tool_progress": _load_tool_progress_mode(),
+            },
         )
     if key == "mouse":
         display = _load_cfg().get("display")
@@ -383,10 +407,15 @@ def _(rid, params: dict) -> dict:
         provider_configured = bool(_has_any_provider_configured())
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
-        if not provider_configured and provider == "bedrock" and source in {
-            "iam-role",
-            "aws-sdk-default-chain",
-        }:
+        if (
+            not provider_configured
+            and provider == "bedrock"
+            and source
+            in {
+                "iam-role",
+                "aws-sdk-default-chain",
+            }
+        ):
             return _ok(
                 rid,
                 {
@@ -426,6 +455,84 @@ def _(rid, params: dict) -> dict:
                 "provider": runtime.get("provider"),
                 "model": runtime.get("model"),
                 "source": runtime.get("source"),
+            },
+        )
+    except Exception as e:
+        return _ok(rid, {"ok": False, "error": str(e)})
+
+
+@method("diagnostics.share_nous")
+def _(rid, params: dict) -> dict:
+    """Upload a redacted debug bundle to Nous-internal diagnostics storage.
+
+    Desktop's "Send Diagnostics" action (error card / diagnostics UI). Same
+    collection + force-redaction pipeline as ``hermes debug share --nous``
+    (collect_share_bundle → build_nous_bundle → share_to_nous); redaction is
+    NOT client-controllable — this handler always redacts.
+
+    Params (all optional):
+      - ``error_context``: short client-supplied text describing the failure
+        that prompted the report (the error card's layer/code/message blob).
+        Redacted server-side and attached as ``error-context.txt``.
+      - ``extra_files``: {label → text} of client-side artifacts the backend
+        can't see (e.g. the local desktop.log when this backend is remote).
+        Each value is force-redacted server-side before inclusion; labels are
+        sanitized and size-capped.
+      - ``log_lines``: report excerpt length (default 200).
+
+    Consent lives with the CALLER: the desktop shows the privacy notice and
+    an explicit Upload button before invoking this. Structured envelope
+    (``ok``/``error``) rather than JSON-RPC errors so the client can render
+    upload failures inline.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+        from hermes_cli.debug import build_nous_bundle, collect_share_bundle
+        from hermes_cli.diagnostics_upload import share_to_nous
+
+        log_lines = params.get("log_lines")
+        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
+            log_lines = 200
+
+        bundle = collect_share_bundle(log_lines=log_lines, redact=True)
+
+        error_context = params.get("error_context")
+        if isinstance(error_context, str) and error_context.strip():
+            bundle["error-context.txt"] = redact_sensitive_text(
+                error_context.strip()[:8_000], force=True
+            )
+
+        # Client-side artifacts (local desktop.log on remote connections).
+        # Bounded: at most 4 files, 512KB of text each, sanitized labels —
+        # this is a diagnostics channel, not an arbitrary upload surface.
+        extra_files = params.get("extra_files")
+        if isinstance(extra_files, dict):
+            for label, text in list(extra_files.items())[:4]:
+                if not isinstance(label, str) or not isinstance(text, str):
+                    continue
+                safe_label = "".join(
+                    ch for ch in label if ch.isalnum() or ch in "._- ()"
+                ).strip()[:64]
+                # Collapse dot-runs and leading dots so traversal-shaped labels
+                # ("../../etc/passwd") can't survive even cosmetically.
+                while ".." in safe_label:
+                    safe_label = safe_label.replace("..", ".")
+                safe_label = safe_label.lstrip(".").strip()
+                if not safe_label or not text.strip():
+                    continue
+                bundle[f"client/{safe_label}"] = redact_sensitive_text(
+                    text[:524_288], force=True
+                )
+
+        blob = build_nous_bundle(bundle, redact=True)
+        res = share_to_nous(blob)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "view_url": res.get("viewUrl") or res.get("view_url"),
+                "upload_id": res.get("id"),
+                "expires_at": res.get("expiresAt") or res.get("expires_at"),
             },
         )
     except Exception as e:

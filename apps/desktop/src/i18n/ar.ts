@@ -1,6 +1,26 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  sendDiagnostics: {
+    title: 'إرسال التشخيصات إلى Nous',
+    privacyNotice:
+      'سيؤدي هذا إلى رفع حزمة تصحيح إلى التخزين الداخلي لدى Nous (ليست لصيقة عامة). تتضمن معلومات النظام (نظام التشغيل، الإصدارات، المزوّد — وليس مفاتيح API الخاصة بك أبداً) وسجلات حديثة للوكيل والبوابة وسطح المكتب، وقد تحتوي على محتوى المحادثات ومسارات الملفات. تُحجب الأسرار قبل الرفع. لا يمكن الاطلاع عليها إلا لموظفي Nous، وتُحذف تلقائياً بعد 14 يوماً.',
+    upload: 'رفع',
+    uploading: 'جارٍ الرفع…',
+    cancel: 'إلغاء',
+    close: 'إغلاق',
+    copyLink: 'نسخ الرابط',
+    doneTitle: 'تم إرسال التشخيصات',
+    doneDescription: 'تم رفع الحزمة بشكل خاص. شارك الرابط أدناه في محادثة الدعم لكي يتمكن الفريق من رؤية سجلاتك.',
+    failedTitle: 'فشل الرفع',
+    failedHint: 'يمكنك أيضاً تشغيل `hermes debug share --nous` من الطرفية، أو `hermes debug share --local` لعرض التقرير دون رفعه.',
+    handoffLead: 'تابع النقاش في:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'دعم بوابة Nous',
+      discord: 'Discord'
+    }
+  },
   common: {
     apply: 'تطبيق',
     back: 'رجوع',
@@ -2457,6 +2477,7 @@ export const ar = defineLocale({
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
       errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',
       errorCopyDiagnostics: 'نسخ تفاصيل الخطأ',
+      errorSendDiagnostics: 'إرسال التشخيصات',
       filesChanged: count => `${count} ملفات تم تغييرها`,
       reviewChanges: 'مراجعة',
       readAloudFailed: 'فشلت القراءة بصوت عال',

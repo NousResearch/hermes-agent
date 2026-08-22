@@ -211,6 +211,27 @@ export const ja = defineLocale({
     dismiss: '閉じる'
   },
 
+  sendDiagnostics: {
+    title: 'Nous に診断情報を送信',
+    privacyNotice:
+      'デバッグバンドルを Nous 内部ストレージにアップロードします（公開ペーストではありません）。システム情報（OS、バージョン、プロバイダー — API キーは含まれません）と、最近のエージェント/ゲートウェイ/デスクトップのログ（会話内容やファイルパスを含む場合があります）が含まれます。シークレットはアップロード前にマスクされます。閲覧できるのは Nous スタッフのみで、14 日後に自動削除されます。',
+    upload: 'アップロード',
+    uploading: 'アップロード中…',
+    cancel: 'キャンセル',
+    close: '閉じる',
+    copyLink: 'リンクをコピー',
+    doneTitle: '診断情報を送信しました',
+    doneDescription: 'バンドルは非公開でアップロードされました。サポートスレッドで以下のリンクを共有すると、チームがログを確認できます。',
+    failedTitle: 'アップロードに失敗しました',
+    failedHint: 'ターミナルから `hermes debug share --nous` を実行するか、`hermes debug share --local` でアップロードせずにレポートを表示することもできます。',
+    handoffLead: '続きは次の場所で:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal サポート',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -2755,6 +2776,7 @@ export const ja = defineLocale({
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
       errorOpenDesktopLogs: 'デスクトップのログを開く',
       errorCopyDiagnostics: 'エラー詳細をコピー',
+      errorSendDiagnostics: '診断情報を送信',
       filesChanged: count => `${count} 件のファイルを変更`,
       reviewChanges: 'レビュー',
       readAloudFailed: '読み上げに失敗しました',

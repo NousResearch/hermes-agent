@@ -32,13 +32,14 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, Upload, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
@@ -554,6 +555,14 @@ const ErrorRecoveryActions: FC = () => {
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
+      <button
+        className="aui-error-action"
+        onClick={() => requestSendDiagnostics(diagnosticsText())}
+        type="button"
+      >
+        <Upload className="size-3" />
+        {copy.errorSendDiagnostics}
+      </button>
       <CopyButton
         appearance="inline"
         className="aui-error-action"

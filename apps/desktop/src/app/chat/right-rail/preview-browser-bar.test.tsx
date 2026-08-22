@@ -10,6 +10,7 @@ const baseProps = {
   devToolsOpen: false,
   loading: false,
   onBack: vi.fn(),
+  onClose: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
   onOpenExternal: vi.fn(),
@@ -89,6 +90,7 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Close preview pane' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
   })
 
@@ -118,6 +120,15 @@ describe('PreviewBrowserBar', () => {
     fireEvent.click(rendered.getByRole('button', { name: label }))
 
     expect(spy).toHaveBeenCalledOnce()
+  })
+
+  it('closes the preview from the visible toolbar control', () => {
+    const onClose = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onClose={onClose} />)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Close preview pane' }))
+
+    expect(onClose).toHaveBeenCalledOnce()
   })
 
   it('toggles the console and DevTools, and labels them by current state', () => {

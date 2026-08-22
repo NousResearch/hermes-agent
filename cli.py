@@ -9847,9 +9847,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # was for the previous session only, not for every session spawned
         # afterwards.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
-        )
+        # (#reasoning-model-switch-staleness) reasoning_config is resolved
+        # AFTER the model-reset block below (not here), via the same
+        # per-model-aware chokepoint used at CLI startup - this used to read
+        # only the raw global agent.reasoning_effort, ignoring
+        # agent.reasoning_overrides entirely, and used the PRE-reset model
+        # (self.model may still change a few lines down).
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry
         # forward.  Re-derive model/provider and service tier from config.yaml
@@ -9909,6 +9912,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Best-effort: an unreachable config default must never block
                 # /new. The session keeps the current working model.
                 logger.debug("/new model reset to config default failed", exc_info=True)
+
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+
         _sync_process_session_id(self.session_id)
 
         if self.agent:
@@ -10852,6 +10859,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
+            "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None,
@@ -10870,6 +10878,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key",
             "base_url",
             "api_mode",
+            "reasoning_config",
         ):
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
@@ -10877,6 +10886,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+
+        # Same chokepoint-bypass class as the /model switch fix below:
+        # propagate onto the live in-place agent object too, not just the
+        # CLI wrapper's own attribute, regardless of which restore path
+        # below actually succeeds.
+        agent.reasoning_config = getattr(self, "reasoning_config", None)
 
         primary = snapshot.get("agent_primary_runtime")
         if primary and hasattr(agent, "_restore_primary_runtime"):
@@ -11017,6 +11032,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
+            "reasoning_config": getattr(self, "reasoning_config", None),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -11033,6 +11049,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # (#reasoning-model-switch-staleness) reasoning_config was otherwise
+        # only ever recomputed at CLI startup / `/new` - a `/model` switch
+        # left the PREVIOUS model's reasoning_config attached on the CLI
+        # wrapper, which 400s hard against a target model with a `none`
+        # override in agent.reasoning_overrides. Same chokepoint used at
+        # startup (hermes_constants.resolve_reasoning_config).
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -11042,6 +11067,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                self.agent.reasoning_config = self.reasoning_config
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
                 # Roll the CLI's own staged fields back too and abort the rest
@@ -11406,6 +11432,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
+            "reasoning_config": getattr(self, "reasoning_config", None),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -11422,6 +11449,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # (#reasoning-model-switch-staleness) same fix as the other /model
+        # switch path above - see comment there.
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+
         # Apply to running agent (in-place swap)
         if self.agent is not None:
             try:
@@ -11432,6 +11464,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                self.agent.reasoning_config = self.reasoning_config
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a
                 # failed switch is a no-op rather than a dead session (#50163).

@@ -14,6 +14,7 @@ import {
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { notifyError } from '@/store/notifications'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -359,6 +360,11 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     })
   })()
 
+  // A failed switch must NOT fall back to the primary socket silently: that
+  // would route the user's messages to the wrong profile's backend and cause
+  // cross-profile session writes (#81094). The rejection propagates to
+  // await-callers (session actions, slash commands) which surface it in their
+  // own flows; fire-and-forget callers surface it via their own .catch below.
   try {
     await gatewaySwitch
   } finally {
@@ -505,7 +511,11 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void ensureGatewayProfile(target).catch((error: unknown) => {
+    // #81094: a failed switch must be visible — the profile pill stays on the
+    // previous profile and the user learns why the backend is unreachable.
+    notifyError(error, `Failed to switch to profile "${target}"`)
+  })
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -518,7 +528,10 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void ensureGatewayProfile(target).catch((error: unknown) => {
+    // #81094: surface the failed dial instead of failing silently.
+    notifyError(error, `Failed to open profile "${target}"`)
+  })
 }
 
 export function setShowAllProfiles(value: boolean): void {

@@ -104,3 +104,86 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
 
     assert len(opened) == 1
     assert len(closed) == 1
+
+
+def test_survives_transient_state_db_write_contention(monkeypatch, tmp_path):
+    """Transient lock contention on state.db must be ridden out — the
+    helper survives a brief hold by a competing writer instead of
+    raising ``database is locked`` mid-dispatch.
+
+    Repro pattern: an older Hermes install mid-FTS-maintenance, or a
+    sibling CLI turn append, holds the WAL write lock for a few hundred
+    ms. Before A6b this surfaced as a mid-turn OperationalError; the
+    shared ``state_db_begin_immediate`` primitive now waits it out via
+    the same jitter schedule ``SessionDB._execute_write`` uses.
+    """
+    import threading
+
+    _point_ledger(monkeypatch, tmp_path)
+
+    # Force the WAL into existence so the contention is real.
+    # Let ``_connect()`` create the schema with the right columns; we just
+    # need to seed a dummy row + force WAL so a second opener actually has
+    # to fight the lock.
+    ad._connect().close()
+    seed = sqlite3.connect(str(tmp_path / "state.db"), timeout=10, isolation_level=None)
+    try:
+        # At least one row exists so a competing transaction has work to do.
+        seed.execute("INSERT OR IGNORE INTO async_delegations (delegation_id) VALUES ('_seed')")
+        seed.execute("PRAGMA journal_mode=WAL")
+    finally:
+        seed.close()
+
+    competitor_holder = []
+    release = threading.Event()
+
+    def _hold_lock():
+        c = sqlite3.connect(str(tmp_path / "state.db"), timeout=10, isolation_level=None)
+        competitor_holder.append(c)
+        c.execute("BEGIN IMMEDIATE")
+        release.wait()
+        try:
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:
+                pass
+        c.close()
+
+    competitor = threading.Thread(target=_hold_lock, daemon=True)
+    competitor.start()
+
+    # Wait until the competitor actually holds the write lock
+    deadline = __import__("time").monotonic() + 2.0
+    while not competitor_holder:
+        if __import__("time").monotonic() > deadline:
+            pytest.fail("competitor never acquired the lock")
+        __import__("time").sleep(0.01)
+    __import__("time").sleep(0.05)
+
+    # Schedule the competitor to release after 250 ms — well within the
+    # primitive's 20 s default patience budget but long enough to force
+    # at least one retry cycle.
+    def _release_after():
+        __import__("time").sleep(0.25)
+        release.set()
+    threading.Thread(target=_release_after, daemon=True).start()
+
+    # The dispatch must succeed by riding out the hold.
+    ad._persist_dispatch({
+        "delegation_id": "deleg_contended",
+        "session_key": "test:sess",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+        "origin_session_id": "",
+        "goal": "contended",
+        "context": "ctx",
+    })
+
+    row = ad.get_durable_delegation("deleg_contended")
+    assert row is not None, row
+    assert row["origin_session"] == "test:sess"
+
+    competitor.join(timeout=2.0)

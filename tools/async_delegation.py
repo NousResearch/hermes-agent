@@ -47,6 +47,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state_common import state_db_begin_immediate
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -128,7 +129,13 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # ``isolation_level=None`` opts out of sqlite3's implicit transaction
+    # wrapper so ``_transaction`` can issue ``BEGIN IMMEDIATE`` explicitly
+    # (the lock is acquired at transaction start, not lazily on the first
+    # INSERT/UPDATE).  ``timeout=10`` keeps sqlite3's built-in busy handler
+    # engaged for mid-body contention; the BEGIN itself rides out longer
+    # holds via the shared ``state_db_begin_immediate`` primitive.
+    conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     try:
         _initialize_schema(conn)
     except Exception:
@@ -184,19 +191,33 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+def _transaction() -> Iterator[Any]:
+    """Open a short-lived connection and run the body under a
+    ``BEGIN IMMEDIATE`` write transaction with bounded jitter retry.
 
-    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the
-    transaction; they do not close the connection. Using ``with _connect()``
-    alone therefore leaks a connection — and its WAL/SHM file descriptors — on
-    every durable dispatch, completion, and delivery-claim, deferring the close
-    to the garbage collector. On a long-running gateway that exhausts
-    ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was #69567 / PR #69594).
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commits or rolls
+    back but never closes, which historically leaked ``db/-wal/-shm``
+    file descriptors (see #69567, #69594).  This helper guarantees the
+    deterministic close (in ``finally``) AND adds the reliability
+    discipline:
+
+    * ``BEGIN IMMEDIATE`` is issued before the body runs via the
+      shared ``hermes_state_common.state_db_begin_immediate`` context
+      manager.  A competing write lock that survives the helper's
+      ``timeout=10`` blocks this start; the shared primitive retries
+      with the same fast-then-slow jitter schedule
+      ``SessionDB._execute_write`` uses.
+    * Mid-body contention rides on SQLite's own ``timeout=10`` busy
+      handler — the helper's bodies are short idempotent SQL batches
+      that SQLite handles cleanly at the connection level.
+    * On body success the transaction commits; on body exception it
+      rolls back and the exception propagates.
+    * The connection is ALWAYS closed in ``finally`` so the FD leaks
+      the original ``with conn:`` had cannot return.
     """
     conn = _connect()
     try:
-        with conn:
+        with state_db_begin_immediate(conn):
             yield conn
     finally:
         conn.close()
@@ -278,38 +299,44 @@ def _prune_durable_records() -> None:
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
+        _prune_durable_records_body(conn, now, cutoff)
+
+
+def _prune_durable_records_body(
+    conn: sqlite3.Connection, now: float, cutoff: float
+) -> None:
+    conn.execute(
+        "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
+        (cutoff,),
+    )
+    terminal_count = conn.execute(
+        "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')"
+    ).fetchone()[0]
+    excess = max(0, terminal_count - _MAX_RETAINED_COMPLETED)
+    if excess:
         conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
-            (cutoff,),
+            """DELETE FROM async_delegations WHERE delegation_id IN (
+                 SELECT delegation_id FROM async_delegations
+                 WHERE state NOT IN ('running','finalizing')
+                 ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
+                          updated_at ASC LIMIT ?
+               )""",
+            (excess,),
         )
-        terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')"
-        ).fetchone()[0]
-        excess = max(0, terminal_count - _MAX_RETAINED_COMPLETED)
-        if excess:
-            conn.execute(
-                """DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
-                     ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
-                              updated_at ASC LIMIT ?
-                   )""",
-                (excess,),
-            )
-        pending_count = conn.execute(
-            """SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'"""
-        ).fetchone()[0]
-        overflow = max(0, pending_count - _MAX_DURABLE_PENDING)
-        if overflow:
-            conn.execute(
-                """DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
-                     ORDER BY updated_at ASC LIMIT ?
-                   )""",
-                (overflow,),
-            )
+    pending_count = conn.execute(
+        """SELECT COUNT(*) FROM async_delegations
+           WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'"""
+    ).fetchone()[0]
+    overflow = max(0, pending_count - _MAX_DURABLE_PENDING)
+    if overflow:
+        conn.execute(
+            """DELETE FROM async_delegations WHERE delegation_id IN (
+                 SELECT delegation_id FROM async_delegations
+                 WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                 ORDER BY updated_at ASC LIMIT ?
+               )""",
+            (overflow,),
+        )
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -341,51 +368,58 @@ def recover_abandoned_delegations() -> int:
     now = time.time()
     recovered = 0
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            """SELECT delegation_id, origin_session, origin_ui_session_id,
-                      parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
-               FROM async_delegations WHERE state IN ('running','finalizing')"""
-        ).fetchall()
-        for row in rows:
-            (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
-            live = False
-            if pid:
-                live = _pid_exists(int(pid))
-                if live and started is not None:
-                    live = get_process_start_time(int(pid)) == int(started)
-            if live:
-                continue
-            task = json.loads(task_json or "{}")
-            event = {
-                "type": "async_delegation", "delegation_id": delegation_id,
-                "session_key": session_key, "origin_ui_session_id": origin_ui,
-                # Restore the durable wake target so completions recovered
-                # after a restart remain routable to api_server sessions.
-                "origin_session_id": origin_session_id or "",
-                "parent_session_id": parent_id, "goal": task.get("goal", ""),
-                "goals": task.get("goals"), "context": task.get("context"),
-                "toolsets": task.get("toolsets"), "role": task.get("role"),
-                "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None,
-                "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
-                "dispatched_at": dispatched_at, "completed_at": now,
-            }
-            # Routing origin persisted at dispatch (see _capture_routing_origin):
-            # restores scope_id/user_id for the reconstructed SessionSource so
-            # relay egress priming works after a restart.
-            for _k in ("scope_id", "user_id", "user_name"):
-                if task.get(_k):
-                    event[_k] = task[_k]
-            result = {"status": "unknown", "summary": None, "error": event["error"]}
-            conn.execute(
-                """UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""",
-                (now, now, json.dumps(event), json.dumps(result), delegation_id),
-            )
-            recovered += 1
+        recovered = _recover_abandoned_delegations_body(conn, now)
+    return recovered
+
+
+def _recover_abandoned_delegations_body(conn: sqlite3.Connection, now: float) -> int:
+    from gateway.status import _pid_exists, get_process_start_time
+    recovered = 0
+    rows = conn.execute(
+        """SELECT delegation_id, origin_session, origin_ui_session_id,
+                  parent_session_id, dispatched_at, owner_pid,
+                  owner_started_at, task_json, origin_session_id
+           FROM async_delegations WHERE state IN ('running','finalizing')"""
+    ).fetchall()
+    for row in rows:
+        (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
+         pid, started, task_json, origin_session_id) = row
+        live = False
+        if pid:
+            live = _pid_exists(int(pid))
+            if live and started is not None:
+                live = get_process_start_time(int(pid)) == int(started)
+        if live:
+            continue
+        task = json.loads(task_json or "{}")
+        event = {
+            "type": "async_delegation", "delegation_id": delegation_id,
+            "session_key": session_key, "origin_ui_session_id": origin_ui,
+            # Restore the durable wake target so completions recovered
+            # after a restart remain routable to api_server sessions.
+            "origin_session_id": origin_session_id or "",
+            "parent_session_id": parent_id, "goal": task.get("goal", ""),
+            "goals": task.get("goals"), "context": task.get("context"),
+            "toolsets": task.get("toolsets"), "role": task.get("role"),
+            "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+            "status": "unknown", "summary": None,
+            "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+            "dispatched_at": dispatched_at, "completed_at": now,
+        }
+        # Routing origin persisted at dispatch (see _capture_routing_origin):
+        # restores scope_id/user_id for the reconstructed SessionSource so
+        # relay egress priming works after a restart.
+        for _k in ("scope_id", "user_id", "user_name"):
+            if task.get(_k):
+                event[_k] = task[_k]
+        result = {"status": "unknown", "summary": None, "error": event["error"]}
+        conn.execute(
+            """UPDATE async_delegations SET state='unknown', completed_at=?,
+               updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+               WHERE delegation_id=?""",
+            (now, now, json.dumps(event), json.dumps(result), delegation_id),
+        )
+        recovered += 1
     return recovered
 
 
@@ -412,35 +446,43 @@ def restore_undelivered_completions(target_queue) -> int:
     now = time.time()
     restored = 0
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            """SELECT delegation_id, event_json, completed_at, dispatched_at
-               FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id"""
-        ).fetchall()
-        for delegation_id, payload, completed_at, dispatched_at in rows:
-            age_basis = completed_at or dispatched_at
-            if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
-                conn.execute(
-                    """UPDATE async_delegations SET delivery_state='dropped',
-                              delivery_claim=NULL, delivery_claimed_at=NULL,
-                              updated_at=?
-                       WHERE delegation_id=? AND delivery_state='pending'""",
-                    (now, delegation_id),
-                )
-                logger.warning(
-                    "Async delegation %s: pending completion is %.1fh old "
-                    "(cap %.1fh); terminally dropping the replay (result "
-                    "remains queryable).",
-                    delegation_id, (now - age_basis) / 3600.0,
-                    _MAX_COMPLETION_REPLAY_AGE_S / 3600.0,
-                )
-                continue
-            evt = json.loads(payload)
-            if isinstance(evt, dict):
-                evt["restored"] = True
-            target_queue.put(evt)
-            restored += 1
+        restored = _restore_undelivered_completions_body(conn, target_queue, now)
+    return restored
+
+
+def _restore_undelivered_completions_body(
+    conn: sqlite3.Connection, target_queue: Any, now: float
+) -> int:
+    restored = 0
+    rows = conn.execute(
+        """SELECT delegation_id, event_json, completed_at, dispatched_at
+           FROM async_delegations
+           WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
+           ORDER BY completed_at, delegation_id"""
+    ).fetchall()
+    for delegation_id, payload, completed_at, dispatched_at in rows:
+        age_basis = completed_at or dispatched_at
+        if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
+            conn.execute(
+                """UPDATE async_delegations SET delivery_state='dropped',
+                          delivery_claim=NULL, delivery_claimed_at=NULL,
+                          updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'""",
+                (now, delegation_id),
+            )
+            logger.warning(
+                "Async delegation %s: pending completion is %.1fh old "
+                "(cap %.1fh); terminally dropping the replay (result "
+                "remains queryable).",
+                delegation_id, (now - age_basis) / 3600.0,
+                _MAX_COMPLETION_REPLAY_AGE_S / 3600.0,
+            )
+            continue
+        evt = json.loads(payload)
+        if isinstance(evt, dict):
+            evt["restored"] = True
+        target_queue.put(evt)
+        restored += 1
     return restored
 
 
@@ -460,20 +502,26 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        row = conn.execute(
-            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
-            (delegation_id,),
-        ).fetchone()
-        if row is None:
-            return True  # legacy event created before durable dispatch
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
-                      delivery_attempts=delivery_attempts+1, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - 300),
-        )
-        return cur.rowcount == 1
+        return _claim_completion_delivery_body(conn, delegation_id, claim_id, now)
+
+
+def _claim_completion_delivery_body(
+    conn: sqlite3.Connection, delegation_id: str, claim_id: str, now: float
+) -> bool:
+    row = conn.execute(
+        "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+        (delegation_id,),
+    ).fetchone()
+    if row is None:
+        return True  # legacy event created before durable dispatch
+    cur = conn.execute(
+        """UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
+                  delivery_attempts=delivery_attempts+1, updated_at=?
+           WHERE delegation_id=? AND delivery_state='pending'
+             AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
+        (claim_id, now, now, delegation_id, now - 300),
+    )
+    return cur.rowcount == 1
 
 
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
@@ -499,28 +547,34 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        capped = conn.execute(
-            """UPDATE async_delegations SET delivery_state='dropped',
-                      delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=? AND delivery_attempts>=?""",
-            (now, delegation_id, claim_id, _MAX_DELIVERY_ATTEMPTS),
+        return _release_completion_delivery_body(conn, delegation_id, claim_id, now)
+
+
+def _release_completion_delivery_body(
+    conn: sqlite3.Connection, delegation_id: str, claim_id: str, now: float
+) -> bool:
+    capped = conn.execute(
+        """UPDATE async_delegations SET delivery_state='dropped',
+                  delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+           WHERE delegation_id=? AND delivery_state='pending'
+             AND delivery_claim=? AND delivery_attempts>=?""",
+        (now, delegation_id, claim_id, _MAX_DELIVERY_ATTEMPTS),
+    )
+    if capped.rowcount == 1:
+        logger.warning(
+            "Async delegation %s exhausted its %d delivery attempts; "
+            "marking terminally dropped (result remains queryable).",
+            delegation_id, _MAX_DELIVERY_ATTEMPTS,
         )
-        if capped.rowcount == 1:
-            logger.warning(
-                "Async delegation %s exhausted its %d delivery attempts; "
-                "marking terminally dropped (result remains queryable).",
-                delegation_id, _MAX_DELIVERY_ATTEMPTS,
-            )
-            return True
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=NULL,
-                      delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""",
-            (now, delegation_id, claim_id),
-        )
-        return cur.rowcount == 1
+        return True
+    cur = conn.execute(
+        """UPDATE async_delegations SET delivery_claim=NULL,
+                  delivery_claimed_at=NULL, updated_at=?
+           WHERE delegation_id=? AND delivery_state='pending'
+             AND delivery_claim=?""",
+        (now, delegation_id, claim_id),
+    )
+    return cur.rowcount == 1
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:

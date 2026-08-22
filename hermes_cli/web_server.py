@@ -16372,12 +16372,29 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     # Hermes TUI child: build via the single spawn-env factory (profile-home
     # contract applied; secrets kept — the spawned agent needs provider creds).
-    # An explicit profile scope below still overrides HERMES_HOME afterwards.
+    # An explicit profile scope still overrides HERMES_HOME before config is
+    # bridged into the child environment.
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    if profile_dir is not None:
+        env["HERMES_HOME"] = str(profile_dir)
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
-        apply_terminal_config_to_env(env=env)
+        from hermes_cli.config import (
+            TERMINAL_CONFIG_ENV_MAP,
+            apply_terminal_config_to_env,
+        )
+
+        if profile_dir is not None:
+            # The dashboard process already bridged its own terminal config
+            # into os.environ at startup. build_subprocess_env() snapshots that
+            # process env, so remove every bridged value before applying the
+            # selected profile or omitted keys leak from the launch profile.
+            for env_var in TERMINAL_CONFIG_ENV_MAP.values():
+                env.pop(env_var, None)
+            with _config_profile_scope(requested):
+                apply_terminal_config_to_env(env=env)
+        else:
+            apply_terminal_config_to_env(env=env)
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
@@ -16402,9 +16419,6 @@ def _resolve_chat_argv(
     # setdefault so an explicit operator value still wins.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
-
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
 
     if resume:
         _resume_db = _open_session_db_for_profile(

@@ -650,6 +650,37 @@ class TestProfileScopedChatPty:
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
 
+    def test_chat_argv_bridges_selected_profile_terminal_config(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "terminal:\n"
+            "  backend: ssh\n"
+            "  ssh_host: worker.example.test\n"
+            "  cwd: '~'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "launch-profile-user")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env["TERMINAL_ENV"] == "ssh"
+        assert env["TERMINAL_SSH_HOST"] == "worker.example.test"
+        assert env["TERMINAL_CWD"] == "~"
+        assert env["TERMINAL_DOCKER_IMAGE"] != "launch-profile-image"
+        assert "TERMINAL_SSH_USER" not in env
+
 
 class TestProfileScopedAudio:
     """Audio endpoints must honor ``profile`` like the rest of the dashboard.

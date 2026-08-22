@@ -443,6 +443,16 @@ export function useMainApp(gw: GatewayClient) {
     onHeightsChange: syncHeightCache
   })
 
+  // Auto-scroll to bottom when the agent starts streaming output, but only if
+  // the user is already pinned to the tail (hasn't manually scrolled up). This
+  // ensures the TUI follows along during agent output without yanking the view
+  // out from under a user who is reading earlier content.
+  useEffect(() => {
+    if (turnLiveTailActive && scrollRef.current?.isSticky()) {
+      scrollRef.current.scrollToBottom()
+    }
+  }, [turnLiveTailActive])
+
   const scrollWithSelection = useCallback(
     (delta: number) => scrollWithSelectionBy(delta, { scrollRef, selection }),
     [selection]

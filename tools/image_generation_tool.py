@@ -1208,6 +1208,7 @@ def image_generate_tool(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -1215,16 +1216,28 @@ def image_generate_tool(
     the configured model declares an ``edit_endpoint``, the call routes to that
     image-to-image / edit endpoint; otherwise it's plain text-to-image.
 
-    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, ``image_url``
-    and ``reference_image_urls``; the remaining kwargs are overrides for direct
-    Python callers and are filtered per-model via the ``supports`` /
+    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, ``image_url``,
+    ``reference_image_urls``, and ``model``; the remaining kwargs are overrides
+    for direct Python callers and are filtered per-model via the ``supports`` /
     ``edit_supports`` whitelist (unsupported overrides are silently dropped so
     legacy callers don't break when switching models).
+
+    ``model`` is an optional per-request model override. When provided, it is
+    passed to the plugin provider's ``generate()``; the in-tree FAL path uses
+    it to override the configured model if it matches a known FAL model id.
+    When omitted, the configured default (``image_gen.model`` or the provider's
+    own default) is used.
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "modality": "text" | "image", "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    # Per-request model override: when the caller passes a valid FAL model id,
+    # use it instead of the configured default. Non-FAL model ids are ignored
+    # on this path (they belong to plugin providers, handled in dispatch).
+    if model and isinstance(model, str) and model.strip() in FAL_MODELS:
+        model_id, meta = model.strip(), FAL_MODELS[model.strip()]
+    else:
+        model_id, meta = _resolve_fal_model()
 
     # Collect any source images (primary + references) into one ordered list.
     source_images: list = []
@@ -1590,7 +1603,7 @@ IMAGE_GENERATE_SCHEMA = {
             },
             "reference_image_urls": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": { "type": "string" },
                 "description": (
                     "Optional list of additional reference image URLs / paths "
                     "(style, character, or composition references) to guide an "
@@ -1607,6 +1620,17 @@ IMAGE_GENERATE_SCHEMA = {
                     "enhancer and can alter fine detail (rendered text, "
                     "faces), so only use it when resolution matters more "
                     "than fidelity."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for this request. When omitted, "
+                    "the configured default model is used. When provided, must "
+                    "be one of the models listed by the active provider. Use "
+                    "this to pick a specific model per image (e.g. "
+                    "'gpt-image-2' for one, 'grok-imagine-image' for another) "
+                    "instead of changing the global default."
                 ),
             },
         },
@@ -1660,6 +1684,7 @@ def _dispatch_to_plugin_provider(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    model: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1726,6 +1751,9 @@ def _dispatch_to_plugin_provider(
     try:
         if configured_model:
             kwargs["model"] = configured_model
+        # Per-request model override takes precedence over the configured default
+        if model and isinstance(model, str) and model.strip():
+            kwargs["model"] = model.strip()
         if isinstance(image_url, str) and image_url.strip():
             kwargs["image_url"] = image_url.strip()
         norm_refs = None
@@ -1961,6 +1989,7 @@ def _handle_image_generate(args, **kw):
     upscale = args.get("upscale")
     if not isinstance(upscale, bool):
         upscale = None
+    model = args.get("model")
     task_id = kw.get("task_id")
 
     # Terminal-backend confinement chokepoint: convert path-like sources to
@@ -1980,6 +2009,7 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
         upscale=upscale,
+        model=model,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)

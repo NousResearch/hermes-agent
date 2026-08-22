@@ -3638,8 +3638,11 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
 VALID_SORT_ORDERS: dict[str, str] = {
     "created": "created_at ASC, id ASC",
     "created-desc": "created_at DESC, id DESC",
-    "priority": "priority DESC, created_at ASC",
-    "priority-desc": "priority ASC, created_at ASC",
+    # Lower priority number = higher urgency (P0 > P1 > P2 > P3), FIFO
+    # within a band.  ``priority`` (the default) sorts ascending so the
+    # most urgent cards surface first; ``priority-desc`` reverses it.
+    "priority": "priority ASC, created_at ASC",
+    "priority-desc": "priority DESC, created_at ASC",
     "status": "status ASC, created_at ASC",
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",
@@ -3692,7 +3695,7 @@ def list_tasks(
             )
         query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
     else:
-        query += " ORDER BY priority DESC, created_at ASC"
+        query += " ORDER BY priority ASC, created_at ASC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
@@ -10036,7 +10039,7 @@ def _dispatch_once_locked(
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "ORDER BY priority ASC, created_at ASC"
     ).fetchall()
     # Review rows are enumerated up front (not after the ready loop) so the
     # budget split below can see whether review work exists at all.
@@ -10045,7 +10048,7 @@ def _dispatch_once_locked(
         review_rows = conn.execute(
             "SELECT id, assignee FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
-            "ORDER BY priority DESC, created_at ASC"
+            "ORDER BY priority ASC, created_at ASC"
         ).fetchall()
     # Review-lane reservation (OOF-30 review finding): the ready loop runs
     # first and used to consume the ENTIRE shared budget, so a sustained

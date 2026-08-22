@@ -43,7 +43,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "vision_router_analyze", "vision_ocr_page", "image_generate",
     # BFL FLUX 3 video generation
     "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
     "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
@@ -133,10 +133,9 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["vision_analyze", "vision_router_analyze", "vision_ocr_page"],
         "includes": []
     },
-
     "video": {
         "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
         "tools": ["video_analyze"],
@@ -946,6 +945,43 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
         if toolset:
             result[display_name] = toolset
     return result
+
+
+# Vision Router tool visibility: the controlled wrapper tool
+# `vision_router_analyze` is model-visible ONLY when the effective gate is
+# true (server flag vision_router.enabled OR the in-memory session flag set
+# by the user-only /vision command). get_tool_definitions filters it out
+# when the gate is false — hard invisibility even through combination
+# toolsets (e.g. "safe" includes "vision").
+VISION_ROUTER_TOOL = "vision_router_analyze"
+VISION_OCR_PAGE_TOOL = "vision_ocr_page"
+
+
+def vision_router_tool_visible(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Server-side visibility gate for the Vision Router wrapper tool.
+
+    Default is always False; the live runtime configuration is never
+    modified here. Mirrors ``vision_orchestrator.vision_router_enabled`` and
+    resolves the canonical ``auxiliary.vision_router`` section (legacy
+    top-level fallback only when the nested mapping is absent).
+    """
+    from tools.vision_policy import resolve_vision_router_enabled
+
+    return resolve_vision_router_enabled(config)
+
+
+def vision_router_effective_visible(
+    config: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Effective model-visible flag: server flag OR the in-memory session
+    flag (limited-use session mode, user-only ``/vision on``). The session
+    flag never persists and the model can never set it.
+    """
+    if vision_router_tool_visible(config):
+        return True
+    from tools.vision_session_state import vision_session_state
+
+    return vision_session_state.enabled
 
 
 def get_toolset_names() -> List[str]:

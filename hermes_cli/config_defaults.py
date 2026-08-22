@@ -1263,6 +1263,32 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             # NOTE: no reasoning_effort here by design — see moa_reference above.
         },
+        # Vision Router — inactive V0.1 foundation (local vision policy and
+        # orchestration layer). Disabled by default; does NOT modify
+        # auxiliary.vision behavior while both integration switches are
+        # false. Model-slot references are role names resolved from runtime
+        # configuration; no private endpoint is hardcoded in defaults.
+        # Default timeouts are safety ceilings, not expected latency.
+        # Dynamic timeout selection (image size / crop / task) is deferred.
+        "vision_router": {
+            "enabled": False,
+            "auxiliary_integration_enabled": False,
+            "max_model_calls": 1,
+            "telemetry_mode": "decisions_only",
+            "ocr_excerpt_chars": 4000,
+            "ocr_page_chars": 65536,
+            "per_workflow_max_calls": 20,
+            "models": {
+                "fast_vlm": "qwen2.5vl",
+                "precision_vlm": "qwen3.6:27b",
+                "ocr": "glm-ocr",
+            },
+            "timeouts": {
+                "fast_vlm_seconds": 45,
+                "precision_vlm_seconds": 120,
+                "ocr_seconds": 45,
+            },
+        },
     },
     
     "display": {

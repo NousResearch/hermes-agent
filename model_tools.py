@@ -374,6 +374,7 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                _vision_router_flag_fingerprint(),
             )
         with _tool_defs_cache_lock:
             cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
@@ -412,6 +413,24 @@ def get_tool_definitions(
     if quiet_mode:
         return list(result)
     return result
+
+
+def _vision_router_flag_fingerprint() -> str:
+    """Cache-fingerprint for the Vision Router visibility gate.
+
+    The wrapper tool's visibility depends on the server flag
+    (vision_router.enabled). The tool-definitions cache must invalidate the
+    moment the flag flips — otherwise a kill-switch toggle would not remove
+    (or restore) the tool until some unrelated config edit bumped the
+    config-mtime fingerprint. Reads the live config; a failure to read it
+    fingerprints as disabled (fail closed).
+    """
+    try:
+        from hermes_cli.config import load_config as _lc
+        from toolsets import vision_router_effective_visible
+        return f"vr:{bool(vision_router_effective_visible(_lc()))}"
+    except Exception:
+        return "vr:False"
 
 
 def _compute_tool_definitions(
@@ -598,6 +617,70 @@ def _compute_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
+
+    # Vision Router wrapper visibility gate:
+    # `vision_router_analyze` and `vision_ocr_page` are model-visible ONLY
+    # when the effective gate is true (server flag vision_router.enabled OR
+    # the in-memory session flag from the user-only /vision command).
+    # When the gate is false the controlled tools are removed here
+    # regardless of which toolsets were enabled — hard invisibility (the
+    # names never reach the model), including through combination toolsets
+    # like "safe". The official legacy `vision_analyze` remains available
+    # while the gate is off, exactly as upstream.
+    # When the gate is true, the legacy auxiliary `vision_analyze` is hidden
+    # in this session: the controlled wrapper REPLACES its model-facing role
+    # — the model must never see two vision entry points. Internal callers
+    # (browser/attachment flows that import vision_analyze_tool directly)
+    # are unaffected.
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        from toolsets import (VISION_ROUTER_TOOL, VISION_OCR_PAGE_TOOL,
+                              vision_router_effective_visible)
+        from tools.registry import registry as _vr_registry
+
+        _vr_visible = vision_router_effective_visible(_load_cfg())
+        if _vr_visible:
+            # Replacement semantics: wherever the legacy model-visible tool
+            # WOULD have been exposed (based on the resolved toolset set,
+            # NOT on check_fn-filtered results), expose exactly the
+            # controlled set — the wrapper plus the bounded OCR page
+            # retrieval tool.
+            _had_legacy = any(
+                td.get("function", {}).get("name") == "vision_analyze"
+                for td in filtered_tools
+            )
+            filtered_tools = [
+                td for td in filtered_tools
+                if td.get("function", {}).get("name") != "vision_analyze"
+            ]
+            if _had_legacy:
+                _existing = {td.get("function", {}).get("name")
+                             for td in filtered_tools}
+                _missing = [n for n in (VISION_ROUTER_TOOL, VISION_OCR_PAGE_TOOL)
+                            if n not in _existing]
+                if _missing:
+                    filtered_tools.extend(
+                        _vr_registry.get_definitions(set(_missing), quiet=True)
+                    )
+        else:
+            # Public compatibility: official legacy vision_analyze stays
+            # visible; only the controlled local Router tools are hidden.
+            filtered_tools = [
+                td for td in filtered_tools
+                if td.get("function", {}).get("name") not in (
+                    VISION_ROUTER_TOOL, VISION_OCR_PAGE_TOOL
+                )
+            ]
+    except Exception:
+        # Fail closed: if the gate cannot be evaluated, the controlled
+        # local Router tools stay hidden (kill switch defaults to OFF);
+        # official legacy vision_analyze is untouched.
+        filtered_tools = [
+            td for td in filtered_tools
+            if td.get("function", {}).get("name") not in (
+                "vision_router_analyze", "vision_ocr_page"
+            )
+        ]
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]

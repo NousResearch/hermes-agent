@@ -121,8 +121,10 @@ computer_use:
   grant_existing_profile: true
 ```
 
-Hermes then launches the cua-driver runtime with the trusted-launcher grant
-(`--grant existing-profile`), and
+By default, Hermes launches the cua-driver runtime with the trusted-launcher
+grant (`--grant existing-profile`). When `computer_use.daemon_socket` selects
+an existing daemon, that daemon must have been started with the grant instead;
+launch settings cannot be changed by an MCP proxy connection. Then
 `cua_browser_prepare` with an existing profile succeeds against the exact
 `(pid, window_id)` the agent proves. Leave it `false` (the default) and
 existing-profile attachment fails closed; driver-owned isolated profiles work
@@ -412,7 +414,17 @@ computer_use:
   permission_mode: standard        # standard (default) | bounded
   capability_manifest: ""          # capability manifest path, required for bounded
   grant_existing_profile: false    # opt-in: attach in standard or unrestricted mode
+  daemon_socket: ""                # absolute Unix socket or Windows named pipe
 ```
+
+`daemon_socket` applies only to standard mode. It makes Hermes start
+`cua-driver mcp --socket <endpoint>` instead of a second in-process runtime, so
+multiple Hermes processes can share one long-lived daemon and its process-owned
+desktop portal/EIS session. The value must be an absolute path (after `~`
+expansion) or a Windows named pipe such as `\\.\pipe\cua-driver`; relative,
+non-string, and duplicate manifest socket selections fail closed. Hermes does
+not own or stop this daemon, and the daemon's permission mode, capability
+manifest, and grants must be configured when the daemon itself starts.
 
 Override the driver binary path (tests / CI / local builds):
 

@@ -56,3 +56,34 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     assert captured["env"].get("PATH") == "/usr/bin:/bin"
 
 
+def test_cli_fallback_keeps_the_configured_standard_daemon_socket(monkeypatch):
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        lambda: "/resolved/cua-driver",
+    )
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend._cua_daemon_socket",
+        lambda: "/run/user/1000/cua.sock",
+    )
+    captured = {}
+
+    def fake_run(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return _fake_completed_process(json.dumps({"windows": []}))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    session = _make_session()
+    result = session._call_tool_via_cli("list_windows", {}, timeout=5.0)
+
+    assert result["isError"] is False
+    assert captured["cmd"] == [
+        "/resolved/cua-driver",
+        "call",
+        "list_windows",
+        "{}",
+        "--socket",
+        "/run/user/1000/cua.sock",
+    ]
+
+

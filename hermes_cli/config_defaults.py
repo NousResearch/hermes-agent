@@ -3535,6 +3535,14 @@ DEFAULT_CONFIG = {
         # Leave false to keep existing-profile attachment failing closed;
         # isolated driver-owned profiles work either way.
         "grant_existing_profile": False,
+        # Optional endpoint for an already-running cua-driver daemon. When set,
+        # standard-mode Computer Use starts only an MCP proxy with
+        # `mcp --socket <path>` so every Hermes process shares the daemon's
+        # process-owned desktop portal/EIS session. The daemon's permission mode
+        # and grants are fixed at daemon startup; Hermes does not forward
+        # grant_existing_profile to an existing endpoint. Empty preserves the
+        # default per-Hermes-process runtime.
+        "daemon_socket": "",
     },
 
     # =========================================================================

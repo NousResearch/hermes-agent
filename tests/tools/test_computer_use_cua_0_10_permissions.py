@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -236,6 +237,142 @@ def test_standard_existing_profile_grant_stays_in_process_off_macos():
 
     assert args == ["mcp", "--grant", "existing-profile"]
     assert socket_path is None
+
+
+def test_standard_external_daemon_socket_uses_proxy_without_runtime_grants(tmp_path):
+    from tools.computer_use.cua_backend import _standard_runtime_launch_args
+
+    daemon_socket = tmp_path / "cua-driver.sock"
+    args, owned_socket = _standard_runtime_launch_args(
+        ["mcp"],
+        grant_existing_profile=True,
+        platform="linux",
+        daemon_socket=str(daemon_socket),
+    )
+
+    assert args == ["mcp", "--socket", str(daemon_socket)]
+    assert owned_socket is None
+
+
+def test_configured_daemon_socket_is_expanded_to_a_stable_absolute_path(
+    monkeypatch, tmp_path
+):
+    from tools.computer_use import cua_backend
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"computer_use": {"daemon_socket": "~/.cache/cua.sock"}},
+    ):
+        assert cua_backend._cua_daemon_socket() == str(
+            tmp_path / ".cache" / "cua.sock"
+        )
+
+
+@pytest.mark.parametrize("value", [123, [], {}])
+def test_configured_daemon_socket_rejects_non_string_values(value):
+    from tools.computer_use import cua_backend
+
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"computer_use": {"daemon_socket": value}},
+    ), pytest.raises(ValueError, match="must be a string"):
+        cua_backend._cua_daemon_socket()
+
+
+def test_configured_daemon_socket_rejects_relative_paths():
+    from tools.computer_use import cua_backend
+
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"computer_use": {"daemon_socket": "relative/cua.sock"}},
+    ), pytest.raises(ValueError, match="absolute path"):
+        cua_backend._cua_daemon_socket()
+
+
+def test_configured_windows_named_pipe_is_preserved(monkeypatch):
+    from tools.computer_use import cua_backend
+
+    monkeypatch.setattr(cua_backend.sys, "platform", "win32")
+    pipe = r"\\.\pipe\cua-driver"
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"computer_use": {"daemon_socket": pipe}},
+    ):
+        assert cua_backend._cua_daemon_socket() == pipe
+
+
+@pytest.mark.parametrize(
+    "manifest_args",
+    [
+        ["mcp", "--socket", "/manifest.sock"],
+        ["mcp", "--socket=/manifest.sock"],
+    ],
+)
+def test_configured_daemon_socket_rejects_a_manifest_socket(manifest_args):
+    from tools.computer_use.cua_backend import _standard_runtime_launch_args
+
+    with pytest.raises(ValueError, match="both select a socket"):
+        _standard_runtime_launch_args(
+            manifest_args,
+            grant_existing_profile=False,
+            platform="linux",
+            daemon_socket="/configured.sock",
+        )
+
+
+def test_standard_lifecycle_passes_the_configured_socket_to_mcp():
+    from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+
+    session = _CuaDriverSession(_AsyncBridge())
+    captured = {}
+
+    async def drive_lifecycle():
+        def capture_params(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/opt/cua-driver",
+        ), patch(
+            "tools.computer_use.cua_backend._resolve_mcp_invocation",
+            return_value=("/opt/cua-driver", ["mcp"]),
+        ), patch(
+            "tools.computer_use.cua_backend._cua_daemon_socket",
+            return_value="/run/user/1000/cua.sock",
+        ), patch(
+            "tools.computer_use.cua_backend._cua_grant_existing_profile",
+            return_value=True,
+        ), patch(
+            "mcp.StdioServerParameters", side_effect=capture_params
+        ), patch("mcp.client.stdio.stdio_client") as mock_stdio, patch(
+            "mcp.ClientSession"
+        ) as mock_session_class:
+            mock_stdio.return_value.__aenter__ = AsyncMock(
+                return_value=(MagicMock(), MagicMock())
+            )
+            mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
+            fake_session = MagicMock()
+            fake_session.initialize = AsyncMock()
+            fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+            mock_session_class.return_value.__aenter__ = AsyncMock(
+                return_value=fake_session
+            )
+            mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            async def signal_shutdown():
+                while session._shutdown_event is None:
+                    await asyncio.sleep(0)
+                session._shutdown_event.set()
+
+            signal = asyncio.create_task(signal_shutdown())
+            await session._lifecycle_coro()
+            await signal
+
+    asyncio.run(drive_lifecycle())
+    assert captured["command"] == "/opt/cua-driver"
+    assert captured["args"] == ["mcp", "--socket", "/run/user/1000/cua.sock"]
 
 
 def test_transport_reset_invalidates_native_and_browser_capabilities():

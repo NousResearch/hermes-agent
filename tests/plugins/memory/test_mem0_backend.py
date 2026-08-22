@@ -1,6 +1,9 @@
 """Tests for Mem0Backend abstraction — PlatformBackend, OSSBackend, SelfHostedBackend."""
 
 import copy
+import sys
+import types
+
 import pytest
 
 from plugins.memory.mem0._backend import (
@@ -112,11 +115,59 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
+    def test_dimension_guard_supports_qdrant_host_and_port(self, monkeypatch):
+        calls = []
+
+        class QdrantClient:
+            def __init__(self, **kwargs):
+                calls.append(("init", kwargs))
+
+            def collection_exists(self, collection_name):
+                calls.append(("exists", collection_name))
+                return True
+
+            def get_collection(self, collection_name):
+                calls.append(("get", collection_name))
+                vectors = types.SimpleNamespace(size=768)
+                params = types.SimpleNamespace(vectors=vectors)
+                return types.SimpleNamespace(
+                    config=types.SimpleNamespace(params=params)
+                )
+
+            def delete_collection(self, collection_name):
+                calls.append(("delete", collection_name))
+
+            def close(self):
+                calls.append(("close",))
+
+        stub_qdrant = types.ModuleType("qdrant_client")
+        stub_qdrant.QdrantClient = QdrantClient  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "qdrant_client", stub_qdrant)
+
+        OSSBackend._recreate_collection_if_dims_changed(
+            "qdrant",
+            {
+                "collection_name": "hermes_mem0",
+                "host": "127.0.0.1",
+                "port": 6333,
+                "api_key": "secret",
+            },
+            expected_dims=1536,
+        )
+
+        assert calls == [
+            (
+                "init",
+                {"host": "127.0.0.1", "port": 6333, "api_key": "secret"},
+            ),
+            ("exists", "hermes_mem0"),
+            ("get", "hermes_mem0"),
+            ("delete", "hermes_mem0"),
+            ("close",),
+        ]
+
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
-        import sys
-        import types
-
         captured = {}
 
         class Memory:

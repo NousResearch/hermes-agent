@@ -158,6 +158,23 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
+def _union_compact_categories(
+    posture: "frozenset[str]", catalog: "frozenset[str]"
+) -> "frozenset[str]":
+    """Union the coding-posture and skills-catalog demotion sets.
+
+    The ALL_SKILL_CATEGORIES sentinel (names-only mode) is absorbing: if
+    either input demotes every category, the union does too. Otherwise the
+    plain frozenset union applies. Kept as a helper so the sentinel's identity
+    semantics live in one place.
+    """
+    from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+    if posture is ALL_SKILL_CATEGORIES or catalog is ALL_SKILL_CATEGORIES:
+        return ALL_SKILL_CATEGORIES
+    return frozenset(posture) | frozenset(catalog)
+
+
 def _plugin_session_info(agent: Any) -> Dict[str, str]:
     """Return immutable-at-render-time metadata exposed to prompt sections."""
     try:
@@ -536,19 +553,48 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # names-only in the index (never hidden — skill_view/skills_list
         # reach everything, and every name stays visible for recall). The
         # default coding posture leaves the index untouched.
+        #
+        # Independently, agent.skills_catalog_mode can demote the
+        # catalog on any surface — chat/messaging defaults to `compact`. Both
+        # sets resolve once from session-fixed inputs (platform, config) and
+        # are unioned into a single compact_categories argument, so the render
+        # stays a single cache-safe entry.
         _compact_cats = frozenset()
+        _catalog_cats = frozenset()
         try:
-            from agent.coding_context import coding_compact_skill_categories
+            from agent.coding_context import (
+                coding_compact_skill_categories,
+                resolve_skills_catalog_compaction,
+            )
 
+            _cwd = resolve_context_cwd()
             _compact_cats = coding_compact_skill_categories(
-                platform=agent.platform, cwd=resolve_context_cwd()
+                platform=agent.platform, cwd=_cwd
+            )
+            try:
+                from hermes_cli.config import load_config_readonly
+
+                _cfg = load_config_readonly()
+            except Exception:
+                _cfg = None
+            _catalog_cats = resolve_skills_catalog_compaction(
+                platform=agent.platform, config=_cfg
             )
         except Exception:
             _compact_cats = frozenset()
+            _catalog_cats = frozenset()
+        _resolved_cats = _union_compact_categories(_compact_cats, _catalog_cats)
+        # Pass the resolved set through WITHOUT boolean coercion. The
+        # ALL_SKILL_CATEGORIES sentinel (names-only) is an empty-but-meaningful
+        # frozenset, so `_resolved_cats or None` would silently coerce it to
+        # None and disable names-only mode. build_skills_system_prompt already
+        # identity-checks the sentinel and treats an empty plain frozenset the
+        # same as None, so forwarding the set verbatim is correct for all of
+        # full / compact / names-only.
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
-            compact_categories=_compact_cats or None,
+            compact_categories=_resolved_cats,
             skills_dir_override=_agent_skills_dir(agent),
         )
     else:

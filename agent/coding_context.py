@@ -692,6 +692,73 @@ def coding_compact_skill_categories(
     ).compact_skill_categories()
 
 
+def _skills_catalog_mode(
+    config: Optional[dict[str, Any]], platform: Optional[str]
+) -> str:
+    """Resolve ``agent.skills_catalog_mode`` to ``full|compact|names-only``.
+
+    Precedence (highest wins), all session-fixed inputs:
+
+      1. Explicit ``agent.skills_catalog_mode`` in ``config`` (the active
+         profile's ``config.yaml`` merged over base ``config.yaml`` — the
+         config loader already layers profile over base, so a non-empty value
+         here is the effective override).
+      2. Per-surface default: ``compact`` when the platform is not an
+         interactive coding surface, else ``full``.
+
+    The empty-string sentinel (``''``) means "no explicit choice — use the
+    per-surface default", matching the ``service_tier: ''`` convention.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    raw = ((config or {}).get("agent", {}) or {}).get("skills_catalog_mode", "")
+    mode = str(raw or "").strip().lower()
+    if mode in {"names_only", "namesonly", "names"}:
+        return "names-only"
+    if mode in {"full", "compact", "names-only"}:
+        return mode
+    # Empty or unrecognized → per-surface default. Chat/messaging surfaces
+    # default to compact; interactive coding surfaces keep the full catalog.
+    plat = (platform or "").strip().lower()
+    return "full" if plat in INTERACTIVE_CODING_PLATFORMS else "compact"
+
+
+def resolve_skills_catalog_compaction(
+    *,
+    platform: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> frozenset[str]:
+    """Skill categories to demote to names-only for THIS surface + config.
+
+    Pure function of session-fixed inputs (``platform``, ``config``). Reads no
+    turn-varying state (no message history, tool-call log, or clock), so it is
+    cache-safe: identical inputs yield an identical result, and the returned
+    set joins the renderer's LRU cache key so the ``<available_skills>`` block
+    stays byte-stable for the life of a conversation.
+
+    Returns:
+      * ``frozenset()`` for ``full`` — no demotion.
+      * the non-coding category deny-list for ``compact`` — union-compatible
+        with the coding-posture set.
+      * :data:`ALL_SKILL_CATEGORIES` (an all-categories sentinel) for
+        ``names-only`` — demote every category. Names stay visible; only
+        descriptions are dropped, so the never-hide invariant holds.
+    """
+    mode = _skills_catalog_mode(config, platform)
+    if mode == "full":
+        return frozenset()
+    if mode == "names-only":
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+        return ALL_SKILL_CATEGORIES
+    return frozenset(_NON_CODING_SKILL_CATEGORIES)
+
+
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
     """Names of MCP servers the user has enabled — kept in the coding posture.
 

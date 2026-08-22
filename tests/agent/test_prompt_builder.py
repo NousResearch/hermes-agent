@@ -1058,3 +1058,159 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# names-only sentinel + measured catalog compaction
+# =========================================================================
+
+
+class TestSkillsCatalogModeRendering:
+    """T2/T3/T6/T7 — renderer behaviour under compact and names-only."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _populate(self, root):
+        # One demotable (non-coding) category and one coding-adjacent category.
+        for cat, name in (
+            ("social-media", "tweet-stuff"),
+            ("cooking", "make-pasta"),
+            ("github", "pr-review"),
+        ):
+            d = root / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things in detail\n---\n"
+            )
+
+    def test_t2_names_only_never_hides_a_name(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._populate(tmp_path)
+        full = build_skills_system_prompt()
+        names_only = build_skills_system_prompt(compact_categories=ALL_SKILL_CATEGORIES)
+        # Every name present in full is still present under names-only.
+        for name in ("tweet-stuff", "make-pasta", "pr-review"):
+            assert name in full
+            assert name in names_only
+
+    def test_t3_names_only_drops_all_descriptions(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._populate(tmp_path)
+        result = build_skills_system_prompt(compact_categories=ALL_SKILL_CATEGORIES)
+        # No category keeps descriptions — even the coding-adjacent one.
+        for desc in (
+            "Does tweet-stuff things",
+            "Does make-pasta things",
+            "Does pr-review things",
+        ):
+            assert desc not in result
+        # Every category renders as a [names only] line.
+        for cat in ("social-media", "cooking", "github"):
+            assert f"{cat} [names only]" in result
+
+    def test_t3_compact_drops_only_noncoding_descriptions(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._populate(tmp_path)
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media", "cooking"})
+        )
+        assert "Does tweet-stuff things" not in result
+        assert "Does make-pasta things" not in result
+        # Coding-adjacent category keeps its description.
+        assert "Does pr-review things" in result
+
+    def test_names_only_and_full_key_cache_distinctly(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import ALL_SKILL_CATEGORIES
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._populate(tmp_path)
+        # full then names-only must not be served from the same cache entry.
+        full = build_skills_system_prompt()
+        names_only = build_skills_system_prompt(compact_categories=ALL_SKILL_CATEGORIES)
+        assert "Does pr-review things" in full
+        assert "Does pr-review things" not in names_only
+
+    def test_t4_determinism_byte_identical_render(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._populate(tmp_path)
+        cats = frozenset({"social-media", "cooking"})
+        a = build_skills_system_prompt(compact_categories=cats)
+        b = build_skills_system_prompt(compact_categories=cats)
+        assert a == b
+
+    def test_t6_compact_shrinks_block_at_least_50pct(self, monkeypatch, tmp_path):
+        """Measured saving gate: many demotable skills, long descriptions."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Build a representative catalog: several non-coding categories with
+        # multiple skills each carrying a realistic-length description.
+        long_desc = "Handles a rich workflow with many steps " * 4
+        noncoding = [
+            "apple", "communication", "cooking", "email", "finance",
+            "health", "media", "music", "productivity", "travel",
+        ]
+        for cat in noncoding:
+            for i in range(3):
+                d = tmp_path / "skills" / cat / f"{cat}-skill-{i}"
+                d.mkdir(parents=True)
+                (d / "SKILL.md").write_text(
+                    f"---\nname: {cat}-skill-{i}\ndescription: {long_desc}\n---\n"
+                )
+        full = build_skills_system_prompt()
+        compact = build_skills_system_prompt(
+            compact_categories=frozenset(noncoding)
+        )
+        assert full and compact
+
+        # Measure the <available_skills> block itself (the ADR's T6 target),
+        # not the surrounding fixed prose.
+        def _block(s):
+            start = s.index("<available_skills>")
+            end = s.index("</available_skills>") + len("</available_skills>")
+            return s[start:end]
+
+        full_block, compact_block = _block(full), _block(compact)
+        reduction = 1.0 - (len(compact_block) / len(full_block))
+        assert reduction >= 0.50, f"only {reduction:.1%} reduction"
+
+    def test_t7_no_env_var_for_mode(self, monkeypatch):
+        """The mode is config-only — no HERMES_* env var can steer it.
+
+        Behavioral, not source-text: populate the environment with every
+        plausible HERMES_* mode override and assert resolution still follows
+        only (config, platform). If the resolver ever read an env var, one of
+        these would flip the outcome away from the config/surface default.
+        """
+        from agent import coding_context as cc
+
+        for name in (
+            "HERMES_SKILLS_CATALOG_MODE",
+            "HERMES_SKILL_CATALOG_MODE",
+            "HERMES_CATALOG_MODE",
+            "HERMES_SKILLS_MODE",
+        ):
+            monkeypatch.setenv(name, "names-only")
+
+        # Chat surface, empty config → still the compact surface default
+        # (would be the names-only ALL sentinel if any env var were honored).
+        got_chat = cc.resolve_skills_catalog_compaction(platform="mattermost", config={})
+        assert got_chat == frozenset(cc._NON_CODING_SKILL_CATEGORIES)
+
+        # Coding surface, empty config → still full (no demotion).
+        got_cli = cc.resolve_skills_catalog_compaction(platform="cli", config={})
+        assert got_cli == frozenset()
+
+        # Explicit config still wins over the (ignored) environment.
+        cfg_full = {"agent": {"skills_catalog_mode": "full"}}
+        assert (
+            cc.resolve_skills_catalog_compaction(platform="mattermost", config=cfg_full)
+            == frozenset()
+        )

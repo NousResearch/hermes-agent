@@ -3805,17 +3805,56 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
   return { ...local, profiles }
 }
 
+function normalizeMentionHandle(value) {
+  const handle = String(value || '').trim().replace(/^@/, '').toLowerCase()
+
+  return NAME_RE.test(handle) && !['all', 'everyone', 'user', 'default'].includes(handle) ? handle : ''
+}
+
 /** The @handle users tag a bot with. Multi-source rosters precompute the
  *  handle (bare name, or name-device when the profile exists on several
- *  registered sources) — prefer it when present. The primary profile's
- *  callable alias is 'hermes' — the mention middleware resolves it back to
- *  'default' — so the word 'default' never surfaces in the UI. */
+ *  registered sources) — prefer it when present. The primary profile may
+ *  persist a custom mention handle in Bot Mode metadata; @hermes remains the
+ *  fallback and backwards-compatible alias. */
 function botHandle(name, bot) {
+  const profile = (name || '').trim().toLowerCase()
+
+  if (profile === 'default') {
+    const inlineMeta = bot?.ui_meta?.[ID]
+    const localMeta = !bot?.remoteSource && typeof $botMeta !== 'undefined' ? $botMeta.get()?.default : null
+    const custom = normalizeMentionHandle(bot?.mentionHandle || inlineMeta?.mentionHandle || localMeta?.mentionHandle)
+    const routed = String(bot?.handle || '').trim()
+
+    if (custom) {
+      if (!routed || routed === name || routed === 'hermes') {
+        return custom
+      }
+      if (routed.toLowerCase().startsWith('default-')) {
+        return custom + routed.slice('default'.length)
+      }
+    }
+
+    return routed && routed !== name ? routed : 'hermes'
+  }
+
   if (bot?.handle && bot.handle !== name) {
     return bot.handle
   }
 
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  return name
+}
+
+function mentionHandleTaken(handle, currentBot, roster) {
+  const target = String(handle || '').toLowerCase()
+  const currentKey = botRosterKey(currentBot)
+
+  return (roster || []).some(bot => {
+    if (!bot?.name || bot === currentBot || botRosterKey(bot) === currentKey) {
+      return false
+    }
+    const forms = [bot.name, bot.handle, botHandle(bot.name, bot)]
+    return forms.some(form => String(form || '').toLowerCase() === target)
+  })
 }
 
 /** Taggable @-forms derived from a bot's friendly names — the core profile
@@ -3895,11 +3934,21 @@ function resolveRosterMentions(text, roster, active = {}) {
       continue
     }
 
-    const handle = String(botHandle(bot.name, bot) || '').toLowerCase()
+    const rawHandle = botHandle(bot.name, bot)
+    const handle = normalizeMentionHandle(rawHandle) || String(rawHandle || '').toLowerCase()
     const name = String(bot.name || '').toLowerCase()
-    const forms = new Set([handle, name])
+    const isRemoteDefault = name === 'default' && bot.remoteSource
+    const reservedRemoteHandle = isRemoteDefault && ['default', 'hermes'].includes(handle)
+    const forms = new Set([
+      ...(!reservedRemoteHandle ? [handle] : []),
+      ...(!isRemoteDefault ? [name] : [])
+    ])
 
-    if (bot.handle) {
+    if (name === 'default' && !bot.remoteSource) {
+      forms.add('hermes')
+    }
+
+    if (bot.handle && !reservedRemoteHandle) {
       forms.add(String(bot.handle).toLowerCase())
     }
 
@@ -3917,15 +3966,13 @@ function resolveRosterMentions(text, roster, active = {}) {
         continue
       }
 
-      const existing = byForm.get(form)
-
-      if (existing && existing !== bot) {
-        byForm.set(form, null)
+      if (!byForm.has(form)) {
+        byForm.set(form, bot)
         continue
       }
 
-      if (!existing) {
-        byForm.set(form, bot)
+      if (byForm.get(form) !== bot) {
+        byForm.set(form, null)
       }
     }
   }
@@ -4018,7 +4065,8 @@ function botRosterMeta(bot, metaByName) {
 
 function showsHandle(name, meta, bot) {
   const display = displayName({ name }, meta)
-  return Boolean(name && display.toLowerCase() !== botHandle(name, bot).toLowerCase())
+  const identity = bot || { mentionHandle: meta?.mentionHandle }
+  return Boolean(name && display.toLowerCase() !== botHandle(name, identity).toLowerCase())
 }
 
 // ── canonical bot chat ───────────────────────────────────────────────────────
@@ -4433,16 +4481,20 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
   return (bots || []).map(bot => {
-    // Keep the friendly identity on the stored descriptor: after a
-    // connection switch the live roster row may be gone, and renamed-tag
-    // mentions must still resolve against the persisted member.
+    // Keep friendly identity and the custom default handle on the stored
+    // descriptor: after a connection switch the live roster row may be gone.
     const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || '').trim()
+    const localMeta = !bot.remoteSource ? $botMeta.get()?.[bot.name] : null
+    const mentionHandle = (bot.name || '').toLowerCase() === 'default'
+      ? normalizeMentionHandle(bot?.mentionHandle || bot?.ui_meta?.[ID]?.mentionHandle || localMeta?.mentionHandle)
+      : ''
 
     return {
       name: bot.name,
       handle: bot.handle || bot.name,
       ...(title ? { title } : {}),
       ...(bot.display_name ? { display_name: bot.display_name } : {}),
+      ...(mentionHandle ? { mentionHandle } : {}),
       connectionId: bot.connectionId,
       connectionKind: bot.connectionKind,
       connectionLabel: bot.connectionLabel,
@@ -4508,12 +4560,18 @@ function parseGroupChatMentions(text, members) {
     // Cross-connection members are also addressable by their @name-device
     // handle (the roster's disambiguated form) — same-named agents on two
     // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    const handle = String(botHandle(member.name, member) || '').trim()
+    const normalizedHandle = handle.toLowerCase()
+    const isRemoteDefault = member.name.toLowerCase() === 'default' && member.remoteSource
+    const reservedRemoteHandle = isRemoteDefault && ['default', 'hermes'].includes(normalizedHandle)
     const forms = new Set([
-      member.name.toLowerCase(),
-      member.name.toLowerCase().replace(/[\s_-]+/g, ''),
-      ...(handle ? [handle.toLowerCase(), handle.toLowerCase().replace(/[\s_-]+/g, '')] : []),
-      ...(title
+      ...(!isRemoteDefault
+        ? [member.name.toLowerCase(), member.name.toLowerCase().replace(/[\s_-]+/g, '')]
+        : []),
+      ...(handle && !reservedRemoteHandle
+        ? [normalizedHandle, normalizedHandle.replace(/[\s_-]+/g, '')]
+        : []),
+      ...(title && !isRemoteDefault
         ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
         : [])
     ])
@@ -4527,9 +4585,21 @@ function parseGroupChatMentions(text, members) {
       }
     }
 
+    if (member.name.toLowerCase() === 'default' && !member.remoteSource) {
+      forms.add('hermes')
+    }
+
+    const memberKey = groupMemberKey(member)
     for (const form of forms) {
-      if (form) {
-        handles.set(form, groupMemberKey(member))
+      if (!form) {
+        continue
+      }
+      if (!handles.has(form)) {
+        handles.set(form, memberKey)
+        continue
+      }
+      if (handles.get(form) !== memberKey) {
+        handles.set(form, null)
       }
     }
   }
@@ -5689,7 +5759,7 @@ function singleFlight(ref, start) {
  *  breaking @mentions for customized bots (@wesleysimplicio, #16). */
 function messagingProtocolSection(name, roster) {
   const teammates = (roster || []).filter(b => b.name !== name)
-  const handle = botHandle(name)
+  const handle = botHandle(name, (roster || []).find(bot => bot.name === name))
 
   return [
     '## Messaging other agents',
@@ -7112,6 +7182,7 @@ function EditProfileDialog({ bot, open, onClose }) {
   const [color, setColor] = useState(appearance.color)
   const [image, setImage] = useState(appearance.image)
   const [title, setTitle] = useState(meta?.title || '')
+  const [mentionHandle, setMentionHandle] = useState(meta?.mentionHandle || '')
   const [description, setDescription] = useState(bot?.description || '')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -7127,6 +7198,7 @@ function EditProfileDialog({ bot, open, onClose }) {
       setColor(appearance.color)
       setImage(appearance.image)
       setTitle(meta?.title || '')
+      setMentionHandle(meta?.mentionHandle || '')
       setDescription(bot.description || '')
       setBusy(false)
       setAdvanced(false)
@@ -7143,6 +7215,18 @@ function EditProfileDialog({ bot, open, onClose }) {
       return
     }
 
+    const normalizedMentionHandle = normalizeMentionHandle(mentionHandle)
+
+    if (bot.name === 'default' && mentionHandle.trim() && !normalizedMentionHandle) {
+      host.notify({ kind: 'error', message: 'Handle must use letters, numbers, hyphens, or underscores.' })
+      return
+    }
+
+    if (bot.name === 'default' && mentionHandleTaken(normalizedMentionHandle, bot, $lastRoster.get())) {
+      host.notify({ kind: 'error', message: `@${normalizedMentionHandle} is already used by another profile.` })
+      return
+    }
+
     setBusy(true)
     let advancedFailed = false
     const persistence = await saveBotMeta(bot.name, {
@@ -7151,6 +7235,7 @@ function EditProfileDialog({ bot, open, onClose }) {
       image,
       imageKind: image ? 'photo' : 'shape',
       title: title.trim(),
+      ...(bot.name === 'default' ? { mentionHandle: normalizedMentionHandle } : {}),
       custom: true
     })
     // Only an explicit remote failure is an error — 'unsupported' is the
@@ -7239,6 +7324,25 @@ function EditProfileDialog({ bot, open, onClose }) {
                 onChange: event => setTitle(event.target.value)
               })
             ),
+            bot.name === 'default'
+              ? labeled(
+                  'Handle',
+                  jsxs('div', {
+                    className: 'grid gap-1',
+                    children: [
+                      jsx(Input, {
+                        placeholder: 'hermes',
+                        value: mentionHandle,
+                        onChange: event => setMentionHandle(event.target.value.replace(/^@/, '').toLowerCase())
+                      }),
+                      jsx('div', {
+                        className: 'text-[0.65rem] text-(--ui-text-quaternary)',
+                        children: 'Uniqueness across connected computers is best-effort.'
+                      })
+                    ]
+                  })
+                )
+              : null,
             labeled(
               'Description',
               jsx(Textarea, {
@@ -8842,7 +8946,7 @@ function RoutinesPane() {
                   showsHandle(bot, meta)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
-                        children: `@${botHandle(bot)}`
+                        children: `@${botHandle(bot, { mentionHandle: meta?.mentionHandle })}`
                       })
                     : null
                 ]
@@ -9557,7 +9661,7 @@ function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputPr
     }
 
     for (const member of members) {
-      const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+      const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
       const tag = String(botMentionTag(member) || handle).trim()

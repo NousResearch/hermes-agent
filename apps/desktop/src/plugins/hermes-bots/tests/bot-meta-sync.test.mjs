@@ -70,6 +70,23 @@ test('regression: authoritative server metadata removes stale local canonical ch
   assert.equal(Object.hasOwn(writes.at(-1).value.default, 'chat'), false)
 })
 
+test('regression: clearing a custom mention handle overwrites stale local metadata', () => {
+  const writes = []
+  const sync = load()
+  sync.set({ default: { mentionHandle: 'maia', title: 'Maia' } })
+  sync.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
+
+  sync.mergeServerMeta([
+    {
+      name: 'default',
+      ui_meta: { 'hermes-bots': { mentionHandle: '', title: 'Maia' } }
+    }
+  ])
+
+  assert.equal(sync.get().default.mentionHandle, '')
+  assert.equal(writes.at(-1).value.default.mentionHandle, '')
+})
+
 test('regression: authoritative groups remove a stale local legacy group projection', () => {
   const writes = []
   const sync = load()

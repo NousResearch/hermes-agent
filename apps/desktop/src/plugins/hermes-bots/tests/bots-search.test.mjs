@@ -6,14 +6,17 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 function loadFilter() {
-  const start = source.indexOf('function botHandle')
+  const nameReStart = source.indexOf('const NAME_RE')
+  const nameReEnd = source.indexOf('\n', nameReStart) + 1
+  const start = source.indexOf('function normalizeMentionHandle')
   const end = source.indexOf('function slugify')
 
+  assert.ok(nameReStart >= 0 && nameReEnd > nameReStart, 'mention-handle grammar must remain extractable')
   assert.ok(start >= 0 && end > start, 'bot identity helper block must remain extractable')
 
   const context = {}
   vm.runInNewContext(
-    `${source.slice(start, end)}\nglobalThis.__filterBots = filterBots;`,
+    `${source.slice(nameReStart, nameReEnd)}\n${source.slice(start, end)}\nglobalThis.__filterBots = filterBots;`,
     context
   )
 

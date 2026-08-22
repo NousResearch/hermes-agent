@@ -32,7 +32,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__normalizeMentionHandle = normalizeMentionHandle;\nglobalThis.__mentionHandleTaken = mentionHandleTaken;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -258,6 +258,46 @@ test('botHandle: precomputed multi-source handle wins; default stays hermes', ()
   assert.equal(botHandle('research', { handle: 'research' }), 'research')
   assert.equal(botHandle('research'), 'research')
   assert.equal(botHandle('default'), 'hermes')
+})
+
+test('botHandle: default profile accepts a durable custom mention handle', () => {
+  const { __botHandle: botHandle, __normalizeMentionHandle: normalizeMentionHandle } = runtime()
+  const profile = {
+    name: 'default',
+    handle: 'default',
+    ui_meta: { 'hermes-bots': { mentionHandle: 'maia' } }
+  }
+
+  assert.equal(normalizeMentionHandle('@Maia'), 'maia')
+  assert.equal(normalizeMentionHandle('not valid'), '')
+  assert.equal(normalizeMentionHandle('everyone'), '')
+  assert.equal(botHandle('default', profile), 'maia')
+  assert.equal(botHandle('default', { mentionHandle: 'maia' }), 'maia')
+  assert.equal(botHandle('default', { mentionHandle: 'not valid' }), 'hermes')
+  assert.equal(botHandle('default', { handle: 'default-studio', mentionHandle: 'maia' }), 'maia-studio')
+  assert.equal(botHandle('default', { handle: 'hermes', mentionHandle: 'maia' }), 'maia')
+})
+
+test('mentionHandleTaken rejects profile, routed, and same-named remote collisions', () => {
+  const { __mentionHandleTaken: taken } = runtime()
+  const current = { name: 'default', handle: 'default' }
+  const roster = [
+    current,
+    { name: 'maia', handle: 'maia' },
+    { name: 'research', handle: 'research-studio' },
+    {
+      name: 'default',
+      handle: 'default',
+      connectionId: 'remote',
+      remoteSource: true,
+      ui_meta: { 'hermes-bots': { mentionHandle: 'remote-main' } }
+    }
+  ]
+
+  assert.equal(taken('maia', current, roster), true)
+  assert.equal(taken('research-studio', current, roster), true)
+  assert.equal(taken('remote-main', current, roster), true)
+  assert.equal(taken('unique', current, roster), false)
 })
 
 test('filterBots: matches the source device name for remote rows', () => {
@@ -633,21 +673,65 @@ test('resolveRosterMentions: @dixie and @bob-mac-mini hit Connections bots, not 
 test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself', () => {
   const { __resolveRosterMentions: resolve } = runtime()
   const roster = [
-    { name: 'default', connectionId: 'local', handle: 'hermes' },
+    { name: 'default', connectionId: 'local', handle: 'default' },
     {
       name: 'default',
       connectionId: 'mac-mini',
-      connectionLabel: 'Mac Mini',
       handle: 'default-mac-mini',
-      remoteSource: true
+      remoteSource: true,
+      sourceScoped: true
     }
   ]
 
-  const hits = resolve('ask @hermes and @default-mac-mini', roster, {
+  const selfAlias = resolve('@hermes', roster, {
+    name: 'default',
+    connectionId: 'local'
+  })
+  assert.equal(selfAlias.length, 0)
+
+  const legacyRemote = resolve('@hermes', [
+    roster[0],
+    { ...roster[1], handle: 'hermes' }
+  ], {
+    name: 'default',
+    connectionId: 'local'
+  })
+  assert.equal(legacyRemote.length, 0)
+
+  const hits = resolve('@default-mac-mini', roster, {
     name: 'default',
     connectionId: 'local'
   })
 
   assert.equal(hits.length, 1)
   assert.equal(hits[0].connectionId, 'mac-mini')
+})
+
+test('resolveRosterMentions: custom default handle and @hermes alias target the same profile', () => {
+  const { __resolveRosterMentions: resolve } = runtime()
+  const roster = [
+    {
+      name: 'default',
+      connectionId: 'local',
+      handle: 'default',
+      ui_meta: { 'hermes-bots': { mentionHandle: 'maia' } }
+    },
+    { name: 'dixie', connectionId: 'local', handle: 'dixie' }
+  ]
+
+  for (const alias of ['@maia', '@hermes', '@default']) {
+    const hits = resolve(`${alias} act`, roster, { name: 'dixie', connectionId: 'local' })
+    assert.equal(JSON.stringify(hits.map(bot => bot.name)), JSON.stringify(['default']))
+  }
+})
+
+test('resolveRosterMentions: three-way handle collisions remain ambiguous', () => {
+  const { __resolveRosterMentions: resolve } = runtime()
+  const roster = [
+    { name: 'alpha', handle: 'shared' },
+    { name: 'beta', handle: 'shared' },
+    { name: 'gamma', handle: 'shared' }
+  ]
+
+  assert.equal(resolve('@shared act', roster, { name: 'other' }).length, 0)
 })

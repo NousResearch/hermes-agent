@@ -196,7 +196,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, durableGroupChatMembers, botHandle, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -243,6 +243,61 @@ test('mention routing: display titles resolve to the member and @user never matc
   const parsed = gc.parseGroupChatMentions('@theops please check, then ping @user', MEMBERS)
   assert.equal(parsed.mentioned.has('ops'), true)
   assert.equal(parsed.mentioned.size, 1)
+})
+
+test('mention routing: custom default handle resolves while legacy aliases remain valid', () => {
+  const gc = load(() => '(pass)')
+  const members = [{ name: 'default', handle: 'default', mentionHandle: 'maia', title: 'Maia' }]
+
+  assert.equal(gc.botHandle('default', members[0]), 'maia')
+  for (const alias of ['@maia', '@hermes', '@default']) {
+    const parsed = gc.parseGroupChatMentions(`${alias} please check`, members)
+    assert.equal(parsed.mentioned.has('default'), true, `${alias} should resolve to the default profile`)
+  }
+})
+
+test('mention routing: local metadata survives durable group persistence on older gateways', () => {
+  const gc = load(() => '(pass)')
+  gc.$botMeta.set({ default: { mentionHandle: 'maia', title: 'Maia' } })
+  const members = [{ name: 'default', handle: 'default', connectionId: 'local', title: 'Maia' }]
+
+  assert.equal(gc.botHandle('default', members[0]), 'maia')
+  const persisted = gc.durableGroupChatMembers(members)
+  assert.equal(persisted[0].mentionHandle, 'maia')
+
+  gc.$botMeta.set({})
+  assert.equal(gc.parseGroupChatMentions('@maia please check', persisted).mentioned.size, 1)
+})
+
+test('mention routing: legacy aliases target the local default when a remote default is also seated', () => {
+  const gc = load(() => '(pass)')
+  const members = [
+    { name: 'default', handle: 'default', title: 'Hermes' },
+    { name: 'default', handle: 'hermes', connectionId: 'studio', remoteSource: true, sourceScoped: true }
+  ]
+
+  for (const alias of ['@hermes', '@default']) {
+    const parsed = gc.parseGroupChatMentions(`${alias} please check`, members)
+    assert.equal(parsed.mentioned.size, 1)
+    assert.equal(parsed.mentioned.has('default'), true)
+  }
+})
+
+test('mention routing: duplicate forms fail closed even with three matching members', () => {
+  const gc = load(() => '(pass)')
+  const members = [
+    { name: 'alpha', handle: 'shared' },
+    { name: 'beta', handle: 'shared' },
+    { name: 'gamma', handle: 'shared' }
+  ]
+
+  assert.equal(gc.parseGroupChatMentions('@shared please check', members).mentioned.size, 0)
+})
+
+test('source contract: default handle is editable and persisted in Bot Mode metadata', () => {
+  assert.match(pluginSource, /const \[mentionHandle, setMentionHandle\] = useState/)
+  assert.match(pluginSource, /mentionHandle: normalizedMentionHandle/)
+  assert.match(pluginSource, /'Handle'/)
 })
 
 test('a member @-mentioned by another bot joins the NEXT round', async () => {

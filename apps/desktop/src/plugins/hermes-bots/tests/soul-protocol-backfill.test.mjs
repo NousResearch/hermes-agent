@@ -6,13 +6,16 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 function loadSoulHelpers({ serverInjects = false } = {}) {
-  const start = source.indexOf('function botHandle(name')
+  const nameReStart = source.indexOf('const NAME_RE')
+  const nameReEnd = source.indexOf('\n', nameReStart) + 1
+  const start = source.indexOf('function normalizeMentionHandle')
   const end = source.indexOf('// ── human-readable row helpers', start)
-  assert.notEqual(start, -1, 'botHandle is missing')
+  assert.ok(nameReStart >= 0 && nameReEnd > nameReStart, 'mention-handle grammar must remain extractable')
+  assert.notEqual(start, -1, 'mention-handle helper block is missing')
   assert.notEqual(end, -1, 'soul-helper section delimiter is missing')
   const context = { serverInjectsProtocol: serverInjects }
   vm.runInNewContext(
-    `${source.slice(start, end)}\nObject.assign(globalThis, { botHandle, hasMessagingProtocol, ensureMessagingProtocol, composeSoul, messagingProtocolSection })`,
+    `${source.slice(nameReStart, nameReEnd)}\n${source.slice(start, end)}\nObject.assign(globalThis, { botHandle, hasMessagingProtocol, ensureMessagingProtocol, composeSoul, messagingProtocolSection })`,
     context
   )
   return context

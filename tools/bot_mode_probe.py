@@ -21,8 +21,9 @@ Silent (returns ``""``) when:
 - the current profile's SOUL.md already contains the protocol heading,
 - anything at all goes wrong (never crash a prompt build).
 
-Deterministic within a process: the result is computed once and cached, so
-compression-triggered prompt rebuilds produce identical bytes.
+Deterministic within a capability epoch: the result is cached, so ordinary
+prompt rebuilds produce identical bytes. A detected user-initiated capability
+change refreshes the cache exactly once before rebuilding the stored prompt.
 
 Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
 """
@@ -30,6 +31,7 @@ Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -100,9 +102,30 @@ def _soul_has_protocol(profile_dir: Path) -> bool:
         return False
 
 
-def _handle(name: str) -> str:
-    # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+def _handle(name: str, profile_dir: Path | None = None) -> str:
+    """Callable Bot Mode handle; default may override @hermes in profile metadata."""
+    if name != "default":
+        return name
+    try:
+        meta = profile_dir / "profile.yaml" if profile_dir else None
+        if meta and meta.is_file():
+            raw = meta.read_text(encoding="utf-8", errors="replace")
+            if "mentionHandle" in raw:
+                import yaml
+
+                data = yaml.safe_load(raw)
+                ui_meta = data.get("ui_meta") if isinstance(data, dict) else None
+                bots = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+                custom = ""
+                if isinstance(bots, dict):
+                    custom = str(bots.get("mentionHandle") or "").strip().lstrip("@").lower()
+                if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", custom) and custom not in {
+                    "all", "everyone", "user", "default"
+                }:
+                    return custom
+    except Exception:
+        pass
+    return "hermes"
 
 
 def _profile_role(profile_dir: Path) -> str:
@@ -145,7 +168,7 @@ def _roster_lines(root: Path, me: str) -> list[str]:
         if name == me:
             continue
         role = _profile_role(profile_dir)
-        handle = _handle(name)
+        handle = _handle(name, profile_dir)
         lines.append(f"- `@{handle}`" + (f" — {role}" if role else ""))
     return lines
 
@@ -203,7 +226,7 @@ def _build_section(home: Path) -> str:
     if _soul_has_protocol(my_dir):
         return ""
 
-    handle = _handle(me)
+    handle = _handle(me, my_dir)
     roster_block = "\n".join(_roster_lines(root, me)) or "- (no teammates yet)"
 
     return (
@@ -321,14 +344,16 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         root = _hermes_root(resolved)
         surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
-        # Roles are part of the messaging surface: renaming a bot or editing
-        # a profile description must refresh eternal Bot Chat prompts so the
-        # roster block teammates pick recipients from stays current.
+        # Roles and the callable handle are part of the messaging surface:
+        # rename/description/handle edits refresh eternal Bot Chat prompts.
         surface["roster_roles"] = sorted(
             f"{n}:{_profile_role(d)}" for n, d in _roster(root)
         )
+        surface["bot_handle"] = _handle(_profile_name(resolved), resolved)
     except Exception:
         surface["roster"] = []
+        surface["roster_roles"] = []
+        surface["bot_handle"] = ""
     # Protocol-text version salt: bumping this refreshes every eternal Bot
     # Chat prompt ONCE so existing bots adopt a new protocol section (e.g.
     # the v2 message_agent tool replacing the shellout instructions).
@@ -369,7 +394,13 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
         current = capability_fingerprint(home)
         if current == "unavailable":
             return False
-        return m.group(1) != current
+        stale = m.group(1) != current
+        if stale:
+            # The caller rebuilds the stored Bot Chat prompt immediately after
+            # this check. Refresh the rendered protocol in the same epoch
+            # transition so the rebuild cannot reuse stale roster/handle text.
+            get_bot_mode_protocol_section(home, force_refresh=True)
+        return stale
     except Exception:
         return False
 

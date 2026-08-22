@@ -94,6 +94,20 @@ def test_roster_lines_carry_roles(tmp_path):
     assert "Deep research and literature review" in section
 
 
+def test_default_protocol_uses_custom_bot_mode_handle(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    mentionHandle: maia\n",
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "You are `@maia`." in section
+    assert "You are `@hermes`." not in section
+
+
 def test_silent_when_soul_already_carries_protocol(tmp_path):
     """Legacy plugin-side append — never double the section."""
     home = tmp_path / ".hermes"
@@ -173,7 +187,40 @@ def test_fingerprint_changes_on_each_capability_axis(tmp_path):
 
     # teammate added to the roster
     _make_bot_profile(home, "coder", managed=True)
-    assert bot_mode_probe.capability_fingerprint(home) != after_soul
+    after_roster = bot_mode_probe.capability_fingerprint(home)
+    assert after_roster != after_soul
+
+    # default Bot Mode mention handle changed
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    mentionHandle: maia\n",
+        encoding="utf-8",
+    )
+    assert bot_mode_probe.capability_fingerprint(home) != after_roster
+
+
+def test_default_protocol_refreshes_after_handle_epoch_change(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    profile = home / "profile.yaml"
+    profile.write_text(
+        "ui_meta:\n  hermes-bots:\n    mentionHandle: maia\n",
+        encoding="utf-8",
+    )
+
+    first = bot_mode_probe.get_bot_mode_protocol_section(home)
+    stamped = first + "\n\n" + bot_mode_probe.epoch_line(home)
+    assert "You are `@maia`." in first
+
+    profile.write_text(
+        "ui_meta:\n  hermes-bots:\n    mentionHandle: luna\n",
+        encoding="utf-8",
+    )
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    rebuilt = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "You are `@luna`." in rebuilt
+    assert "You are `@maia`." not in rebuilt
 
 
 def test_stored_prompt_staleness(tmp_path):

@@ -149,6 +149,54 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     assert exec_line == f"{hermes_bin} desktop"
 
 
+# uv-managed venvs create a venv python (e.g. ``…/venv/bin/python3``) that
+# symlinks to the uv binary (``…/uv/python/…/bin/python3.X``).
+# ``sys.executable`` returns the venv path, but ``.resolve()`` follows the
+# symlink to the uv binary.  The old ``_needs_interpreter`` compared the
+# resolved parent dir against the raw shebang text, missed the match,
+# prefixed the uv Python, and the uv Python had no venv site-packages →
+# ``ModuleNotFoundError``.  This test simulates that exact scenario.
+def test_exec_leaves_symlinked_venv_shebang_alone(tmp_path, xdg_home, monkeypatch):
+    import sys
+
+    root = _make_project(tmp_path)
+
+    # Simulate a uv-managed venv: the "real" python lives elsewhere.
+    real_python_name = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    uv_tag = f"cpython-{sys.version_info.major}.{sys.version_info.minor}"
+    real_python_dir = tmp_path / "uv-python" / uv_tag / "bin"
+    real_python_dir.mkdir(parents=True)
+    real_python = real_python_dir / real_python_name
+    real_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    real_python.chmod(0o755)
+
+    # The venv python is a symlink to the real one.
+    venv_dir = tmp_path / "venv" / "bin"
+    venv_dir.mkdir(parents=True)
+    venv_python = venv_dir / "python3"
+    venv_python.symlink_to(real_python)
+
+    # The hermes script has a venv-prefix shebang pointing at the symlink.
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text(f"#!{venv_python}\nimport hermes_cli\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    # sys.executable reports the unresolved venv path (like uv venvs do).
+    monkeypatch.setattr(lde.sys, "executable", str(venv_python))
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    # The venv shebang is valid — don't prefix with sys.executable.
+    assert exec_line == f"{hermes_bin} desktop", (
+        "symlinked venv shebang should NOT get an interpreter prefix; "
+        f"got Exec={exec_line}"
+    )
+
+
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")

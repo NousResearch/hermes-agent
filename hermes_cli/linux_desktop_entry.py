@@ -98,16 +98,47 @@ def _needs_interpreter(bin_path: Path) -> bool:
         # Native binary (uv tool shim, PyInstaller, distro package) — its own
         # loader is self-sufficient.
         return False
-    shebang = head.decode("utf-8", errors="replace").strip().lower()
-    if "python" not in shebang:
+    shebang = head.decode("utf-8", errors="replace").strip()
+    if "python" not in shebang.lower():
         # A shell wrapper (e.g. the installer's bash launcher) execs the venv
         # python itself — leave it alone.
         return False
     # A python shebang pointing INSIDE the running interpreter's environment
     # already resolves correctly; anything else (``/usr/bin/env python3``,
     # a system path) would escape the venv when spawned by the DE.
+    #
+    # Resolve *both* sides before comparing: uv-managed venvs create a venv
+    # python (``…/venv/bin/python3``) that symlinks to the uv binary
+    # (``…/uv/python/…/python3.X``).  ``sys.executable`` reports the venv
+    # path, but ``.resolve()`` follows it to the uv binary.  Comparing the
+    # resolved parent dir against the raw shebang text misses the match,
+    # prefixes the uv Python, and the uv Python has no venv site-packages →
+    # ``ModuleNotFoundError``.  Instead, resolve the shebang interpreter too
+    # and compare the canonical binaries.
+    shebang_interp = _extract_shebang_interpreter(shebang)
+    if shebang_interp:
+        try:
+            if Path(shebang_interp).resolve() == Path(sys.executable).resolve():
+                return False
+        except OSError:
+            pass
     exe_dir = str(Path(sys.executable).resolve().parent)
-    return exe_dir not in shebang
+    return exe_dir not in shebang.lower()
+
+
+def _extract_shebang_interpreter(shebang_line: str) -> str:
+    """Return the interpreter path from a ``#!…`` line, or ``''``."""
+    line = shebang_line.strip()
+    if not line.startswith("#!"):
+        return ""
+    rest = line[2:].strip()
+    # ``#!/usr/bin/env python3`` → skip ``/usr/bin/env`` and return ``python3``
+    parts = rest.split()
+    if not parts:
+        return ""
+    if parts[0].endswith("/env") and len(parts) > 1:
+        return parts[1]
+    return parts[0]
 
 
 def _quote_exec_arg(arg: str) -> str:

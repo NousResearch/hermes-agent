@@ -522,6 +522,27 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
                 _SESSION_ASYNC_DELIVERY.reset(_stateless_token)
         except Exception:
             _stateless_reset = None
+
+        # Pre-dispatch stale execution sweep (#90089): the background dispatch
+        # path's own ``recover_interrupted_executions`` call is gated behind
+        # ``async_delivery_supported()`` — which we just disabled above — so
+        # it never runs for a one-shot CLI invocation.  Without a gateway tick
+        # loop running, a zombie 'running'/'claimed' row from a *previous*
+        # crashed manual run would block this run forever.  Call the
+        # context-agnostic reaper before dispatching so dead-owner rows are
+        # cleared.  Best-effort: a failure here must not block the run.
+        try:
+            from cron.executions import reclaim_stale_executions
+
+            _reclaimed = reclaim_stale_executions()
+            if _reclaimed:
+                print(color(
+                    f"Reclaimed {_reclaimed} stale cron execution(s) from "
+                    f"dead owner process(es) before running job '{job_id}'.",
+                    Colors.YELLOW,
+                ))
+        except Exception:
+            pass
     try:
         result = _cron_api(action=action, job_id=job_id)
     finally:

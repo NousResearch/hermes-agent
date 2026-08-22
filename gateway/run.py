@@ -113,6 +113,10 @@ _USER_BOUNDARY_END_REASONS = (
 # on timeout the latch stays clear and the next tick retries).
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_STALE_PROGRESS_EDIT_MARKERS = (
+    "message to edit not found",
+    "message_id_invalid",
+)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 
@@ -159,6 +163,12 @@ _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # from "compaction silently switched off". 1h is well past the point where a
 # retry is cheap and still recovers within a session.
 _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
+
+
+def _is_stale_progress_edit_error(error: Any) -> bool:
+    """Return whether a progress edit failed because its anchor is gone."""
+    normalized = str(error or "").lower()
+    return any(marker in normalized for marker in _STALE_PROGRESS_EDIT_MARKERS)
 
 
 def _hygiene_cooldown_for_failure(
@@ -4870,10 +4880,27 @@ class TurnRunner:
             groups: list[list] = []
             current: list = []
             for line in lines:
-                candidate = current + [line]
+                line_text = str(line)
+                if _progress_len_fn(line_text) > _PROGRESS_TEXT_LIMIT:
+                    if current:
+                        groups.append(current)
+                        current = []
+                    from gateway.platforms.helpers import split_text_fence_aware
+
+                    chunks = split_text_fence_aware(
+                        line_text,
+                        _PROGRESS_TEXT_LIMIT,
+                        len_fn=_progress_len_fn,
+                        prefer_paragraphs=False,
+                        balance_fences=True,
+                    )
+                    groups.extend([[chunk] for chunk in chunks])
+                    continue
+
+                candidate = current + [line_text]
                 if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
                     groups.append(current)
-                    current = [line]
+                    current = [line_text]
                 else:
                     current = candidate
             if current:
@@ -4898,49 +4925,185 @@ class TurnRunner:
             _track_progress_result(result)
             return result
 
-        async def _roll_progress_overflow_if_needed() -> bool:
-            """Start fresh editable progress bubbles before a bubble exceeds limit.
+        async def _replace_stale_progress_anchor(error, full_text: str) -> str:
+            """Replace a deleted edit anchor and report its delivery state."""
+            nonlocal progress_msg_id, can_edit
+            if not _is_stale_progress_edit_error(error):
+                return "not_stale"
 
-                Returns True when it delivered/split the current buffer, or when
-                a transient edit failure left the buffer and message identity
-                intact for a later retry.  In either case the caller should skip
-                the normal send/edit path for this tick.
-                """
+            # Do not retry the known-dead ID, even when the replacement send
+            # itself fails. A later update may still be delivered send-only.
+            progress_msg_id = None
+            try:
+                replacement = await _send_progress_text(full_text)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to replace stale progress anchor: %s",
+                    adapter.name,
+                    exc,
+                )
+                can_edit = False
+                return "failed"
+
+            if not replacement.success:
+                logger.warning(
+                    "[%s] Failed to replace stale progress anchor: %s",
+                    adapter.name,
+                    getattr(replacement, "error", "unknown error"),
+                )
+                can_edit = False
+                return "failed"
+            if not replacement.message_id:
+                # The update landed, but the adapter did not expose an ID for
+                # future edits. Switch to send-only without replaying it.
+                can_edit = False
+                return "delivered"
+
+            progress_msg_id = replacement.message_id
+            can_edit = True
+            return "editable"
+
+        async def _send_progress_groups(groups: list[list]) -> None:
+            """Best-effort delivery of pre-sized groups without retry loops."""
+            for group in groups:
+                try:
+                    result = await _send_progress_text(_progress_text(group))
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Failed to deliver progress fallback group: %s",
+                        adapter.name,
+                        exc,
+                    )
+                    continue
+                if result is not None and not result.success:
+                    logger.warning(
+                        "[%s] Failed to deliver progress fallback group: %s",
+                        adapter.name,
+                        getattr(result, "error", "unknown error"),
+                    )
+
+        async def _fallback_progress_lines(lines: list) -> None:
+            """Deliver a complete buffer in bounded send-only groups."""
+            nonlocal progress_msg_id, progress_lines, can_edit
+            progress_msg_id = None
+            can_edit = False
+            await _send_progress_groups(_split_progress_groups(lines))
+            progress_lines = []
+
+        async def _roll_progress_overflow_if_needed() -> str:
+            """Split an oversized buffer while preserving its newest anchor."""
             nonlocal progress_msg_id, progress_lines, can_edit
             if not progress_lines or not can_edit:
-                return False
+                return "no_roll"
             groups = _split_progress_groups(progress_lines)
             if len(groups) <= 1:
-                return False
+                return "no_roll"
 
             first_text = _progress_text(groups[0])
             if progress_msg_id is not None:
-                result = await _edit_progress_message(progress_msg_id, first_text)
-                if not result.success:
+                try:
+                    result = await _edit_progress_message(
+                        progress_msg_id, first_text
+                    )
+                except Exception as exc:
+                    recovery = await _replace_stale_progress_anchor(
+                        exc, first_text
+                    )
+                    if recovery == "not_stale":
+                        progress_msg_id = None
+                        can_edit = False
+                        return "needs_fallback"
+                    if recovery == "failed":
+                        return "needs_fallback"
+                    result = None
+                if result is not None and not result.success:
                     if getattr(result, "retryable", False):
                         logger.debug(
                             "[%s] Transient overflow edit failure — keeping can_edit=True",
                             adapter.name,
                         )
-                        return True
-                    can_edit = False
-                    # Fall back to the existing non-edit behavior below.
-                    return False
+                        return "deferred"
+                    recovery = await _replace_stale_progress_anchor(
+                        getattr(result, "error", ""), first_text
+                    )
+                    if recovery in ("not_stale", "failed"):
+                        progress_msg_id = None
+                        can_edit = False
+                        return "needs_fallback"
             else:
-                result = await _send_progress_text(first_text)
+                try:
+                    result = await _send_progress_text(first_text)
+                except Exception:
+                    return "needs_fallback"
                 if result.success and result.message_id:
                     progress_msg_id = result.message_id
+                else:
+                    progress_msg_id = None
+                    can_edit = False
 
             for group in groups[1:]:
-                result = await _send_progress_text(_progress_text(group))
-                if result.success and result.message_id:
+                try:
+                    result = await _send_progress_text(_progress_text(group))
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Failed to deliver progress overflow group: %s",
+                        adapter.name,
+                        exc,
+                    )
+                    progress_msg_id = None
+                    can_edit = False
+                    continue
+                if can_edit and result.success and result.message_id:
                     progress_msg_id = result.message_id
+                elif not result.success or not result.message_id:
+                    progress_msg_id = None
+                    can_edit = False
 
             # The newest continuation is now the only mutable bubble.  Keep
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
-            progress_lines = groups[-1]
-            return True
+            progress_lines = groups[-1] if can_edit else []
+            return "handled"
+
+        async def _flush_progress_buffer() -> None:
+            """Finalize pending progress, falling back on any edit failure."""
+            nonlocal progress_lines, progress_msg_id, can_edit
+            if not progress_lines:
+                return
+            if not can_edit:
+                await _fallback_progress_lines(progress_lines)
+                return
+
+            roll_outcome = await _roll_progress_overflow_if_needed()
+            if roll_outcome in ("deferred", "needs_fallback"):
+                await _fallback_progress_lines(progress_lines)
+                return
+            if not progress_lines:
+                return
+            if progress_msg_id is None:
+                await _fallback_progress_lines(progress_lines)
+                return
+
+            full_text = _progress_text(progress_lines)
+            try:
+                result = await _edit_progress_message(progress_msg_id, full_text)
+            except Exception as exc:
+                recovery = await _replace_stale_progress_anchor(exc, full_text)
+                if recovery not in ("editable", "delivered"):
+                    await _fallback_progress_lines(progress_lines)
+                elif not can_edit:
+                    progress_lines = []
+                return
+
+            if result.success:
+                return
+            recovery = await _replace_stale_progress_anchor(
+                getattr(result, "error", ""), full_text
+            )
+            if recovery not in ("editable", "delivered"):
+                await _fallback_progress_lines(progress_lines)
+            elif not can_edit:
+                progress_lines = []
 
         while True:
             try:
@@ -4973,9 +5136,14 @@ class TurnRunner:
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
-                    if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                    msg = progress_lines[-1] if progress_lines else base_msg
+                    dedup_msg = f"{base_msg} (×{count + 1})"
+                    if can_edit and progress_lines:
+                        progress_lines[-1] = dedup_msg
+                        msg = dedup_msg
+                    else:
+                        await _send_progress_text(dedup_msg)
+                        _last_edit_ts = time.monotonic()
+                        continue
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
@@ -4985,6 +5153,7 @@ class TurnRunner:
                     # order. Mirrors GatewayStreamConsumer.on_segment_break
                     # on the content side. (Issue: tool + content
                     # linearization regression after PR #7885.)
+                    await _flush_progress_buffer()
                     progress_msg_id = None
                     progress_lines = []
                     ctx.last_progress_msg[0] = None
@@ -4994,7 +5163,10 @@ class TurnRunner:
                     msg = raw
                     progress_lines.append(msg)
 
-                if await _roll_progress_overflow_if_needed():
+                roll_outcome = await _roll_progress_overflow_if_needed()
+                if roll_outcome == "needs_fallback":
+                    await _fallback_progress_lines(progress_lines)
+                if roll_outcome != "no_roll":
                     _last_edit_ts = time.monotonic()
                     await asyncio.sleep(0.3)
                     if ctx._run_still_current():
@@ -5019,9 +5191,25 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
-                    result = await _edit_progress_message(progress_msg_id, full_text)
-                    if not result.success:
+                    full_text = _progress_text(progress_lines)
+                    try:
+                        result = await _edit_progress_message(
+                            progress_msg_id, full_text
+                        )
+                    except Exception as exc:
+                        recovery = await _replace_stale_progress_anchor(
+                            exc, full_text
+                        )
+                        if recovery == "not_stale":
+                            raise
+                        if recovery == "failed":
+                            await _fallback_progress_lines(progress_lines)
+                        elif recovery == "delivered":
+                            progress_lines = []
+                        result = None
+                    if result is None and not can_edit:
+                        progress_lines = []
+                    if result is not None and not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
                         # Transient network errors (ConnectError, timeouts)
                         # must not permanently disable progress-message
@@ -5042,42 +5230,32 @@ class TurnRunner:
                                 adapter.name,
                             )
                             _last_edit_ts = time.monotonic()
+                            await _send_progress_text(msg)
+                        elif _is_stale_progress_edit_error(_err):
+                            recovery = await _replace_stale_progress_anchor(
+                                _err, full_text
+                            )
+                            if recovery == "failed":
+                                await _fallback_progress_lines(progress_lines)
+                            elif recovery == "delivered":
+                                progress_lines = []
                         else:
                             can_edit = False
-                        _flood_result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
-                        )
-                        if (
-                            ctx._cleanup_progress
-                            and getattr(_flood_result, "success", False)
-                            and getattr(_flood_result, "message_id", None)
-                        ):
-                            ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
+                            progress_msg_id = None
+                            await _send_progress_text(msg)
+                            progress_lines = []
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
-                        result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=full_text,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
+                        result = await _send_progress_text(
+                            _progress_text(progress_lines)
                         )
                     else:
                         # Editing unsupported: send just this line
-                        result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
-                        )
+                        result = await _send_progress_text(msg)
+                        progress_lines = []
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
-                        if ctx._cleanup_progress:
-                            ctx._cleanup_msg_ids.append(str(result.message_id))
 
                 _last_edit_ts = time.monotonic()
 
@@ -5095,38 +5273,45 @@ class TurnRunner:
                         raw = ctx.progress_queue.get_nowait()
                         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
-                            if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                await _roll_progress_overflow_if_needed()
+                            dedup_msg = f"{base_msg} (×{count + 1})"
+                            if can_edit and progress_lines:
+                                progress_lines[-1] = dedup_msg
+                                roll_outcome = (
+                                    await _roll_progress_overflow_if_needed()
+                                )
+                                if roll_outcome == "needs_fallback":
+                                    await _fallback_progress_lines(
+                                        progress_lines
+                                    )
+                            else:
+                                await _send_progress_text(dedup_msg)
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                             # Content-bubble marker during drain: close off
                             # the current progress bubble and start a fresh
                             # one for any tool lines that arrived after.
-                            await _roll_progress_overflow_if_needed()
-                            if can_edit and progress_lines and progress_msg_id:
-                                _pending_text = _progress_text(progress_lines)
-                                try:
-                                    await _edit_progress_message(progress_msg_id, _pending_text)
-                                except Exception:
-                                    pass
+                            await _flush_progress_buffer()
                             progress_msg_id = None
                             progress_lines = []
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
+                            if not can_edit:
+                                await _send_progress_text(str(raw))
+                                continue
                             progress_lines.append(raw)
-                            await _roll_progress_overflow_if_needed()
-                    except Exception:
+                            roll_outcome = (
+                                await _roll_progress_overflow_if_needed()
+                            )
+                            if roll_outcome == "needs_fallback":
+                                await _fallback_progress_lines(progress_lines)
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Failed to drain progress update: %s",
+                            adapter.name,
+                            exc,
+                        )
                         break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
+                await _flush_progress_buffer()
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)

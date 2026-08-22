@@ -135,12 +135,12 @@ def _sync_windows_cli_launchers(root: Path) -> list[Path]:
 
     root = Path(root)
     scripts_dir = _venv_scripts_dir(root)
-    required_source = (
-        scripts_dir / "hermes.exe"
-        if scripts_dir is not None
-        else root / "venv" / "Scripts" / "hermes.exe"
-    )
-    if scripts_dir is None or not required_source.is_file():
+    if scripts_dir is None:
+        raise FileNotFoundError(
+            f"project venv executable directory not found under: {root}"
+        )
+    required_source = scripts_dir / "hermes.exe"
+    if not required_source.is_file():
         raise FileNotFoundError(
             f"required Hermes launcher not found: {required_source}"
         )

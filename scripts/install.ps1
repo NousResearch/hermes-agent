@@ -3013,7 +3013,8 @@ function Set-PathVariable {
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        $hermesBin = Install-HermesCommandLaunchers -Root $InstallDir
+        $hermesBin = "$InstallDir\bin"
+        Install-HermesCommandLaunchers -Root $InstallDir | Out-Null
     }
     
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")

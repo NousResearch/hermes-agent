@@ -618,21 +618,34 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        if command -v python >/dev/null 2>&1; then
-            PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-                log_success "Python found: $PYTHON_FOUND_VERSION"
-                return 0
-            fi
-        fi
+        local install_attempted=false
+        local candidate
+        while true; do
+            # Prefer every explicitly supported minor before Termux's default
+            # `python`, which may already be newer than Hermes supports.
+            for candidate in python3.11 python3.12 python3.13 python; do
+                if ! command -v "$candidate" >/dev/null 2>&1; then
+                    continue
+                fi
+                PYTHON_PATH="$(command -v "$candidate")"
+                if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info < (3, 14) else 1)' 2>/dev/null; then
+                    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                    log_success "Python found: $PYTHON_FOUND_VERSION"
+                    return 0
+                fi
+            done
 
-        log_info "Installing Python via pkg..."
-        pkg install -y python >/dev/null
-        PYTHON_PATH="$(command -v python)"
-        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-        log_success "Python installed: $PYTHON_FOUND_VERSION"
-        return 0
+            if [ "$install_attempted" = true ]; then
+                break
+            fi
+            log_info "Installing Python via pkg..."
+            pkg install -y python >/dev/null
+            install_attempted=true
+        done
+
+        log_error "Hermes requires Python >=3.11,<3.14 on Termux"
+        log_info "Install Python 3.11, 3.12, or 3.13 and re-run this script"
+        exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."

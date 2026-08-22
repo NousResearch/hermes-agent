@@ -21,7 +21,13 @@ const electronNative: TestProjectConfiguration = {
     name: 'electron',
     environment: 'node',
     include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}'],
-    exclude: ['scripts/run-short-session-hang-repro.test.mjs']
+    exclude: [
+      'scripts/run-short-session-hang-repro.test.mjs',
+      // This suite is wired explicitly through `node --test` in
+      // check:test:desktop:all. Let one runner own it instead of making Node
+      // and Vitest reject each other's registration APIs.
+      'scripts/stage-native-deps-recovery.test.mjs'
+    ]
   }
 }
 

@@ -1,0 +1,87 @@
+name: PR 91079 materialize Python rollback patch
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pr91079-materialize-patch.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Patch rollback transaction
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('hermes_cli/main.py')
+          s = p.read_text(encoding='utf-8')
+          a = s.index('def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:\n')
+          b = s.index('\ndef _ensure_desktop_exe_launchable(\n', a)
+          replacement = '''def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
+              """Restore the previous unpacked desktop app from its ``.bak`` tree.
+
+              Returns the restored executable path, or ``None`` when no usable backup
+              exists or the filesystem transaction cannot complete. The invalid candidate
+              is kept alongside as ``<unpacked-dir>.corrupt`` after a successful rollback.
+
+              The live path is never deleted to make room for the backup. A stale
+              quarantine must be retired before either generation moves; the candidate is
+              then quarantined by rename, and backup promotion owns the commit point. If
+              promotion fails, the candidate is moved back to the live path while the
+              backup remains intact. Best-effort: never raises.
+              """
+              unpacked = packaged_executable.parent
+              backup_dir = _desktop_backup_unpacked_dir(packaged_executable)
+              backup_exe = backup_dir / packaged_executable.name
+              if not backup_exe.exists():
+                  return None
+              if _desktop_exe_integrity_error(backup_exe) is not None:
+                  return None
+
+              corrupt_dir = unpacked.parent / (unpacked.name + ".corrupt")
+              marker_path = backup_dir.with_name(backup_dir.name + ".session")
+
+              if corrupt_dir.exists():
+                  try:
+                      shutil.rmtree(corrupt_dir)
+                  except FileNotFoundError:
+                      pass
+                  except OSError:
+                      return None
+
+              try:
+                  unpacked.rename(corrupt_dir)
+              except OSError:
+                  return None
+
+              try:
+                  backup_dir.rename(unpacked)
+              except OSError:
+                  try:
+                      corrupt_dir.rename(unpacked)
+                  except OSError:
+                      # Both generations remain preserved at explicit paths for manual or
+                      # later recovery; never delete either one here.
+                      pass
+                  return None
+
+              try:
+                  marker_path.unlink()
+              except OSError:
+                  pass
+
+              restored = unpacked / packaged_executable.name
+              return restored if restored.exists() else None
+          '''
+          p.write_text(s[:a] + replacement + s[b:], encoding='utf-8')
+          PY
+          python -m py_compile hermes_cli/main.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr91079-patched-main
+          path: hermes_cli/main.py
+          retention-days: 1

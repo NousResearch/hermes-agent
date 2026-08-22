@@ -28,7 +28,7 @@
     "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
     "prebuild": "npm run clean",
-    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
+    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps-recovery.mjs",
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
@@ -71,7 +71,7 @@
     "check:test:ui:shard-1of3": "node scripts/run-ui-shard.mjs",
     "check:test:ui:shard-2of3": "node scripts/run-ui-shard.mjs",
     "check:test:ui:shard-3of3": "node scripts/run-ui-shard.mjs",
-    "check:test:desktop:all": "npm run test:desktop:all",
+    "check:test:desktop:all": "node --test scripts/stage-native-deps-recovery.test.mjs && npm run test:desktop:all",
     "check:lint": "npm run typecheck && npm run lint",
     "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",
@@ -212,7 +212,7 @@
       "package.json"
     ],
     "beforeBuild": "scripts/before-build.mjs",
-    "beforePack": "scripts/before-pack.mjs",
+    "beforePack": "scripts/before-pack-recovery.mjs",
     "afterPack": "scripts/after-pack.mjs",
     "extraResources": [
       {

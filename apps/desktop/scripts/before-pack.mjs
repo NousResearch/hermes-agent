@@ -29,17 +29,18 @@
  *
  * The packaging step is not idempotent across an interrupted run, so we make
  * it idempotent ourselves: wipe the target unpacked directory up front so
- * electron-builder always stages into a clean tree. This is safe — the
- * directory is a pure build artifact that electron-builder fully recreates
- * on every pack; nothing else depends on its prior contents.
+ * electron-builder always stages into a clean tree. This is safe for stale or
+ * structurally incomplete output. On Windows, however, a valid current app is
+ * user rollback material: destructive replacement is allowed only after that
+ * generation has been acquired transactionally.
  *
  * Cross-platform: the same partial-state trap exists on macOS
  * (the mac-unpacked Hermes.app bundle) and Windows (win-unpacked), so we
  * clean whatever `appOutDir` electron-builder hands us regardless of platform.
  *
- * Best-effort: a cleanup failure must never mask the real build. We log and
- * resolve rather than throw — worst case electron-builder hits the original
- * ENOENT, which is no worse than not having this hook at all.
+ * Best-effort cleanup applies to stale/partial trees. Failure to acquire
+ * rollback authority for a valid Windows app is different: the hook fails
+ * closed rather than deleting the current working generation.
  *
  * 2. Re-stages node-pty's native files for the ACTUAL target platform/arch
  *    of this pack. `npm run build` already staged node-pty once for the
@@ -61,6 +62,43 @@ import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
+import {
+  PACK_SESSION_ENV,
+  clearRollbackSession,
+  readRollbackSession,
+  writeRollbackSession
+} from './desktop-pack-transaction.mjs'
+
+export const ROLLBACK_ACQUISITION_STATUS = Object.freeze({
+  PRESERVED: 'preserved',
+  SAFE_TO_CLEAN: 'safe-to-clean',
+  BLOCKED: 'blocked'
+})
+
+function rollbackResult(status, reason, error, details = {}) {
+  return {
+    status,
+    reason,
+    ...(error ? { error } : {}),
+    ...details
+  }
+}
+
+function rollbackOperations(overrides) {
+  const supplied = overrides && typeof overrides === 'object' ? overrides : {}
+  return {
+    existsSync: supplied.existsSync ?? existsSync,
+    rmSync: supplied.rmSync ?? rmSync,
+    renameSync: supplied.renameSync ?? renameSync,
+    clearRollbackSession: supplied.clearRollbackSession ?? clearRollbackSession,
+    readRollbackSession: supplied.readRollbackSession ?? readRollbackSession,
+    writeRollbackSession: supplied.writeRollbackSession ?? writeRollbackSession
+  }
+}
+
+function removeTree(rm, target) {
+  rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -72,7 +110,7 @@ export function cleanStaleAppOutDir(appOutDir) {
   // Recursive + force so a half-written tree (read-only bits, partial files)
   // can't block the wipe. retry/maxRetries rides out transient EBUSY on
   // Windows where an AV/indexer may briefly hold a handle.
-  rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  removeTree(rmSync, appOutDir)
   return true
 }
 
@@ -82,52 +120,210 @@ export function cleanStaleAppOutDir(appOutDir) {
  * exe (i.e. it is a previously-working build, not the corrupted partial state
  * cleanStaleAppOutDir exists to remove). If the fresh pack then produces a
  * Hermes.exe that Windows can't load (truncated PE from a corrupt cached
- * Electron zip, wrong arch), the updater's integrity gate in
- * `hermes desktop --build-only` (hermes_cli/main.py
- * `_ensure_desktop_exe_launchable`) restores this .bak instead of leaving the
- * user with "This app can't run on your computer".
+ * Electron zip, wrong arch), the builder transaction restores this .bak
+ * instead of leaving the user with "This app can't run on your computer".
  *
- * Returns true when the tree was preserved (appOutDir no longer exists), false
- * when there was nothing worth preserving (caller falls through to the wipe).
- * A rename failure (AV holding a handle) also returns false — the wipe is the
- * safe fallback and matches pre-#69179 behavior exactly.
+ * One electron-builder invocation may run beforePack more than once (multiple
+ * Windows targets/architectures). The wrapper supplies one pack-session ID.
+ * A matching `<appOutDir>.bak.session` proves the backup already belongs to
+ * this invocation, so later targets clean their intermediate output without
+ * overwriting the original rollback generation.
+ *
+ * The result is deliberately multi-state:
+ *
+ * - `preserved`: rollback authority exists for this generation;
+ * - `safe-to-clean`: the current tree is absent/partial and may be wiped;
+ * - `blocked`: a valid current or backup generation exists, but rollback
+ *   authority could not be acquired. The caller must fail closed.
  */
-export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe') {
-  if (!appOutDir || typeof appOutDir !== 'string' || !existsSync(appOutDir)) {
-    return false
+export function preserveRollbackBackup(
+  appOutDir,
+  productExeName = 'Hermes.exe',
+  sessionId = process.env[PACK_SESSION_ENV],
+  operationOverrides
+) {
+  const operations = rollbackOperations(operationOverrides)
+  if (!appOutDir || typeof appOutDir !== 'string') {
+    return rollbackResult(
+      ROLLBACK_ACQUISITION_STATUS.SAFE_TO_CLEAN,
+      'invalid-or-missing-app-output'
+    )
   }
-  if (!existsSync(path.join(appOutDir, productExeName))) {
-    // Partial/corrupt tree (interrupted prior pack) — not rollback material.
-    return false
-  }
+
   const backupDir = `${appOutDir}.bak`
-  try {
-    rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-    renameSync(appOutDir, backupDir)
-    return true
-  } catch {
-    return false
+  const currentExe = path.join(appOutDir, productExeName)
+  const backupExe = path.join(backupDir, productExeName)
+
+  if (!operations.existsSync(currentExe)) {
+    // Partial/corrupt tree (interrupted prior pack) — not rollback material.
+    // A valid backup from an interrupted older invocation remains useful, but
+    // it must be adopted into this generation before packaging may proceed.
+    if (sessionId && operations.existsSync(backupExe)) {
+      try {
+        operations.writeRollbackSession(backupDir, sessionId)
+      } catch (error) {
+        return rollbackResult(
+          ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+          'existing-backup-adoption-failed',
+          error,
+          { backupDir }
+        )
+      }
+    }
+    return rollbackResult(
+      ROLLBACK_ACQUISITION_STATUS.SAFE_TO_CLEAN,
+      'current-package-is-partial-or-absent',
+      undefined,
+      { backupDir }
+    )
   }
+
+  const sameSessionBackup =
+    Boolean(sessionId) &&
+    operations.existsSync(backupExe) &&
+    operations.readRollbackSession(backupDir) === sessionId
+
+  if (sameSessionBackup) {
+    // Multi-target pack: keep the first (pre-build) generation as authority.
+    // The current tree is output from an earlier target in this same builder
+    // process and must not replace the rollback generation.
+    try {
+      removeTree(operations.rmSync, appOutDir)
+      return rollbackResult(
+        ROLLBACK_ACQUISITION_STATUS.PRESERVED,
+        'same-session-backup-retained',
+        undefined,
+        { backupDir }
+      )
+    } catch (error) {
+      return rollbackResult(
+        ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+        'same-session-output-cleanup-failed',
+        error,
+        { backupDir }
+      )
+    }
+  }
+
+  try {
+    // Do not touch the valid current app unless the prior rollback slot and
+    // marker can first be retired. A locked marker therefore blocks packaging.
+    operations.clearRollbackSession(backupDir)
+    removeTree(operations.rmSync, backupDir)
+  } catch (error) {
+    return rollbackResult(
+      ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+      'rollback-slot-retirement-failed',
+      error,
+      { backupDir }
+    )
+  }
+
+  // Stage the generation identity before moving the current package. If marker
+  // creation fails, the live app has not been touched. If the subsequent
+  // directory rename fails, marker cleanup is best-effort but the live app
+  // still remains at appOutDir.
+  if (sessionId) {
+    try {
+      operations.writeRollbackSession(backupDir, sessionId)
+    } catch (error) {
+      return rollbackResult(
+        ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+        'rollback-session-write-failed',
+        error,
+        { backupDir, currentPackageUntouched: true }
+      )
+    }
+  }
+
+  try {
+    operations.renameSync(appOutDir, backupDir)
+  } catch (error) {
+    let markerCleanupError
+    if (sessionId) {
+      try {
+        operations.clearRollbackSession(backupDir)
+      } catch (cleanupError) {
+        markerCleanupError = cleanupError
+      }
+    }
+    return rollbackResult(
+      ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+      'current-package-preservation-failed',
+      error,
+      {
+        backupDir,
+        currentPackageUntouched: true,
+        ...(markerCleanupError ? { markerCleanupError } : {})
+      }
+    )
+  }
+
+  return rollbackResult(
+    ROLLBACK_ACQUISITION_STATUS.PRESERVED,
+    'current-package-preserved',
+    undefined,
+    { backupDir }
+  )
 }
 
-export default async function beforePack(context) {
+function rollbackBlockMessage(appOutDir, acquisition) {
+  const primary =
+    acquisition.error instanceof Error ? acquisition.error.message : String(acquisition.error || '')
+  const markerCleanup =
+    acquisition.markerCleanupError instanceof Error
+      ? `; cleaning the staged rollback marker also failed: ${acquisition.markerCleanupError.message}`
+      : ''
+  const detail = primary ? `: ${primary}` : ''
+  return (
+    `[before-pack] refusing destructive Windows package replacement for ${appOutDir}: ` +
+    `rollback acquisition blocked (${acquisition.reason})${detail}${markerCleanup}`
+  )
+}
+
+export default async function beforePack(
+  context,
+  {
+    rollbackOperations: operationOverrides,
+    rollbackSessionId = process.env[PACK_SESSION_ENV]
+  } = {}
+) {
   const appOutDir = context && context.appOutDir
   const platformName = context && context.electronPlatformName
-  try {
-    // Windows: keep the previous working build as rollback material for the
-    // post-build integrity gate (#69179) instead of destroying it. Falls
-    // through to the plain wipe when the old tree is partial/corrupt or the
-    // rename fails.
-    const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
-    if (platformName === 'win32' && preserveRollbackBackup(appOutDir, productExe)) {
-      console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
-    } else if (cleanStaleAppOutDir(appOutDir)) {
-      console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
+  const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
+
+  if (platformName === 'win32') {
+    const acquisition = preserveRollbackBackup(
+      appOutDir,
+      productExe,
+      rollbackSessionId,
+      operationOverrides
+    )
+    if (acquisition.status === ROLLBACK_ACQUISITION_STATUS.BLOCKED) {
+      throw new Error(rollbackBlockMessage(appOutDir, acquisition))
     }
-  } catch (err) {
-    // Never fail the build over cleanup; surface why so a genuinely stuck
-    // directory (permissions, mount) is still diagnosable.
-    console.warn(`[before-pack] could not clean ${appOutDir} (${err.message}); continuing`)
+    if (acquisition.status === ROLLBACK_ACQUISITION_STATUS.PRESERVED) {
+      console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
+    } else {
+      try {
+        if (cleanStaleAppOutDir(appOutDir)) {
+          console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
+        }
+      } catch (err) {
+        // A stale/partial tree is not rollback authority. Keep cleanup
+        // best-effort so electron-builder can surface its canonical failure.
+        console.warn(`[before-pack] could not clean ${appOutDir} (${err.message}); continuing`)
+      }
+    }
+  } else {
+    try {
+      if (cleanStaleAppOutDir(appOutDir)) {
+        console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
+      }
+    } catch (err) {
+      // Non-Windows cleanup remains best-effort.
+      console.warn(`[before-pack] could not clean ${appOutDir} (${err.message}); continuing`)
+    }
   }
 
   try {

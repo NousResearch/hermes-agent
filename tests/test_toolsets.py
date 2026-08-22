@@ -218,6 +218,15 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_top_level_delegation_surfaces_include_persistent_sessions(self):
+        """Any top-level surface exposing Hermes child delegation must also expose Pi sessions."""
+        for name, toolset in TOOLSETS.items():
+            tools = set(toolset.get("tools", ()))
+            if "delegate_task" in tools:
+                assert "delegate_session" in tools, (
+                    f"{name} exposes delegate_task but hides delegate_session"
+                )
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

@@ -251,6 +251,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+    # Google Chat adapter — Pub/Sub subscriptions + Chat API.
+    "platform.google_chat": (
+        "google-cloud-pubsub==2.39.0",
+        "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
+        "google-auth-oauthlib==1.3.1",
+        "google-auth-httplib2==0.3.1",
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
+    ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

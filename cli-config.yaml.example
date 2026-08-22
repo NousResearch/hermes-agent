@@ -1437,6 +1437,10 @@ stt:
 #   deepinfra:
 #     # Leave `model` blank for the first live `image-gen`-tagged result.
 #     model: ""
+#   # The Codex image backend normally uses Hermes-managed Codex OAuth. To
+#   # reuse a named provider credential instead (including key_cmd), set:
+#   # openai-codex:
+#   #   auth_provider: "my-codex-gateway"
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

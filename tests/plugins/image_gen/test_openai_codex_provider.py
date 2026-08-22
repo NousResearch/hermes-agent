@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -36,7 +37,9 @@ def _b64_png() -> str:
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    codex_plugin._cached_command_token_source.cache_clear()
     yield tmp_path
+    codex_plugin._cached_command_token_source.cache_clear()
 
 
 @pytest.fixture
@@ -127,7 +130,16 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(
+            token,
+            *,
+            prompt,
+            size,
+            quality,
+            input_images=None,
+            base_url=None,
+            extra_headers=None,
+        ):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
@@ -161,6 +173,39 @@ class TestGenerate:
         # Progressive previews disabled: partial frames were being saved as
         # finals and presented as smeared/unfinished images.
         assert tool["partial_images"] == 0
+
+    def test_generate_routes_through_named_auth_provider(
+        self, provider, monkeypatch
+    ):
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"auth_provider": "codex-passive"}},
+        )
+        monkeypatch.setattr(
+            codex_plugin,
+            "_resolve_named_provider_auth",
+            lambda name: codex_plugin._CodexImageAuth(
+                "passive-token",
+                "https://chatgpt.example/backend-api/codex",
+                {"ChatGPT-Account-ID": "acct-test"},
+            ),
+        )
+        captured = {}
+
+        def _collect(token, **kwargs):
+            captured["token"] = token
+            captured.update(kwargs)
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert captured["token"] == "passive-token"
+        assert captured["base_url"] == "https://chatgpt.example/backend-api/codex"
+        assert captured["extra_headers"] == {"ChatGPT-Account-ID": "acct-test"}
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
@@ -400,6 +445,252 @@ class TestGenerate:
 
 
 class TestRequestShape:
+    def test_named_provider_key_cmd_source_is_reused(self, monkeypatch):
+        entry = {
+            "name": "codex-passive",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "key_cmd": "token-helper print",
+            "extra_headers": {"ChatGPT-Account-ID": "acct-test"},
+        }
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: entry,
+        )
+        token_source = Mock(return_value="passive-token")
+        builder = Mock(return_value=token_source)
+        monkeypatch.setattr(
+            "agent.command_token_source.build_command_token_provider", builder
+        )
+
+        first = codex_plugin._resolve_named_provider_auth("codex-passive")
+        second = codex_plugin._resolve_named_provider_auth("codex-passive")
+
+        assert first == second == codex_plugin._CodexImageAuth(
+            "passive-token",
+            "https://chatgpt.com/backend-api/codex",
+            {"ChatGPT-Account-ID": "acct-test"},
+        )
+        builder.assert_called_once_with("token-helper print", "codex-passive")
+        assert token_source.call_count == 2
+
+    def test_is_available_does_not_execute_key_cmd(self, monkeypatch):
+        """Availability is a hot-path probe; it must not run the auth helper."""
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"auth_provider": "codex-passive"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                "key_cmd": "token-helper print",
+            },
+        )
+        builder = Mock(side_effect=AssertionError("key_cmd ran during is_available()"))
+        monkeypatch.setattr(
+            "agent.command_token_source.build_command_token_provider", builder
+        )
+
+        assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
+        builder.assert_not_called()
+
+    def test_missing_named_provider_never_falls_back_to_codex_oauth(
+        self, provider, monkeypatch
+    ):
+        """A typo'd/disabled auth_provider fails closed, it does not downgrade."""
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"auth_provider": "typo"}},
+        )
+        # _get_named_custom_provider returns None for absent AND disabled entries.
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: None,
+        )
+        # Legacy OAuth IS present — so a pass here would prove silent fallback.
+        monkeypatch.setattr(
+            codex_plugin, "_read_codex_access_token", lambda: "codex-token"
+        )
+
+        assert provider.is_available() is False
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+
+    def test_named_provider_refuses_builtin_provider_fallback(self, monkeypatch):
+        """resolve_runtime_provider() must not reroute us to a built-in."""
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {
+                "provider": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "unrelated-builtin-key",
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="refusing to route"):
+            codex_plugin._resolve_named_provider_auth("codex-passive")
+
+    def test_static_named_provider_uses_runtime_credential(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                "extra_headers": {"ChatGPT-Account-ID": "from-entry"},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {
+                "provider": "custom",
+                "base_url": "https://gw.example/codex/",
+                "api_key": "static-key",
+                "extra_headers": {"ChatGPT-Account-ID": "from-runtime"},
+            },
+        )
+
+        assert codex_plugin._resolve_named_provider_auth(
+            "codex-passive"
+        ) == codex_plugin._CodexImageAuth(
+            "static-key",
+            "https://gw.example/codex",
+            {"ChatGPT-Account-ID": "from-runtime"},
+        )
+
+    def test_open_endpoint_sentinel_is_not_treated_as_a_credential(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {
+                "provider": "custom",
+                "base_url": "https://gw.example/codex",
+                "api_key": "no-key-required",
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="produced no credential"):
+            codex_plugin._resolve_named_provider_auth("codex-passive")
+
+    def test_omitted_auth_provider_leaves_codex_oauth_path_untouched(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(codex_plugin, "_load_image_gen_config", lambda: {})
+        lookup = Mock(side_effect=AssertionError("named-provider lookup ran"))
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider", lookup
+        )
+        monkeypatch.setattr(
+            codex_plugin, "_read_codex_access_token", lambda: "codex-token"
+        )
+
+        assert codex_plugin._resolve_codex_image_auth() == codex_plugin._CodexImageAuth(
+            "codex-token", codex_plugin._CODEX_BASE_URL, {}
+        )
+        lookup.assert_not_called()
+
+    def test_named_provider_headers_and_route_reach_http_boundary(self, monkeypatch):
+        import httpx
+
+        seen = {}
+
+        def _handler(request):
+            seen["request"] = request
+            body = (
+                'event: response.output_item.done\n'
+                "data: "
+                + json.dumps({
+                    "item": {
+                        "type": "image_generation_call",
+                        "result": _b64_png(),
+                    }
+                })
+                + "\n\n"
+            )
+            return httpx.Response(200, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
+
+        result = codex_plugin._collect_image_b64(
+            "passive-token",
+            prompt="a cat",
+            size="1024x1024",
+            quality="low",
+            base_url="https://chatgpt.example/backend-api/codex",
+            extra_headers={
+                "ChatGPT-Account-ID": "acct-test",
+                "Authorization": "Bearer stale-token",
+                # Header names are case-insensitive on the wire but dict keys
+                # are not, and httpx does not de-duplicate: an unfiltered
+                # lowercase spelling would be sent ALONGSIDE the real bearer
+                # and win at upstreams that honour the first Authorization.
+                "authorization": "Bearer stale-token-lowercase",
+                "ACCEPT": "application/json",
+                "content-type": "text/plain",
+            },
+        )
+
+        assert result == {"b64": _b64_png(), "source": "final"}
+        request = seen["request"]
+        assert str(request.url) == "https://chatgpt.example/backend-api/codex/responses"
+        assert request.headers["ChatGPT-Account-ID"] == "acct-test"
+        # get_list() exposes every value sent under the name, so a smuggled
+        # duplicate cannot hide behind a single-value lookup.
+        assert request.headers.get_list("authorization") == ["Bearer passive-token"]
+        assert request.headers.get_list("accept") == ["text/event-stream"]
+        assert request.headers.get_list("content-type") == ["application/json"]
+
+    def test_config_headers_cannot_smuggle_a_second_authorization(self):
+        """Reserved headers are dropped regardless of the casing config uses."""
+        merged = codex_plugin._merge_request_headers(
+            {"User-Agent": "codex_cli_rs/0.0.0", "ChatGPT-Account-ID": "from-jwt"},
+            {
+                "Authorization": "Bearer a",
+                "authorization": "Bearer b",
+                "AUTHORIZATION": "Bearer c",
+                "Accept": "application/json",
+                "Content-Type": "text/plain",
+            },
+        )
+        assert not [k for k in merged if k.lower() in {"authorization", "accept", "content-type"}]
+        assert merged["User-Agent"] == "codex_cli_rs/0.0.0"
+
+    def test_config_headers_override_route_metadata_in_place(self):
+        """A case-variant override replaces the key instead of duplicating it."""
+        merged = codex_plugin._merge_request_headers(
+            {"User-Agent": "codex_cli_rs/0.0.0", "ChatGPT-Account-ID": "from-jwt"},
+            {"chatgpt-account-id": "from-config", "  ": "dropped"},
+        )
+        account_keys = [k for k in merged if k.lower() == "chatgpt-account-id"]
+        assert account_keys == ["ChatGPT-Account-ID"]
+        assert merged["ChatGPT-Account-ID"] == "from-config"
+        assert "  " not in merged
+
     def test_payload_omits_tool_choice(self):
         """Codex rejects every tool_choice shape for hosted image_generation."""
         payload = codex_plugin._build_responses_payload(
@@ -449,6 +740,173 @@ class TestRequestShape:
         # Body is capped, but the actionable wire message still reaches the user.
         assert "tools' parameter" in message
         assert len(message) < len(body)
+
+
+# ── Real key_cmd path ───────────────────────────────────────────────────────
+
+
+class TestKeyCmdRealPath:
+    """Drive the REAL command-token source (subprocess) through the plugin.
+
+    The upstream/mocked tests prove the plugin asks for the right builder and
+    reuses it; these prove the command actually runs, environment expansion
+    works, and the minted token is what lands in the auth record and on the
+    wire.
+    """
+
+    def test_key_cmd_real_subprocess_mints_and_env_expands(self, monkeypatch, tmp_path):
+        counter = tmp_path / "counter"
+        monkeypatch.setenv("CODEX_IMG_TEST_TOKEN", "minted-secret-token-123")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                # Real subprocess: appends a marker, then prints the
+                # env-expanded token. If env expansion regressed, the token
+                # would come back as the literal variable name.
+                "key_cmd": (
+                    f"printf 'x' >> {counter} && "
+                    "printf '%s' \"$CODEX_IMG_TEST_TOKEN\""
+                ),
+            },
+        )
+
+        first = codex_plugin._resolve_named_provider_auth("codex-passive")
+        second = codex_plugin._resolve_named_provider_auth("codex-passive")
+
+        assert first == second == codex_plugin._CodexImageAuth(
+            "minted-secret-token-123",
+            "https://gw.example/codex",
+            {},
+        )
+        # The no-TTL bearer is cached for a bounded window: the helper ran
+        # exactly once across both resolutions.
+        assert counter.read_text() == "x"
+
+    def test_generate_uses_real_key_cmd_token(self, provider, monkeypatch):
+        """generate() mints via the actual subprocess and sends that token."""
+        monkeypatch.setenv("CODEX_IMG_TEST_TOKEN", "minted-secret-token-123")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"auth_provider": "codex-passive"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                "key_cmd": "printf '%s' \"$CODEX_IMG_TEST_TOKEN\"",
+            },
+        )
+        captured = {}
+
+        def _collect(token, **kwargs):
+            captured["token"] = token
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert captured["token"] == "minted-secret-token-123"
+
+
+# ── No secret leakage ───────────────────────────────────────────────────────
+
+
+class TestNoSecretLeak:
+    def test_minted_token_and_key_cmd_never_reach_logs(
+        self, monkeypatch, caplog, tmp_path
+    ):
+        """DEBUG logs may name the provider, never the credential material."""
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setenv("CODEX_IMG_TEST_TOKEN", "minted-secret-token-123")
+        secret_cmd = (
+            f"printf 'x' >> {tmp_path / 'codex-leak-ctr'} && "
+            "printf '%s' \"$CODEX_IMG_TEST_TOKEN\""
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                "key_cmd": secret_cmd,
+                "extra_headers": {
+                    "Authorization": "Bearer should-never-reach-wire",
+                },
+            },
+        )
+
+        codex_plugin._resolve_named_provider_auth("codex-passive")
+
+        blob = caplog.text
+        assert "minted-secret-token-123" not in blob
+        assert "should-never-reach-wire" not in blob
+        # key_cmd can legitimately embed a secret (--client-secret=…), so the
+        # command string itself must never be echoed back into a log record.
+        assert secret_cmd not in blob
+
+    def test_static_secret_never_reaches_logs(self, monkeypatch, caplog):
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {
+                "provider": "custom",
+                "api_key": "static-secret-456",
+                "base_url": "https://gw.example/codex",
+            },
+        )
+
+        auth = codex_plugin._resolve_named_provider_auth("codex-passive")
+
+        assert auth.token == "static-secret-456"
+        assert "static-secret-456" not in caplog.text
+
+    def test_failed_key_cmd_error_does_not_leak_command_or_output(
+        self, provider, monkeypatch, caplog
+    ):
+        """A broken auth helper must not leak its output or command string."""
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        secret_cmd = (
+            "printf 'stdout-SENTINEL'; printf 'stderr-SENTINEL' >&2; exit 1"
+        )
+        monkeypatch.setattr(
+            codex_plugin,
+            "_load_image_gen_config",
+            lambda: {"openai-codex": {"auth_provider": "codex-passive"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            lambda requested: {
+                "name": "codex-passive",
+                "base_url": "https://gw.example/codex",
+                "key_cmd": secret_cmd,
+            },
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+        assert "SENTINEL" not in result["error"]
+        assert secret_cmd not in result["error"]
+        assert "SENTINEL" not in caplog.text
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

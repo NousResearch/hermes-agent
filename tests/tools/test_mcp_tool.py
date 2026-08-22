@@ -2394,6 +2394,57 @@ class TestMCPSelectiveToolLoading:
         )
         assert registered == ["mcp__ink__create_service"]
 
+    def test_live_discovery_caches_mcp_sdk2_input_schema(self):
+        """MCP SDK 2.x tools expose input_schema, not legacy inputSchema."""
+        from tools.mcp_tool import _discover_and_register_server, _servers
+        from tools.registry import ToolRegistry
+
+        expected_schema = {
+            "type": "object",
+            "properties": {"company": {"type": "string"}},
+            "required": ["company"],
+        }
+        sdk2_tool = SimpleNamespace(
+            name="product_get_page",
+            description="Read one product page",
+            input_schema=expected_schema,
+            annotations=None,
+        )
+        server = _make_mock_server(
+            "product_brain",
+            session=SimpleNamespace(),
+            tools=[sdk2_tool],
+        )
+        mock_registry = ToolRegistry()
+        cached_payloads = []
+
+        async def fake_connect(_name, _config):
+            return server
+
+        def capture_cache(_name, _fingerprint, *, tools, **_kwargs):
+            cached_payloads.extend(tools)
+
+        try:
+            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+                 patch("tools.registry.registry", mock_registry), \
+                 patch("tools.mcp_schema_cache.write_cache_entry", side_effect=capture_cache):
+                registered = asyncio.run(
+                    _discover_and_register_server(
+                        "product_brain", {"command": "gbrain", "args": ["serve"]}
+                    )
+                )
+        finally:
+            _servers.pop("product_brain", None)
+
+        assert registered == ["mcp__product_brain__product_get_page"]
+        assert cached_payloads == [
+            {
+                "name": "product_get_page",
+                "description": "Read one product page",
+                "inputSchema": expected_schema,
+                "annotations": {"readOnlyHint": False},
+            }
+        ]
 
     def test_enabled_false_skips_connection_attempt(self):
         from tools.mcp_tool import discover_mcp_tools

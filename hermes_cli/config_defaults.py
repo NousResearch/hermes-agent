@@ -1267,6 +1267,9 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # Render the classic CLI welcome banner at startup and after /clear.
+        # Set false for a minimal screen while retaining diagnostic warnings.
+        "show_banner": True,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the

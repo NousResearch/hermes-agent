@@ -488,6 +488,7 @@ def load_cli_config() -> Dict[str, Any]:
 
         "display": {
             "compact": False,
+            "show_banner": True,
             "resume_display": "full",
             # Recap tuning for /resume — see hermes_cli/config.py DEFAULT_CONFIG.
             "resume_exchanges": 10,
@@ -5012,6 +5013,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        # show_banner: when False, suppress the ASCII-art / compact welcome
+        # banner at startup and on /clear for a minimal "Ctrl+L" feel.
+        # Diagnostic warnings (disabled tools, low context) are still shown.
+        self.show_startup_banner = CLI_CONFIG["display"].get("show_banner", True)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -8368,110 +8373,118 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self._console_print(_build_compact_banner())
-            self._show_status()
-        else:
-            # Warm-launch fast path: replay last launch's tool panel when the
-            # snapshot fingerprint (config.yaml + .env + checkout rev +
-            # toolsets) is unchanged, skipping the ~0.5-0.9s cold
-            # get_tool_definitions walk. The agent's REAL tool list is still
-            # computed fresh at first message; a background refresh below
-            # re-verifies the snapshot so any drift self-heals next launch.
-            from hermes_cli.banner import (
-                compute_toolset_availability,
-                load_banner_snapshot,
-                save_banner_snapshot,
-            )
+        # display.show_banner: false opts into a minimal startup — skip the
+        # visual banner entirely. Diagnostic warnings further below still run.
+        if self.show_startup_banner:
+            # Auto-compact for narrow terminals — the full banner with caduceus
+            # + tool list needs ~80 columns minimum to render without wrapping.
+            term_width = shutil.get_terminal_size().columns
+            use_compact = self.compact or term_width < 80
 
-            snapshot = None
-            try:
-                snapshot = load_banner_snapshot(self.enabled_toolsets)
-            except Exception:
-                snapshot = None
-
-            # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-
-            if snapshot is not None:
-                self._defer_tool_warnings = True
-                toolset_map = snapshot["toolset_map"]
-                build_welcome_banner(
-                    console=self.console,
-                    model=self.model,
-                    cwd=cwd,
-                    tools=snapshot["tools"],
-                    enabled_toolsets=self.enabled_toolsets,
-                    session_id=self.session_id,
-                    get_toolset_for_tool=lambda name: toolset_map.get(name),
-                    context_length=ctx_len,
-                    provider=self.provider,
-                    availability=snapshot["availability"],
-                    skills_by_category=snapshot.get("skills_by_category"),
+            if use_compact:
+                self._console_print(_build_compact_banner())
+                self._show_status()
+            else:
+                # Warm-launch fast path: replay last launch's tool panel when the
+                # snapshot fingerprint (config.yaml + .env + checkout rev +
+                # toolsets) is unchanged, skipping the ~0.5-0.9s cold
+                # get_tool_definitions walk. The agent's REAL tool list is still
+                # computed fresh at first message; a background refresh below
+                # re-verifies the snapshot so any drift self-heals next launch.
+                from hermes_cli.banner import (
+                    compute_toolset_availability,
+                    load_banner_snapshot,
+                    save_banner_snapshot,
                 )
 
-                def _refresh_banner_snapshot() -> None:
+                snapshot = None
+                try:
+                    snapshot = load_banner_snapshot(self.enabled_toolsets)
+                except Exception:
+                    snapshot = None
+
+                # Get terminal working directory (where commands will execute)
+                cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+
+                if snapshot is not None:
+                    self._defer_tool_warnings = True
+                    toolset_map = snapshot["toolset_map"]
+                    build_welcome_banner(
+                        console=self.console,
+                        model=self.model,
+                        cwd=cwd,
+                        tools=snapshot["tools"],
+                        enabled_toolsets=self.enabled_toolsets,
+                        session_id=self.session_id,
+                        get_toolset_for_tool=lambda name: toolset_map.get(name),
+                        context_length=ctx_len,
+                        provider=self.provider,
+                        availability=snapshot["availability"],
+                        skills_by_category=snapshot.get("skills_by_category"),
+                    )
+
+                    def _refresh_banner_snapshot() -> None:
+                        try:
+                            from model_tools import get_toolset_for_tool
+
+                            tools = get_tool_definitions(
+                                enabled_toolsets=self.enabled_toolsets, quiet_mode=True
+                            )
+                            availability = compute_toolset_availability(self.enabled_toolsets)
+                            tmap = {
+                                t["function"]["name"]: get_toolset_for_tool(
+                                    t["function"]["name"]
+                                )
+                                for t in tools
+                            }
+                            for item in availability.get("unavailable_toolsets", []):
+                                for name in item.get("tools", []):
+                                    tmap.setdefault(
+                                        name, item.get("id", item.get("name", ""))
+                                    )
+                            save_banner_snapshot(
+                                tools, self.enabled_toolsets, availability, tmap
+                            )
+                        except Exception:
+                            logger.debug("banner snapshot refresh failed", exc_info=True)
+
+                    threading.Thread(
+                        target=_refresh_banner_snapshot,
+                        name="banner-snapshot-refresh",
+                        daemon=True,
+                    ).start()
+                else:
+                    # Cold path: compute everything live, then persist the snapshot
+                    # so the next launch replays it.
+                    from model_tools import get_toolset_for_tool
+
+                    tools = get_tool_definitions(
+                        enabled_toolsets=self.enabled_toolsets, quiet_mode=True
+                    )
+                    availability = compute_toolset_availability(self.enabled_toolsets)
+
+                    build_welcome_banner(
+                        console=self.console,
+                        model=self.model,
+                        cwd=cwd,
+                        tools=tools,
+                        enabled_toolsets=self.enabled_toolsets,
+                        session_id=self.session_id,
+                        context_length=ctx_len,
+                        provider=self.provider,
+                        availability=availability,
+                    )
                     try:
-                        from model_tools import get_toolset_for_tool
-                        tools = get_tool_definitions(
-                            enabled_toolsets=self.enabled_toolsets, quiet_mode=True
-                        )
-                        availability = compute_toolset_availability(self.enabled_toolsets)
                         tmap = {
                             t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
                             for t in tools
                         }
                         for item in availability.get("unavailable_toolsets", []):
                             for name in item.get("tools", []):
-                                tmap.setdefault(
-                                    name, item.get("id", item.get("name", ""))
-                                )
-                        save_banner_snapshot(
-                            tools, self.enabled_toolsets, availability, tmap
-                        )
+                                tmap.setdefault(name, item.get("id", item.get("name", "")))
+                        save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
                     except Exception:
-                        logger.debug("banner snapshot refresh failed", exc_info=True)
-
-                threading.Thread(
-                    target=_refresh_banner_snapshot,
-                    name="banner-snapshot-refresh",
-                    daemon=True,
-                ).start()
-            else:
-                # Cold path: compute everything live, then persist the snapshot
-                # so the next launch replays it.
-                from model_tools import get_toolset_for_tool
-                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                availability = compute_toolset_availability(self.enabled_toolsets)
-
-                build_welcome_banner(
-                    console=self.console,
-                    model=self.model,
-                    cwd=cwd,
-                    tools=tools,
-                    enabled_toolsets=self.enabled_toolsets,
-                    session_id=self.session_id,
-                    context_length=ctx_len,
-                    provider=self.provider,
-                    availability=availability,
-                )
-                try:
-                    tmap = {
-                        t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
-                        for t in tools
-                    }
-                    for item in availability.get("unavailable_toolsets", []):
-                        for name in item.get("tools", []):
-                            tmap.setdefault(name, item.get("id", item.get("name", "")))
-                    save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
-                except Exception:
-                    logger.debug("banner snapshot save failed", exc_info=True)
+                        logger.debug("banner snapshot save failed", exc_info=True)
         
         # Tool discovery is intentionally deferred on the Termux bare prompt
         # path; availability warnings are shown once tools are initialized.
@@ -11872,25 +11885,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                        provider=self.provider,
-                    )
+                if self.show_startup_banner:
+                    term_w = shutil.get_terminal_size().columns
+                    if self.compact or term_w < 80:
+                        cc.print(_build_compact_banner())
+                    else:
+                        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                        ctx_len = None
+                        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                            ctx_len = self.agent.context_compressor.context_length
+                        build_welcome_banner(
+                            console=cc,
+                            model=self.model,
+                            cwd=cwd,
+                            tools=tools,
+                            enabled_toolsets=self.enabled_toolsets,
+                            session_id=self.session_id,
+                            context_length=ctx_len,
+                            provider=self.provider,
+                        )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:

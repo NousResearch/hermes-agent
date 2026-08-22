@@ -268,6 +268,34 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_bare_resume_unnamed_rows_do_not_hide_named_sessions(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        for i in range(3):
+            sid = f"named_{i}"
+            db.create_session(
+                sid, "telegram", session_key=lane_key,
+                user_id="12345", chat_id="67890",
+            )
+            db.set_session_title(sid, f"Named Work {i}")
+        for i in range(12):
+            db.create_session(
+                f"unnamed_{i}", "telegram", session_key=lane_key,
+                user_id="12345", chat_id="67890",
+            )
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Named Work 0" in result
+        assert "Named Work 1" in result
+        assert "Named Work 2" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_bare_resume_admin_all_preserves_same_platform_widening(self, tmp_path):
         from hermes_state import SessionDB
 

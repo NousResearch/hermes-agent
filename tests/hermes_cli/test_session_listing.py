@@ -135,3 +135,60 @@ class TestQuerySessionListingLaneScope:
         )
 
         assert [row["id"] for row in rows] == ["foreign_59"]
+
+    def test_unnamed_rows_do_not_consume_named_listing_limit(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "named-window.db")
+        lane_key = "agent:main:telegram:dm:lane"
+        try:
+            for i in range(3):
+                sid = f"named_{i}"
+                db.create_session(sid, "telegram", session_key=lane_key)
+                db.set_session_title(sid, f"Named {i}")
+            for i in range(50):
+                db.create_session(f"unnamed_{i}", "telegram", session_key=lane_key)
+
+            rows = query_session_listing(
+                db,
+                source="telegram",
+                session_key=lane_key,
+                limit=2,
+            )
+
+            assert [row["id"] for row in rows] == ["named_2", "named_1"]
+        finally:
+            db.close()
+
+    def test_titled_compression_tip_survives_named_listing_filter(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "named-compression-tip.db")
+        lane_key = "agent:main:telegram:dm:lane"
+        try:
+            db.create_session("root", "telegram", session_key=lane_key)
+            db.set_session_title("root", "Old Chat")
+            db.end_session("root", end_reason="compression")
+            db.create_session(
+                "tip",
+                "telegram",
+                session_key=lane_key,
+                parent_session_id="root",
+            )
+            # Reusing the lineage title transfers it from the hidden root to
+            # the surfaced continuation tip.
+            db.set_session_title("tip", "Old Chat")
+            assert db.get_session("root")["title"] is None
+
+            rows = query_session_listing(
+                db,
+                source="telegram",
+                session_key=lane_key,
+                limit=10,
+            )
+
+            assert [(row["id"], row["title"]) for row in rows] == [
+                ("tip", "Old Chat")
+            ]
+        finally:
+            db.close()

@@ -1417,9 +1417,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
-        _resolve_task_host_cwd,
-        _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
+        _resolve_task_workspace,
     )
     import time
 
@@ -1500,27 +1498,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 recorded_cwd = get_session_cwd(raw_task_id)
             except Exception:
                 recorded_cwd = None
-            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
+            cwd = recorded_cwd or overrides.get("cwd") or config["cwd"]
+            workspace = _resolve_task_workspace(config, raw_task_id, str(cwd))
+            cwd = workspace.container_cwd
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
@@ -1563,7 +1543,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 container_config=container_config,
                 local_config=local_config,
                 task_id=task_id,
-                host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+                host_cwd=workspace.host_cwd,
             )
 
             with _env_lock:

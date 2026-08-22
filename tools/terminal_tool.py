@@ -46,12 +46,14 @@ import threading
 import atexit
 import shutil
 import subprocess
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
+_HOST_PURE_PATH = PureWindowsPath if os.name == "nt" else PurePosixPath
 
 
 def _redact_terminal_error_text(value: Any) -> str:
@@ -1183,8 +1185,8 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
 #
 # This is never exposed to the model -- only infrastructure code calls it.
-# Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_env_overrides_lock = threading.RLock()
 
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
 #
@@ -1202,6 +1204,14 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 # env-side tracking + ownership guards.
 _session_cwd: Dict[str, str] = {}
 _session_cwd_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class TaskWorkspaceResolution:
+    """Docker workspace mapping resolved from one provenance-aware policy."""
+
+    host_cwd: Optional[str]
+    container_cwd: str
 
 
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
@@ -1239,6 +1249,54 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+def _workspace_roots_differ(previous: Any, current: Any) -> bool:
+    """Return whether two host workspace roots name different paths."""
+    if not isinstance(previous, str) or not previous.strip():
+        return True
+    if not isinstance(current, str) or not current.strip():
+        return True
+    return os.path.normcase(os.path.abspath(os.path.expanduser(previous))) != (
+        os.path.normcase(os.path.abspath(os.path.expanduser(current)))
+    )
+
+
+def _invalidate_workspace_environment(task_id: str) -> None:
+    """Retire environments and file caches tied to a replaced bind source."""
+    effective_task_id = _resolve_container_task_id(task_id)
+    keys = tuple(dict.fromkeys((effective_task_id, task_id)))
+    with _env_lock:
+        active_keys = [key for key in keys if key in _active_environments]
+
+    for key in active_keys:
+        cleanup_vm(key, force_remove=True, wait_for_cleanup=True)
+
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        # A collapsed "default" environment is shared by multiple raw session
+        # keys, so every file-ops wrapper may hold the retired environment.
+        if effective_task_id == "default":
+            clear_file_ops_cache()
+        else:
+            clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+
+
+def _workspace_reset_rebinds_environment(task_id: str) -> bool:
+    """Return whether a reset changes this task's Docker bind source."""
+    try:
+        config = _get_env_config()
+    except Exception:
+        return True
+    return bool(
+        config.get("env_type") == "docker"
+        and config.get("docker_mount_cwd_to_workspace")
+        and _docker_session_isolation_enabled()
+        and _resolve_container_task_id(task_id) != "default"
+    )
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -1255,18 +1313,41 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    normalized = dict(overrides)
+    workspace_reset = bool(normalized.pop("workspace_reset", False))
+    cwd = normalized.get("cwd")
+    workspace_root_changed = False
+    with _task_env_overrides_lock:
+        previous = _task_env_overrides.get(task_id, {})
+        if (
+            normalized.get("cwd_source") == "session"
+            and isinstance(cwd, str)
+            and cwd.strip()
+        ):
+            if workspace_reset or not previous.get("host_workspace_root"):
+                normalized["host_workspace_root"] = cwd
+                workspace_root_changed = workspace_reset and _workspace_roots_differ(
+                    previous.get("host_workspace_root"), cwd
+                )
+            else:
+                normalized["host_workspace_root"] = previous[
+                    "host_workspace_root"
+                ]
+        _task_env_overrides[task_id] = normalized
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
     # mid-session via ``session/load`` / ``session/resume``) must take effect
     # immediately. The session record is what commands resolve against;
     # the live env's cwd is also updated so env-side seeding stays consistent.
-    new_cwd = overrides.get("cwd")
+    new_cwd = normalized.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         # A registered workspace cwd IS the session's working directory until
         # a `cd` changes it.
         record_session_cwd(task_id, new_cwd)
+        if workspace_root_changed and _workspace_reset_rebinds_environment(task_id):
+            _invalidate_workspace_environment(task_id)
+            return
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1276,7 +1357,12 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            try:
+                env.cwd = _resolve_task_workspace(
+                    _get_env_config(), task_id, new_cwd
+                ).container_cwd
+            except Exception:
+                env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1285,7 +1371,8 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    with _task_env_overrides_lock:
+        _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
@@ -1354,9 +1441,11 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     predicate — shared by container-key resolution and container creation so
     the two can't drift.
     """
-    if not task_id or task_id not in _task_env_overrides:
+    if not task_id:
         return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    with _task_env_overrides_lock:
+        overrides = _task_env_overrides.get(task_id)
+        return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1425,55 +1514,81 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     source of that lookup so the terminal and file layers can't drift apart.
     """
     raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
+    with _task_env_overrides_lock:
+        direct = _task_env_overrides.get(raw)
+    if direct:
+        return direct
+    collapsed = _resolve_container_task_id(raw)
+    with _task_env_overrides_lock:
+        return _task_env_overrides.get(collapsed) or {}
+
+
+def _relative_host_suffix(cwd: str, host_root: str) -> Optional[str]:
+    """Return *cwd* relative to *host_root*, or ``None`` when it is outside."""
+    try:
+        root = os.path.abspath(os.path.expanduser(host_root))
+        path = os.path.abspath(os.path.expanduser(cwd))
+        if os.path.commonpath((root, path)) != root:
+            return None
+        return os.path.relpath(path, root)
+    except (OSError, ValueError):
+        return None
+
+
+def _container_cwd_for_host_path(cwd: str, host_root: str) -> str:
+    """Map a host workspace path to its location below Docker's ``/workspace``."""
+    suffix = _relative_host_suffix(cwd, host_root)
+    if suffix == ".":
+        return "/workspace"
+    if suffix is not None:
+        host_path = _HOST_PURE_PATH(suffix)
+        return str(PurePosixPath("/workspace", *host_path.parts))
+    if cwd == "/workspace" or cwd.startswith("/workspace/"):
+        return cwd
+    return "/workspace"
+
+
+def _resolve_task_workspace(
+    config: Dict[str, Any],
+    task_id: Optional[str],
+    requested_cwd: Optional[str] = None,
+) -> TaskWorkspaceResolution:
+    """Resolve Docker's bind source and command cwd as one atomic decision.
+
+    Under per-session isolation, only explicitly session-sourced cwd values are
+    host workspaces. Untagged, process, and benchmark/container values fail
+    closed as bind-mount sources even when an identically named host path exists.
+    """
+    overrides = resolve_task_overrides(task_id)
+    default_cwd = str(config.get("cwd") or "/workspace")
+    cwd = requested_cwd or get_session_cwd(task_id) or overrides.get("cwd") or default_cwd
+    env_type = config.get("env_type")
+    host_cwd: Optional[str] = None
+
+    if env_type == "docker" and config.get("docker_mount_cwd_to_workspace"):
+        if (
+            not _docker_session_isolation_enabled()
+            or _resolve_container_task_id(task_id) == "default"
+        ):
+            host_cwd = config.get("host_cwd")
+        elif overrides.get("cwd_source") == "session":
+            candidate = overrides.get("host_workspace_root") or overrides.get("cwd")
+            if isinstance(candidate, str) and candidate.strip():
+                candidate = os.path.abspath(os.path.expanduser(candidate))
+                if os.path.isdir(candidate):
+                    host_cwd = candidate
+
+    if host_cwd:
+        cwd = _container_cwd_for_host_path(str(cwd), host_cwd)
+    elif env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(str(cwd)):
+        cwd = default_cwd
+
+    return TaskWorkspaceResolution(host_cwd=host_cwd, container_cwd=str(cwd))
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
-
-    The single owner of the cwd-mount policy, shared by every environment
-    creation site (terminal tool, file tools, execute_code, lazy bring-up):
-
-    * Shared-container mode (the default): the process-global
-      ``TERMINAL_CWD``-derived ``config["host_cwd"]`` — unchanged legacy
-      behavior, ONE container whose mount tracks the configured workspace.
-    * Per-session isolation mode (docker + ``container_persistent: false``):
-      only the SESSION's own registered workspace may mount.  The process
-      env var is a launch artifact — the TUI/desktop workspace picker writes
-      ``os.environ["TERMINAL_CWD"]`` and it outlives the session that set it,
-      so deriving a fresh session's mount from it leaks the previous
-      session's directory into a chat that never attached one.  Overrides
-      tagged ``cwd_source: "process"`` (gateway fallback to the global env
-      var) are likewise refused as mount sources; only a workspace the user
-      actually attached to THIS session (``cwd_source: "session"`` or an
-      untagged override from ACP/RL surfaces) mounts.
-    """
-    if config.get("env_type") != "docker":
-        return None
-    if not config.get("docker_mount_cwd_to_workspace"):
-        return None
-    if not _docker_session_isolation_enabled():
-        return config.get("host_cwd")
-    if _resolve_container_task_id(task_id) == "default":
-        # Top-level CLI parent — single-session process, legacy behavior.
-        return config.get("host_cwd")
-    overrides = resolve_task_overrides(task_id)
-    if overrides.get("cwd_source") == "process":
-        return None
-    candidate = overrides.get("cwd")
-    if not isinstance(candidate, str) or not candidate.strip():
-        return None
-    candidate = os.path.abspath(os.path.expanduser(candidate))
-    if not os.path.isdir(candidate):
-        return None
-    if candidate.startswith(("/workspace", "/root")):
-        # Already an in-container path, not a host workspace.
-        return None
-    return candidate
+    """Compatibility wrapper for callers that only need the bind source."""
+    return _resolve_task_workspace(config, task_id).host_cwd
 
 
 # Configuration from environment variables
@@ -2116,6 +2231,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         image = ""
 
     _start_cleanup_thread()
+    workspace = _resolve_task_workspace(config, task_id)
 
     # Per-task creation lock so a concurrent terminal_tool call and this helper
     # don't each spawn a sandbox for the same task.
@@ -2130,7 +2246,7 @@ def ensure_task_env(task_id: Optional[str] = None):
             new_env = _create_environment(
                 env_type=env_type,
                 image=image,
-                cwd=config["cwd"],
+                cwd=workspace.container_cwd,
                 timeout=config["timeout"],
                 ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
                 container_config=(
@@ -2139,7 +2255,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 ),
                 local_config=None,
                 task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
+                host_cwd=workspace.host_cwd,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
@@ -2211,7 +2327,12 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(
+    task_id: str,
+    *,
+    force_remove: bool = False,
+    wait_for_cleanup: bool = False,
+):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* (default False) is forwarded to backends that accept it
@@ -2264,6 +2385,12 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
                 env.cleanup(force_remove=force_remove)
             else:
                 env.cleanup()
+            if wait_for_cleanup and hasattr(env, "wait_for_cleanup"):
+                if not env.wait_for_cleanup(timeout=60.0):
+                    logger.warning(
+                        "Timed out waiting for environment cleanup for task: %s",
+                        task_id,
+                    )
         elif hasattr(env, 'stop'):
             env.stop()
         elif hasattr(env, 'terminate'):
@@ -2590,6 +2717,7 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
+    host_workspace_root: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -2610,6 +2738,8 @@ def _resolve_command_cwd(
     if workdir:
         return workdir
     recorded = get_session_cwd(session_key)
+    if recorded and env_type == "docker" and host_workspace_root:
+        return _container_cwd_for_host_path(recorded, host_workspace_root)
     if (
         recorded
         and env_type in _CONTAINER_BACKENDS
@@ -2710,33 +2840,13 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-        # Session-scoped mount resolution (single owner: _resolve_task_host_cwd).
+        cwd = get_session_cwd(task_id) or overrides.get("cwd") or config["cwd"]
+        # Resolve the bind source and command-facing cwd from the same provenance.
         # Under per-session isolation a fresh session must not inherit the
         # process-global TERMINAL_CWD mount left behind by a previous session.
-        host_cwd = _resolve_task_host_cwd(config, task_id)
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # When the host path IS this session's mounted workspace, remap it to
-        # /workspace (where the mount lands) instead of discarding it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            remapped = "/workspace" if host_cwd else config["cwd"]
-            if cwd != remapped:
-                logger.info(
-                    "Remapping host/relative cwd override %r for %s backend "
-                    "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, remapped,
-                )
-            cwd = remapped
+        workspace = _resolve_task_workspace(config, task_id, str(cwd))
+        host_cwd = workspace.host_cwd
+        cwd = workspace.container_cwd
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2902,6 +3012,7 @@ def terminal_tool(
                 default_cwd=guard_cwd_base,
                 session_key=session_key,
                 env_type=env_type,
+                host_workspace_root=host_cwd,
             )
 
             def _read_script_in_env(script_path: str) -> Optional[str]:
@@ -3004,6 +3115,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
+                host_workspace_root=host_cwd,
             )
             _self_repo_hit, _self_repo_msg = (
                 detect_self_repo_git_mutation(command, guard_cwd)
@@ -3095,6 +3207,7 @@ def terminal_tool(
                 default_cwd=cwd,
                 session_key=session_key,
                 env_type=env_type,
+                host_workspace_root=host_cwd,
             )
             try:
                 if env_type == "local":
@@ -3368,6 +3481,7 @@ def terminal_tool(
                         default_cwd=cwd,
                         session_key=session_key,
                         env_type=env_type,
+                        host_workspace_root=host_cwd,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

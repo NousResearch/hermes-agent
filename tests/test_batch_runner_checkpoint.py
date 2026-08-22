@@ -10,14 +10,14 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from batch_runner import BatchRunner, _process_batch_worker, _process_single_prompt
 
 
 @pytest.fixture
 def runner(tmp_path):
     """Create a BatchRunner with all paths pointing at tmp_path."""
     prompts_file = tmp_path / "prompts.jsonl"
-    prompts_file.write_text("")
+    prompts_file.write_text("", encoding="utf-8")
     output_file = tmp_path / "output.jsonl"
     checkpoint_file = tmp_path / "checkpoint.json"
     r = BatchRunner.__new__(BatchRunner)
@@ -28,6 +28,42 @@ def runner(tmp_path):
     return r
 
 
+def test_batch_cwd_is_tagged_as_container_provenance(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, prompt, task_id):
+            return {"messages": [], "completed": True, "api_calls": 1}
+
+        def _convert_to_trajectory_format(self, messages, prompt, completed):
+            return []
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr("batch_runner.AIAgent", _Agent)
+    monkeypatch.setattr("batch_runner.sample_toolsets_from_distribution", lambda value: [])
+    monkeypatch.setattr(
+        "tools.terminal_tool.register_task_env_overrides",
+        lambda task_id, overrides: captured.update(
+            {"task_id": task_id, "overrides": overrides}
+        ),
+    )
+
+    result = _process_single_prompt(
+        7,
+        {"prompt": "test", "image": "bench:latest", "cwd": "/tmp/project"},
+        1,
+        {"distribution": "minimal", "model": "test", "max_iterations": 1},
+    )
+
+    assert result["success"] is True
+    assert captured["task_id"] == "task_7"
+    assert captured["overrides"]["cwd"] == "/tmp/project"
+    assert captured["overrides"]["cwd_source"] == "container"
+
+
 class TestSaveCheckpoint:
     """Verify _save_checkpoint writes valid, atomic JSON."""
 
@@ -35,7 +71,7 @@ class TestSaveCheckpoint:
         data = {"run_name": "test", "completed_prompts": [1, 2, 3], "batch_stats": {}}
         runner._save_checkpoint(data)
 
-        result = json.loads(runner.checkpoint_file.read_text())
+        result = json.loads(runner.checkpoint_file.read_text(encoding="utf-8"))
         assert result["run_name"] == "test"
         assert result["completed_prompts"] == [1, 2, 3]
 
@@ -43,7 +79,7 @@ class TestSaveCheckpoint:
         data = {"run_name": "test", "completed_prompts": []}
         runner._save_checkpoint(data)
 
-        result = json.loads(runner.checkpoint_file.read_text())
+        result = json.loads(runner.checkpoint_file.read_text(encoding="utf-8"))
         assert "last_updated" in result
         assert result["last_updated"] is not None
 
@@ -51,7 +87,7 @@ class TestSaveCheckpoint:
         runner._save_checkpoint({"run_name": "test", "completed_prompts": [1]})
         runner._save_checkpoint({"run_name": "test", "completed_prompts": [1, 2, 3]})
 
-        result = json.loads(runner.checkpoint_file.read_text())
+        result = json.loads(runner.checkpoint_file.read_text(encoding="utf-8"))
         assert result["completed_prompts"] == [1, 2, 3]
 
     def test_with_lock(self, runner):
@@ -59,7 +95,7 @@ class TestSaveCheckpoint:
         data = {"run_name": "test", "completed_prompts": [42]}
         runner._save_checkpoint(data, lock=lock)
 
-        result = json.loads(runner.checkpoint_file.read_text())
+        result = json.loads(runner.checkpoint_file.read_text(encoding="utf-8"))
         assert result["completed_prompts"] == [42]
 
 
@@ -87,14 +123,14 @@ class TestLoadCheckpoint:
     def test_loads_existing_checkpoint(self, runner):
         data = {"run_name": "test_run", "completed_prompts": [5, 10, 15],
                 "batch_stats": {"0": {"processed": 3}}}
-        runner.checkpoint_file.write_text(json.dumps(data))
+        runner.checkpoint_file.write_text(json.dumps(data), encoding="utf-8")
 
         result = runner._load_checkpoint()
         assert result["completed_prompts"] == [5, 10, 15]
         assert result["batch_stats"]["0"]["processed"] == 3
 
     def test_handles_corrupt_json(self, runner):
-        runner.checkpoint_file.write_text("{broken json!!")
+        runner.checkpoint_file.write_text("{broken json!!", encoding="utf-8")
 
         result = runner._load_checkpoint()
         # Should return empty/default, not crash
@@ -112,7 +148,7 @@ class TestResumePreservesProgress:
             "batch_stats": {"0": {"processed": 5}},
             "last_updated": "2026-01-01T00:00:00",
         }
-        runner.checkpoint_file.write_text(json.dumps(prior))
+        runner.checkpoint_file.write_text(json.dumps(prior), encoding="utf-8")
 
         # Load checkpoint like run() does
         checkpoint_data = runner._load_checkpoint()
@@ -133,7 +169,7 @@ class TestResumePreservesProgress:
             "completed_prompts": [0, 1, 2],
             "batch_stats": {},
         }
-        runner.checkpoint_file.write_text(json.dumps(prior))
+        runner.checkpoint_file.write_text(json.dumps(prior), encoding="utf-8")
 
         checkpoint_data = runner._load_checkpoint()
         if checkpoint_data.get("run_name") != runner.run_name:
@@ -174,7 +210,7 @@ class TestBatchWorkerResumeBehavior:
 
         assert result["discarded_no_reasoning"] == 1
         assert result["completed_prompts"] == [0]
-        assert not batch_file.exists() or batch_file.read_text() == ""
+        assert not batch_file.exists() or batch_file.read_text(encoding="utf-8") == ""
 
 
 class TestFinalCheckpointNoDuplicates:
@@ -218,7 +254,7 @@ class TestFinalCheckpointNoDuplicates:
             "completed_prompts": final,
             "batch_stats": {},
         })
-        loaded = json.loads(runner.checkpoint_file.read_text())
+        loaded = json.loads(runner.checkpoint_file.read_text(encoding="utf-8"))
         cp = loaded["completed_prompts"]
         assert cp == sorted(set(cp))
         assert len(cp) == 4

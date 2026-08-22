@@ -871,6 +871,7 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        is_index = detail == "index"
         result_detail = "full" if detail == "full" or not results else "compact"
         window_messages = view.get("window") or []
         if result_detail == "compact":
@@ -888,7 +889,9 @@ def _discover(
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
             "bookend_start": (
-                [
+                []
+                if is_index
+                else [
                     _shape_message(m, max_content_len=1200)
                     for m in (view.get("bookend_start") or [])
                     if not _is_compaction_summary(m.get("content", ""))
@@ -896,12 +899,18 @@ def _discover(
                 if result_detail == "full"
                 else []
             ),
-            "messages": [
-                _shape_message(m, anchor_id=msg_id, max_content_len=4000)
-                for m in window_messages
-            ],
+            "messages": (
+                []
+                if is_index
+                else [
+                    _shape_message(m, anchor_id=msg_id, max_content_len=4000)
+                    for m in window_messages
+                ]
+            ),
             "bookend_end": (
-                [
+                []
+                if is_index
+                else [
                     _shape_message(m, max_content_len=1200)
                     for m in (view.get("bookend_end") or [])
                     if not _is_compaction_summary(m.get("content", ""))
@@ -911,7 +920,7 @@ def _discover(
             ),
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
-            "detail": result_detail,
+            "detail": "index" if is_index else result_detail,
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
@@ -954,7 +963,8 @@ def _session_search_impl(
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
-    Discovery: pass ``query``; ``detail="full"`` hydrates every result.
+    Discovery: pass ``query``; ``detail="full"`` hydrates every result,
+    ``detail="index"`` returns only snippets for cheap broad recall.
     Scroll:    pass ``session_id`` + ``around_message_id``.
     Read:      pass ``session_id`` (no anchor) — dumps the whole session.
     Browse:    pass nothing.
@@ -1047,6 +1057,8 @@ def _session_search_impl(
     detail_norm = (
         "full"
         if isinstance(detail, str) and detail.strip().lower() == "full"
+        else "index"
+        if isinstance(detail, str) and detail.strip().lower() == "index"
         else "adaptive"
     )
 
@@ -1238,12 +1250,16 @@ SESSION_SEARCH_SCHEMA = {
             },
             "detail": {
                 "type": "string",
-                "enum": ["adaptive", "full"],
+                "enum": ["adaptive", "full", "index"],
                 "description": (
                     "Discovery shape only. 'adaptive' (default) fully hydrates the "
                     "top-ranked result and returns only the exact anchor message for "
                     "lower-ranked results. 'full' returns bookends and the complete "
-                    "anchored window for every result."
+                    "anchored window for every result. 'index' returns ONLY "
+                    "session_id, title, when, snippet, and match_message_id for every "
+                    "result — no messages, no bookends. Use 'index' for broad recall "
+                    "(limit=10+) when you need to scan many sessions cheaply, then "
+                    "scroll into promising hits with session_id + around_message_id."
                 ),
                 "default": "adaptive",
             },

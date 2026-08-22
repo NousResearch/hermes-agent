@@ -1354,7 +1354,16 @@ def build_turn_context(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
-                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+                # ``effective_task_id`` and ``turn_id`` were created above,
+                # before both this prefetch and the per-turn hooks. Pass them
+                # as operation-bound values; never recover correlation from a
+                # provider's mutable state or from the recall query/hash.
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                    _query,
+                    session_id=agent.session_id or "",
+                    task_id=effective_task_id,
+                    turn_id=turn_id,
+                ) or ""
         except Exception:
             pass
         # Deterministic, model-independent recall indicator: when memory was

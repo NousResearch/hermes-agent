@@ -643,14 +643,18 @@ class MemoryManager:
         *,
         query: str,
         session_id: str,
+        task_id: Optional[str],
+        turn_id: Optional[str],
     ) -> None:
         """Notify opt-in plugins without exposing merged recalled context.
 
         The hook receives only the validated, provider-bound observation tuple,
         operation identifiers, and a digest/byte length for the final merged
-        context. The public result remains available to trusted direct callers,
-        but must never cross this observer boundary. Hook return values are
-        ignored so observers cannot transform context or affect the agent turn.
+        context. ``task_id`` and ``turn_id`` are explicit operation arguments;
+        direct callers that do not own a turn leave them ``None``. The public
+        result remains available to trusted direct callers, but must never cross
+        this observer boundary. Hook return values are ignored so observers
+        cannot transform context or affect the agent turn.
         """
         if not result.observations:
             return
@@ -664,6 +668,8 @@ class MemoryManager:
                 "memory_prefetch",
                 query=query,
                 session_id=session_id,
+                task_id=task_id,
+                turn_id=turn_id,
                 observations=result.observations,
                 context_sha256=hashlib.sha256(context_bytes).hexdigest(),
                 context_byte_length=len(context_bytes),
@@ -674,14 +680,21 @@ class MemoryManager:
             logger.debug("memory_prefetch observer dispatch failed: %s", exc)
 
     def prefetch_all_result(
-        self, query: str, *, session_id: str = ""
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        task_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> MemoryPrefetchResult:
         """Collect context and bounded observations from one prefetch operation.
 
         Existing providers returning ``str`` are normalized without changing
         their context bytes. Provider failures remain isolated as before;
         malformed structured observations alone are dropped while that
-        provider's formatted context is retained.
+        provider's formatted context is retained. ``task_id`` and ``turn_id``
+        are manager-owned operation metadata only; they are not passed to
+        providers and do not affect provider queries or context bytes.
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
@@ -710,17 +723,31 @@ class MemoryManager:
             result,
             query=clean_query,
             session_id=session_id,
+            task_id=task_id,
+            turn_id=turn_id,
         )
         return result
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        task_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> str:
         """Collect prefetch context from all providers.
 
         This compatibility method intentionally keeps its historical ``str``
         return type. Use :meth:`prefetch_all_result` when the operation-bound
         structured result is needed.
         """
-        return self.prefetch_all_result(query, session_id=session_id).context
+        return self.prefetch_all_result(
+            query,
+            session_id=session_id,
+            task_id=task_id,
+            turn_id=turn_id,
+        ).context
 
     def _prefetch_provider(
         self, provider: MemoryProvider, query: str, *, session_id: str = ""

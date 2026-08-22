@@ -143,7 +143,12 @@ def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
     manager.add_provider(first)
     manager.add_provider(second)
 
-    result = manager.prefetch_all_result("question", session_id="session-a")
+    result = manager.prefetch_all_result(
+        "question",
+        session_id="session-a",
+        task_id="task-a",
+        turn_id="turn-a",
+    )
 
     expected_context = "first — résumé\n\nsecond"
     expected_bytes = expected_context.encode("utf-8")
@@ -155,6 +160,8 @@ def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
     assert set(event) == {
         "query",
         "session_id",
+        "task_id",
+        "turn_id",
         "observations",
         "context_sha256",
         "context_byte_length",
@@ -163,6 +170,8 @@ def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
     assert event["observations"] is result.observations
     assert event["query"] == "question"
     assert event["session_id"] == "session-a"
+    assert event["task_id"] == "task-a"
+    assert event["turn_id"] == "turn-a"
     assert event["context_sha256"] == hashlib.sha256(expected_bytes).hexdigest()
     assert event["context_byte_length"] == len(expected_bytes)
     assert event["context_byte_length"] != len(expected_context)
@@ -241,6 +250,29 @@ def test_structured_context_without_observation_does_not_emit(monkeypatch):
     assert result.context == "structured but undisclosed"
     assert result.observations == ()
     assert events == []
+
+
+def test_direct_structured_prefetch_marks_turn_correlation_unavailable(monkeypatch):
+    """Direct manager callers cannot silently acquire a synthetic turn id."""
+    events = []
+    _capture_hook(monkeypatch, events)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="context",
+                observations=(_observation(),),
+            ),
+        )
+    )
+
+    manager.prefetch_all_result("question", session_id="session-a")
+
+    assert events[0]["session_id"] == "session-a"
+    assert events[0]["task_id"] is None
+    assert events[0]["turn_id"] is None
+    assert "api_request_id" not in events[0]
 
 
 def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
@@ -356,7 +388,12 @@ def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
 
     def run(session_id):
-        return session_id, manager.prefetch_all_result("question", session_id=session_id)
+        return session_id, manager.prefetch_all_result(
+            "question",
+            session_id=session_id,
+            task_id=f"task-{session_id}",
+            turn_id=f"turn-{session_id}",
+        )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         returned = dict(pool.map(run, ("session-a", "session-b")))
@@ -369,10 +406,47 @@ def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
         assert len(matching) == 1
         event = matching[0]
         assert "result" not in event
+        assert event["task_id"] == f"task-{session_id}"
+        assert event["turn_id"] == f"turn-{session_id}"
         assert event["observations"][0].payload["session_id"] == session_id
         encoded = result.context.encode("utf-8")
         assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
         assert event["context_byte_length"] == len(encoded)
+
+
+def test_concurrent_same_session_turns_keep_explicit_ids_bound(monkeypatch):
+    events = []
+    event_lock = threading.Lock()
+    import hermes_cli.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
+
+    def capture_thread_safe(name, **kwargs):
+        with event_lock:
+            events.append(kwargs)
+        return []
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", capture_thread_safe)
+    manager = MemoryManager()
+    manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
+
+    def run(turn_number):
+        return manager.prefetch_all_result(
+            "question",
+            session_id="same-session",
+            task_id=f"task-{turn_number}",
+            turn_id=f"turn-{turn_number}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run, (1, 2)))
+
+    assert {(event["task_id"], event["turn_id"]) for event in events} == {
+        ("task-1", "turn-1"),
+        ("task-2", "turn-2"),
+    }
+    assert all(event["session_id"] == "same-session" for event in events)
+    assert all(result.context == "context:same-session" for result in results)
 
 
 def test_invalid_provider_return_keeps_existing_provider_isolation(monkeypatch):

@@ -175,6 +175,10 @@ observation and receives exactly these keyword fields:
   and may contain raw user input; it is retained because an exact-operation
   consumer needs it.
 - `session_id`: the operation's session identifier.
+- `task_id`: the canonical task identifier for the owning turn, or `None` when
+  a trusted direct caller did not provide one.
+- `turn_id`: the canonical immutable turn identifier for the owning turn, or
+  `None` when a trusted direct caller did not provide one.
 - `context_sha256`: the lowercase hexadecimal SHA-256 digest of the final
   merged context's exact UTF-8 bytes.
 - `context_byte_length`: the byte length of those exact UTF-8 bytes.
@@ -186,8 +190,44 @@ observation payload. Legacy/string-only provider context never reaches this
 hook. Hook return values cannot transform context, and callback errors are
 isolated by the normal plugin hook registry. Hermes provides no telemetry,
 network delivery, or storage for this event. The operation-bound observation
-tuple avoids a mutable provider `last_*` getter and therefore does not share
-observations between concurrent sessions.
+tuple and explicit `task_id`/`turn_id` avoid query, hash, call-order, mutable
+provider `last_*`, or session-cache inference and therefore do not share
+observations between concurrent turns. `memory_prefetch` binds to the owning
+turn only: it intentionally has no `api_request_id`, `api_call_count`, or
+`retry_count`, because one turn may issue several provider requests and the
+prefetch occurs before a single final request can be known. Direct callers may
+still use `prefetch_all()` / `prefetch_all_result()` without correlation; their
+structured event is explicit about unavailable task/turn IDs (`None`) and does
+not invent IDs in the memory subsystem.
+
+### Correlation ownership matrix
+
+The canonical owner is the agent turn prologue in
+`agent/turn_context.py`. It creates `effective_task_id` (the caller-supplied
+`task_id`, or the core's normal task ID) and the immutable `turn_id` before
+`pre_llm_call`, before synchronous memory prefetch, and before the first API
+request. The values are locals returned in `TurnContext`; memory receives them
+as explicit arguments rather than reading agent/provider mutable state.
+
+| Boundary | Owner and timing | Canonical correlation |
+|---|---|---|
+| `pre_llm_call` | `agent/turn_context.py`, once after turn IDs are created | `session_id`, `task_id`, `turn_id` |
+| `memory_prefetch` | Same prologue, synchronous `prefetch_all()` for the current turn | Same `session_id`, `task_id`, `turn_id`; no request ID |
+| `pre_api_request`, `post_api_request`, `api_request_error` | `agent/conversation_loop.py`, around each provider attempt | Same `task_id`/`turn_id` plus the outer model-call `api_request_id`/`api_call_count`; retries of that request retain those IDs and are distinguished by `retry_count` |
+| `post_llm_call` | `agent/turn_finalizer.py`, successful final-answer ownership | Same `session_id`, `task_id`, `turn_id` |
+| canonical `on_session_end` | `agent/turn_finalizer.py`, every `run_conversation()` finalization | Same turn IDs and outcome; it is not a session teardown ID |
+| interruption fallback | CLI `_emit_interrupted_session_end()` may emit a reduced safety payload from the active agent slots; TUI teardown emits session-only legacy fields | Not a memory-correlation owner; no new IDs are inferred |
+| `on_session_finalize` / provider shutdown | CLI, gateway, or TUI session teardown | Session lifecycle only; not a substitute for a turn correlation ID |
+
+All product surfaces (CLI, gateway, TUI gateway, desktop's gateway client,
+cron, and delegated/background agents) converge on `AIAgent.run_conversation()`
+and this prologue. The only other `prefetch_all*` callers are the public
+manager compatibility tests/direct callers; those have no final-answer owner
+and therefore receive explicit unavailable (`None`) task/turn fields. The
+post-turn `queue_prefetch_all()` path only warms the next provider turn and
+does not emit a structured `memory_prefetch` event. No correlation is inferred
+from query text, context hashes, call order, session caches, `last_*` state, or
+ambient context variables.
 
 The current Honcho provider remains on its existing formatted-string path in
 this change. A future Honcho mapping should use only fields actually returned

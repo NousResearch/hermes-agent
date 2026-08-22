@@ -2,13 +2,64 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import nullcontext
-from typing import Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+
+
+def desktop_serve_should_skip_configured_mcp(
+    *,
+    desktop_env: str | None,
+    record: dict[str, Any] | None,
+    current_home: Path,
+    pid_is_live: Callable[[dict[str, Any] | None], bool],
+) -> bool:
+    """True when Desktop ``serve`` must not start a second MCP tree (#91564).
+
+    The scheduled gateway is *not* the Desktop ``/api/ws`` control plane, so
+    ``hermes serve`` still starts. It must not reload ``mcp_servers`` when
+    ``gateway.status`` proves a live process incarnation for this home.
+    Fail-open: missing/foreign/dead records start discovery.
+    """
+    if desktop_env != "1":
+        return False
+    if not isinstance(record, dict):
+        return False
+    if not pid_is_live(record):
+        return False
+    recorded_home = record.get("hermes_home")
+    if recorded_home:
+        try:
+            if Path(str(recorded_home)).resolve() != Path(current_home).resolve():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def should_skip_mcp_for_desktop_serve() -> bool:
+    """Live check used by ``cmd_dashboard``. Fail-open on any probe error."""
+    try:
+        from gateway.status import (
+            read_runtime_status,
+            runtime_status_pid_is_live,
+        )
+        from hermes_constants import get_hermes_home
+
+        return desktop_serve_should_skip_configured_mcp(
+            desktop_env=os.environ.get("HERMES_DESKTOP"),
+            record=read_runtime_status(),
+            current_home=get_hermes_home(),
+            pid_is_live=runtime_status_pid_is_live,
+        )
+    except Exception:
+        return False
 
 
 def _has_configured_mcp_servers() -> bool:

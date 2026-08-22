@@ -11523,12 +11523,21 @@ def cmd_dashboard(args):
     # sessions show no MCP tools.  Spawn discovery in the background here so a
     # slow/dead server can't block dashboard startup.
     try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
+        from hermes_cli.mcp_startup import (
+            should_skip_mcp_for_desktop_serve,
+            start_background_mcp_discovery,
         )
+
+        if should_skip_mcp_for_desktop_serve():
+            logger.info(
+                "Skipping MCP discovery: a live gateway already owns "
+                "configured MCP servers for this Hermes home (#91564)"
+            )
+        else:
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
     except Exception:
         logger.debug(
             "Background MCP tool discovery failed at dashboard startup",

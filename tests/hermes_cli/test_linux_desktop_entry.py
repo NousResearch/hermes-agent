@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -107,7 +109,7 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(tmp_path, xdg_h
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    interpreter = str(Path(sys.executable).resolve())
+    interpreter = str(lde._running_interpreter())
     assert exec_line.split(" ")[0].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
@@ -130,12 +132,10 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
 
 
 def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch):
-    import sys
-
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    interpreter = str(Path(sys.executable).resolve())
+    interpreter = str(lde._running_interpreter())
     hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
@@ -147,6 +147,77 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     # Console-script with the venv's own interpreter in the shebang: correct
     # as-is, prefixing would only add noise.
     assert exec_line == f"{hermes_bin} desktop"
+
+
+# uv/pyenv-style venv: sys.executable is a SYMLINK into the base interpreter
+# install. Path.resolve() dereferences it out of the venv, and the base
+# interpreter has no venv site-packages — the #90292 silent crash again.
+def _fake_symlinked_venv(tmp_path: Path) -> "tuple[Path, Path]":
+    base = tmp_path / "base" / "bin" / "python3.11"
+    base.parent.mkdir(parents=True)
+    base.write_text("#!/bin/sh\n", encoding="utf-8")
+    base.chmod(0o755)
+    venv_dir = tmp_path / "venv"
+    (venv_dir / "bin").mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text("home = " + str(base.parent) + "\n")
+    venv_python = venv_dir / "bin" / "python"
+    venv_python.symlink_to(base)
+    return venv_python, base
+
+
+def test_running_interpreter_keeps_venv_symlink_unresolved(tmp_path, monkeypatch):
+    venv_python, base = _fake_symlinked_venv(tmp_path)
+    monkeypatch.setattr(lde.sys, "executable", str(venv_python))
+
+    assert str(lde._running_interpreter()) == str(venv_python)
+    assert str(lde._running_interpreter()) != str(base)
+
+
+def test_exec_prefixes_venv_symlink_not_dereferenced_base(
+    tmp_path, xdg_home, monkeypatch
+):
+    venv_python, base = _fake_symlinked_venv(tmp_path)
+    monkeypatch.setattr(lde.sys, "executable", str(venv_python))
+
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text("#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    # The prefix must be the venv python (symlink path kept), never the
+    # dereferenced base interpreter — it lacks the venv's site-packages.
+    assert exec_line.split(" ")[0].strip('"') == str(venv_python)
+    assert str(base) not in exec_line
+
+
+def test_needs_interpreter_flags_shebang_pointing_at_base_install(
+    tmp_path, monkeypatch
+):
+    venv_python, base = _fake_symlinked_venv(tmp_path)
+    monkeypatch.setattr(lde.sys, "executable", str(venv_python))
+
+    # A launcher shebanged with the BASE interpreter path: under the old
+    # code the exe_dir was the dereferenced base dir, this shebang matched
+    # it, and the entry launched the base python — no venv site-packages.
+    script = tmp_path / "bin" / "hermes"
+    script.parent.mkdir()
+    script.write_text(f"#!{base}\nimport hermes_cli\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    assert lde._needs_interpreter(script) is True
+
+    # A launcher shebanged with the venv symlink itself stays unprefixed.
+    venv_shebang = tmp_path / "bin" / "hermes-venv"
+    venv_shebang.write_text(f"#!{venv_python}\nimport hermes_cli\n", encoding="utf-8")
+    venv_shebang.chmod(0o755)
+    assert lde._needs_interpreter(venv_shebang) is False
 
 
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):

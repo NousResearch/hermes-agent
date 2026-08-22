@@ -57,6 +57,19 @@ def icon_path(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "assets" / "icon.png"
 
 
+def _running_interpreter() -> Path:
+    """Absolute ``sys.executable`` WITHOUT dereferencing symlinks.
+
+    ``sys.executable`` in a venv is often a symlink into the base
+    interpreter install (uv, pyenv, conda). ``Path.resolve()`` follows it
+    out of the venv, and the base interpreter has no venv
+    ``site-packages`` — the #90292 silent crash again, one level up. The
+    symlink path itself is what activates the venv (``pyvenv.cfg`` sits
+    next to it), so keep it.
+    """
+    return Path(os.path.abspath(sys.executable))
+
+
 def resolve_exec_command() -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
@@ -77,12 +90,14 @@ def resolve_exec_command() -> str:
             # shebang resolves to the SYSTEM python and dies on the first
             # third-party import (#90292) — silently, since Terminal=false.
             # sys.executable is the interpreter actually running Hermes (the
-            # venv one), so prefix it explicitly.
-            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+            # venv one), so prefix it explicitly. Keep it as-is: resolving
+            # would dereference a venv symlink to the base interpreter,
+            # which lacks the venv's site-packages.
+            argv = [str(_running_interpreter()), str(resolved), "desktop"]
         else:
             argv = [str(resolved), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        argv = [str(_running_interpreter()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
 
 
@@ -98,15 +113,21 @@ def _needs_interpreter(bin_path: Path) -> bool:
         # Native binary (uv tool shim, PyInstaller, distro package) — its own
         # loader is self-sufficient.
         return False
-    shebang = head.decode("utf-8", errors="replace").strip().lower()
-    if "python" not in shebang:
+    shebang = head.decode("utf-8", errors="replace").strip()
+    if "python" not in shebang.lower():
         # A shell wrapper (e.g. the installer's bash launcher) execs the venv
         # python itself — leave it alone.
         return False
     # A python shebang pointing INSIDE the running interpreter's environment
     # already resolves correctly; anything else (``/usr/bin/env python3``,
-    # a system path) would escape the venv when spawned by the DE.
-    exe_dir = str(Path(sys.executable).resolve().parent)
+    # a system path) would escape the venv when spawned by the DE. Use the
+    # interpreter path AS RUNNING (a venv python is often a symlink into
+    # the base install): the dereferenced base dir is a DIFFERENT
+    # environment with no venv site-packages, so a shebang pointing there
+    # must still be prefixed. Paths are compared case-SENSITIVELY as the
+    # OS resolves them (lowercasing the shebang only for the ``python``
+    # keyword check).
+    exe_dir = str(_running_interpreter().parent)
     return exe_dir not in shebang
 
 

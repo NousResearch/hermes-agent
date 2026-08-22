@@ -17,8 +17,9 @@
  */
 export function serveBackendArgs(profile?: string) {
   const head = profile ? ['--profile', profile] : []
+  const isolation = profile ? ['--isolated'] : []
 
-  return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
+  return [...head, 'serve', ...isolation, '--host', '127.0.0.1', '--port', '0']
 }
 
 /**
@@ -34,7 +35,11 @@ export function dashboardFallbackArgs(args) {
     return args.slice()
   }
 
-  return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
+  // `--isolated` is a serve-era flag. Older dashboard runtimes already use
+  // the profile-scoped behavior and do not necessarily recognize it.
+  const tail = args.slice(i + 1).filter(arg => arg !== '--isolated')
+
+  return [...args.slice(0, i), 'dashboard', '--no-open', ...tail]
 }
 
 /**

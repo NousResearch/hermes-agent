@@ -190,6 +190,46 @@ def test_webhook_subscriptions_blocked(fake_home):
 
 
 
+@pytest.mark.parametrize("name", ["google_token.json", "google_oauth_pending.json"])
+def test_google_workspace_live_stores_blocked(fake_home, name):
+    """The LIVE Google Workspace stores at the HERMES_HOME root are blocked:
+    ``google_token.json`` (OAuth refresh/access token, consumed by the
+    skill's gws_bridge.py/google_api.py) and ``google_oauth_pending.json``
+    (in-flight PKCE exchange state, consumed by setup.py). #38953 closed the
+    write side; before this test the read guard blocked only the unused
+    ``auth/google_oauth.json`` path while the live token stayed readable."""
+    from agent.file_safety import get_read_block_error
+
+    p = _create(fake_home, name)
+    err = get_read_block_error(str(p))
+    assert err is not None
+    assert "credential store" in err
+
+
+@pytest.mark.parametrize("name", ["google_token.json", "google_oauth_pending.json"])
+def test_profile_mode_blocks_root_google_workspace_stores(tmp_path, monkeypatch, name):
+    """Root-level live Google Workspace stores stay blocked while a profile
+    is active (root credentials are inherited by every profile), and the
+    profile-local copies are blocked too."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    root_store = root / name
+    root_store.write_text("x")
+    assert "credential store" in (get_read_block_error(str(root_store)) or "")
+
+    profile_store = profile / name
+    profile_store.write_text("x")
+    assert "credential store" in (get_read_block_error(str(profile_store)) or "")
+
+
 def test_identically_named_hermes_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
@@ -213,6 +253,10 @@ def test_identically_named_hermes_files_outside_home_not_blocked(
     google_oauth.parent.mkdir()
     google_oauth.write_text("not really a token", encoding="utf-8")
     assert get_read_block_error(str(google_oauth)) is None
+
+    google_token = project / "google_token.json"
+    google_token.write_text("not really a token", encoding="utf-8")
+    assert get_read_block_error(str(google_token)) is None
 
     tokens = project / "mcp-tokens"
     tokens.mkdir()

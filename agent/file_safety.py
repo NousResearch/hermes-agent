@@ -255,10 +255,11 @@ def get_read_block_error(path: str) -> Optional[str]:
       * Credential / secret stores under HERMES_HOME and the global Hermes
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
-        and anything under ``mcp-tokens/``. These hold plaintext provider keys,
-        OAuth tokens, and HMAC secrets that the agent never needs to read
-        directly — provider tools / gateway adapters consume them through
-        internal channels.
+        ``google_token.json``, ``google_oauth_pending.json``,
+        ``cache/bws_cache.json``, and anything under ``mcp-tokens/``. These
+        hold plaintext provider keys, OAuth tokens, and HMAC secrets that the
+        agent never needs to read directly — provider tools / gateway
+        adapters / skill scripts consume them through internal channels.
       * Project-local environment files anywhere on disk: ``.env``,
         ``.env.local``, ``.env.development``, ``.env.production``,
         ``.env.test``, ``.env.staging``, ``.envrc``. These routinely hold
@@ -331,6 +332,15 @@ def get_read_block_error(path: str) -> Optional[str]:
         ".env",
         "webhook_subscriptions.json",
         os.path.join("auth", "google_oauth.json"),
+        # LIVE Google Workspace OAuth stores at the HERMES_HOME root: the
+        # token written by the google-workspace skill's setup.py (refreshed
+        # by google_api.py, consumed by gws_bridge.py) and the in-flight
+        # exchange state (PKCE verifier + session). Only the skill's own
+        # scripts read them, via direct file IO that bypasses this guard.
+        # The skill's sandbox mount keeps working through an explicit
+        # exception in tools.credential_files (_MOUNTABLE_SERVICE_TOKENS).
+        "google_token.json",
+        "google_oauth_pending.json",
         # Bitwarden Secrets Manager disk cache: stores plaintext secret values
         # to avoid re-fetching across back-to-back CLI invocations. The file
         # was introduced by #31968 but not added to this guard.

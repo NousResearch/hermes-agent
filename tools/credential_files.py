@@ -35,6 +35,18 @@ except ImportError:  # noqa: F401 - sentinel consumed in register_credential_fil
 
 logger = logging.getLogger(__name__)
 
+# Per-service tokens that skills may mount into their own sandboxes even
+# though the model-facing read surface denies them. The mount gate below
+# reuses the canonical read deny-list, but read-denied and mountable are not
+# the same judgement for a service token: google_token.json must not be
+# read_file'd by the agent on the host (a prompt-injected read exfiltrates a
+# live refresh token), yet the google-workspace skill's own scripts need it
+# bind-mounted to run inside Docker/Modal sandboxes. Exact filenames relative
+# to HERMES_HOME; keep this to skill-declared service tokens only — master
+# stores (.env, auth.json, mcp-tokens/, ...) must never appear here. See
+# #89064 for folding these per-surface judgements into one registry.
+_MOUNTABLE_SERVICE_TOKENS = frozenset({"google_token.json"})
+
 # Session-scoped list of credential files to mount.
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
@@ -59,6 +71,19 @@ def _resolve_hermes_home() -> Path:
     return get_hermes_home()
 
 
+def _is_mountable_service_token(resolved: Path, hermes_home: Path) -> bool:
+    """Return True when *resolved* is exactly a ``_MOUNTABLE_SERVICE_TOKENS``
+    entry under the active HERMES_HOME. Path-resolved comparison so spellings
+    like ``./google_token.json`` neither dodge nor widen the carve-out."""
+    for name in _MOUNTABLE_SERVICE_TOKENS:
+        try:
+            if resolved == (hermes_home / name).resolve():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
@@ -80,7 +105,10 @@ def register_credential_file(
     ``mcp-tokens/`` or the Bitwarden plaintext cache. Those are refused via
     the canonical read deny-list (``agent.file_safety.get_read_block_error``)
     — the same guard that stops the agent reading them with ``read_file``, so
-    the mount surface cannot hand a skill what the read surface denies it.
+    the mount surface cannot hand a skill what the read surface denies it,
+    with one carve-out: the read guard also denies skill-scoped service
+    tokens (``_MOUNTABLE_SERVICE_TOKENS``), which stay mountable because the
+    skill's own sandboxed scripts are their intended consumer.
     """
     hermes_home = _resolve_hermes_home()
 
@@ -133,7 +161,7 @@ def register_credential_file(
             "credential_files: refusing %r — read guard raised", relative_path
         )
         return False
-    if denied:
+    if denied and not _is_mountable_service_token(resolved, hermes_home):
         logger.warning(
             "credential_files: refused %r — it is a credential store the agent "
             "is denied from reading; a skill may mount its own service token, "

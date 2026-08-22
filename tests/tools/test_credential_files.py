@@ -528,7 +528,10 @@ class TestMasterCredentialStoresAreNeverMountable:
 
     The bar is the canonical read deny-list: whatever the agent is forbidden to
     ``read_file`` must not be mountable either, so the mount surface can't
-    grant what the read surface denies.
+    grant what the read surface denies. One carve-out: skill-scoped service
+    tokens (``_MOUNTABLE_SERVICE_TOKENS``, today only ``google_token.json``)
+    are read-denied to the agent but stay mountable, because the skill's own
+    sandboxed scripts are their intended consumer.
     """
 
     @staticmethod
@@ -566,7 +569,13 @@ class TestMasterCredentialStoresAreNeverMountable:
             assert get_credential_file_mounts() == []
 
     def test_per_service_token_still_mounts(self, tmp_path):
-        """The module's legitimate purpose must keep working."""
+        """The module's legitimate purpose must keep working.
+
+        Doubles as the regression test for the ``_MOUNTABLE_SERVICE_TOKENS``
+        carve-out: ``google_token.json`` is read-denied by
+        ``get_read_block_error()``, so without the carve-out this mount
+        would be refused and the google-workspace skill would lose its
+        token inside Docker/Modal sandboxes."""
         home = self._home(tmp_path)
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
             assert register_credential_file("google_token.json") is True
@@ -574,6 +583,29 @@ class TestMasterCredentialStoresAreNeverMountable:
         assert [m["container_path"] for m in mounts] == [
             "/root/.hermes/google_token.json"
         ]
+
+    def test_pending_oauth_state_is_refused(self, tmp_path):
+        """``google_oauth_pending.json`` is read-denied and NOT in the
+        service-token carve-out: no skill declares it, and the in-flight
+        PKCE verifier has no business inside a sandbox."""
+        home = self._home(tmp_path)
+        (home / "google_oauth_pending.json").write_text("{}")
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file("google_oauth_pending.json") is False
+            assert get_credential_file_mounts() == []
+
+    def test_carve_out_is_exact_path_not_basename(self, tmp_path):
+        """A nested file that merely shares the carve-out basename gets no
+        special treatment: it is not read-denied (per-location gate), so it
+        mounts on its own merits, while the carve-out never widens to paths
+        outside HERMES_HOME root."""
+        from tools.credential_files import _is_mountable_service_token
+
+        home = self._home(tmp_path)
+        nested = home / "skills" / "g" / "google_token.json"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("{}")
+        assert _is_mountable_service_token(nested.resolve(), home) is False
 
     def test_refused_entry_does_not_block_the_rest_of_the_batch(self, tmp_path):
         home = self._home(tmp_path)

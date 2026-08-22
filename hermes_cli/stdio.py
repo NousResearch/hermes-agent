@@ -32,7 +32,11 @@ from __future__ import annotations
 import os
 import sys
 
-__all__ = ["configure_windows_stdio", "is_windows"]
+__all__ = [
+    "configure_windows_stdio",
+    "configure_headless_stdout_buffering",
+    "is_windows",
+]
 
 
 _CONFIGURED = False
@@ -41,6 +45,35 @@ _CONFIGURED = False
 def is_windows() -> bool:
     """Return True iff running on native Windows (not WSL)."""
     return sys.platform == "win32"
+
+
+def configure_headless_stdout_buffering() -> bool:
+    """Line-buffer stdout when it is not a TTY (#92281).
+
+    Python block-buffers stdout whenever it is a pipe or file — the normal
+    topology for headless supervisors and agent-runner integrations. The
+    agent loop then delivers minutes of steady work in a single flush
+    burst, which is indistinguishable from a hang from the log stream
+    alone. Line buffering restores incremental delivery; interactive TTYs
+    are already line-buffered and are left untouched.
+    """
+    stream = sys.stdout
+    if stream is None:
+        return False
+    try:
+        if stream.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        # Not a real console stream (closed / replaced) — treat as headless.
+        pass
+    try:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            return False
+        reconfigure(line_buffering=True)
+        return True
+    except Exception:
+        return False
 
 
 def _flip_console_code_page_to_utf8() -> None:

@@ -12432,6 +12432,15 @@ def main():
     except Exception:
         pass
 
+    # Headless runners pipe stdout; line-buffer it so live agent output
+    # streams incrementally instead of arriving as end-of-run bursts
+    # that read as a hang (#92281). No-op for interactive TTYs.
+    try:
+        from hermes_cli.stdio import configure_headless_stdout_buffering
+        configure_headless_stdout_buffering()
+    except Exception:
+        pass
+
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.

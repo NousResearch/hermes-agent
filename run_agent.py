@@ -9025,6 +9025,15 @@ def main(
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
+
+    # Headless runners pipe stdout; line-buffer it so live agent output
+    # streams incrementally instead of arriving as end-of-run bursts
+    # that read as a hang (#92281). No-op for interactive TTYs.
+    try:
+        from hermes_cli.stdio import configure_headless_stdout_buffering
+        configure_headless_stdout_buffering()
+    except Exception:
+        pass
     
     # Handle tool listing
     if list_tools:

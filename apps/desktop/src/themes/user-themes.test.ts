@@ -46,12 +46,22 @@ describe('user theme registry', () => {
     expect(names.at(-1)).toBe('vsc-custom')
   })
 
-  it('removes a theme', () => {
+  it('removes a theme and scrubs profile and global skin assignments', () => {
     const theme = installUserTheme(makeTheme('Throwaway'))
+    window.localStorage.setItem(
+      'hermes-desktop-profile-themes-v1',
+      JSON.stringify({ default: theme.name, custom: 'other-theme' })
+    )
+    window.localStorage.setItem('hermes-desktop-theme-v2', theme.name)
+
     removeUserTheme(theme.name)
 
     expect(isUserTheme(theme.name)).toBe(false)
     expect(resolveTheme(theme.name)).toBeUndefined()
+    expect(
+      JSON.parse(window.localStorage.getItem('hermes-desktop-profile-themes-v1') || '{}')
+    ).toEqual({ custom: 'other-theme' })
+    expect(window.localStorage.getItem('hermes-desktop-theme-v2')).toBeNull()
   })
 
   it('resolves built-ins through the same lookup', () => {

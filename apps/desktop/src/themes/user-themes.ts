@@ -115,6 +115,33 @@ export function removeUserTheme(name: string): void {
   delete next[name]
   $userThemes.set(next)
   persist(next)
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const rawProfiles = window.localStorage.getItem('hermes-desktop-profile-themes-v1')
+      if (rawProfiles) {
+        const profileSkins = JSON.parse(rawProfiles)
+        let changed = false
+        for (const [profile, skin] of Object.entries(profileSkins)) {
+          if (skin === name) {
+            delete profileSkins[profile]
+            changed = true
+          }
+        }
+        if (changed) {
+          window.localStorage.setItem(
+            'hermes-desktop-profile-themes-v1',
+            JSON.stringify(profileSkins)
+          )
+        }
+      }
+      if (window.localStorage.getItem('hermes-desktop-theme-v2') === name) {
+        window.localStorage.removeItem('hermes-desktop-theme-v2')
+      }
+    } catch {
+      // Best-effort storage cleanup
+    }
+  }
 }
 
 export const isUserTheme = (name: string): boolean => Boolean($userThemes.get()[name])

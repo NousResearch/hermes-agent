@@ -7807,6 +7807,37 @@ class AIAgent:
         from agent.chat_completion_helpers import build_assistant_message
         return build_assistant_message(self, assistant_message, finish_reason)
 
+    @staticmethod
+    def _build_empty_assistant_placeholder() -> dict:
+        """Return a persistable assistant closer for an end_turn tool batch.
+
+        After tool results the next user turn must not land as ``tool → user``.
+        This closer keeps that sequence valid. It is not the empty-response
+        failure sentinel: do not set ``_empty_terminal_sentinel``, which
+        ``_drop_trailing_empty_response_scaffolding`` strips and then rewinds
+        the tool batch. Visible handoff text overwrites ``content`` before
+        append; silent batches keep the provider-safe ``(empty)`` body.
+        """
+        return {
+            "role": "assistant",
+            "content": "(empty)",
+            "finish_reason": "stop",
+        }
+
+    @staticmethod
+    def _tool_batch_has_end_turn(tool_calls) -> bool:
+        """Return True when any tool in the batch can legally end the turn."""
+        if not tool_calls:
+            return False
+        from tools.registry import registry
+
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", None)
+            if name and registry.is_end_turn(name):
+                return True
+        return False
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 

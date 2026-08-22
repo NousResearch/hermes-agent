@@ -45,6 +45,19 @@ def _is_pure_tool_call_tail(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _is_empty_placeholder_tail(msg: dict) -> bool:
+    """Assistant closer from ``_build_empty_assistant_placeholder``.
+
+    Role-only finalization would keep ``(empty)`` in durable history when
+    ``final_response`` holds the real handoff text. Restrict to the helper's
+    shape (no tool_calls, empty or ``(empty)`` body) so a real assistant
+    answer is never overwritten.
+    """
+    if msg.get("tool_calls"):
+        return False
+    return flatten_message_text(msg.get("content")).strip() in ("", "(empty)")
+
+
 # Verification continuation scaffolding flags: verify-on-stop / pre_verify
 # inject a synthetic user nudge to keep the agent going one more turn.
 # These nudges must be stripped from returned/live history to avoid
@@ -350,16 +363,23 @@ def finalize_turn(
                     messages,
                     {"role": "assistant", "content": final_response},
                 )
-            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
-                # The tail IS an assistant row, but a *pure tool-call turn*:
-                # tool_calls with no text of its own. The role check alone
-                # leaves the #43849/#44100 invariant unmet — the user saw a
-                # response that never reached the transcript, and the next turn
-                # replays the user backlog and re-answers it (the very symptom
-                # this block was added for). Fill that row's empty content
-                # instead of appending, so the durable turn ends with the answer
-                # without disturbing the tool-call structure or creating an
-                # assistant→assistant pair.
+            elif (
+                isinstance(_tail, dict)
+                and _tail.get("content") != final_response
+                and (
+                    _is_pure_tool_call_tail(_tail)
+                    or _is_empty_placeholder_tail(_tail)
+                )
+            ):
+                # The tail IS an assistant row, but a *pure tool-call turn*
+                # or the end_turn ``(empty)`` closer: no delivered answer of
+                # its own. The role check alone leaves the #43849/#44100
+                # invariant unmet — the user saw a response that never reached
+                # the transcript, and the next turn replays the user backlog
+                # and re-answers it (the very symptom this block was added
+                # for). Fill that row's empty content instead of appending, so
+                # the durable turn ends with the answer without disturbing the
+                # tool-call structure or creating an assistant→assistant pair.
                 #
                 # The ``content != final_response`` guard prevents filling when
                 # the tail already carries the final response text (verification

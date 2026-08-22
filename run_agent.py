@@ -5104,6 +5104,17 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _dead_request_client_socket_count(client: Any) -> int:
+        """Probe an idle request client's pool without changing shared-client semantics."""
+        from agent.agent_runtime_helpers import _count_dead_pool_sockets
+
+        try:
+            return _count_dead_pool_sockets(client)
+        except Exception as exc:
+            logger.debug("Cached request connection check error: %s", exc)
+            return 0
+
+    @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
@@ -5412,6 +5423,7 @@ class AIAgent:
         # (a second concurrent call gets a fresh untracked client with
         # the old build-per-request behavior).
         stale = None
+        stale_dead_count = 0
         with self._openai_client_lock():
             cache = self._request_client_cache_ref()
             cached = cache["client"]
@@ -5421,16 +5433,25 @@ class AIAgent:
                     and cache["kwargs"] == request_kwargs
                     and not self._is_openai_client_closed(cached)
                 ):
-                    cache["in_use"] = True
-                    return cached
+                    stale_dead_count = self._dead_request_client_socket_count(cached)
+                    if stale_dead_count == 0:
+                        cache["in_use"] = True
+                        return cached
                 # kwargs changed (credential rotation, provider failover),
-                # poisoned by a cross-thread abort (#29507), or externally
-                # closed — never reuse; discard and rebuild below.
+                # poisoned by a cross-thread abort (#29507), externally
+                # closed, or holding a dead pooled socket — never reuse;
+                # discard and rebuild below.
                 stale = cached
                 cache["client"] = None
                 cache["kwargs"] = None
                 cache["poisoned"] = False
         if stale is not None:
+            if stale_dead_count > 0:
+                logger.warning(
+                    "Found %d dead connection(s) in cached request client pool "
+                    "before reuse — evicting client",
+                    stale_dead_count,
+                )
             # Safe to close from this thread: in_use was False, so no
             # worker thread owns the pool's FDs (#29507 concerns clients
             # with an in-flight request on another thread).

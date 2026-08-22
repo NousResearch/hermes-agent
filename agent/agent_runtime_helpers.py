@@ -4175,47 +4175,153 @@ def _iter_pool_sockets(client: Any):
                 yield sock
 
 
-def cleanup_dead_connections(agent) -> bool:
-    """Detect and clean up dead TCP connections on the primary client.
+def _peek_plain_socket_is_eof(sock: Any, *, set_nonblocking: bool) -> bool:
+    """Distinguish EOF from readable data without consuming either."""
+    import socket as _socket
 
-    Inspects the httpx connection pool for sockets in unhealthy states
-    (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
-    and rebuilds the primary client from scratch.
+    reset_blocking = False
+    try:
+        if set_nonblocking:
+            sock.setblocking(False)
+            reset_blocking = True
+        flags = _socket.MSG_PEEK | getattr(_socket, "MSG_DONTWAIT", 0)
+        return sock.recv(1, flags) == b""
+    except BlockingIOError:
+        return False
+    except (AttributeError, TypeError):
+        # Private stream wrappers and lightweight doubles need not implement
+        # the complete socket API. An inconclusive probe must not poison the
+        # whole pool scan or evict a connection as dead.
+        return False
+    except (OSError, ValueError):
+        return True
+    finally:
+        if reset_blocking:
+            try:
+                sock.setblocking(True)
+            except (AttributeError, TypeError, OSError, ValueError):
+                pass
+
+
+def _idle_pool_socket_is_unusable(sock: Any) -> bool:
+    """Return whether an idle HTTP socket is unsafe to reuse.
+
+    OS readiness polling works on TLS sockets without attempting
+    ``SSLSocket.recv(..., MSG_PEEK)``, which rejects non-zero flags. For plain
+    sockets, a readiness event is refined with a non-consuming peek so buffered
+    data is not mistaken for EOF. POSIX uses ``poll`` so high-numbered
+    descriptors are not misclassified by ``select``'s ``FD_SETSIZE`` limit.
+    The recv fallback preserves support for lightweight test doubles and
+    private stream wrappers without ``fileno``/``getsockopt``.
+    """
+    import select
+    import socket as _socket
+    import ssl
+    import sys
+
+    def _readable_socket_is_unusable() -> bool:
+        if isinstance(sock, _socket.socket) and not isinstance(sock, ssl.SSLSocket):
+            return _peek_plain_socket_is_eof(sock, set_nonblocking=False)
+        # TLS and unknown wrappers cannot be safely peeked. Unexpected
+        # readability between requests remains a conservative eviction signal.
+        return True
+
+    try:
+        sock_fd = sock.fileno()
+        if sock_fd < 0:
+            return True
+        if sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_ERROR):
+            return True
+        if sys.platform == "win32" or getattr(select, "poll", None) is None:
+            readable, _, exceptional = select.select([sock], [], [sock], 0)
+            if exceptional:
+                return True
+            return _readable_socket_is_unusable() if readable else False
+        poller = select.poll()
+        poller.register(sock_fd, select.POLLIN)
+        events = poller.poll(0)
+        if not events:
+            return False
+        event_mask = 0
+        for _, mask in events:
+            event_mask |= mask
+        fatal_mask = (
+            getattr(select, "POLLERR", 0)
+            | getattr(select, "POLLHUP", 0)
+            | getattr(select, "POLLNVAL", 0)
+        )
+        if event_mask & fatal_mask:
+            return True
+        readable_mask = select.POLLIN | getattr(select, "POLLPRI", 0)
+        return _readable_socket_is_unusable() if event_mask & readable_mask else True
+    except (AttributeError, TypeError):
+        pass
+    except (OSError, ValueError):
+        return True
+
+    return _peek_plain_socket_is_eof(sock, set_nonblocking=True)
+
+
+def _count_dead_pool_sockets(client: Any) -> int:
+    """Return the number of sockets that are unsafe for idle-pool reuse."""
+    dead_count = 0
+    for candidate_sock in _iter_pool_sockets(client):
+        sock: Any = candidate_sock
+        if _idle_pool_socket_is_unusable(sock):
+            dead_count += 1
+    return dead_count
+
+
+def cleanup_dead_connections(agent) -> bool:
+    """Detect and clean up dead TCP connections between agent turns.
+
+    Rebuilds the primary client when its pool contains dead sockets and evicts
+    an idle cached request client when its separate pool is unhealthy.  An
+    in-flight request client is never probed or closed from the turn thread.
 
     Returns True if dead connections were found and cleaned up.
     """
-    client = getattr(agent, "client", None)
-    if client is None:
-        return False
+    cleaned = False
     try:
-        dead_count = 0
-        for sock in _iter_pool_sockets(client):
-            # Probe socket health with a non-blocking recv peek
-            import socket as _socket
-            try:
-                sock.setblocking(False)
-                data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
-                if data == b"":
-                    dead_count += 1
-            except BlockingIOError:
-                pass  # No data available — socket is healthy
-            except OSError:
-                dead_count += 1
-            finally:
-                try:
-                    sock.setblocking(True)
-                except OSError:
-                    pass
-        if dead_count > 0:
-            _ra().logger.warning(
-                "Found %d dead connection(s) in client pool — rebuilding client",
-                dead_count,
-            )
-            agent._replace_primary_openai_client(reason="dead_connection_cleanup")
-            return True
+        primary_client = getattr(agent, "client", None)
+        if primary_client is not None:
+            primary_dead_count = _count_dead_pool_sockets(primary_client)
+            if primary_dead_count > 0:
+                _ra().logger.warning(
+                    "Found %d dead connection(s) in primary client pool — rebuilding client",
+                    primary_dead_count,
+                )
+                agent._replace_primary_openai_client(reason="dead_connection_cleanup")
+                cleaned = True
+
+        # The request client owns a separate httpx pool and remains cached
+        # between sequential calls. Hold the cache lock while checking it so a
+        # concurrent request cannot check out the client during the probe.
+        lock_factory = getattr(agent, "_openai_client_lock", None)
+        if callable(lock_factory):
+            lock: Any = lock_factory()
+            with lock:
+                cache = getattr(agent, "_request_client_cache", None)
+                request_client = (
+                    cache.get("client") if isinstance(cache, dict) else None
+                )
+                in_use = (
+                    bool(cache.get("in_use")) if isinstance(cache, dict) else False
+                )
+                if request_client is not None and not in_use:
+                    request_dead_count = _count_dead_pool_sockets(request_client)
+                    if request_dead_count > 0:
+                        _ra().logger.warning(
+                            "Found %d dead connection(s) in cached request client pool — evicting client",
+                            request_dead_count,
+                        )
+                        agent._close_cached_request_openai_client(
+                            reason="dead_connection_cleanup"
+                        )
+                        cleaned = True
     except Exception as exc:
         _ra().logger.debug("Dead connection check error: %s", exc)
-    return False
+    return cleaned
 
 
 

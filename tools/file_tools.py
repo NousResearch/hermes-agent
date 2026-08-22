@@ -961,14 +961,14 @@ def _check_protected_instruction_write(paths: list[str],
 
 def _check_approval_required_write(paths: list[str],
                                    task_id: str = "default") -> str | None:
-    """Gate a write/patch touching an approval-required path (``~/.ssh/config``).
+    """Gate a write/patch touching an approval-required path.
 
     These paths are NOT credentials and NOT hard-denied, but a write must
     be confirmed by a human because they can steer process execution
-    (an SSH ``ProxyCommand`` / ``Match exec``). Unlike the protected-
-    instruction gate this is a routine, user-initiated edit, so the prompt
-    offers once/session/always scopes and honors --yolo (the historical
-    dangerous-command semantics) rather than always re-asking.
+    (SSH ``ProxyCommand`` / ``Match exec``, or a login shell rc). Unlike
+    the protected-instruction gate this is a routine, user-initiated edit,
+    so the prompt offers once/session/always scopes and honors --yolo
+    (the historical dangerous-command semantics) rather than always re-asking.
 
     Returns ``None`` when no target is approval-gated or the human
     approved; otherwise a BLOCKED error string. Fail-closed when no
@@ -986,12 +986,12 @@ def _check_approval_required_write(paths: list[str],
 
     display_targets = ", ".join(dict.fromkeys(targets))
     description = (
-        f"Write to SSH client config file(s): {display_targets}. "
-        "The SSH config can carry ProxyCommand / Match exec directives that "
-        "run commands, so writes require your approval."
+        f"Write to approval-gated file(s): {display_targets}. "
+        "SSH client config and login shell rc files can run commands, "
+        "so writes require your approval."
     )
     blocked = (
-        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
+        f"BLOCKED: write to approval-gated file(s) ({display_targets}) "
         "{why} Do NOT retry it via another path (terminal, execute_code) "
         "without the user's explicit consent."
     )

@@ -66,6 +66,36 @@ class TestSshConfigApprovalGate:
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
 
+class TestShellRcApprovalGate:
+    """Login shell rc files pair with the terminal gate (#85321)."""
+
+    def test_shell_rc_not_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        assert is_write_denied(os.path.expanduser("~/.bashrc")) is False
+
+    def test_shell_rc_is_approval_required(self):
+        from agent.file_safety import is_write_approval_required
+
+        for name in (
+            ".bashrc", ".bash_aliases", ".profile", ".bash_profile",
+            ".zshenv", ".zshrc", ".zprofile", ".zlogin", ".zlogout",
+            ".config/fish/config.fish",
+        ):
+            assert is_write_approval_required(os.path.expanduser(f"~/{name}")) is True, name
+
+    def test_shell_rc_relocations_are_approval_required(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import is_write_approval_required
+
+        zsh_dir = tmp_path / "zsh"
+        xdg_dir = tmp_path / "xdg"
+        monkeypatch.setenv("ZDOTDIR", str(zsh_dir))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_dir))
+
+        assert is_write_approval_required(str(zsh_dir / ".zshrc")) is True
+        assert is_write_approval_required(str(xdg_dir / "fish" / "config.fish")) is True
+
+
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""

@@ -191,6 +191,12 @@ _STDERR_MESSAGE_LIMIT = 400
 _registered: Set[Tuple[str, Optional[str], str]] = set()
 _registered_lock = threading.Lock()
 
+# One-shot guard for the "configured but never registered" warning below.
+# Separate from ``_registered_lock`` so the warning path never contends
+# with registration.
+_unregistered_warning_lock = threading.Lock()
+_unregistered_warning_emitted = False
+
 # Intra-process lock for allowlist read-modify-write on platforms that
 # lack ``fcntl`` (non-POSIX).  Kept separate from ``_registered_lock``
 # because ``register_from_config`` already holds ``_registered_lock`` when
@@ -338,6 +344,85 @@ def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     return _parse_hooks_block(cfg.get("hooks"))
 
 
+def warn_if_configured_but_unregistered(
+    cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Warn once if ``hooks:`` is configured but nothing ever registered it.
+
+    :func:`register_from_config` is the only path that wires the ``hooks:``
+    block onto the plugin manager, and it is called from the CLI and
+    gateway entry points.  Code that drives :class:`AIAgent` directly — the
+    supported embedding path documented in "Using Hermes as a Python
+    Library" — never reaches those call sites, so a populated ``hooks:``
+    block is inert: every ``invoke_hook()`` dispatch finds zero handlers
+    and the configured scripts never run.
+
+    Nothing about that is observable today.  There is no error, no log
+    line, and ``hermes hooks list`` still shows the hooks as configured
+    because it reads the config rather than the manager.  This turns that
+    silence into one actionable warning.
+
+    Advisory only: it never registers anything and never raises.  Returns
+    ``True`` when a warning was emitted.
+    """
+    global _unregistered_warning_emitted
+
+    with _unregistered_warning_lock:
+        if _unregistered_warning_emitted:
+            return False
+
+        with _registered_lock:
+            if _registered:
+                # Something already registered hooks in this process, so
+                # the bridge is live and there is nothing to warn about.
+                return False
+
+        # Safe mode skips registration deliberately (see
+        # ``register_from_config``); warning there would be noise.
+        from utils import env_var_enabled
+
+        if env_var_enabled("HERMES_SAFE_MODE"):
+            return False
+
+        if cfg is None:
+            try:
+                # Read-only fast path: this check only reads ``hooks:`` and
+                # discards the parsed specs, so it does not need the
+                # defensive deepcopy ``load_config()`` pays for. Every
+                # ``AIAgent`` construction reaches here when no hooks are
+                # configured, so the deepcopy would be pure overhead on a
+                # path that never mutates.
+                from hermes_cli.config import load_config_readonly
+
+                cfg = load_config_readonly()
+            except Exception:
+                logger.debug(
+                    "could not load config for shell-hook registration check",
+                    exc_info=True,
+                )
+                return False
+
+        specs = iter_configured_hooks(cfg)
+        if not specs:
+            return False
+
+        events = sorted({spec.event for spec in specs})
+        logger.warning(
+            "%d shell hook(s) are configured for %s but none are registered "
+            "in this process, so they will not fire. register_from_config() "
+            "wires the `hooks:` block onto the plugin manager and is only "
+            "called by the CLI and gateway entry points; embedders driving "
+            "AIAgent directly must call it themselves: "
+            "`from agent.shell_hooks import register_from_config; "
+            "from hermes_cli.config import load_config; "
+            "register_from_config(load_config())`.",
+            len(specs),
+            ", ".join(events),
+        )
+        _unregistered_warning_emitted = True
+        return True
+
+
 def re_register_config_hooks() -> None:
     """Re-register shell hooks from config after a plugin force-reload.
 
@@ -361,8 +446,12 @@ def re_register_config_hooks() -> None:
 
 def reset_for_tests() -> None:
     """Clear the idempotence set.  Test-only helper."""
+    global _unregistered_warning_emitted
+
     with _registered_lock:
         _registered.clear()
+    with _unregistered_warning_lock:
+        _unregistered_warning_emitted = False
 
 
 # ---------------------------------------------------------------------------

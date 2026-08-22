@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
@@ -223,6 +223,149 @@ class TestDeliverOnlySecurityInvariants:
 
         # Target never called
         mock_target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_delivery_can_retry_with_same_delivery_id(self):
+        """A failed direct delivery releases its idempotency claim."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="temporary outage"),
+                SendResult(success=True),
+            ]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "retry-1"}
+            first = await cli.post("/webhooks/r", json={}, headers=headers)
+            second = await cli.post("/webhooks/r", json={}, headers=headers)
+
+            assert first.status == 502
+            assert second.status == 200
+            assert (await second.json())["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_delivery_exception_can_retry_with_same_delivery_id(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[RuntimeError("temporary outage"), SendResult(success=True)]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "retry-exception-1"}
+            first = await cli.post("/webhooks/r", json={}, headers=headers)
+            second = await cli.post("/webhooks/r", json={}, headers=headers)
+
+            assert first.status == 502
+            assert second.status == 200
+            assert (await second.json())["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_delivery_releases_claim_for_retry(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[asyncio.CancelledError(), SendResult(success=True)]
+        )
+        request = make_mocked_request(
+            "POST",
+            "/webhooks/r",
+            headers={"X-GitHub-Delivery": "retry-cancel-1"},
+            match_info={"route_name": "r"},
+        )
+        request.read = AsyncMock(return_value=b"{}")
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._handle_webhook(request)
+
+        retry = await adapter._handle_webhook(request)
+        assert retry.status == 200
+        assert json.loads(retry.text)["status"] == "delivered"
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrent_duplicate_delivery_id_sends_once(self):
+        """The in-flight claim still suppresses concurrent duplicates."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _send(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "same-direct-id"}
+            first = asyncio.create_task(cli.post("/webhooks/r", json={}, headers=headers))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+
+            # Even a send that outlives the configured TTL remains reserved
+            # until completion; an expired timestamp must not admit a second.
+            adapter._idempotency_ttl = 0
+            second = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert second.status == 200
+            assert (await second.json())["status"] == "duplicate"
+
+            adapter._idempotency_ttl = 3600
+            release.set()
+            first_response = await first
+            assert first_response.status == 200
+            assert (await first_response.json())["status"] == "delivered"
+
+            retry = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert retry.status == 200
+            assert (await retry.json())["status"] == "duplicate"
+
+        assert mock_target.send.await_count == 1
 
 
 # ===================================================================

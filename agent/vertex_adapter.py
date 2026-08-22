@@ -213,16 +213,75 @@ def get_vertex_config(
     return token, base_url
 
 
+def _adc_well_known_path() -> str:
+    """Path gcloud writes for `auth application-default login`."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA", "")
+        return os.path.join(base, "gcloud", "application_default_credentials.json")
+    return os.path.join(
+        os.path.expanduser("~"),
+        ".config",
+        "gcloud",
+        "application_default_credentials.json",
+    )
+
+
+def _on_gce() -> bool:
+    """True when this host looks like GCE/GKE, without touching the network.
+
+    On GCE the DMI product name is exactly "Google Compute Engine". Reading
+    it is a single small file read, so this keeps the no-network promise that
+    :func:`has_vertex_credentials` makes to startup paths — a metadata-server
+    ping would not.
+    """
+    try:
+        with open("/sys/class/dmi/id/product_name", "r", encoding="utf-8") as fh:
+            return "Google Compute Engine" in fh.read()
+    except Exception:
+        return False
+
+
+def has_adc_available() -> bool:
+    """True when Application Default Credentials are plausibly resolvable.
+
+    Deliberately a cheap heuristic rather than a real ADC resolution: the
+    caller is a startup/display path, and `google.auth.default()` both imports
+    google-auth and can hit the metadata server.
+
+    Two signals, either sufficient:
+
+    * the well-known ADC file that `gcloud auth application-default login`
+      writes, and
+    * running on GCE/GKE, where the metadata server *is* the credential and no
+      file exists at all.
+    """
+    if os.path.exists(_adc_well_known_path()):
+        return True
+    return _on_gce()
+
+
 def has_vertex_credentials() -> bool:
     """Fast check for whether Vertex credentials appear configured.
 
     No network calls and no google-auth import — safe for provider
-    auto-detection and setup-status display. True when either a service
-    account JSON path is resolvable, or an explicit project ID is configured
-    (env or config.yaml, implying ADC is intended).
+    auto-detection and setup-status display. True when a service account JSON
+    path is resolvable, an explicit project ID is configured (env or
+    config.yaml, implying ADC is intended), or ADC itself is plausibly
+    available.
+
+    The ADC branch matters most where it is least visible: on a GCE VM the
+    credential is the metadata server, so there is no JSON file to find and no
+    reason for an operator to restate a project ID that
+    ``google.auth.default()`` already returns. Without it, such a deployment
+    reports "no GCP credentials found" and
+    ``resolve_provider_client("vertex")`` returns ``(None, None)``, silently
+    disabling every auxiliary task (vision, compression, curator,
+    session_search, title generation, web extract) while the main conversation
+    path — which resolves credentials properly — keeps working. That split
+    failure is very hard to read from the symptoms.
     """
     if _resolve_credentials_path(None):
         return True
     if _resolve_project_override():
         return True
-    return False
+    return has_adc_available()

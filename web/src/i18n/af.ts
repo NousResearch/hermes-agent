@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const af: Translations = {
+export const af: TranslationOverlay = {
   common: {
     save: "Stoor",
     saving: "Besig om te stoor...",
@@ -618,12 +618,6 @@ export const af: Translations = {
       "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
     slug: "Slug",
     slugHint: "— kleinletters, koppeltekens, bv. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Vertoonnaam",
     displayNameHint: "(opsioneel)",
     description: "Beskrywing",

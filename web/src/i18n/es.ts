@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const es: Translations = {
+export const es: TranslationOverlay = {
   common: {
     save: "Guardar",
     saving: "Guardando...",
@@ -618,12 +618,6 @@ export const es: Translations = {
       "Los tableros te permiten separar flujos de trabajo no relacionados — uno por proyecto, repositorio o dominio. Los workers de un tablero nunca ven las tareas de otro.",
     slug: "Slug",
     slugHint: "— minúsculas, guiones, p. ej. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nombre visible",
     displayNameHint: "(opcional)",
     description: "Descripción",

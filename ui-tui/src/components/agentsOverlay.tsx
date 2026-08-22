@@ -13,14 +13,15 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import { type TranslationKey, useI18n } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
   descendantIds,
   flattenTree,
+  fmtCost,
   fmtDuration,
   fmtTokens,
-  formatSummary,
   hotnessBucket,
   peakHotness,
   sparkline,
@@ -43,20 +44,6 @@ type Status = SubagentProgress['status']
 
 const SORT_ORDER: readonly SortMode[] = ['depth-first', 'tools-desc', 'duration-desc', 'status']
 const FILTER_ORDER: readonly FilterMode[] = ['all', 'running', 'failed', 'leaf']
-
-const SORT_LABEL: Record<SortMode, string> = {
-  'depth-first': 'spawn order',
-  'duration-desc': 'slowest',
-  status: 'status',
-  'tools-desc': 'busiest'
-}
-
-const FILTER_LABEL: Record<FilterMode, string> = {
-  all: 'all',
-  failed: 'failed',
-  leaf: 'leaves',
-  running: 'running'
-}
 
 const STATUS_RANK: Record<Status, number> = {
   error: 0,
@@ -96,6 +83,16 @@ const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string 
   failed: { color: t => t.color.error, glyph: '✗' },
   timeout: { color: t => t.color.warn, glyph: '⌛' },
   error: { color: t => t.color.error, glyph: '⚠' }
+}
+
+const STATUS_LABEL: Record<Status, TranslationKey> = {
+  completed: 'agents.status.completed',
+  error: 'agents.status.error',
+  failed: 'agents.status.failed',
+  interrupted: 'agents.status.interrupted',
+  queued: 'agents.status.queued',
+  running: 'agents.status.running',
+  timeout: 'agents.status.timeout'
 }
 
 // Heatmap palette — cold → hot, resolved against the active theme.
@@ -139,6 +136,44 @@ const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => 
   return `${name}: ${fmt(a)} → ${fmt(b)}  (${sign}${fmt(Math.abs(d)) || '0'})`
 }
 
+const formatLocalizedSummary = (
+  totals: ReturnType<typeof treeTotals>,
+  ti: (key: TranslationKey, vars?: Record<string, string | number>) => string
+) => {
+  const pieces = [
+    ti('agents.summaryDepth', { depth: String(Math.max(0, totals.maxDepthFromHere)) }),
+    ti('agents.summaryAgents', {
+      count: String(totals.descendantCount),
+      noun: ti(totals.descendantCount === 1 ? 'agents.node' : 'agents.nodes')
+    })
+  ]
+
+  if (totals.totalTools > 0) {
+    pieces.push(
+      ti('agents.summaryTools', {
+        count: String(totals.totalTools),
+        noun: ti(totals.totalTools === 1 ? 'agents.tool' : 'agents.tools')
+      })
+    )
+  }
+
+  if (totals.totalDuration > 0) {
+    pieces.push(fmtDuration(totals.totalDuration))
+  }
+
+  const tokens = totals.inputTokens + totals.outputTokens
+
+  if (tokens > 0) {
+    pieces.push(ti('agents.summaryTokens', { tokens: fmtTokens(tokens) }))
+  }
+
+  if (totals.activeCount > 0) {
+    pieces.push(`⚡${totals.activeCount}`)
+  }
+
+  return pieces.join(' · ')
+}
+
 // ── Sub-components ───────────────────────────────────────────────────
 
 function GanttStrip({
@@ -156,6 +191,8 @@ function GanttStrip({
   now: number
   t: Theme
 }) {
+  const { t: ti } = useI18n()
+
   const spans = flatNodes
     .map((node, idx) => {
       const started = node.item.startedAt ?? now
@@ -230,7 +267,7 @@ function GanttStrip({
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={t.color.muted}>
-        Timeline · {fmtElapsedLabel(Math.max(0, totalSeconds))}
+        {ti('agents.timeline', { elapsed: fmtElapsedLabel(Math.max(0, totalSeconds)) })}
         {windowLabel}
       </Text>
 
@@ -318,12 +355,17 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
 
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
   const { aggregate: agg, item } = node
+  const { t: ti } = useI18n()
   const { color, glyph } = statusGlyph(item, t)
 
   const inputTokens = item.inputTokens ?? 0
   const outputTokens = item.outputTokens ?? 0
   const localTokens = inputTokens + outputTokens
   const subtreeTokens = agg.inputTokens + agg.outputTokens - localTokens
+  const localCost = item.costUsd ?? 0
+  const subtreeCost = Math.max(0, agg.costUsd - localCost)
+  const subtreeCostText = subtreeCost >= 0.01 ? fmtCost(subtreeCost) : ''
+  const showBudget = localTokens > 0 || subtreeTokens > 0 || localCost > 0 || Boolean(subtreeCostText)
 
   const filesRead = item.filesRead ?? []
   const filesWritten = item.filesWritten ?? []
@@ -343,41 +385,76 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
-        {item.model ? <Field name="model" t={t} value={item.model} /> : null}
-        {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
-        <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
+        <Field name={ti('agents.field.depth')} t={t} value={`${item.depth} · ${ti(STATUS_LABEL[item.status])}`} />
+        {item.model ? <Field name={ti('agents.field.model')} t={t} value={item.model} /> : null}
+        {item.toolsets?.length ? (
+          <Field name={ti('agents.field.toolsets')} t={t} value={item.toolsets.join(', ')} />
+        ) : null}
         <Field
-          name="subtree"
+          name={ti('agents.field.tools')}
           t={t}
-          value={`${agg.descendantCount} agent${agg.descendantCount === 1 ? '' : 's'} · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
+          value={ti('agents.subtreeTools', {
+            local: String(item.toolCount ?? 0),
+            total: String(agg.totalTools)
+          })}
         />
-        {item.durationSeconds ? <Field name="elapsed" t={t} value={fmtDur(item.durationSeconds)} /> : null}
-        {item.iteration != null ? <Field name="iteration" t={t} value={String(item.iteration)} /> : null}
-        {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
+        <Field
+          name={ti('agents.field.subtree')}
+          t={t}
+          value={ti('agents.subtreeSummary', {
+            active: String(agg.activeCount),
+            count: String(agg.descendantCount),
+            depth: String(agg.maxDepthFromHere),
+            noun: ti(agg.descendantCount === 1 ? 'agents.node' : 'agents.nodes')
+          })}
+        />
+        {item.durationSeconds ? (
+          <Field name={ti('agents.field.elapsed')} t={t} value={fmtDur(item.durationSeconds)} />
+        ) : null}
+        {item.iteration != null ? (
+          <Field name={ti('agents.field.iteration')} t={t} value={String(item.iteration)} />
+        ) : null}
+        {item.apiCalls ? <Field name={ti('agents.field.apiCalls')} t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
-      {localTokens > 0 ? (
-        <OverlaySection defaultOpen t={t} title="Budget">
+      {showBudget ? (
+        <OverlaySection defaultOpen t={t} title={ti('section.budget')}>
           {localTokens > 0 ? (
             <Field
-              name="tokens"
+              name={ti('agents.field.tokens')}
               t={t}
               value={
                 <>
-                  {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
-                  {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
+                  {ti('agents.tokenFlow', { input: fmtTokens(inputTokens), output: fmtTokens(outputTokens) })}
+                  {item.reasoningTokens
+                    ? ti('agents.reasoningTokens', { tokens: fmtTokens(item.reasoningTokens) })
+                    : ''}
                 </>
               }
             />
           ) : null}
 
-          {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
+          {subtreeTokens > 0 ? (
+            <Field name={ti('agents.field.subtreeTokens')} t={t} value={`+${fmtTokens(subtreeTokens)}`} />
+          ) : null}
+
+          {localCost > 0 ? (
+            <Field
+              name={ti('agents.field.cost')}
+              t={t}
+              value={
+                <>
+                  {fmtCost(localCost)}
+                  {subtreeCostText ? ti('agents.subtreeCost', { cost: subtreeCostText }) : ''}
+                </>
+              }
+            />
+          ) : null}
         </OverlaySection>
       ) : null}
 
       {filesRead.length > 0 || filesWritten.length > 0 ? (
-        <OverlaySection count={filesRead.length + filesWritten.length} t={t} title="Files">
+        <OverlaySection count={filesRead.length + filesWritten.length} t={t} title={ti('section.files')}>
           {filesWritten.slice(0, 8).map((p, i) => (
             <Text color={t.color.statusGood} key={`w-${i}`} wrap="truncate-end">
               +{p}
@@ -390,12 +467,14 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
             </Text>
           ))}
 
-          {filesOverflow > 0 ? <Text color={t.color.muted}>…+{filesOverflow} more</Text> : null}
+          {filesOverflow > 0 ? (
+            <Text color={t.color.muted}>{ti('agents.moreFiles', { count: String(filesOverflow) })}</Text>
+          ) : null}
         </OverlaySection>
       ) : null}
 
       {toolLines.length > 0 ? (
-        <OverlaySection count={toolLines.length} defaultOpen t={t} title="Tool calls">
+        <OverlaySection count={toolLines.length} defaultOpen t={t} title={ti('section.toolCalls')}>
           {toolLines.map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.muted}>·</Text> {line}
@@ -405,7 +484,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {outputTail.length > 0 ? (
-        <OverlaySection count={outputTail.length} defaultOpen t={t} title="Output">
+        <OverlaySection count={outputTail.length} defaultOpen t={t} title={ti('section.output')}>
           {outputTail.map((entry, i) => (
             <Text color={entry.isError ? t.color.error : t.color.text} key={i} wrap="wrap">
               <Text bold color={entry.isError ? t.color.error : t.color.accent}>
@@ -418,7 +497,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.notes.length ? (
-        <OverlaySection count={item.notes.length} t={t} title="Progress">
+        <OverlaySection count={item.notes.length} t={t} title={ti('section.progress')}>
           {item.notes.slice(-6).map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.label}>·</Text> {line}
@@ -428,7 +507,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.summary ? (
-        <OverlaySection defaultOpen t={t} title="Summary">
+        <OverlaySection defaultOpen t={t} title={ti('section.summary')}>
           <Text color={t.color.text} wrap="wrap">
             {item.summary}
           </Text>
@@ -453,12 +532,13 @@ function ListRow({
   t: Theme
   width: number
 }) {
+  const { t: ti } = useI18n()
   const { color, glyph } = statusGlyph(node.item, t)
   const palette = heatPalette(t)
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const goal = compactPreview(node.item.goal || ti('agents.defaultName'), width - 28 - node.item.depth * 2)
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -499,6 +579,8 @@ function DiffPane({
   totals: ReturnType<typeof treeTotals>
   width: number
 }) {
+  const { t: ti } = useI18n()
+
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.text}>
@@ -511,7 +593,7 @@ function DiffPane({
 
       <Box marginTop={1}>
         <Text color={t.color.muted} wrap="truncate-end">
-          {formatSummary(totals)}
+          {formatLocalizedSummary(totals, ti)}
         </Text>
       </Box>
 
@@ -523,7 +605,7 @@ function DiffPane({
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">
-                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'}
+                <Text color={color}>{glyph}</Text> {s.goal || ti('agents.defaultName')}
               </Text>
             )
           })}
@@ -543,6 +625,7 @@ function DiffView({
   pair: { baseline: SpawnSnapshot; candidate: SpawnSnapshot }
   t: Theme
 }) {
+  const { t: ti } = useI18n()
   const aTotals = useMemo(() => treeTotals(buildSubagentTree(pair.baseline.subagents)), [pair.baseline])
   const bTotals = useMemo(() => treeTotals(buildSubagentTree(pair.candidate.subagents)), [pair.candidate])
   const paneWidth = Math.floor((cols - 4) / 2)
@@ -560,15 +643,27 @@ function DiffView({
     <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
         <Text bold color={t.color.border}>
-          Replay diff
+          {ti('agents.diff.title')}
         </Text>
-        <Text color={t.color.muted}>baseline vs candidate · esc/q close</Text>
+        <Text color={t.color.muted}>{ti('agents.diff.subtitle')}</Text>
       </Box>
 
       <Box flexDirection="row" marginBottom={1}>
-        <DiffPane label="A · baseline" snapshot={pair.baseline} t={t} totals={aTotals} width={paneWidth} />
+        <DiffPane
+          label={ti('agents.diff.baseline')}
+          snapshot={pair.baseline}
+          t={t}
+          totals={aTotals}
+          width={paneWidth}
+        />
         <Box width={2} />
-        <DiffPane label="B · candidate" snapshot={pair.candidate} t={t} totals={bTotals} width={paneWidth} />
+        <DiffPane
+          label={ti('agents.diff.candidate')}
+          snapshot={pair.candidate}
+          t={t}
+          totals={bTotals}
+          width={paneWidth}
+        />
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
@@ -577,16 +672,25 @@ function DiffView({
         </Text>
 
         <Text color={t.color.text}>
-          {diffMetricLine('agents', aTotals.descendantCount, bTotals.descendantCount, round)}
-        </Text>
-        <Text color={t.color.text}>{diffMetricLine('tools', aTotals.totalTools, bTotals.totalTools, round)}</Text>
-        <Text color={t.color.text}>
-          {diffMetricLine('depth', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
+          {diffMetricLine(ti('agents.diff.metricAgents'), aTotals.descendantCount, bTotals.descendantCount, round)}
         </Text>
         <Text color={t.color.text}>
-          {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
+          {diffMetricLine(ti('agents.diff.metricTools'), aTotals.totalTools, bTotals.totalTools, round)}
         </Text>
-        <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
+        <Text color={t.color.text}>
+          {diffMetricLine(ti('agents.diff.metricDepth'), aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
+        </Text>
+        <Text color={t.color.text}>
+          {diffMetricLine(
+            ti('agents.diff.metricDuration'),
+            aTotals.totalDuration,
+            bTotals.totalDuration,
+            n => `${n.toFixed(1)}s`
+          )}
+        </Text>
+        <Text color={t.color.text}>
+          {diffMetricLine(ti('agents.diff.metricTokens'), sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}
+        </Text>
       </Box>
     </Box>
   )
@@ -595,6 +699,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+  const { t: ti } = useI18n()
   const liveSubagents = useTurnSelector(state => state.subagents)
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -670,9 +775,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     if (historyIndex === 0 && prev > 0 && liveSubagents.length === 0 && history.length > 0) {
       setHistoryIndex(1)
       setCursor(0)
-      setFlash('turn finished · inspect freely · q to close')
+      setFlash(ti('agents.turnFinished'))
     }
-  }, [history.length, historyIndex, liveSubagents.length])
+  }, [history.length, historyIndex, liveSubagents.length, ti])
 
   useEffect(() => {
     // Reset detail scroll on navigation so the top of the new node shows.
@@ -696,7 +801,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const guardLive = (action: () => void) => {
     if (replayMode) {
-      setFlash('replay mode — controls disabled')
+      setFlash(ti('agents.replayControlsDisabled'))
     } else {
       action()
     }
@@ -709,16 +814,21 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
-          setFlash(r?.found ? `killing ${id}` : `not found: ${id}`)
+          setFlash(r?.found ? ti('agents.killing', { id }) : ti('agents.notFound', { id }))
         })
-        .catch(() => setFlash(`kill failed: ${id}`))
+        .catch(() => setFlash(ti('agents.killFailed', { id })))
     })
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
-      setFlash(`killing subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
+      setFlash(
+        ti('agents.killingSubtree', {
+          count: String(ids.length),
+          noun: ti(ids.length === 1 ? 'agents.node' : 'agents.nodes')
+        })
+      )
     })
 
   const togglePause = () =>
@@ -727,9 +837,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)
           applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+          setFlash(r?.paused ? ti('agents.spawningPaused') : ti('agents.spawningResumed'))
         })
-        .catch(() => setFlash('pause failed'))
+        .catch(() => setFlash(ti('agents.pauseFailed')))
     })
 
   const stepHistory = (delta: -1 | 1) =>
@@ -738,7 +848,11 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       if (next !== idx) {
         setCursor(0)
-        setFlash(next === 0 ? 'live turn' : `replay · ${next}/${history.length}`)
+        setFlash(
+          next === 0
+            ? ti('agents.liveTurn')
+            : ti('agents.replayStep', { current: String(next), total: String(history.length) })
+        )
       }
 
       return next
@@ -876,16 +990,41 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const title =
     replayMode && effectiveSnapshot
-      ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
-          effectiveSnapshot.finishedAt
-        ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+      ? `${historyIndex > 0 ? ti('agents.replayTitle', { current: String(historyIndex), total: String(history.length) }) : ti('agents.lastTurn')} · ${ti(
+          'agents.finishedAt',
+          { time: new Date(effectiveSnapshot.finishedAt).toLocaleTimeString() }
+        )}`
+      : `${ti('section.spawnTree')}${delegation.paused ? ` · ⏸ ${ti('agents.paused')}` : ''}`
 
-  const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
+  const metaLine = [formatLocalizedSummary(totals, ti), spark, capsLabel, mix ? `· ${mix}` : '']
+    .filter(Boolean)
+    .join('  ')
 
   const controlsHint = replayMode
-    ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    ? ti('agents.controlsLocked')
+    : ti('agents.controlsLive', { action: delegation.paused ? ti('agents.resume') : ti('agents.pause') })
+
+  const sortLabel = ti(
+    (
+      {
+        'depth-first': 'agents.sort.depthFirst',
+        'duration-desc': 'agents.sort.durationDesc',
+        status: 'agents.sort.status',
+        'tools-desc': 'agents.sort.toolsDesc'
+      } as const
+    )[sort]
+  )
+
+  const filterLabel = ti(
+    (
+      {
+        all: 'agents.filter.all',
+        failed: 'agents.filter.failed',
+        leaf: 'agents.filter.leaf',
+        running: 'agents.filter.running'
+      } as const
+    )[filter]
+  )
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -911,7 +1050,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       {rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>{ti('agents.noSubagents')}</Text>
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
@@ -950,15 +1089,18 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
         {mode === 'list' ? (
           <Text color={t.color.muted}>
-            ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
-            {FILTER_LABEL[filter]}
-            {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
-            {' · q close'}
+            {ti('agents.hintList', {
+              controls: controlsHint,
+              filter: filterLabel,
+              history:
+                history.length > 0
+                  ? ti('agents.historyHint', { current: String(historyIndex), total: String(history.length) })
+                  : '',
+              sort: sortLabel
+            })}
           </Text>
         ) : (
-          <Text color={t.color.muted}>
-            ↑↓/jk scroll · PgUp/PgDn page · g/G top/bottom · Esc/← back to list{controlsHint} · q close
-          </Text>
+          <Text color={t.color.muted}>{ti('agents.hintDetail', { controls: controlsHint })}</Text>
         )}
       </Box>
     </Box>

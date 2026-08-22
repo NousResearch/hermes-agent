@@ -1,5 +1,7 @@
 import type { BillingBlock } from '@hermes/shared/billing'
 
+import { translate, type Locale } from '../i18n/index.js'
+
 export interface BillingDialogCopy {
   cancelLabel: string
   confirmLabel: string
@@ -15,22 +17,25 @@ export interface BillingDialogCopy {
  * billing page (or `/model` to switch when we have no URL). Pure + exported so
  * the wording is unit-tested without driving the gateway.
  */
-export function billingDialogCopy(block: BillingBlock): BillingDialogCopy {
+export function billingDialogCopy(block: BillingBlock, locale: Locale = 'en'): BillingDialogCopy {
   if (block.is_nous) {
     return {
-      cancelLabel: 'Dismiss',
-      confirmLabel: 'Top up',
-      detail: 'Your Nous credit balance is exhausted — top up to keep going.',
-      title: 'Out of Nous credits'
+      cancelLabel: translate(locale, 'billing.blocked.dismiss'),
+      confirmLabel: translate(locale, 'billing.blocked.nous.confirm'),
+      detail: translate(locale, 'billing.blocked.nous.detail'),
+      title: translate(locale, 'billing.blocked.nous.title')
     }
   }
 
-  const label = block.provider_label || 'your provider'
+  const label = block.provider_label || translate(locale, 'billing.blocked.provider.fallbackLabel')
 
   return {
-    cancelLabel: 'Dismiss',
-    confirmLabel: block.billing_url ? 'Open billing page' : 'Switch provider',
-    detail: `${label} reports your credits or billing are exhausted.`,
-    title: `Out of credits · ${label}`
+    cancelLabel: translate(locale, 'billing.blocked.dismiss'),
+    confirmLabel: translate(
+      locale,
+      block.billing_url ? 'billing.blocked.provider.confirmOpen' : 'billing.blocked.provider.confirmSwitch'
+    ),
+    detail: translate(locale, 'billing.blocked.provider.detail', { provider: label }),
+    title: translate(locale, 'billing.blocked.provider.title', { provider: label })
   }
 }

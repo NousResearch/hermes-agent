@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const fr: Translations = {
+export const fr: TranslationOverlay = {
   common: {
     save: "Enregistrer",
     saving: "Enregistrement...",
@@ -618,12 +618,6 @@ export const fr: Translations = {
       "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slug: "Slug",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nom affiché",
     displayNameHint: "(facultatif)",
     description: "Description",

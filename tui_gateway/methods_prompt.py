@@ -856,12 +856,20 @@ def _(rid, params: dict) -> dict:
     # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
     if not save_clipboard_image(img_path):
         session["image_counter"] = max(0, session["image_counter"] - 1)
+        extraction_failed = has_clipboard_image()
         msg = (
             "Clipboard has image but extraction failed"
-            if has_clipboard_image()
+            if extraction_failed
             else "No image found in clipboard"
         )
-        return _ok(rid, {"attached": False, "message": msg})
+        return _ok(
+            rid,
+            {
+                "attached": False,
+                "message": msg,
+                "reason": "extract_failed" if extraction_failed else "empty",
+            },
+        )
 
     session.setdefault("attached_images", []).append(str(img_path))
     return _ok(

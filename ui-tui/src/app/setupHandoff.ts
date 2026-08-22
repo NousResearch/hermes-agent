@@ -1,6 +1,7 @@
 import type { RunExternalProcess } from '@hermes/ink'
 
 import type { SetupStatusResponse } from '../gatewayTypes.js'
+import { type Locale, translate } from '../i18n/index.js'
 import type { LaunchResult } from '../lib/externalCli.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
@@ -10,14 +11,15 @@ export interface RunExternalSetupOptions {
   args: string[]
   ctx: Pick<SlashHandlerContext, 'gateway' | 'session' | 'transcript'>
   done: string
+  locale: Locale
   launcher: (args: string[]) => Promise<LaunchResult>
   suspend: (run: RunExternalProcess) => Promise<void>
 }
 
-export async function runExternalSetup({ args, ctx, done, launcher, suspend }: RunExternalSetupOptions) {
+export async function runExternalSetup({ args, ctx, done, launcher, locale, suspend }: RunExternalSetupOptions) {
   const { gateway, session, transcript } = ctx
 
-  transcript.sys(`launching \`hermes ${args.join(' ')}\`…`)
+  transcript.sys(translate(locale, 'setup.launching', { args: args.join(' ') }))
   patchUiState({ status: 'setup running…' })
 
   let result: LaunchResult = { code: null }
@@ -27,14 +29,14 @@ export async function runExternalSetup({ args, ctx, done, launcher, suspend }: R
   })
 
   if (result.error) {
-    transcript.sys(`error launching hermes: ${result.error}`)
+    transcript.sys(translate(locale, 'setup.launchError', { error: result.error }))
     patchUiState({ status: 'setup required' })
 
     return
   }
 
   if (result.code !== 0) {
-    transcript.sys(`hermes ${args[0]} exited with code ${result.code}`)
+    transcript.sys(translate(locale, 'setup.exitedWithCode', { command: args[0] ?? '', code: String(result.code) }))
     patchUiState({ status: 'setup required' })
 
     return
@@ -43,7 +45,7 @@ export async function runExternalSetup({ args, ctx, done, launcher, suspend }: R
   const setup = await gateway.rpc<SetupStatusResponse>('setup.status', {})
 
   if (setup?.provider_configured === false) {
-    transcript.sys('still no provider configured')
+    transcript.sys(translate(locale, 'setup.stillNoProvider'))
     patchUiState({ status: 'setup required' })
 
     return

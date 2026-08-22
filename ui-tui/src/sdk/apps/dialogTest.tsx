@@ -1,6 +1,7 @@
 import { Text } from '@hermes/ink'
 
 import { Dialog, Overlay, type OverlayZone } from '../../components/overlay.js'
+import { useI18n } from '../../i18n/index.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl } from '../types.js'
 
@@ -25,18 +26,12 @@ export interface DialogTestState {
   zone: OverlayZone
 }
 
-const defaultBody = (zone: OverlayZone) =>
-  [
-    'This is a viewport-level overlay with a backdrop.',
-    '',
-    `Zone: ${zone}`,
-    'Try: /dialog-test top-right · bottom · left · ...'
-  ].join('\n')
-
 export const dialogTestApp = defineWidgetApp<DialogTestState>({
   id: 'dialog-test',
   help: 'open a sample dialog overlay with a faked backdrop',
+  helpKey: 'widget.dialog.help',
   usage: USAGE,
+  usageKey: 'widget.dialog.usage',
 
   init(arg) {
     const zone = (arg.trim().toLowerCase() || 'center') as OverlayZone
@@ -45,7 +40,7 @@ export const dialogTestApp = defineWidgetApp<DialogTestState>({
       return null
     }
 
-    return { body: defaultBody(zone), hint: 'Esc/q/Enter close · Ctrl+C close', title: 'Dialog primitive', zone }
+    return { body: '', zone }
   },
 
   reduce(state, { ch, key }) {
@@ -53,14 +48,25 @@ export const dialogTestApp = defineWidgetApp<DialogTestState>({
   },
 
   render({ cols, state }) {
-    return (
-      <Overlay backdrop zone={state.zone}>
-        <Dialog hint={state.hint ?? 'Esc/q close'} title={state.title} width={Math.min(60, cols - 8)}>
-          {state.body.split('\n').map((line, i) => (
-            <Text key={i}>{line || ' '}</Text>
-          ))}
-        </Dialog>
-      </Overlay>
-    )
+    return <DialogTestView cols={cols} state={state} />
   }
 })
+
+function DialogTestView({ cols, state }: { cols: number; state: DialogTestState }) {
+  const { t: ti } = useI18n()
+  const body = state.body || ti('widget.dialog.body', { zone: state.zone })
+
+  return (
+    <Overlay backdrop zone={state.zone}>
+      <Dialog
+        hint={state.hint ?? ti('widget.dialog.hint')}
+        title={state.title ?? ti('widget.dialog.title')}
+        width={Math.min(60, cols - 8)}
+      >
+        {body.split('\n').map((line, i) => (
+          <Text key={i}>{line || ' '}</Text>
+        ))}
+      </Dialog>
+    </Overlay>
+  )
+}

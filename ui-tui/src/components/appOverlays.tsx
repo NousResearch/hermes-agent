@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { useI18n } from '../i18n/index.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -68,6 +69,7 @@ export function PromptZone({
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
+  const { t } = useI18n()
 
   if (overlay.approval) {
     return (
@@ -144,7 +146,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <MaskedPrompt cols={cols} icon="🔐" label={t('prompt.sudoPassword')} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -157,7 +159,7 @@ export function PromptZone({
           icon="🔑"
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          sub={t('prompt.secretFor', { envVar: overlay.secret.envVar })}
           t={theme}
         />
       </PromptCell>
@@ -195,6 +197,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
+  const { t } = useI18n()
 
   const hasAny = hasFloatingPanel(overlay) || completions.length
 
@@ -315,8 +318,11 @@ export function FloatingOverlays({
             <Box marginTop={1}>
               <OverlayHint t={theme}>
                 {pager.offset + pagerPageSize < pager.lines.length
-                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
-                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${pager.lines.length} lines)`}
+                  ? t('pager.navHint', {
+                      current: String(Math.min(pager.offset + pagerPageSize, pager.lines.length)),
+                      total: String(pager.lines.length)
+                    })
+                  : t('pager.navEnd', { total: String(pager.lines.length) })}
               </OverlayHint>
             </Box>
           </Box>

@@ -1,39 +1,40 @@
+import type { TranslationKey } from '../i18n/index.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
-const copyHotkeys: [string, string][] = isMac
+const copyHotkeys: [string, TranslationKey][] = isMac
   ? [
-      ['Cmd+C', 'copy selection'],
-      ['Ctrl+C', 'clear draft / interrupt / exit']
+      ['Cmd+C', 'hotkey.copySelection'],
+      ['Ctrl+C', 'hotkey.interruptClearExit']
     ]
   : isRemoteShell()
     ? [
-        ['Cmd+C', 'copy selection when forwarded by the terminal'],
-        ['Ctrl+C', 'copy selection / clear draft / interrupt / exit']
+        ['Cmd+C', 'hotkey.forwardCopySelection'],
+        ['Ctrl+C', 'hotkey.copySelectionInterruptClearExit']
       ]
-    : [['Ctrl+C', 'copy selection / clear draft / interrupt / exit']]
+    : [['Ctrl+C', 'hotkey.copySelectionInterruptClearExit']]
 
-export const HOTKEYS: [string, string][] = [
+export const HOTKEYS: [string, TranslationKey][] = [
   ...copyHotkeys,
-  [action + '+D', 'exit'],
-  [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
-  [action + '+L', 'redraw / repaint'],
-  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
-  ['Esc Esc', 'discard draft (recall with ↑)'],
-  ['Tab', 'apply completion'],
-  ['↑/↓', 'completions / queue edit / history'],
-  ['Ctrl+X', 'open live session switcher (deletes queued message while editing)'],
-  ['Ctrl+O', 'open model picker (keeps your draft; applies to next turn mid-stream)'],
-  [action + '+A/E', 'home / end of line'],
-  [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
-  [action + '+W', 'delete word'],
-  [action + '+U/K', 'kill to line start / end (repeat across lines)'],
-  [action + '+←/→', 'jump word'],
-  ['Home/End', 'start / end of line'],
-  ['Shift+Enter / Alt+Enter', 'insert newline'],
-  ['\\+Enter', 'multi-line continuation (fallback)'],
-  ['!<cmd>', 'run a shell command (e.g. !ls, !git status)'],
-  ['{!<cmd>}', 'interpolate shell output inline (e.g. "branch is {!git branch --show-current}")']
+  [action + '+D', 'hotkey.quit'],
+  [action + '+G / Alt+G', 'hotkey.openEditor'],
+  [action + '+L', 'hotkey.redraw'],
+  [paste + '+V / /paste', 'hotkey.pasteTextOrImage'],
+  ['Esc Esc', 'hotkey.discardDraft'],
+  ['Tab', 'hotkey.applyCompletion'],
+  ['↑/↓', 'hotkey.navigateOrEdit'],
+  ['Ctrl+X', 'hotkey.openSessionsOrDeleteQueued'],
+  ['Ctrl+O', 'hotkey.openModelPicker'],
+  [action + '+A/E', 'hotkey.lineStartEnd'],
+  [action + '+Z / ' + action + '+Y', 'hotkey.undoRedo'],
+  [action + '+W', 'hotkey.deleteWord'],
+  [action + '+U/K', 'hotkey.deleteToLineEnds'],
+  [action + '+←/→', 'hotkey.jumpWord'],
+  ['Home/End', 'hotkey.lineStartEnd'],
+  ['Shift+Enter / Alt+Enter', 'hotkey.insertNewline'],
+  ['\\+Enter', 'hotkey.multilineCont'],
+  ['!<cmd>', 'hotkey.runShellCmd'],
+  ['{!<cmd>}', 'hotkey.inlineShellCmd']
 ]

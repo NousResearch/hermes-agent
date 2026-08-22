@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { completionRequestForInput } from '../hooks/useCompletion.js'
+import {
+  completionRequestForInput,
+  localizableCompletionItem,
+  localizeCompletionItems
+} from '../hooks/useCompletion.js'
 
 describe('completionRequestForInput', () => {
   it('routes real slash commands to slash completion', () => {
@@ -31,5 +35,31 @@ describe('completionRequestForInput', () => {
 
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
+  })
+})
+
+describe('localized completion metadata', () => {
+  it('uses stable presentation keys while preserving English wire fallbacks', () => {
+    const item = localizableCompletionItem({
+      text: '@file:',
+      display: '@file:',
+      meta: 'attach file',
+      meta_key: 'completion.attachFile'
+    })
+
+    expect(localizeCompletionItems([item], 'zh')).toEqual([{ text: '@file:', display: '@file:', meta: '附加文件' }])
+    expect(localizeCompletionItems([item], 'ja')).toEqual([{ text: '@file:', display: '@file:', meta: 'attach file' }])
+  })
+
+  it('interpolates dynamic argument metadata', () => {
+    const item = localizableCompletionItem({
+      text: 'expanded',
+      display: 'expanded',
+      meta: 'set thinking',
+      meta_key: 'completion.setSection',
+      meta_vars: { section: 'thinking' }
+    })
+
+    expect(localizeCompletionItems([item], 'zh')[0]?.meta).toBe('设置 thinking')
   })
 })

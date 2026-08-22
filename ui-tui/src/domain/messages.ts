@@ -1,10 +1,11 @@
 import { LONG_MSG } from '../config/limits.js'
+import { type Locale, translate } from '../i18n/index.js'
 import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
-export const userDisplay = (text: string) => {
+export const userDisplay = (text: string, locale: Locale = 'en') => {
   if (text.length <= LONG_MSG) {
     return text
   }
@@ -13,10 +14,10 @@ export const userDisplay = (text: string) => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || '(message)'} [long message]`
+  return `${prefix || translate(locale, 'transcript.messageFallback')} ${translate(locale, 'transcript.longMessage')}`
 }
 
-export const toTranscriptMessages = (rows: unknown): Msg[] => {
+export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
   }
@@ -51,21 +52,21 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.modelChanged') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
+      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.resumedInterruptedTurn') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'personality changed' })
+      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.personalityChanged') })
       pending = []
 
       continue
@@ -77,8 +78,10 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
 
       const label =
         count === undefined
-          ? 'background agent work finished'
-          : `${count} background agent${count === 1 ? '' : 's'} finished`
+          ? translate(locale, 'transcript.backgroundAgentWorkFinished')
+          : count === 1
+            ? translate(locale, 'transcript.backgroundAgentFinished', { count })
+            : translate(locale, 'transcript.backgroundAgentsFinished', { count })
 
       out.push({ kind: 'event', role: 'system', text: label })
       pending = []

@@ -2265,6 +2265,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
                         "setup) — your message will be sent as soon as it's "
                         "ready."
                     ),
+                    "text_key": "notification.agentStartingSlow",
                     "level": "info",
                     "kind": "agent",
                     "ttl_ms": None,
@@ -3744,6 +3745,21 @@ def resolve_skin() -> dict:
         }
     except Exception:
         return {}
+
+
+def resolve_language() -> str:
+    """Resolve the presentation locale through the shared Python contract.
+
+    Ink owns subsequent display-language refreshes.  Keeping that refresh at
+    the presentation boundary avoids rebuilding the agent or its cached tool
+    schema when a user changes language.
+    """
+    try:
+        from agent.i18n import get_language
+
+        return get_language()
+    except Exception:
+        return "en"
 
 
 # Signature of the last skin broadcast: (name, active user-file mtime). Lets the
@@ -8071,7 +8087,11 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             _emit(
                 "status.update",
                 sid,
-                {"kind": "process", "text": "Resuming interrupted turn…"},
+                {
+                    "kind": "process",
+                    "text": "Resuming interrupted turn…",
+                    "text_key": "status.resumingInterruptedTurn",
+                },
             )
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
@@ -13408,6 +13428,26 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/sessions", "Switch between live TUI sessions", "TUI"),
 ]
 
+_TUI_COMPLETION_EXTRA: tuple[str, ...] = (
+    "/density",
+    "/details",
+    "/logs",
+    "/mouse",
+)
+
+
+def _command_category_key(category: str) -> str:
+    """Return a stable presentation id; clients own localized category copy."""
+    return {
+        "Session": "session",
+        "Configuration": "configuration",
+        "Tools & Skills": "tools",
+        "Info": "info",
+        "Exit": "exit",
+        "TUI": "tui",
+        "User commands": "userCommands",
+    }.get(category, "")
+
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,
 # so slash.exec routes them to command.dispatch internally (which handles
@@ -13770,16 +13810,27 @@ def _abs_completion_prefix_exists(path_part: str) -> bool:
         return False
 
 
-def _details_completion_item(value: str, meta: str = "") -> dict:
-    return {"text": value, "display": value, "meta": meta}
+def _details_completion_item(
+    value: str,
+    meta: str = "",
+    meta_key: str | None = None,
+    meta_vars: dict | None = None,
+) -> dict:
+    item = {"text": value, "display": value, "meta": meta}
+    if meta_key:
+        item["meta_key"] = meta_key
+    if meta_vars:
+        item["meta_vars"] = meta_vars
+    return item
 
 
 def _details_root_completion_item(
-    value: str, meta: str, needs_leading_space: bool
+    value: str, meta: str, needs_leading_space: bool, meta_key: str
 ) -> dict:
     return _details_completion_item(
         f" {value}" if needs_leading_space else value,
         meta,
+        meta_key,
     )
 
 
@@ -13803,16 +13854,25 @@ def _details_completions(text: str) -> list[dict] | None:
         return [
             *[
                 _details_root_completion_item(
-                    mode, "global mode", not has_trailing_space
+                    mode,
+                    "global mode",
+                    not has_trailing_space,
+                    "completion.globalMode",
                 )
                 for mode in modes
             ],
             _details_root_completion_item(
-                "cycle", "cycle global mode", not has_trailing_space
+                "cycle",
+                "cycle global mode",
+                not has_trailing_space,
+                "completion.cycleGlobalMode",
             ),
             *[
                 _details_root_completion_item(
-                    section, "section override", not has_trailing_space
+                    section,
+                    "section override",
+                    not has_trailing_space,
+                    "completion.sectionOverride",
                 )
                 for section in sections
             ],
@@ -13829,6 +13889,13 @@ def _details_completions(text: str) -> list[dict] | None:
                     if candidate in sections
                     else "cycle global mode" if candidate == "cycle" else "global mode"
                 ),
+                (
+                    "completion.sectionOverride"
+                    if candidate in sections
+                    else "completion.cycleGlobalMode"
+                    if candidate == "cycle"
+                    else "completion.globalMode"
+                ),
             )
             for candidate in candidates
             if candidate.startswith(prefix) and candidate != prefix
@@ -13837,10 +13904,20 @@ def _details_completions(text: str) -> list[dict] | None:
     if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
         return [
             *[
-                _details_completion_item(mode, f"set {parts[0].lower()}")
+                _details_completion_item(
+                    mode,
+                    f"set {parts[0].lower()}",
+                    "completion.setSection",
+                    {"section": parts[0].lower()},
+                )
                 for mode in modes
             ],
-            _details_completion_item("reset", f"clear {parts[0].lower()} override"),
+            _details_completion_item(
+                "reset",
+                f"clear {parts[0].lower()} override",
+                "completion.clearSectionOverride",
+                {"section": parts[0].lower()},
+            ),
         ]
 
     if len(parts) == 2 and not has_trailing_space and parts[0].lower() in sections:
@@ -13853,6 +13930,12 @@ def _details_completions(text: str) -> list[dict] | None:
                     if candidate == "reset"
                     else f"set {parts[0].lower()}"
                 ),
+                (
+                    "completion.clearSectionOverride"
+                    if candidate == "reset"
+                    else "completion.setSection"
+                ),
+                {"section": parts[0].lower()},
             )
             for candidate in (*modes, "reset")
             if candidate.startswith(prefix) and candidate != prefix

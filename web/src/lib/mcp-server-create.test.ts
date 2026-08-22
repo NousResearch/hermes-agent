@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMcpServerCreate, emptyMcpServerDraft } from "./mcp-server-create";
+import {
+  buildMcpServerCreate,
+  emptyMcpServerDraft,
+  McpServerCreateError,
+} from "./mcp-server-create";
 
 describe("buildMcpServerCreate", () => {
   it("builds an HTTP Bearer request without stdio fields", () => {
@@ -70,30 +74,39 @@ describe("buildMcpServerCreate", () => {
     });
   });
 
-  it("rejects missing transport fields and Bearer tokens", () => {
-    expect(() => buildMcpServerCreate(emptyMcpServerDraft())).toThrow(
-      "Name required",
-    );
-    expect(() =>
-      buildMcpServerCreate({
-        ...emptyMcpServerDraft(),
-        name: "remote",
-      }),
-    ).toThrow("URL required");
-    expect(() =>
-      buildMcpServerCreate({
+  it.each([
+    {
+      draft: emptyMcpServerDraft(),
+      code: "name-required" as const,
+    },
+    {
+      draft: { ...emptyMcpServerDraft(), name: "remote" },
+      code: "url-required" as const,
+    },
+    {
+      draft: {
         ...emptyMcpServerDraft(),
         name: "remote",
         url: "https://example.com/mcp",
-        httpAuth: "header",
-      }),
-    ).toThrow("Bearer token required");
-    expect(() =>
-      buildMcpServerCreate({
+        httpAuth: "header" as const,
+      },
+      code: "bearer-token-required" as const,
+    },
+    {
+      draft: {
         ...emptyMcpServerDraft(),
         name: "local",
-        transport: "stdio",
-      }),
-    ).toThrow("Command required");
+        transport: "stdio" as const,
+      },
+      code: "command-required" as const,
+    },
+  ])("rejects invalid drafts with stable code $code", ({ draft, code }) => {
+    try {
+      buildMcpServerCreate(draft);
+      throw new Error("expected validation to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpServerCreateError);
+      expect((error as McpServerCreateError).code).toBe(code);
+    }
   });
 });

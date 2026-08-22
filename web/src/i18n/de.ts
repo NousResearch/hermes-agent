@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const de: Translations = {
+export const de: TranslationOverlay = {
   common: {
     save: "Speichern",
     saving: "Speichern...",
@@ -617,12 +617,6 @@ export const de: Translations = {
       "Mit Boards kannst du voneinander unabhängige Arbeitsabläufe trennen — eines pro Projekt, Repository oder Domäne. Worker auf einem Board sehen niemals die Aufgaben eines anderen Boards.",
     slug: "Slug",
     slugHint: "— Kleinbuchstaben, Bindestriche, z. B. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Anzeigename",
     displayNameHint: "(optional)",
     description: "Beschreibung",

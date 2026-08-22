@@ -1,3 +1,4 @@
+import { translate, type Locale } from '../i18n/index.js'
 import type { SubagentAggregate, SubagentNode, SubagentProgress } from '../types.js'
 
 const ROOT_KEY = '__root__'
@@ -234,12 +235,22 @@ export function sparkline(values: readonly number[]): string {
 /**
  * Format totals into a compact one-line summary: `d2 · 7 agents · 124 tools · 2m 14s`
  */
-export function formatSummary(totals: SubagentAggregate): string {
-  const pieces = [`d${Math.max(0, totals.maxDepthFromHere)}`]
-  pieces.push(`${totals.descendantCount} agent${totals.descendantCount === 1 ? '' : 's'}`)
+export function formatSummary(totals: SubagentAggregate, locale: Locale = 'en'): string {
+  const pieces = [translate(locale, 'agents.summaryDepth', { depth: Math.max(0, totals.maxDepthFromHere) })]
+  pieces.push(
+    translate(locale, 'agents.summaryAgents', {
+      count: totals.descendantCount,
+      noun: translate(locale, totals.descendantCount === 1 ? 'agents.node' : 'agents.nodes')
+    })
+  )
 
   if (totals.totalTools > 0) {
-    pieces.push(`${totals.totalTools} tool${totals.totalTools === 1 ? '' : 's'}`)
+    pieces.push(
+      translate(locale, 'agents.summaryTools', {
+        count: totals.totalTools,
+        noun: translate(locale, totals.totalTools === 1 ? 'agents.tool' : 'agents.tools')
+      })
+    )
   }
 
   if (totals.totalDuration > 0) {
@@ -249,7 +260,7 @@ export function formatSummary(totals: SubagentAggregate): string {
   const tokens = totals.inputTokens + totals.outputTokens
 
   if (tokens > 0) {
-    pieces.push(`${fmtTokens(tokens)} tok`)
+    pieces.push(translate(locale, 'agents.summaryTokens', { tokens: fmtTokens(tokens) }))
   }
 
   if (totals.activeCount > 0) {

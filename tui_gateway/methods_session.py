@@ -2624,7 +2624,26 @@ def _(rid, params: dict) -> dict:
             f"Agent Running: {'Yes' if session.get('running') else 'No'}",
         ]
     )
-    return _ok(rid, {"output": "\n".join(lines)})
+    return _ok(
+        rid,
+        {
+            # Older clients still consume the English projection. Ink uses
+            # structured details so its locale pack owns labels and grammar.
+            "output": "\n".join(lines),
+            "details": {
+                "session_id": str(key),
+                "path": display_hermes_home(),
+                "project": project["name"] if project else "",
+                "title": title,
+                "model": str(model),
+                "provider": str(provider),
+                "created": created.isoformat(),
+                "last_activity": updated.isoformat(),
+                "tokens": int(usage.get("total") or 0),
+                "agent_running": bool(session.get("running")),
+            },
+        },
+    )
 
 
 @method("session.history")

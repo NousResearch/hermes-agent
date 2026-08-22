@@ -1,6 +1,8 @@
+import { getUiState } from '../../app/uiStore.js'
 import { FloatBox } from '../../components/appChrome.js'
 import { GridTestOverlay } from '../../components/gridTestOverlay.js'
 import { Overlay } from '../../components/overlay.js'
+import { translate } from '../../i18n/index.js'
 import { openWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl, type WidgetInput } from '../types.js'
@@ -91,7 +93,9 @@ function reduceStreams(grid: GridTestState, { ch, key }: WidgetInput): GridTestS
 export const gridTestApp = defineWidgetApp<GridTestState>({
   id: 'grid-test',
   help: 'open an interactive widget-grid demo overlay',
+  helpKey: 'widget.grid.help',
   usage: USAGE,
+  usageKey: 'widget.grid.usage',
 
   init(arg) {
     const streams = arg.trim().toLowerCase() === 'streams'
@@ -110,10 +114,12 @@ export const gridTestApp = defineWidgetApp<GridTestState>({
     // `d` opens the dialog app as a nested demo — apps launch each other via
     // the typed programmatic API; the host swaps the active app.
     if (ch === 'd') {
+      const locale = getUiState().locale
+
       openWidget(dialogTestApp, {
-        body: 'Dialog overlaid on top of /grid-test.\n\nBackdrop dims the grid behind.',
-        hint: 'Esc/q/Enter close',
-        title: 'Overlay primitive',
+        body: translate(locale, 'widget.grid.dialogBody'),
+        hint: translate(locale, 'widget.grid.dialogHint'),
+        title: translate(locale, 'widget.grid.dialogTitle'),
         zone: 'center'
       })
 

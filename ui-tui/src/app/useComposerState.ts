@@ -13,6 +13,7 @@ import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropRespon
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
+import { translate } from '../i18n/index.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
@@ -222,7 +223,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       }
 
       if (!quiet) {
-        sys(r?.message || 'No image found in clipboard')
+        const extractionFailed =
+          r?.reason === 'extract_failed' || r?.message === 'Clipboard has image but extraction failed'
+
+        sys(
+          translate(
+            getUiState().locale,
+            extractionFailed ? 'paste.imageExtractionFailed' : 'paste.noImage'
+          )
+        )
       }
 
       return null
@@ -285,7 +294,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         }
       }
 
-      const label = pasteTokenLabel(cleanedText, lineCount)
+      const label = pasteTokenLabel(cleanedText, lineCount, getUiState().locale)
       const inserted = insertAtCursor(value, cursor, label)
 
       setComposerTokens(prev => trimTokens([...prev, { kind: 'paste', label, text: cleanedText }]))
@@ -378,7 +387,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         const attached = await gw
           .request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
           .catch((e: Error) => {
-            sys(`error: ${e.message}`)
+            sys(translate(getUiState().locale, 'errors.rpc', { message: e.message }))
 
             return null
           })

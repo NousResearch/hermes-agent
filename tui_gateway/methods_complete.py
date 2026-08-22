@@ -93,12 +93,12 @@ def _(rid, params: dict) -> dict:
 
         if is_context and not query:
             items = [
-                {"text": "@diff", "display": "@diff", "meta": "git diff"},
-                {"text": "@staged", "display": "@staged", "meta": "staged diff"},
-                {"text": "@file:", "display": "@file:", "meta": "attach file"},
-                {"text": "@folder:", "display": "@folder:", "meta": "attach folder"},
-                {"text": "@url:", "display": "@url:", "meta": "fetch url"},
-                {"text": "@git:", "display": "@git:", "meta": "git log"},
+                {"text": "@diff", "display": "@diff", "meta": "git diff", "meta_key": "completion.gitDiff"},
+                {"text": "@staged", "display": "@staged", "meta": "staged diff", "meta_key": "completion.stagedDiff"},
+                {"text": "@file:", "display": "@file:", "meta": "attach file", "meta_key": "completion.attachFile"},
+                {"text": "@folder:", "display": "@folder:", "meta": "attach folder", "meta_key": "completion.attachFolder"},
+                {"text": "@url:", "display": "@url:", "meta": "fetch url", "meta_key": "completion.fetchUrl"},
+                {"text": "@git:", "display": "@git:", "meta": "git log", "meta_key": "completion.gitLog"},
             ]
             # Agent profiles are mentionable — list them alongside the
             # directive hints so `@` alone reveals them.
@@ -247,6 +247,7 @@ def _(rid, params: dict) -> dict:
                         "text": f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
                         "display": basename + ("/" if is_dir else ""),
                         "meta": "dir" if is_dir else os.path.dirname(rel),
+                        **({"meta_key": "completion.directory"} if is_dir else {}),
                     }
                 )
 
@@ -309,6 +310,7 @@ def _(rid, params: dict) -> dict:
                     "text": text,
                     "display": entry + suffix,
                     "meta": "dir" if is_dir else "",
+                    **({"meta_key": "completion.directory"} if is_dir else {}),
                 }
             )
             if len(items) >= 30:
@@ -334,7 +336,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
 
     try:
-        from hermes_cli.commands import SlashCommandCompleter
+        from hermes_cli.commands import COMMAND_REGISTRY, SlashCommandCompleter
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
@@ -346,6 +348,11 @@ def _(rid, params: dict) -> dict:
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))
+        command_keys: dict[str, str] = {}
+        for command in COMMAND_REGISTRY:
+            command_keys[f"/{command.name}"] = command.name
+            for alias in command.aliases:
+                command_keys[f"/{alias}"] = command.name
         # Skill commands and bundles are the only completions offered for an
         # inline `/skill` reference typed mid-message, so the class has to
         # reach the TUI as data. Derived from the same providers the completer
@@ -354,24 +361,40 @@ def _(rid, params: dict) -> dict:
             key.lstrip("/").lower()
             for key in (*get_skill_commands(), *get_skill_bundles())
         }
-        items = [
-            {
-                "text": c.text,
+        items = []
+        for completion in completer.get_completions(doc, None):
+            item = {
+                "text": completion.text,
                 # prompt_toolkit gives us FormattedText (a list of (style,
                 # text) tuples) for display/display_meta. Serialize both as
                 # plain strings — the TUI's CompletionItem.display contract
                 # is a string, and sending the raw list trips Ink's row
                 # layout into 1-char truncation of the next column.
-                "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
+                "display": (
+                    to_plain_text(completion.display)
+                    if completion.display
+                    else completion.text
+                ),
+                "meta": (
+                    to_plain_text(completion.display_meta)
+                    if completion.display_meta
+                    else ""
+                ),
                 "kind": (
                     "skill"
-                    if c.text.strip().lstrip("/").lower() in skill_names
+                    if completion.text.strip().lstrip("/").lower() in skill_names
                     else "command"
                 ),
             }
-            for c in completer.get_completions(doc, None)
-        ]
+            completion_token = (
+                completion.text
+                if completion.text.startswith("/")
+                else f"/{completion.text}"
+            )
+            command_key = command_keys.get(completion_token)
+            if command_key:
+                item["meta_key"] = command_key
+            items.append(item)
 
         # Rank and bound the list (see _rank_slash_completions) while a
         # `/token` is under the cursor — the one stage skills are offered at.
@@ -416,31 +439,17 @@ def _(rid, params: dict) -> dict:
             items = items[:_SLASH_COMPLETION_LIMIT]
 
         text_lower = text.lower()
+        extra_meta = {name: desc for name, desc, _category in _TUI_EXTRA}
+        extra_meta["/details"] = "Control agent detail visibility"
         extras = [
             {
-                "text": "/density",
-                "display": "/density",
-                "meta": "Toggle compact display mode",
+                "text": command,
+                "display": command,
+                "meta": extra_meta[command],
+                "meta_key": command.lstrip("/"),
                 "kind": "command",
-            },
-            {
-                "text": "/details",
-                "display": "/details",
-                "meta": "Control agent detail visibility",
-                "kind": "command",
-            },
-            {
-                "text": "/logs",
-                "display": "/logs",
-                "meta": "Show recent gateway log lines",
-                "kind": "command",
-            },
-            {
-                "text": "/mouse",
-                "display": "/mouse",
-                "meta": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
-                "kind": "command",
-            },
+            }
+            for command in _TUI_COMPLETION_EXTRA
         ]
         for extra in extras:
             if extra["text"].startswith(text_lower) and not any(

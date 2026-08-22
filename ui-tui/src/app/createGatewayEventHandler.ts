@@ -4,7 +4,7 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -13,6 +13,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { normalizeLocale, translate, translateOptional, type TranslationKey } from '../i18n/index.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
@@ -455,8 +456,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     appendMessage({
       role: 'system',
       text: clarify.questions?.length
-        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'timed out')
-        : formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+        ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'timedOut', getUiState().locale)
+        : formatAbandonedClarify(clarify.question, clarify.choices, 'timedOut', getUiState().locale)
     })
     patchOverlayState({ clarify: null })
   }
@@ -557,7 +558,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     agentsNudgedThisTurn = true
-    turnController.pushActivity('subagents working · /agents to watch live', 'info')
+    turnController.pushActivity(translate(getUiState().locale, 'activity.subagentsWorking'), 'info')
   }
 
   const resetAgentsNudgeTurnState = () => {
@@ -624,18 +625,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       if (!sid) {
-        return sys('startup query skipped: no active session')
+        return sys(ti('startup.noActiveSession'))
       }
 
       if (STARTUP_IMAGE) {
         try {
           await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
         } catch (e) {
-          sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
+          sys(ti('startup.imageAttachFailed', { message: rpcErrorMessage(e) }))
         }
       }
 
-      submitRef.current(STARTUP_QUERY || 'What do you see in this image?')
+      submitRef.current(STARTUP_QUERY || ti('startup.imagePrompt'))
     }, 0)
   }
 
@@ -647,9 +648,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
-    if (skin) {
-      applySkin(skin)
+  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
+
+  const handleReady = (payload?: { language?: string; skin?: GatewaySkin }) => {
+    if (payload?.language) {
+      patchUiState({ locale: normalizeLocale(payload.language) })
+    }
+
+    if (payload?.skin) {
+      applySkin(payload.skin)
     }
 
     // Kick off the config fetch once the gateway is actually ready. If handler
@@ -675,6 +682,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setCatalog({
           canon: (r.canon ?? {}) as Record<string, string>,
           categories: r.categories ?? [],
+          descriptionKeys: (r.description_keys ?? {}) as Record<string, string>,
           pairs: r.pairs as [string, string][],
           skillCount: (r.skill_count ?? 0) as number,
           sub: (r.sub ?? {}) as Record<string, string[]>
@@ -684,7 +692,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(String(r.warning), 'warn')
         }
       })
-      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
+      .catch((e: unknown) =>
+        turnController.pushActivity(ti('gateway.commandCatalogUnavailable', { message: rpcErrorMessage(e) }), 'info')
+      )
 
     // Crash recovery: a respawn triggered by an unexpected gateway death
     // resumes the session that was live, not a brand-new one. One-shot — the
@@ -759,7 +769,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload)
 
         return
 
@@ -830,14 +840,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        if (p.kind === 'goal') {
-          sys(p.text)
+        const text = p.text_key ? translateOptional(getUiState().locale, p.text_key, p.text, p.text_vars) : p.text
 
-          const brief = p.text.startsWith('✓')
+        if (p.kind === 'goal') {
+          sys(text)
+
+          const brief = text.startsWith('✓')
             ? '✓ goal complete'
-            : p.text.startsWith('↻')
+            : text.startsWith('↻')
               ? '↻ goal continuing'
-              : p.text.startsWith('⏸')
+              : text.startsWith('⏸')
                 ? '⏸ goal paused'
                 : 'ready'
 
@@ -847,10 +859,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        setStatus(p.text)
+        setStatus(text)
 
         if (p.kind === 'compressing') {
-          sys(p.text)
+          sys(text)
 
           return
         }
@@ -859,10 +871,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        if (turnController.lastStatusNote !== p.text) {
-          turnController.lastStatusNote = p.text
+        if (turnController.lastStatusNote !== text) {
+          turnController.lastStatusNote = text
           turnController.pushActivity(
-            p.text,
+            text,
             p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
           )
         }
@@ -883,12 +895,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        const text = p.text_key ? translateOptional(getUiState().locale, p.text_key, p.text, p.text_vars) : p.text
+
         turnController.showNotice({
           id: p.id,
           key: p.key,
           kind: p.kind ?? 'sticky',
           level: p.level ?? 'info',
-          text: p.text,
+          text,
           ttl_ms: p.ttl_ms ?? null
         })
 
@@ -915,11 +929,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        sys('💳 Open this link to allow Remote Spending:')
+        sys(ti('billing.stepUp.verificationLink'))
         sys(url)
 
         if (code) {
-          sys(`If prompted, enter code: ${code}`)
+          sys(ti('billing.stepUp.verificationCode', { code }))
         }
 
         void openExternalUrl(url)
@@ -973,7 +987,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setVoiceEnabled(false)
           setVoiceRecording(false)
           setVoiceProcessing(false)
-          sys('voice: stop phrase — voice chat ended')
+          sys(ti('voice.stopPhraseEnded'))
 
           return
         }
@@ -984,7 +998,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setVoiceEnabled(false)
           setVoiceRecording(false)
           setVoiceProcessing(false)
-          sys('voice: no speech detected 3 times, continuous mode stopped')
+          sys(ti('voice.noSpeechStopped'))
 
           return
         }
@@ -1025,7 +1039,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const ownProfile = getUiState().info?.profile_name || 'default'
 
           if (wakeProfile && wakeProfile !== ownProfile) {
-            sys(`wake phrase for profile '${wakeProfile}' — run: hermes -p ${wakeProfile} --tui`)
+            sys(ti('wake.profileMismatch', { profile: wakeProfile }))
             await rpc('wake.resume', {}).catch(() => undefined)
 
             return
@@ -1047,7 +1061,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           await rpc('voice.toggle', { action: 'on' })
           await rpc('voice.record', { action: 'start', session_id: sid })
         })().catch((e: unknown) => {
-          sys(`wake: ${rpcErrorMessage(e)}`)
+          sys(ti('errors.rpc', { message: rpcErrorMessage(e) }))
 
           void rpc('wake.resume', {}).catch(() => undefined)
         })
@@ -1060,7 +1074,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
-        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+        turnController.pushActivity(ti('gateway.startupTimedOut', { trace }), 'error')
 
         // Surface the most useful stderr lines inline so users can tell
         // "wrong python", "missing dep", and "config parse failure"
@@ -1090,11 +1104,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!turnController.protocolWarned) {
           turnController.protocolWarned = true
-          turnController.pushActivity('protocol noise detected · /logs to inspect', 'info')
+          turnController.pushActivity(ti('gateway.protocolNoiseDetected'), 'info')
         }
 
         if (ev.payload?.preview) {
-          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'info')
+          turnController.pushActivity(
+            ti('gateway.protocolNoise', { preview: String(ev.payload.preview).slice(0, 120) }),
+            'info'
+          )
         }
 
         return
@@ -1131,7 +1148,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // reference completes ("MoA: refs 2/3"), so the user sees movement
         // during the (potentially long) reference phase without transcript spam.
         if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
-          turnController.pushActivity(`MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}`, 'info', 'MoA')
+          turnController.pushActivity(
+            ti('activity.moaReferences', {
+              done: ev.payload.refs_done,
+              total: ev.payload.refs_total
+            }),
+            'info',
+            'MoA'
+          )
         }
 
         return
@@ -1140,7 +1164,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Phase transition — currently only phase="aggregator" (fan-out done,
         // aggregator acting). Swap the progress line for aggregator copy.
         if (ev.payload?.phase === 'aggregator') {
-          turnController.pushActivity('MoA: aggregating…', 'info', 'MoA')
+          turnController.pushActivity(ti('activity.moaAggregating'), 'info', 'MoA')
         }
 
         return
@@ -1154,7 +1178,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.generating':
         if (ev.payload?.name) {
-          turnController.pushTrail(`drafting ${ev.payload.name}…`)
+          turnController.pushTrail(ti('tool.drafting', { name: ev.payload.name }))
         }
 
         return
@@ -1246,7 +1270,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'approval.request': {
-        const description = String(ev.payload.description ?? 'dangerous command')
+        const description = String(ev.payload.description ?? ti('prompt.dangerousCommand'))
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
 
@@ -1290,7 +1314,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
-        sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
+        sys(ti('transcript.bgComplete', { taskId: ev.payload.task_id, text: ev.payload.text }))
 
         return
       case 'review.summary': {
@@ -1450,7 +1474,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // the top-of-loop guard already scopes this to the active session.
         if (ev.payload?.billing) {
           const block = ev.payload.billing
-          const copy = billingDialogCopy(block)
+          const copy = billingDialogCopy(block, getUiState().locale)
 
           patchOverlayState({
             confirm: {
@@ -1479,18 +1503,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         flashPet('failed')
 
         {
-          const message = String(ev.payload?.message || 'unknown error')
+          const message = String(ev.payload?.message || ti('common.unknownError'))
 
           turnController.pushActivity(message, 'error')
 
           if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+            const { locale } = getUiState()
+            panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
             setStatus('setup required')
 
             return
           }
 
-          sys(`error: ${message}`)
+          sys(ti('errors.rpc', { message }))
           setStatus('ready')
         }
     }

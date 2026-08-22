@@ -1620,6 +1620,82 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # navigation.  Without this, a task that navigated to localhost on the local
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+
+# Tracks the daemon's last known page URL per session_key — the final
+# (post-redirect) URL of the last successful navigation, refreshed by
+# browser_back (whose result reports the landing URL). Read by the
+# _browser_eval supervisor fast-path gate: the supervisor's attached page
+# must be showing this URL before its eval result can be trusted — see
+# _supervisor_page_matches_daemon for why they diverge.
+_last_navigated_urls: Dict[str, str] = {}  # session_key -> daemon page URL
+
+# Session keys whose daemon page may have moved somewhere the recorded URL
+# no longer describes: a click can follow a link or open a new tab (the
+# daemon rebinds to the new tab while the supervisor keeps showing the old
+# page — whose URL still *matches* the recorded one, so the URL comparison
+# alone would wrongly trust the fast path), and Enter can submit a form.
+# While marked, the eval fast path is off; the next authoritative URL
+# (navigate, or back reporting its landing URL) clears the mark.
+_page_maybe_diverged: set = set()  # of session_key
+
+# session_key -> the supervisor's top-frame id captured at the moment of the
+# last authoritative navigation, IF the supervisor was then showing the URL
+# the daemon had just landed on. A URL match alone cannot prove page
+# identity — two CDP page targets can show the same URL — so the eval
+# fast-path gate additionally requires the supervisor's top frame to still
+# be the one bound here. No binding (no supervisor at navigate time, or its
+# page didn't match — e.g. a Browserless private browser stuck on
+# about:blank) → the gate never trusts the fast path for that session.
+_page_bound_frame_ids: Dict[str, str] = {}
+
+
+def _record_daemon_url(session_key: str, url: str) -> None:
+    """Record the daemon's authoritative current URL and clear any
+    divergence mark — the two must move together so the eval fast-path gate
+    compares the supervisor against the page the daemon is actually on.
+
+    Ordering note: the mark is cleared *before* the identity bind on
+    purpose. If the bind fails (no supervisor, or its page doesn't match),
+    it pops the frame binding, and a missing binding alone stands the fast
+    path down — so clearing first cannot re-enable a stale fast path.
+    Don't "fix" this into clear-after-bind."""
+    _last_navigated_urls[session_key] = url
+    _page_maybe_diverged.discard(session_key)
+    _bind_supervisor_page_identity(session_key, url)
+
+
+def _bind_supervisor_page_identity(session_key: str, url: str) -> None:
+    """Bind the supervisor's current top-frame id as this session's page
+    identity — only when the supervisor is provably watching the page the
+    daemon just navigated to (its top-frame URL equals the fresh
+    post-navigation URL). Any doubt clears the binding, which stands the
+    eval fast path down for the session (see _supervisor_page_matches_daemon).
+    """
+    _page_bound_frame_ids.pop(session_key, None)
+    if not url:
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        supervisor = SUPERVISOR_REGISTRY.get(session_key)
+        if supervisor is None:
+            return
+        snap = supervisor.snapshot()
+        top = (snap.frame_tree or {}).get("top") or {}
+        sup_url = str(top.get("url") or "")
+        frame_id = str(top.get("frame_id") or "")
+    except Exception as exc:
+        logger.debug(
+            "browser eval: supervisor identity bind failed for task=%s: %s",
+            session_key,
+            exc,
+        )
+        return
+    if not sup_url or not frame_id:
+        return
+    if sup_url == url or sup_url.split("#", 1)[0] == url.split("#", 1)[0]:
+        _page_bound_frame_ids[session_key] = frame_id
+
+
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -3484,6 +3560,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Failed opens and blocked redirects must not retarget follow-up clicks
         # or snapshots to a newly-created but irrelevant session.
         _last_active_session_key[effective_task_id] = nav_session_key
+        _record_daemon_url(nav_session_key, str(final_url or ""))
         _copy_fallback_warning(response, result)
 
         # Detect common "blocked" page patterns from title/url
@@ -3667,6 +3744,12 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
+        # A click can follow a link or open a new tab, and its result carries
+        # no URL — so the recorded daemon URL can no longer be trusted (and
+        # probing the daemon here would cost a subprocess call per click).
+        # Mark the session so the eval fast path stands down until the next
+        # authoritative URL (navigate, or back's reported landing URL).
+        _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "clicked": ref
@@ -3825,6 +3908,14 @@ def browser_back(task_id: Optional[str] = None) -> str:
                     ),
                 }, ensure_ascii=False)
         data = result.get("data", {})
+        # back's result reports the landing URL — re-record it so the eval
+        # fast-path gate tracks the page the daemon is actually on (and any
+        # click-induced divergence mark is cleared by the authoritative URL).
+        _back_url = str(data.get("url") or "")
+        if _back_url:
+            _record_daemon_url(effective_task_id, _back_url)
+        else:
+            _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "url": data.get("url", "")
@@ -3860,6 +3951,12 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
+        # Enter can submit a form and navigate (possibly into a new tab via
+        # target=_blank) — same trust problem as a click. Space activates a
+        # focused button/link in browsers, so it can navigate too. Other keys
+        # type or move focus and keep the fast path available.
+        if key in ("Enter", "NumpadEnter", "Space", " "):
+            _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "pressed": key
@@ -4188,6 +4285,78 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
     )
 
 
+def _supervisor_page_matches_daemon(effective_task_id: str, supervisor) -> bool:
+    """Gate for the supervisor eval fast-path: is the supervisor's attached
+    page the page the agent-browser daemon is actually driving?
+
+    The two silently diverge — the supervisor owns a separate CDP connection
+    and attaches to the first page target *that connection* sees:
+
+    * Browserless-style backends spawn a private browser per CDP websocket,
+      so the supervisor's connection can never see the daemon's page; its
+      evals "succeed" against its own about:blank and return empty/wrong
+      results (#32685 family).
+    * On plain Chrome the browser is shared, but the daemon may be driving
+      a different tab than the one the supervisor attached.
+
+    Zero-subprocess check, two conditions both required:
+
+    1. **Page identity**: the supervisor's top frame must still be the one
+       bound at the last authoritative navigation
+       (``_page_bound_frame_ids``, captured when the supervisor's URL
+       matched the fresh post-navigation URL). A URL match alone cannot
+       establish identity — two CDP page targets can show the same URL —
+       so no binding, or a different current frame id, means the fast path
+       is never trusted. This is deliberately the strongest identity
+       available without daemon cooperation: the agent-browser daemon is an
+       external CLI that does not expose its target id, so identity is
+       inferred at the one moment the two provably coincide and required
+       stable thereafter.
+    2. **Page URL**: the supervisor's live top-frame URL (tracked from CDP
+       frame events) must match the daemon's last known URL (recorded by
+       ``browser_navigate``, refreshed by ``browser_back``).
+
+    Mismatch on either, no recorded navigation, or unreadable supervisor
+    state → the caller falls through to the agent-browser subprocess path,
+    which always evaluates in the daemon's session — SPA route changes
+    after navigation cost only the subprocess spawn, never a wrong-page
+    result.
+
+    The comparison is only meaningful while the recorded URL still
+    describes the daemon's page. A click (or Enter) can move the daemon
+    without updating it — including to a *new tab*, where the supervisor
+    keeps showing the old page whose URL still matches the stale record —
+    so sessions marked in ``_page_maybe_diverged`` never take the fast
+    path until the next authoritative URL clears the mark.
+    """
+    if effective_task_id in _page_maybe_diverged:
+        return False
+    last_url = _last_navigated_urls.get(effective_task_id, "")
+    bound_frame_id = _page_bound_frame_ids.get(effective_task_id, "")
+    if not last_url or not bound_frame_id:
+        return False
+    try:
+        snap = supervisor.snapshot()
+        top = (snap.frame_tree or {}).get("top") or {}
+        sup_url = str(top.get("url") or "")
+        sup_frame_id = str(top.get("frame_id") or "")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug(
+            "browser eval: supervisor page-match probe failed for task=%s: %s",
+            effective_task_id,
+            exc,
+        )
+        return False
+    if not sup_url or not sup_frame_id:
+        return False
+    if sup_frame_id != bound_frame_id:
+        return False
+    if sup_url == last_url:
+        return True
+    # Fragment-only differences are the same document.
+    return sup_url.split("#", 1)[0] == last_url.split("#", 1)[0]
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     effective_task_id = _last_session_key(task_id or "default")
@@ -4224,9 +4393,23 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # spawning an ``agent-browser eval`` CLI process.  Falls through to the
     # subprocess path on any error so behaviour is unchanged when no
     # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    # Gated on _supervisor_page_matches_daemon: the supervisor's connection
+    # can be attached to a different page than the daemon's (a private
+    # per-connection browser on Browserless-style backends, or another tab
+    # on plain Chrome) — evaluating there returns plausible-but-wrong
+    # results, so those cases take the subprocess path instead.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        if supervisor is not None and not _supervisor_page_matches_daemon(
+            effective_task_id, supervisor
+        ):
+            logger.debug(
+                "browser eval: supervisor page differs from daemon page for "
+                "task=%s — using agent-browser subprocess path",
+                effective_task_id,
+            )
+            supervisor = None
         if supervisor is not None:
             sup_result = supervisor.evaluate_runtime(expression)
             if sup_result.get("ok"):
@@ -4923,6 +5106,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+        _last_navigated_urls.pop(session_key, None)
+        _page_maybe_diverged.discard(session_key)
+        _page_bound_frame_ids.pop(session_key, None)
 
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the

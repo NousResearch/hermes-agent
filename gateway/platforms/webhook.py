@@ -30,6 +30,9 @@ Security:
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
+from gateway.platforms.webhook_executions import WebhookExecutionRegistry
+from hermes_constants import get_hermes_home
+
 import asyncio
 import base64
 import binascii
@@ -241,6 +244,13 @@ class WebhookAdapter(BasePlatformAdapter):
             script_timeout_seconds=self._script_timeout_seconds
         )
 
+        # Durable registry bound to the REAL agent-processing task.
+        self._execution_registry = WebhookExecutionRegistry(
+            get_hermes_home() / "webhook_executions.json",
+            ttl_seconds=int(config.extra.get("execution_ttl", 3600)),
+            max_records=int(config.extra.get("execution_max_records", 4096)),
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -289,6 +299,22 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        app.router.add_get(
+            "/webhooks/{route_name}/executions/{delivery_id}",
+            self._handle_execution_status,
+        )
+        app.router.add_post(
+            "/webhooks/{route_name}/executions/{delivery_id}/cancel",
+            self._handle_execution_cancel,
+        )
+        app.router.add_get(
+            "/p/{profile}/webhooks/{route_name}/executions/{delivery_id}",
+            self._handle_execution_status,
+        )
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}/executions/{delivery_id}/cancel",
+            self._handle_execution_cancel,
+        )
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
         # routes the inbound event to that profile. Same handler; the profile is
         # captured from the path and stamped onto the SessionSource so the agent
@@ -957,9 +983,53 @@ class WebhookAdapter(BasePlatformAdapter):
         # once the agent run actually finishes (``handle_message`` itself is
         # fire-and-forget: it spawns ``_process_message_background`` and
         # returns before the run starts, so nothing can be closed here).
+        #
+        # The execution registry replaces fire-and-forget task loss: the
+        # delivery gets an observable record (status/cancel) bound to its
+        # asyncio task, and the done-callback advances it to completed/failed.
+        provider = str(route_config.get("provider") or route_config.get("signature_mode") or "generic_v2")
+        execution = self._record_execution(
+            delivery_id,
+            route_name,
+            profile,
+            provider,
+            event.source.chat_id,
+        )
+        event_metadata = getattr(event, "metadata", None)
+        if not isinstance(event_metadata, dict):
+            event_metadata = {}
+            event.metadata = event_metadata
+        event_metadata["webhook_execution_id"] = execution["execution_id"]
+
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+
+        def _dispatcher_done(dispatcher: "asyncio.Task") -> None:
+            self._background_tasks.discard(dispatcher)
+            execution_id = execution["execution_id"]
+            if self._execution_registry.is_bound(execution_id):
+                return
+            if dispatcher.cancelled():
+                self._execution_registry.finish_if_unbound(
+                    execution_id, "cancelled", "dispatcher cancelled before agent task creation"
+                )
+                return
+            try:
+                error = dispatcher.exception()
+            except asyncio.CancelledError:
+                error = None
+            if error is not None:
+                self._execution_registry.finish_if_unbound(
+                    execution_id, "failed", str(error)
+                )
+            else:
+                self._execution_registry.finish_if_unbound(
+                    execution_id,
+                    "failed",
+                    "dispatcher returned before agent-processing task was created",
+                )
+
+        task.add_done_callback(_dispatcher_done)
 
         return web.json_response(
             {
@@ -967,6 +1037,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 "route": route_name,
                 "event": event_type,
                 "delivery_id": delivery_id,
+                "execution_id": execution["execution_id"],
+                "execution_token": execution["access_token"],
+                "status_url": (
+                    f"/p/{profile}/webhooks/{route_name}/executions/{execution['execution_id']}"
+                    if profile else
+                    f"/webhooks/{route_name}/executions/{execution['execution_id']}"
+                ),
+                "cancel_url": (
+                    f"/p/{profile}/webhooks/{route_name}/executions/{execution['execution_id']}/cancel"
+                    if profile else
+                    f"/webhooks/{route_name}/executions/{execution['execution_id']}/cancel"
+                ),
             },
             status=202,
         )
@@ -994,6 +1076,68 @@ class WebhookAdapter(BasePlatformAdapter):
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
         await self._end_webhook_session(event, event.source.chat_id)
+
+    def _record_execution(
+        self,
+        delivery_id: str,
+        route_name: str,
+        profile: str | None,
+        provider: str,
+        session_key: str,
+    ) -> dict:
+        return self._execution_registry.accept(
+            profile=profile or "default",
+            route=route_name,
+            provider=provider,
+            delivery_id=delivery_id,
+            session_key=session_key,
+        )
+
+    def _mark_execution(self, delivery_id: str, state: str, error: str | None = None) -> None:
+        record = self._executions.get(delivery_id)
+        if record is not None:
+            record["state"] = state
+            record["error"] = error
+
+    def _prune_executions(self, now: float) -> None:
+        self._execution_registry.prune(now)
+
+    async def _handle_execution_status(self, request: "web.Request") -> "web.Response":
+        execution_id = request.match_info.get("delivery_id", "")
+        bearer = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        token = bearer or request.headers.get("X-Hermes-Execution-Token", "").strip()
+        profile = (request.match_info.get("profile") or "default").strip() or "default"
+        route = (request.match_info.get("route_name") or "").strip()
+        if not self._execution_registry.authorize_scoped(
+            execution_id, token, profile=profile, route=route
+        ):
+            return web.json_response({"error": "Unknown execution"}, status=404)
+        return web.json_response(self._execution_registry.public(execution_id), status=200)
+
+    async def _handle_execution_cancel(self, request: "web.Request") -> "web.Response":
+        execution_id = request.match_info.get("delivery_id", "")
+        bearer = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        token = bearer or request.headers.get("X-Hermes-Execution-Token", "").strip()
+        profile = (request.match_info.get("profile") or "default").strip() or "default"
+        route = (request.match_info.get("route_name") or "").strip()
+        if not self._execution_registry.authorize_scoped(
+            execution_id, token, profile=profile, route=route
+        ):
+            return web.json_response({"error": "Unknown execution"}, status=404)
+        state = self._execution_registry.request_cancel(execution_id)
+        status = 202 if state == "cancelling" else 200
+        return web.json_response({"execution_id": execution_id, "state": state}, status=status)
+
+    # WEBHOOK_REVOLUTION_TASK11_BIND_REAL_TASK_V1
+    def on_processing_task_created(self, event, session_key: str, task: "asyncio.Task") -> None:
+        metadata = getattr(event, "metadata", None)
+        execution_id = (
+            str(metadata.get("webhook_execution_id") or "")
+            if isinstance(metadata, dict)
+            else ""
+        )
+        if execution_id:
+            self._execution_registry.bind(execution_id, task)
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

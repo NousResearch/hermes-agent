@@ -5883,6 +5883,7 @@ class BasePlatformAdapter(ABC):
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
+        self.on_processing_task_created(event, session_key, task)
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -6041,6 +6042,11 @@ class BasePlatformAdapter(ABC):
             raise
 
         await self._drain_pending_after_session_command(session_key, command_guard)
+
+    # WEBHOOK_REVOLUTION_TASK11_REAL_TASK_HOOK_V1
+    def on_processing_task_created(self, event, session_key: str, task: "asyncio.Task") -> None:
+        """Hook fired with the actual `_process_message_background` task."""
+        return None
 
     async def handle_message(self, event: MessageEvent) -> None:
         """

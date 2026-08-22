@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, plus the community-installed Mnemosyne provider"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 8 bundled external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Additional **community providers** (such as Mnemosyne) can be installed separately and are picked up through the plugin-discovery system. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, mnemosyne
 ```
 
 ## How It Works
@@ -652,6 +652,47 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### Mnemosyne
+
+Local-first SQLite memory with hybrid semantic + FTS5 + temporal ranking, episodic consolidation, multi-agent conflict detection, and a temporal knowledge graph. Mnemosyne is community-maintained and installed as a Hermes plugin; the Hermes plugin-discovery system loads it from `$HERMES_HOME/plugins/` alongside the bundled providers.
+
+| | |
+|---|---|
+| **Best for** | Fully local, zero-cloud agents that want hybrid recall (vector + full-text + temporal) plus a knowledge graph |
+| **Requires** | `pip install mnemosyne-memory` and a one-time plugin symlink into `$HERMES_HOME/plugins/` |
+| **Data storage** | Local SQLite (no network egress) |
+| **Cost** | Free (MIT) — no API key, no subscription, no quotas |
+
+**Tools (26):** `mnemosyne_remember`, `mnemosyne_recall`, `mnemosyne_remember_canonical`, `mnemosyne_recall_canonical`, `mnemosyne_shared_remember`, `mnemosyne_shared_recall`, `mnemosyne_shared_forget`, `mnemosyne_shared_stats`, `mnemosyne_sleep`, `mnemosyne_stats`, `mnemosyne_invalidate`, `mnemosyne_validate`, `mnemosyne_get`, `mnemosyne_triple_add`, `mnemosyne_triple_query`, `mnemosyne_triple_end`, `mnemosyne_scratchpad_write`, `mnemosyne_scratchpad_read`, `mnemosyne_scratchpad_clear`, `mnemosyne_export`, `mnemosyne_import`, `mnemosyne_update`, `mnemosyne_forget`, `mnemosyne_diagnose`, `mnemosyne_graph_query`, `mnemosyne_graph_link`.
+
+**Setup:**
+```bash
+pip install mnemosyne-memory
+
+# Symlink the plugin into $HERMES_HOME so Hermes plugin discovery picks it up.
+# We symlink the hermes_memory_provider package (not the core mnemosyne package)
+# because that's where the register_memory_provider() entry point lives.
+# HERMES_HOME is optional; when unset Hermes falls back to ~/.hermes.
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+mkdir -p "$HERMES_HOME/plugins"
+ln -s "$(python3 -c 'import hermes_memory_provider, os; print(os.path.dirname(hermes_memory_provider.__file__))')" \
+      "$HERMES_HOME/plugins/mnemosyne"
+
+hermes config set memory.provider mnemosyne
+```
+
+**Key capabilities:**
+- **Hybrid ranking** — combines vector similarity, FTS5 full-text search, and recency / time-aware scoring in one query.
+- **Episodic consolidation** — short-term working memories are automatically compressed into long-term episodic summaries.
+- **Temporal knowledge graph** — triple-based facts with validity windows (`valid_from` dates) plus multi-hop graph traversal via `mnemosyne_graph_query` / `mnemosyne_graph_link`.
+- **Multi-agent conflict detection** — detects and surfaces contradictory facts across sessions and agents.
+- **Strict fact matching** — configurable fact recall precision (lenient vs strict) with entity prefix guards.
+- **Memory export / import** — full JSON backup and cross-instance migration.
+
+**Lifecycle integration:** Mnemosyne implements the full provider contract (`register_memory_provider`, `initialize`, `is_available`, `system_prompt_block`, `prefetch` + `queue_prefetch`, `sync_turn`, `get_tool_schemas`, `handle_tool_call`, `shutdown`) plus the optional hooks `on_turn_start`, `on_session_end`, and `on_memory_write` (mirrors built-in memory writes to the SQLite backend). A separate `register(ctx)` entry point registers the `hermes mnemosyne` CLI commands. `on_session_switch`, `on_pre_compress`, and `on_delegation` are not yet implemented — see the provider's changelog for status.
+
+**Status note:** Mnemosyne is **community-maintained** rather than first-party-bundled. Inclusion here is to make the option discoverable; bugs and feature requests should go to the Mnemosyne project. The Hermes plugin contract is documented in the [Developer Guide](/developer-guide/memory-provider-plugin) and applies to Mnemosyne the same way it applies to bundled providers.
+
 ---
 
 ## Provider Comparison
@@ -667,6 +708,9 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Mnemosyne**¹ | Local | Free | 26 | `mnemosyne-memory` | Hybrid semantic + FTS5 + temporal ranking + knowledge graph |
+
+¹ Community-maintained; loaded via the plugin-discovery system from `$HERMES_HOME/plugins/`.
 
 ## Profile Isolation
 

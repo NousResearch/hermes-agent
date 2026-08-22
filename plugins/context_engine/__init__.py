@@ -22,10 +22,17 @@ import importlib
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# A module published in ``sys.modules`` is not ready for reuse until
+# exec_module() and engine extraction finish. Serialize that transaction so
+# concurrent agent construction never observes a partial context-engine module.
+# RLock preserves same-thread import re-entry.
+_ENGINE_LOAD_LOCK = threading.RLock()
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
@@ -98,6 +105,12 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
+    """Thread-safe wrapper around the dynamic engine import transaction."""
+    with _ENGINE_LOAD_LOCK:
+        return _load_engine_from_dir_unlocked(engine_dir)
+
+
+def _load_engine_from_dir_unlocked(engine_dir: Path) -> Optional["ContextEngine"]:
     """Import an engine module and extract the ContextEngine instance.
 
     The module must have either:

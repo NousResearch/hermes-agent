@@ -32,6 +32,7 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -42,6 +43,11 @@ _CRON_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
 _USER_NAMESPACE = "_hermes_user_cron"
+
+# Match the memory-provider loader invariant: a module published in
+# ``sys.modules`` is not ready for reuse until exec_module() and provider
+# extraction finish. RLock preserves same-thread import re-entry.
+_PROVIDER_LOAD_LOCK = threading.RLock()
 
 
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -213,6 +219,12 @@ def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:  # noqa: F821
 
 
 def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  # noqa: F821
+    """Thread-safe wrapper around the dynamic provider import transaction."""
+    with _PROVIDER_LOAD_LOCK:
+        return _load_provider_from_dir_unlocked(provider_dir)
+
+
+def _load_provider_from_dir_unlocked(provider_dir: Path) -> Optional["CronScheduler"]:  # noqa: F821
     """Import a provider module and extract the CronScheduler instance.
 
     The module must have either:

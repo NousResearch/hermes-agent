@@ -37,6 +37,7 @@ import importlib.metadata
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple, TYPE_CHECKING
 from hermes_cli.config import cfg_get
@@ -53,6 +54,13 @@ _REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, Path] = {}
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
 _USER_NAMESPACE = "_hermes_user_memory"
+
+# ``module_from_spec`` sets ``__file__`` before the module body executes, so a
+# concurrent caller cannot use the cached module's ``__file__`` as a readiness
+# signal. Keep publication, execution, and provider extraction in one critical
+# section so every caller observes a fully initialized module. RLock preserves
+# same-thread import re-entry.
+_PROVIDER_LOAD_LOCK = threading.RLock()
 
 
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -417,6 +425,27 @@ def _load_provider_from_entry_point(
 
 
 def _load_provider_from_dir(
+    provider_dir: Path,
+    *,
+    register_skills: bool = True,
+) -> Optional["MemoryProvider"]:
+    """Serialize module readiness and its one-time registration transaction.
+
+    ``register()`` remains inside the boundary deliberately: it returns the
+    provider and may register provider-owned skills/hooks/tools. Returning to a
+    sibling caller before those registrations finish would expose another
+    partially initialized provider state. Skill registration only validates a
+    path and updates in-memory plugin-manager mappings; it does not read the
+    skill body or perform network I/O.
+    """
+    with _PROVIDER_LOAD_LOCK:
+        return _load_provider_from_dir_unlocked(
+            provider_dir,
+            register_skills=register_skills,
+        )
+
+
+def _load_provider_from_dir_unlocked(
     provider_dir: Path,
     *,
     register_skills: bool = True,

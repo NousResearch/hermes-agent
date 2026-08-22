@@ -218,6 +218,44 @@ def test_load_unknown_cron_scheduler_returns_none():
     assert load_cron_scheduler("does-not-exist-xyz") is None
 
 
+def test_concurrent_cron_provider_load_waits_for_module_execution(
+    tmp_path, monkeypatch
+):
+    """Concurrent callers must not reuse a partially executed cron module."""
+    import concurrent.futures
+    import sys
+    import plugins.cron_providers as cron_plugins
+
+    provider_dir = tmp_path / "slowcron"
+    provider_dir.mkdir()
+    (provider_dir / "__init__.py").write_text(
+        "import time\n"
+        "time.sleep(0.15)\n"
+        "from cron.scheduler_provider import CronScheduler\n"
+        "class SlowCron(CronScheduler):\n"
+        "    @property\n"
+        "    def name(self): return 'slowcron'\n"
+        "    def start(self, stop_event, **kwargs): pass\n"
+        "def register(ctx): ctx.register_cron_scheduler(SlowCron())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cron_plugins, "_CRON_PLUGINS_DIR", tmp_path)
+    sys.modules.pop("plugins.cron_providers.slowcron", None)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            providers = list(
+                pool.map(lambda _: cron_plugins.load_cron_scheduler("slowcron"), range(32))
+            )
+    finally:
+        sys.modules.pop("plugins.cron_providers.slowcron", None)
+        if hasattr(cron_plugins, "slowcron"):
+            delattr(cron_plugins, "slowcron")
+
+    assert all(provider is not None for provider in providers)
+    assert {provider.name for provider in providers} == {"slowcron"}
+
+
 def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
     """Putting plugins/ first on sys.path must not hide the core cron package."""
     from importlib.machinery import PathFinder

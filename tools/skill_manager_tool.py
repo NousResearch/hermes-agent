@@ -371,11 +371,20 @@ def _background_review_write_guard(
                 ),
             }
         if skill_usage.is_bundled(name):
+            # Bundled built-ins are governed by `curator.prune_builtins`, not
+            # by the `created_by` ownership marker — `adopt_skill()` refuses
+            # them for exactly that reason ("governed by curator.prune_builtins,
+            # not by adoption"). So decide here and return either way, rather
+            # than falling through to the curator-managed check below, which
+            # keys on `created_by` and would reject every bundled skill (they
+            # ship with no usage record) even when pruning is enabled.
+            if skill_usage._prune_builtins_enabled():
+                return None
             return {
                 "success": False,
                 "error": (
                     f"Refusing background curator {action} for bundled "
-                    f"skill '{name}'."
+                    f"skill '{name}' (curator.prune_builtins is disabled)."
                 ),
             }
         # Skills that are not curator-managed are off-limits to autonomous
@@ -1730,8 +1739,10 @@ SKILL_MANAGE_SCHEMA = {
         "Update when: instructions stale/wrong, OS-specific failures, "
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
+        "After difficult/iterative tasks, save the lessons learned directly. "
+        "Skip for simple one-offs. Do NOT ask the user whether to save — saving is the "
+        "default action. Create/patch the skill, then report what you saved in one line. "
+        "Only ask before DELETING a skill, which is irreversible.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
         "Description: long descriptions are truncated to the first 57 chars "

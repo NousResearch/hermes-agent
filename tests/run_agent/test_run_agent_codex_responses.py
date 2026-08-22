@@ -2391,3 +2391,143 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     )
 
     assert "".join(reasoning_streamed) == "Need to inspect files."
+
+
+def test_codex_responses_truncation_requests_continuation(monkeypatch):
+    """A Responses-family truncation must continue, not be served as a stop.
+
+    A /v1/responses backend that hits the output cap without
+    incomplete_details is currently mapped to finish_reason='stop' and the
+    partial is served as the final answer — the second call below is never
+    made, so this test fails on unpatched main.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "codex_responses"
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Partial text")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="incomplete",
+            incomplete_details=None,
+            model="gpt-5-codex",
+        ),
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Partial text — and the rest.")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="completed",
+            incomplete_details=None,
+            model="gpt-5-codex",
+        ),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("Write a very long essay")
+
+    assert result["api_calls"] == 2  # a continuation WAS issued
+    assert result["completed"] is True
+    assert "and the rest" in (result["final_response"] or "")
+
+
+def test_codex_responses_max_output_tokens_truncation_requests_continuation(monkeypatch):
+    """Responses API truncation with incomplete_details.reason='max_output_tokens' must continue."""
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "codex_responses"
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Section 1.")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            model="gpt-5-codex",
+        ),
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Section 2.")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="completed",
+            incomplete_details=None,
+            model="gpt-5-codex",
+        ),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("Write sections")
+
+    assert result["api_calls"] == 2
+    assert result["completed"] is True
+    assert "Section 1" in (result["final_response"] or "")
+    assert "Section 2" in (result["final_response"] or "")
+
+
+def test_codex_responses_truncated_tool_call_retried_before_execution(monkeypatch):
+    """A length-truncated tool call must be retried with boosted budget, not executed as-is."""
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "codex_responses"
+    truncated_tool = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments='{"command": "rm -rf ',
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="incomplete",
+        incomplete_details=None,
+        model="gpt-5-codex",
+    )
+    complete_resp = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Done.")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        incomplete_details=None,
+        model="gpt-5-codex",
+    )
+    responses = [truncated_tool, complete_resp]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+    executed = []
+    monkeypatch.setattr(
+        agent,
+        "_execute_tool_calls",
+        lambda assistant_message, messages, effective_task_id: executed.append(assistant_message),
+    )
+
+    result = agent.run_conversation("Clean up /tmp leftovers")
+
+    assert result["completed"] is True
+    assert not executed  # truncated call NOT executed
+    assert len(responses) == 0  # both responses consumed (retry occurred)
+    assert result["final_response"] == "Done."
+

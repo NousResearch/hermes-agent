@@ -3457,7 +3457,7 @@ def run_conversation(
                 agent._turn_received_provider_response = True
 
                 # Check finish_reason before proceeding
-                if agent.api_mode == "codex_responses":
+                if agent.api_mode in {"codex_responses", "responses", "codex"}:
                     status = getattr(response, "status", None)
                     if isinstance(status, str):
                         status = status.strip().lower()
@@ -3469,17 +3469,14 @@ def run_conversation(
                         incomplete_reason = getattr(incomplete_details, "reason", None)
                     if incomplete_reason is not None:
                         incomplete_reason = str(incomplete_reason).strip().lower()
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        # Responses API max-output exhaustion is a normal
-                        # Codex incomplete turn.  Let the Codex-specific
-                        # continuation path below append the incomplete
-                        # assistant state and retry, instead of routing to
-                        # the generic chat-completions length rollback that
-                        # emits "Response truncated due to output length
-                        # limit" and stops gateway turns.
-                        finish_reason = "incomplete"
-                    elif status == "incomplete" and incomplete_reason == "content_filter":
+                    if status == "incomplete" and incomplete_reason == "content_filter":
                         finish_reason = "content_filter"
+                    elif status == "incomplete":
+                        # Any non-content_filter incomplete status (max_output_tokens,
+                        # length, or unpopulated incomplete_details on self-hosted
+                        # /v1/responses backends) is a length truncation that must
+                        # be routed to the continuation / tool-call retry machinery.
+                        finish_reason = "length"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
@@ -3758,7 +3755,7 @@ def run_conversation(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses", "responses", "codex"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -3925,7 +3922,7 @@ def run_conversation(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses", "responses", "codex"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (

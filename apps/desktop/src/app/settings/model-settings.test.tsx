@@ -441,6 +441,47 @@ describe('ModelSettings MoA preset editor', () => {
     expect(await screen.findByText('Reference 1')).toBeTruthy()
   }
 
+  async function renderModelSettingsInLocale(locale: 'ja') {
+    const { ModelSettings } = await import('./model-settings')
+    const { I18nProvider } = await import('@/i18n')
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    // The default config client resolves display.language and would override
+    // initialLocale, so pin the locale through a stub config client.
+    const configClient = {
+      getConfig: () => Promise.resolve({ display: { language: locale } }),
+      saveConfig: () => Promise.resolve({ ok: true })
+    }
+
+    return render(
+      <MemoryRouter>
+        <I18nProvider configClient={configClient} initialLocale={locale}>
+          <QueryClientProvider client={client}>
+            <ModelSettings />
+          </QueryClientProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    )
+  }
+
+  it('localizes the MoA reference/aggregator editor controls (ja)', async () => {
+    await renderModelSettingsInLocale('ja')
+
+    // Reference slot titles, the aggregator title, the add-reference button,
+    // and the per-slot enable/disable switch aria-label all come from the
+    // typed locale catalog now, so a non-English locale renders no English
+    // literals for these controls.
+    expect(await screen.findByText('参照 1')).toBeTruthy()
+    expect(screen.getByText('アグリゲーター')).toBeTruthy()
+    expect(screen.getByText('参照モデルを追加')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: '参照 1 を無効化' })).toBeTruthy()
+
+    // The old hardcoded English strings must no longer appear.
+    expect(screen.queryByText('Reference 1')).toBeNull()
+    expect(screen.queryByText('Aggregator')).toBeNull()
+    expect(screen.queryByText('Add reference model')).toBeNull()
+  })
+
   function slotSelects() {
     // Combobox order in the MoA section (last 7 on the page): preset select,
     // then provider+model per reference (2 refs), then aggregator

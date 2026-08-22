@@ -1,0 +1,96 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: snyk
+description: Scan code, dependencies, containers, and IaC with Snyk.
+source: https://docs.snyk.io/integrate-with-snyk/snyk-mcp-server
+
+# Snyk ships its MCP server INSIDE the Snyk CLI — `snyk mcp` is a first-party
+# subcommand, not a community wrapper. Nothing to clone or bootstrap: npx
+# fetches the pinned CLI and launches it over stdio, so there is no `install:`
+# block.
+#
+# `--profile full` exposes all 13 non-experimental tools. We deliberately do
+# NOT pass `--profile lite` (7 tools): lite drops the container, IaC, SBOM,
+# AIBOM, package-health, and breakability tools, which are the ones an agent
+# with a terminal can't already approximate. The tool-schema cost is bounded
+# by `tools.default_enabled` below instead of by the profile flag, so users
+# who want the wider surface can opt in from the install checklist without
+# reinstalling.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    # Pinned per catalog dependency policy: exact version (never @latest), and
+    # the pinned release is at least 2 weeks old at pin time. 1.1306.0 was
+    # published 2026-07-09. Bumping the pin is a PR to this manifest.
+    - "snyk@1.1306.0"
+    - "mcp"
+    - "-t"
+    - "stdio"
+    - "--profile"
+    - "full"
+    # Snyk CLI reports usage analytics by default. Hermes does not ship
+    # opt-out-by-default telemetry, so disable it at launch.
+    - "--DISABLE_ANALYTICS"
+  version: "1.1306.0"
+  # Belt-and-braces telemetry opt-out: the flag above covers the CLI's own
+  # analytics; this covers the env-var path the CLI also honors. Static
+  # non-secret env only — credentials never go here.
+  env:
+    SNYK_DISABLE_ANALYTICS: "1"
+
+# No credentials are prompted at install time. The server exposes a `snyk_auth`
+# tool that runs Snyk's browser OAuth flow on demand, so installing is a
+# genuinely empty modal in the dashboard.
+auth:
+  type: none
+
+# Tool selection at install time:
+# The eight scanning/intelligence tools are pre-checked. Three are pruned from
+# the default surface:
+#   - snyk_send_feedback  — reports issue-count deltas back to Snyk. That is
+#     outbound telemetry, which we do not enable by default.
+#   - snyk_logout         — destructive, rarely wanted mid-session.
+#   - snyk_version        — pure noise in a model's tool schema.
+# snyk_trust IS included: scans of an untrusted folder fail without it, and it
+# only acts when the agent is explicitly told to.
+# Users see the full 13-tool list in the install checklist and can opt into the
+# pruned ones per their own threat model.
+tools:
+  default_enabled:
+    - snyk_auth
+    - snyk_trust
+    - snyk_code_scan
+    - snyk_sca_scan
+    - snyk_container_scan
+    - snyk_iac_scan
+    - snyk_sbom_scan
+    - snyk_package_health_check
+
+post_install: |
+  Authenticate before your first scan by asking Hermes to run the `snyk_auth`
+  tool — it opens a browser and stores the token in the Snyk CLI's own config.
+  A free Snyk account is enough for the code and open-source scanners.
+
+  What each scanner covers:
+    snyk_code_scan            SAST over your source
+    snyk_sca_scan             open-source dependency vulnerabilities
+    snyk_container_scan       container image OS + app packages
+    snyk_iac_scan             Terraform, CloudFormation, Kubernetes, ARM
+    snyk_sbom_scan            an existing SBOM file
+    snyk_package_health_check package intel before you add a dependency
+
+  Scans need an ABSOLUTE path. Snyk also refuses to scan an untrusted folder —
+  if a scan reports a trust error, have Hermes run `snyk_trust` on that path.
+
+  Scanning uploads code metadata to Snyk's cloud for analysis. Usage analytics
+  are disabled by this manifest, but the scan itself is a network call — keep
+  that in mind for private repositories.
+
+  Start a new Hermes session to load the Snyk tools.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure snyk

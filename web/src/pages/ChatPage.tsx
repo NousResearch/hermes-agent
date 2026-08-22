@@ -20,7 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type IDisposable } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
@@ -184,6 +184,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  // Retry the WebGL renderer install when the chat tab or browser tab
+  // becomes active again after a context loss (see the WebGL block below).
+  const webglRecoverRef = useRef<(() => void) | null>(null);
   // NS-434 follow-up: the keyboard-inset sync + reset closures from the main
   // PTY effect, exposed to the visibility-gated listener effect below.
   // ChatPage stays mounted (hidden) on every dashboard route, so the
@@ -886,19 +889,117 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
+    //
+    // Consolidated WebGL context-loss recovery (family: #78973, #64259, #28008):
+    //
+    // 1. Immediate fallback. The WebglAddon reacts to the DOM
+    //    `webglcontextlost` event by starting a 3000ms restoration grace
+    //    timer and only fires its own `onContextLoss` if the context is not
+    //    restored by then. When the context is lost because the tab went
+    //    hidden (GPU resources reclaimed — the normal switch-away-and-back
+    //    case), it never restores, so waiting leaves the viewport blank for
+    //    ~3s after every tab return, looking like a crash. We listen for the
+    //    DOM event ourselves (capture phase, so we run before the addon's
+    //    own canvas listener starts the timer) and dispose the addon
+    //    immediately: the terminal falls back to the canvas renderer and
+    //    repaints at once. The addon's later onContextLoss (if its grace
+    //    timer still fires) is a no-op on an already-disposed addon.
+    //
+    // 2. Full repaint after fallback. Disposing alone leaves xterm's DOM
+    //    fallback unrendered until the next dirty region; force a viewport
+    //    refresh so a suspended tab or GPU reset cannot leave a black pane.
+    //
+    // 3. Reinstall on return. After a context loss the WebGL renderer is
+    //    re-attempted (via webglRecoverRef) when the chat tab or browser tab
+    //    becomes active again, so wide layouts get crisp WebGL back instead
+    //    of staying on the canvas fallback for the rest of the session.
+    let webglAddon: WebglAddon | null = null;
+    let webglContextLossDisposable: IDisposable | null = null;
+    let webglContextLostListener: (() => void) | null = null;
+    let webglRecoverRaf = 0;
+
+    const disposeWebglAddon = () => {
+      webglContextLossDisposable?.dispose();
+      webglContextLossDisposable = null;
+      if (webglContextLostListener) {
+        host.removeEventListener(
+          "webglcontextlost",
+          webglContextLostListener,
+          true,
+        );
+        webglContextLostListener = null;
+      }
+      webglAddon?.dispose();
+      webglAddon = null;
+    };
+
+    const installWebglAddon = () => {
+      if (webglAddon || terminalTierWidthPx(host) < 768) {
+        return;
+      }
+      let nextWebgl: WebglAddon | null = null;
       try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
+        nextWebgl = new WebglAddon();
+        webglContextLossDisposable = nextWebgl.onContextLoss(() => {
+          if (webglAddon !== nextWebgl) {
+            return;
+          }
+          recoverFromWebglContextLoss();
+        });
+        // Capture phase: fires before the addon's own canvas listener (set
+        // up in its constructor) starts the 3000ms restoration grace timer.
+        const onWebglContextLost = () => {
+          if (webglAddon !== nextWebgl) {
+            return;
+          }
+          recoverFromWebglContextLoss();
+        };
+        host.addEventListener("webglcontextlost", onWebglContextLost, true);
+        webglContextLostListener = onWebglContextLost;
+        term.loadAddon(nextWebgl);
+        webglAddon = nextWebgl;
       } catch (err) {
+        webglContextLossDisposable?.dispose();
+        webglContextLossDisposable = null;
+        if (webglContextLostListener) {
+          host.removeEventListener(
+            "webglcontextlost",
+            webglContextLostListener,
+            true,
+          );
+          webglContextLostListener = null;
+        }
+        nextWebgl?.dispose();
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",
           err,
         );
       }
-    }
+    };
+
+    const recoverFromWebglContextLoss = () => {
+      disposeWebglAddon();
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* terminal teardown raced the context-loss callback */
+      }
+      // Re-attempt WebGL once the tab is interactable again (rAF is paused
+      // while hidden, so this naturally defers to the next visible frame).
+      if (host.isConnected && !webglRecoverRaf) {
+        webglRecoverRaf = requestAnimationFrame(() => {
+          webglRecoverRaf = 0;
+          installWebglAddon();
+          syncMetricsRef.current?.();
+        });
+      }
+    };
+
+    installWebglAddon();
+    webglRecoverRef.current = () => {
+      installWebglAddon();
+      syncMetricsRef.current?.();
+    };
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -1478,6 +1579,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      webglRecoverRef.current = null;
+      if (webglRecoverRaf) cancelAnimationFrame(webglRecoverRaf);
+      disposeWebglAddon();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;
@@ -1575,7 +1679,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf1 = 0;
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
-        syncMetricsRef.current?.();
+        // Retry the WebGL renderer after a context loss and re-sync metrics;
+        // then re-anchor to the live tail. Inline-mode output lives in
+        // xterm's primary-buffer scrollback — after Chat was display:none,
+        // xterm can resume with the viewport parked above the live tail,
+        // presenting an entirely black pane even though the PTY is fine.
+        // Re-anchor only on the explicit inactive → active path so ordinary
+        // resizes preserve a user's intentional history position.
+        webglRecoverRef.current?.();
+        termRef.current?.scrollToBottom();
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
@@ -1645,6 +1757,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       window.removeEventListener("online", onResume);
     };
   }, [isActive, maybeReconnectOnPageResume]);
+
+  // Safety net for the blank-viewport-on-tab-return case: force a full
+  // viewport repaint whenever the document becomes visible again. rAF is
+  // suspended while the tab is hidden, and a hidden tab's GPU resources can
+  // be reclaimed, leaving the canvas stale or blank on return even when the
+  // WebSocket never dropped. The webglcontextlost handler above covers the
+  // WebGL path; this covers every renderer for the remaining cases. The
+  // refresh is cheap (xterm only repaints the viewport rows).
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      // Retry WebGL if a context loss left us on the canvas fallback, and
+      // re-anchor to the live tail (tab suspension can park the viewport
+      // above it, presenting a black pane even with a live PTY).
+      webglRecoverRef.current?.();
+      const term = termRef.current;
+      if (!term) return;
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* ignore */
+      }
+      try {
+        term.scrollToBottom();
+      } catch {
+        /* ignore */
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // Keep the live xterm theme in sync when the active theme's terminal
   // colors change (e.g. user switches to a custom YAML theme mid-session).

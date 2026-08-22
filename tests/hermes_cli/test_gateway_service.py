@@ -806,6 +806,130 @@ class TestGatewaySystemServiceRouting:
         assert run_calls == []
 
 
+class TestLaunchdRestartDrainAwareRestart:
+    """launchd_restart must use the drain-aware SIGUSR1 helper for callers
+    that are not gateway descendants (fresh shells), and keep the in-band
+    ancestor fast path and SIGTERM fallback intact (#27745)."""
+
+    def _patch_launchd_restart_basics(self, monkeypatch, calls):
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda: 321,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_clear_launchd_unsupported_marker",
+            lambda: calls.append(("clear",)),
+        )
+
+    def test_launchd_restart_from_fresh_shell_uses_drain_aware_sigusr1(self, monkeypatch, capsys):
+        calls = []
+        self._patch_launchd_restart_basics(monkeypatch, calls)
+        # Fresh shell: the calling CLI is NOT a gateway descendant, so the
+        # ancestor-guarded helper must return False and the drain-aware
+        # helper must be used instead (the #27745 regression).
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(("self", pid)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: calls.append(("term", pid, force)),
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: calls.append(("run", a[0])),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert ("graceful", 321, 27.0) in calls
+        assert not any(c[0] == "term" for c in calls)
+        assert not any(c[0] == "run" for c in calls)
+        out = capsys.readouterr().out.lower()
+        assert "drained" in out
+
+    def test_launchd_restart_preserves_in_band_ancestor_self_restart(self, monkeypatch, capsys):
+        calls = []
+        self._patch_launchd_restart_basics(monkeypatch, calls)
+        # In-band: the CLI IS a gateway descendant, so the ancestor-guarded
+        # fast path must return immediately and never reach the drain-aware
+        # helper (the gateway drains itself after the signal).
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(("self", pid)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: calls.append(("run", a[0])),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert ("self", 321) in calls
+        assert not any(c[0] == "graceful" for c in calls)
+        assert not any(c[0] == "run" for c in calls)
+        assert "restart requested" in capsys.readouterr().out.lower()
+
+    def test_launchd_restart_falls_back_to_sigterm_when_sigusr1_unavailable(self, monkeypatch, capsys):
+        calls = []
+        self._patch_launchd_restart_basics(monkeypatch, calls)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(("self", pid)) or False,
+        )
+        # SIGUSR1 unsupported or drain timed out: fall back to SIGTERM +
+        # kickstart, preserving the pre-existing recovery path.
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: calls.append(("term", pid, force)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda timeout, force_after=None: calls.append(("wait", timeout)) or True,
+        )
+
+        def fake_run(cmd, **kwargs):
+            calls.append(("run", cmd))
+            return SimpleNamespace(stdout="", returncode=0)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert ("graceful", 321, 27.0) in calls
+        assert ("term", 321, False) in calls
+        assert any(c[0] == "run" and "kickstart" in c[1] for c in calls)
+        assert "service restarted" in capsys.readouterr().out.lower()
+
+
 class TestDetectVenvDir:
     """Tests for _detect_venv_dir() virtualenv detection."""
 

@@ -5330,6 +5330,20 @@ def launchd_restart():
             _escalate_wedged_gateway(pid)
             pid = None
         if pid is not None:
+            # The ancestor-guarded request above only succeeds when this CLI
+            # is a descendant of the gateway (in-band self-restart). From a
+            # fresh shell the gateway is a sibling under launchd, so the guard
+            # fails and we used to drop straight to SIGTERM, killing in-flight
+            # agent runs without draining them (#27745). Reach the same
+            # drain-aware SIGUSR1 path systemd_restart() uses before falling
+            # back: the gateway refuses new turns, finishes in-flight work,
+            # runs its stop() cleanup, then exits; launchd's unconditional
+            # KeepAlive relaunches it.
+            wait_budget = _get_restart_exit_wait_budget()
+            if _graceful_restart_via_sigusr1(pid, wait_budget):
+                print("✓ Service restart requested — gateway drained; launchd will relaunch it")
+                _clear_launchd_unsupported_marker()
+                return
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway
             # finishes in-flight agent runs, and it streams into surfaces with

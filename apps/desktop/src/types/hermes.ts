@@ -337,6 +337,8 @@ export interface HermesConfig {
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
+    /** Linkify plain-text file paths in conversation messages (default off). */
+    markdown_linkify_paths?: boolean
   }
   terminal?: {
     cwd?: string

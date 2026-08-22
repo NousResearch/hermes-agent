@@ -2095,6 +2095,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_tokenhub=_is_tokenhub,
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
+        is_a6api="a6api.com" in agent._base_url_lower,
         ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
@@ -2984,7 +2985,24 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             agent._resolve_lmstudio_summary_reasoning_effort()
             if _is_lmstudio_summary else None
         )
-        if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
+        # a6api relay: mirror the main-loop emission — top-level
+        # reasoning_effort, ultra clamped to max, disabled → "none".
+        # Skip Claude and Gemini (they don't use reasoning_effort).
+        _is_a6api_summary = "a6api.com" in agent._base_url_lower
+        _a6api_reasoning_effort: str | None = None
+        if _is_a6api_summary:
+            _model = (agent.model or "").lower()
+            if "claude" not in _model and "gemini" not in _model:
+                _rc = getattr(agent, "reasoning_config", None)
+                if _rc and isinstance(_rc, dict):
+                    if _rc.get("enabled") is False:
+                        _a6api_reasoning_effort = "none"
+                    else:
+                        _eff = str(_rc.get("effort") or "medium").strip().lower() or "medium"
+                        _a6api_reasoning_effort = "high" if _eff in {"xhigh", "max", "ultra"} else _eff
+                else:
+                    _a6api_reasoning_effort = "medium"
+        if not _is_lmstudio_summary and not _is_a6api_summary and agent._supports_reasoning_extra_body():
             if agent.reasoning_config is not None:
                 summary_extra_body["reasoning"] = agent.reasoning_config
             else:
@@ -3014,6 +3032,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            if _a6api_reasoning_effort is not None:
+                summary_kwargs["reasoning_effort"] = _a6api_reasoning_effort
 
             # Merge the profile's canonical body even when routing is unset:
             # profiles may always emit required metadata such as Portal tags.

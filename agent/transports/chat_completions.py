@@ -553,6 +553,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
+        is_a6api = params.get("is_a6api", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
@@ -662,9 +663,41 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
+        # a6api relay: top-level reasoning_effort (OpenAI native shape).
+        # Only works on models that natively support it: GPT-5.x, deepseek,
+        # grok. Claude uses `thinking` (not reasoning_effort) and 400s on
+        # "none". Gemini uses `thinkingLevel` and ignores reasoning_effort
+        # entirely. Verified live:
+        #   GPT-5.6-sol     : none→low→medium→high  ✅ 梯度清晰
+        #   deepseek-v4-flash: none→low→high         ✅  none 关闭思考
+        #   grok-4.5        : low=387→default=716→high=943  ✅ 梯度
+        #   claude-opus-5   : none=400, low/high accepted但无 reasoning_tokens
+        #   gemini-3.1-pro  : 完全忽略，始终 ~490 reasoning_tokens
+        if params.get("is_a6api", False):
+            _model_lower = (model or "").lower()
+            is_claude = "claude" in _model_lower
+            is_gemini = "gemini" in _model_lower
+            if not is_claude and not is_gemini:
+                _a6api_effort = "medium"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    if reasoning_config.get("enabled") is False:
+                        _a6api_effort = "none"
+                    else:
+                        _a6api_effort = str(
+                            reasoning_config.get("effort") or "medium"
+                        ).strip().lower() or "medium"
+                        if _a6api_effort in {"xhigh", "max", "ultra"}:
+                            _a6api_effort = "high"
+                api_kwargs["reasoning_effort"] = _a6api_effort
+
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
-        # so skip emitting extra_body.reasoning for it.
-        if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
+        # so skip emitting extra_body.reasoning for it. a6api also uses
+        # top-level reasoning_effort (handled above) — skip extra_body too.
+        if (
+            params.get("supports_reasoning", False)
+            and not params.get("is_lmstudio", False)
+            and not is_a6api
+        ):
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:

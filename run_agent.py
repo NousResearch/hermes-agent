@@ -7626,6 +7626,12 @@ class AIAgent:
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
+        # a6api relay: accepts OpenAI-style top-level `reasoning_effort`
+        # (verified live: minimal/low/medium/high/xhigh/max + "none" to
+        # disable thinking). "ultra" 400s upstream, so the transport clamps
+        # ultra → max before emission.
+        if base_url_host_matches(self._base_url_lower, "a6api.com"):
+            return True
         if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
         if (

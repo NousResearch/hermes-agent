@@ -37,7 +37,7 @@ def _run(current: int, latest: int):
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            update_cmd._maybe_migrate_config_on_current(lambda msg: None)
+            update_cmd._maybe_migrate_config_on_current()
         return buf.getvalue(), migrate_calls
 
 
@@ -83,7 +83,7 @@ def test_surfaces_migration_warnings():
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            update_cmd._maybe_migrate_config_on_current(lambda msg: None)
+            update_cmd._maybe_migrate_config_on_current()
         out = buf.getvalue()
 
     assert "personality reset" in out
@@ -102,6 +102,6 @@ def test_check_failure_is_silent():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             # Should not raise and should not attempt migration.
-            update_cmd._maybe_migrate_config_on_current(lambda msg: None)
+            update_cmd._maybe_migrate_config_on_current()
         assert buf.getvalue() == ""
         mig.assert_not_called()

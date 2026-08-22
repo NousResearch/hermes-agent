@@ -226,7 +226,7 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     return migrate_config(interactive=interactive, quiet=quiet)
 
 
-def _maybe_migrate_config_on_current(print_completion) -> None:
+def _maybe_migrate_config_on_current() -> None:
     """Run config migration on the ``commit_count == 0`` repair path.
 
     A previous update attempt can pull new code onto disk and then fail
@@ -5595,13 +5595,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 healthy_after, detail_after = _venv_core_imports_healthy()
                 if healthy_after:
                     print("✓ Dependencies repaired!")
-                    _maybe_migrate_config_on_current(_print_update_completion)
+                    _maybe_migrate_config_on_current()
                     _print_update_completion("✓ Update complete!")
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _maybe_migrate_config_on_current(_print_update_completion)
+                _maybe_migrate_config_on_current()
                 _repair_node_deps_on_current_checkout(_print_update_completion)
             if runtime_repaired is not None and not _m()._is_windows():
                 print()

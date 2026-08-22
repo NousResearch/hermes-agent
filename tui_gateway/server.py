@@ -5530,6 +5530,8 @@ def _get_usage(agent) -> dict:
         "input": g("session_input_tokens", "session_prompt_tokens"),
         "output": g("session_output_tokens", "session_completion_tokens"),
         "reasoning": g("session_reasoning_tokens"),
+        "cache_read_tokens": g("session_cache_read_tokens"),
+        "cache_write_tokens": g("session_cache_write_tokens"),
         "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),

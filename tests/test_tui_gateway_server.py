@@ -17503,6 +17503,20 @@ class _BareAgent:
     model = "x"
 
 
+def test_get_usage_includes_cache_totals():
+    agent = types.SimpleNamespace(
+        model="cached-model",
+        session_cache_read_tokens=4_096,
+        session_cache_write_tokens=512,
+        context_compressor=None,
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["cache_read_tokens"] == 4_096
+    assert usage["cache_write_tokens"] == 512
+
+
 def test_get_usage_includes_active_subagents(monkeypatch):
     import tools.async_delegation as ad_mod
     monkeypatch.setattr(ad_mod, "active_count", lambda: 4)

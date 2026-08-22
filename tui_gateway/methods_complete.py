@@ -471,13 +471,17 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.inventory import build_model_options_payload
 
-        session = _sessions.get(params.get("session_id", ""))
-        agent = session.get("agent") if session else None
-        # Layer agent-session state on top of disk config — once an agent
-        # is spawned, IT owns the live provider/model/base_url. Empty
-        # agent attributes must NOT clobber disk config (with_overrides
-        # is truthy-only).
-        ctx = _model_picker_context(agent)
+        if _MODEL_OPTIONS_RUNTIME_SNAPSHOT in params:
+            runtime_snapshot = params.get(_MODEL_OPTIONS_RUNTIME_SNAPSHOT)
+            agent = None
+        else:
+            runtime_snapshot = None
+            session = _sessions.get(params.get("session_id", ""))
+            agent = session.get("agent") if session else None
+
+        # Preserve request-time agent state from the pool handoff while keeping
+        # custom-provider identities canonical for the picker.
+        ctx = _model_picker_context(agent, runtime_snapshot=runtime_snapshot)
         payload = build_model_options_payload(
             ctx,
             explicit_only=bool(params.get("explicit_only")),
@@ -487,6 +491,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5033, str(e))
+
 
 
 @method("model.save_key")

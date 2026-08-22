@@ -2123,6 +2123,29 @@ def _current_session_steer_authority(
         return transport, session
 
 
+_MODEL_OPTIONS_RUNTIME_SNAPSHOT = "_model_runtime_snapshot"
+
+
+def _freeze_model_options_request(req: dict, params: dict) -> dict:
+    """Copy a model.options request with its coherent request-time runtime."""
+    with _sessions_lock:
+        session = _sessions.get(params.get("session_id", ""))
+        agent = session.get("agent") if session else None
+        if agent is None:
+            runtime_snapshot = None
+        else:
+            runtime_snapshot = {
+                key: getattr(agent, key, "") or ""
+                for key in ("model", "provider", "base_url")
+            }
+
+    worker_params = dict(params)
+    worker_params[_MODEL_OPTIONS_RUNTIME_SNAPSHOT] = runtime_snapshot
+    worker_request = dict(req)
+    worker_request["params"] = worker_params
+    return worker_request
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
@@ -2142,16 +2165,22 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if isinstance(normalized, dict):
             return normalized
 
-        _rid, method, _params = normalized
+        _rid, method, params = normalized
         if method not in _LONG_HANDLERS:
             return handle_request(req)
+
+        worker_request = (
+            _freeze_model_options_request(req, params)
+            if method == "model.options"
+            else req
+        )
 
         # Snapshot the context so the pool worker sees the bound transport.
         ctx = contextvars.copy_context()
 
         def run():
             try:
-                resp = handle_request(req)
+                resp = handle_request(worker_request)
             except Exception as exc:
                 resp = _err(req.get("id"), -32000, f"handler error: {exc}")
             if resp is not None:
@@ -13873,13 +13902,19 @@ def _details_completions(text: str) -> list[dict] | None:
     return []
 
 
-def _model_picker_context(agent):
-    """Layer live session state onto config without losing custom identity."""
+def _model_picker_context(agent, *, runtime_snapshot: dict | None = None):
+    """Layer live or request-time state onto config without losing identity."""
     from hermes_cli.inventory import load_picker_context
 
     ctx = load_picker_context()
-    provider = getattr(agent, "provider", "") if agent else ""
-    base_url = getattr(agent, "base_url", "") if agent else ""
+    if isinstance(runtime_snapshot, dict):
+        provider = runtime_snapshot.get("provider", "")
+        model = runtime_snapshot.get("model", "")
+        base_url = runtime_snapshot.get("base_url", "")
+    else:
+        provider = getattr(agent, "provider", "") if agent else ""
+        model = getattr(agent, "model", "") if agent else ""
+        base_url = getattr(agent, "base_url", "") if agent else ""
     if str(provider or "").strip().lower() == "custom":
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
@@ -13888,8 +13923,7 @@ def _model_picker_context(agent):
                 canonical_custom_identity(
                     base_url=base_url or None,
                     config_provider=ctx.current_provider,
-                    model=(getattr(agent, "model", "") if agent else "")
-                    or None,
+                    model=model or None,
                 )
                 or provider
             )
@@ -13901,10 +13935,10 @@ def _model_picker_context(agent):
 
     return ctx.with_overrides(
         current_provider=provider,
-        current_model=(getattr(agent, "model", "") if agent else "")
-        or _resolve_model(),
+        current_model=model or _resolve_model(),
         current_base_url=base_url,
     )
+
 
 
 # ── Methods: slash.exec ──────────────────────────────────────────────

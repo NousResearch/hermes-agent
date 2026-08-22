@@ -129,8 +129,53 @@ def build_write_approval_paths(home: str) -> set[str]:
     }
 
 
+# Kernel character-device sinks that are ALWAYS safe to write to regardless
+# of ``HERMES_WRITE_SAFE_ROOT``. Writing here is a no-op at the OS level
+# (``/dev/null`` discards; ``/dev/stdout`` / ``/dev/stderr`` go to the
+# process's own streams; ``/dev/zero`` and ``/dev/tty`` are similarly
+# harmless as write targets), so gating them behind the safe-root check
+# only produces false-positive denials for legitimate shell redirection
+# patterns.
+#
+# The check is on the *user-supplied* path normalized to absolute form
+# (``os.path.normpath`` + ``os.path.abspath``) — NOT ``realpath`` —
+# specifically so a symlink like ``/opt/data/evil -> /dev/null`` cannot
+# ride this allowlist into bypassing the containment check for its own
+# absolute path. Membership is tested against the exact string set.
+_KERNEL_SINK_ALLOWLIST: frozenset[str] = frozenset({
+    "/dev/null",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/tty",
+    "/dev/zero",
+})
+
+
+def _is_kernel_sink(path: str) -> bool:
+    """True when ``path`` normalizes to one of the always-allowed kernel sinks.
+
+    Uses ``normpath`` + ``abspath`` (not ``realpath``) so a symlink whose
+    target happens to be ``/dev/null`` does NOT inherit the allowlist —
+    only the literal kernel-sink paths themselves short-circuit the guard.
+    """
+    try:
+        normalized = os.path.normpath(os.path.abspath(os.path.expanduser(str(path))))
+    except (OSError, ValueError):
+        return False
+    return normalized in _KERNEL_SINK_ALLOWLIST
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    # Kernel character-device sinks (/dev/null etc.) are always writable —
+    # they're OS-level no-ops, and blocking them via HERMES_WRITE_SAFE_ROOT
+    # only breaks legitimate shell redirection. Short-circuit BEFORE any
+    # other check so the allowlist wins over safe-root containment; the
+    # rest of the guard (credential denylist, hermes-internal paths) is
+    # untouched below.
+    if _is_kernel_sink(path):
+        return None
+
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 

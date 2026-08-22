@@ -8290,10 +8290,14 @@ function scheduleLabel(schedule) {
     return `Once (${bare[1]}${bare[2]})`
   }
 
-  const match = /^every (\d+)m$/.exec(schedule || '')
+  // composeSchedule emits h/d intervals directly ('every 1h', 'every 2d') —
+  // normalize every unit to minutes so those get friendly labels too instead
+  // of falling through to the raw schedule string.
+  const match = /^every (\d+)([mhd])$/.exec(schedule || '')
 
   if (match) {
-    const minutes = Number(match[1])
+    const n = Number(match[1])
+    const minutes = match[2] === 'h' ? n * 60 : match[2] === 'd' ? n * 1440 : n
 
     if (minutes % 1440 === 0) {
       const d = minutes / 1440

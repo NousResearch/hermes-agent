@@ -7641,11 +7641,66 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return False
+    return _linux_restricts_unprivileged_userns()
+
+
+def _linux_restricts_unprivileged_userns() -> bool:
+    """Return True when AppArmor's sysctl blocks unprivileged user namespaces.
+
+    Ubuntu 23.10+ only. Absence of the sysctl does NOT prove the userns sandbox
+    works - use _linux_userns_sandbox_available() for that.
+    """
+    if sys.platform != "linux":
+        return False
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
             return f.read().strip() == "1"
     except OSError:
         return False
+
+
+_CLONE_NEWUSER = 0x10000000
+
+
+def _linux_userns_sandbox_available() -> bool:
+    """Return True when this process can actually create a user namespace.
+
+    Chromium consults the setuid ``chrome-sandbox`` helper only when the
+    unprivileged user-namespace sandbox is unavailable, and it then *aborts*
+    (LOG(FATAL) in setuid_sandbox_host.cc) rather than dropping the sandbox if
+    the helper is not root:root 4755. So before continuing past a failed
+    fixup we must know the namespace sandbox really works. AppArmor's sysctl
+    being absent does not show that: ``kernel.unprivileged_userns_clone=0``
+    (Debian, Arch linux-hardened), ``user.max_user_namespaces=0``, a kernel
+    without CONFIG_USER_NS, and container seccomp policy all block it too.
+
+    Mirror Chromium's own probe (sandbox::Credentials::CanCreateProcessInNewUserNS):
+    fork and try ``unshare(CLONE_NEWUSER)``. Fail closed if we cannot probe.
+    """
+    if sys.platform != "linux":
+        return False
+    if _linux_restricts_unprivileged_userns():
+        return False
+
+    import ctypes
+
+    try:
+        # Load libc before forking so the child only makes one syscall.
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        pid = os.fork()
+    except (OSError, AttributeError):
+        return False
+    if pid == 0:
+        try:
+            rc = libc.unshare(_CLONE_NEWUSER)
+        except BaseException:
+            os._exit(1)
+        os._exit(0 if rc == 0 else 1)
+    try:
+        _, status = os.waitpid(pid, 0)
+    except OSError:
+        return False
+    return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
@@ -8066,10 +8121,21 @@ def cmd_gui(args: argparse.Namespace):
 
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+        helper_present = _desktop_linux_sandbox_helper_is_regular_file(packaged_executable)
+        if _desktop_linux_needs_no_sandbox() and helper_present:
             print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
             launch_command.append("--no-sandbox")
+        # No root guard here, unlike _desktop_linux_needs_no_sandbox(): that
+        # guard exists because root + --no-sandbox is the risky combination,
+        # and this branch keeps Chromium's sandbox.
+        elif helper_present and _linux_userns_sandbox_available():
+            print("⚠ Continuing with Chromium's unprivileged user-namespace sandbox: the setuid helper could not be configured from this launch context, and this host does not restrict user namespaces.")
         else:
+            if helper_present:
+                sandbox = packaged_executable.parent / "chrome-sandbox"
+                print("✗ Electron's setuid sandbox helper is not configured and this host does not")
+                print("  allow unprivileged user namespaces, so Chromium would abort at startup.")
+                print(f"  Fix with: sudo chown root:root {sandbox} && sudo chmod 4755 {sandbox}")
             sys.exit(1)
 
     launch_command.extend(config_electron_flags)

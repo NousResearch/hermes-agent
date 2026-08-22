@@ -779,3 +779,144 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     mock_detect.assert_not_called()
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert "HERMES_DESKTOP_PASSWORD_STORE" not in launch_env
+
+
+# ── Linux sandbox-helper gate ─────────────────────────────────────────
+# Restores the fixup-failure coverage pruned in 6b81590c5 and covers the
+# userns-sandbox continuation added for non-TTY launch contexts.
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox gate")
+def test_gui_linux_falls_back_to_no_sandbox_when_userns_is_restricted(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    (packaged_exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--no-sandbox"], 0)
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=True), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main._detect_linux_password_store"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == [str(packaged_exe), "--no-sandbox"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox gate")
+def test_gui_continues_with_userns_sandbox_when_helper_unconfigurable(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    (packaged_exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._linux_userns_sandbox_available", return_value=True), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main._detect_linux_password_store"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_run.assert_called_once()
+    # Chromium's namespace sandbox needs no flag: the launch command is bare.
+    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox gate")
+def test_gui_linux_exits_when_userns_unavailable_and_helper_unconfigurable(tmp_path, monkeypatch):
+    """linux-hardened / unprivileged_userns_clone=0: neither sandbox works."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    (packaged_exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._linux_userns_sandbox_available", return_value=False), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main._detect_linux_password_store"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox gate")
+def test_gui_linux_exits_when_sandbox_helper_missing_even_with_userns(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    (packaged_exe.parent / "chrome-sandbox").unlink()
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._linux_userns_sandbox_available", return_value=True), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main._detect_linux_password_store"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox gate")
+def test_gui_electron_disable_sandbox_still_wins_on_unrestricted_host(tmp_path, monkeypatch):
+    """The explicit env override must beat the userns continuation."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    (packaged_exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+    monkeypatch.setenv("ELECTRON_DISABLE_SANDBOX", "1")
+    monkeypatch.setattr(cli_main, "_linux_restricts_unprivileged_userns", lambda: False)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--no-sandbox"], 0)
+
+    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main._detect_linux_password_store"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_run.assert_called_once()
+    assert "--no-sandbox" in mock_run.call_args.args[0]
+
+
+def test_linux_userns_probe_false_off_linux(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    assert cli_main._linux_userns_sandbox_available() is False
+
+
+def test_linux_userns_probe_skips_fork_when_apparmor_restricted(monkeypatch):
+    monkeypatch.setattr(cli_main, "_linux_restricts_unprivileged_userns", lambda: True)
+    with patch("hermes_cli.main.os.fork", side_effect=AssertionError("must not fork")):
+        assert cli_main._linux_userns_sandbox_available() is False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs os.fork")
+def test_linux_userns_probe_fails_closed_on_fork_error(monkeypatch):
+    monkeypatch.setattr(cli_main, "_linux_restricts_unprivileged_userns", lambda: False)
+    with patch("hermes_cli.main.os.fork", side_effect=OSError("no fork")):
+        assert cli_main._linux_userns_sandbox_available() is False

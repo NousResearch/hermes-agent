@@ -1333,6 +1333,12 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # Read receipts are provider control events, not user messages. Photon
+        # Spectrum 12 exposes them through the same stream; dispatching them as
+        # unknown content creates a fake prompt and can feed a read-receipt loop.
+        if ctype in {"read", "read_receipt"}:
+            logger.debug("[photon] ignoring read receipt event")
+            return
         # U+FFFC placeholder — wait for the real attachment instead of
         # dispatching. Detected before _record_last_inbound so the placeholder
         # is not recorded as the reaction target — the real attachment will be.

@@ -1703,6 +1703,14 @@ def init_agent(
     # Cross-session-stable prefix of the cached prompt. It remains separate
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
+
+    # Hermes Startup v3: the coordinator runs once immediately before the
+    # first system-prompt build.  Its context is consumed by the first user
+    # sidecar, while the immutable receipt remains available for diagnostics.
+    agent._startup_coordinator_enabled = True
+    agent._startup_user_context = ""
+    agent._startup_receipt = None
+    agent._startup_receipt_path = None
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager

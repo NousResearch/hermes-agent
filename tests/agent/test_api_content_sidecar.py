@@ -230,7 +230,7 @@ def _build(agent, **overrides):
         restore_or_build_system_prompt=lambda *a, **k: None,
         install_safe_stdio=lambda: None,
         sanitize_surrogates=lambda s: s,
-        summarize_user_message_for_log=lambda s: s,
+        summarize_user_message_for_log=lambda s: str(s),
         set_session_context=lambda _sid: None,
         set_current_write_origin=lambda _o: None,
         ra=lambda: types.SimpleNamespace(_set_interrupt=lambda *a, **k: None),
@@ -246,6 +246,32 @@ def _stub_runtime_main():
 
 
 class TestPrologueStamping:
+    def test_startup_context_is_injected_once_on_first_text_turn(self):
+        agent = _FakeAgent()
+        agent._startup_user_context = "STARTUP-PACKET"
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            first = _build(agent)
+            second = _build(agent, conversation_history=first.messages)
+        first_message = first.messages[first.current_turn_user_idx]
+        second_message = second.messages[second.current_turn_user_idx]
+        assert first_message["api_content"] == "hello\n\nSTARTUP-PACKET"
+        assert "api_content" not in second_message
+        assert agent._startup_user_context == ""
+
+    def test_startup_context_is_injected_once_on_first_multimodal_turn(self):
+        agent = _FakeAgent()
+        agent._startup_user_context = "STARTUP-PACKET"
+        content = [
+            {"type": "text", "text": "inspect"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}},
+        ]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            ctx = _build(agent, user_message=content)
+        message = ctx.messages[ctx.current_turn_user_idx]
+        assert message["content"][-1] == {"type": "text", "text": "STARTUP-PACKET"}
+        assert "api_content" not in message
+        assert agent._startup_user_context == ""
+
     def test_stamps_api_content_from_plugin_context(self):
         agent = _FakeAgent()
         with patch(

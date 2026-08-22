@@ -981,23 +981,47 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             agent.session_id, stored_state,
         )
 
-    # First turn of a new session (or recovering from a broken stored
-    # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # Plugin hook: on_session_start — collect its one permitted context
+    # injector BEFORE prompt construction.  Startup context rides the first
+    # user-message sidecar rather than the system prompt, preserving the
+    # cached prompt bytes for the entire conversation.  A stale/missing prompt
+    # recovered for a continuing transcript is not a new session and must not
+    # re-run startup-only hooks.
+    if not conversation_history:
+        _session_results = []
+        _session_hook_started = time.monotonic()
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
 
-    # Plugin hook: on_session_start — fired once when a brand-new
-    # session is created (not on continuation).  Plugins can use this
-    # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
+            _session_results = _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
+
+        # Exact-True avoids filesystem side effects in minimal test doubles;
+        # every real AIAgent enables the coordinator during initialization.
+        if getattr(agent, "_startup_coordinator_enabled", False) is True:
+            try:
+                from agent.startup_coordinator import coordinate_session_start
+
+                _startup = coordinate_session_start(
+                    agent,
+                    _session_results,
+                    elapsed_ms=(time.monotonic() - _session_hook_started) * 1000,
+                )
+                agent._startup_user_context = _startup.context
+                agent._startup_receipt = _startup.receipt
+                agent._startup_receipt_path = _startup.receipt_path
+            except Exception as exc:
+                logger.warning("startup coordination failed: %s", exc)
+
+    # First turn of a new session (or recovering from a broken stored
+    # prompt) — build from scratch only after startup coordination is sealed.
+    agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
     # desktop build seeds at session OPEN (see seed_credits_at_session_start in

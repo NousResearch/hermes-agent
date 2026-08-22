@@ -1241,8 +1241,15 @@ def build_turn_context(
         )
         agent._persist_user_message_idx = current_turn_user_idx
 
+    # One-shot startup context is the first contribution to the user-message
+    # sidecar.  Consume it before per-turn hooks so it can never be injected on
+    # a later model call; the persisted ``api_content`` below retains the exact
+    # first-request bytes for replay and prompt-cache stability.
+    _startup_context = getattr(agent, "_startup_user_context", "")
+    plugin_user_context = _startup_context if isinstance(_startup_context, str) else ""
+    agent._startup_user_context = ""
+
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
-    plugin_user_context = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -1291,9 +1298,28 @@ def build_turn_context(
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
         if _ctx_parts:
-            plugin_user_context = "\n\n".join(_ctx_parts)
+            _per_turn_context = "\n\n".join(_ctx_parts)
+            plugin_user_context = (
+                plugin_user_context + "\n\n" + _per_turn_context
+                if plugin_user_context
+                else _per_turn_context
+            )
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # Multimodal user content cannot carry the string ``api_content``
+    # sidecar. Preserve the one-shot startup context as a text part so the
+    # first image/audio turn sees the same bounded startup packet as a text
+    # turn. The attribute was already consumed above, so later turns cannot
+    # append a second copy.
+    if (
+        _startup_context
+        and 0 <= current_turn_user_idx < len(messages)
+        and isinstance(messages[current_turn_user_idx].get("content"), list)
+    ):
+        append_notes_to_multimodal_content(
+            messages[current_turn_user_idx]["content"], _startup_context,
+        )
 
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
     # voice-channel change) ride the same user-message injection channel as

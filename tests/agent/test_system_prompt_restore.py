@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -120,6 +121,50 @@ class TestStoredPromptReuse:
 
 
 class TestLegitimateFreshBuild:
+    def test_new_session_invokes_startup_once_and_stages_one_packet(self, monkeypatch):
+        agent = _make_agent(session_db=None)
+        agent._startup_coordinator_enabled = True
+        hook_calls = []
+        coordinate_calls = []
+
+        def invoke(event, **kwargs):
+            hook_calls.append((event, kwargs))
+            return [{"context": "STARTUP-PACKET"}]
+
+        def coordinate(target, results, **kwargs):
+            coordinate_calls.append((target, results, kwargs))
+            return SimpleNamespace(
+                context="STARTUP-PACKET", receipt={"schema": "hermes.startup-receipt.v3"},
+                receipt_path=None,
+            )
+
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke)
+        monkeypatch.setattr("agent.startup_coordinator.coordinate_session_start", coordinate)
+        _restore_or_build_system_prompt(agent, None, [])
+        assert [event for event, _ in hook_calls] == ["on_session_start"]
+        assert len(coordinate_calls) == 1
+        assert agent._startup_user_context == "STARTUP-PACKET"
+
+    def test_hook_failure_fails_open_without_startup_context(self, monkeypatch):
+        agent = _make_agent(session_db=None)
+        agent._startup_coordinator_enabled = False
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+        _restore_or_build_system_prompt(agent, None, [])
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+
+    def test_continuation_never_invokes_startup_hook(self, monkeypatch):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": "stored"}
+        agent = _make_agent(session_db=db)
+        agent._startup_coordinator_enabled = True
+        invoked = []
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda *args, **kwargs: invoked.append(args))
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "prior"}])
+        assert invoked == []
+
     def test_no_history_skips_db_and_builds_fresh(self, caplog):
         """First turn with empty history → build fresh, don't touch the DB."""
         db = MagicMock()

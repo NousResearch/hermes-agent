@@ -44,7 +44,10 @@ Wire protocol
     {"decision": "block", "reason":  "Forbidden command"}   # Claude-Code-style
     {"action":   "block", "message": "Forbidden command"}   # Hermes-canonical
 
-    # Inject context for pre_llm_call:
+    # Inject context once at session start (preferred):
+    {"context": "Today is Friday", "receipt_patch": {"inventory": {"state": "ready"}}}
+
+    # Per-turn context remains supported for genuinely dynamic hooks:
     {"context": "Today is Friday"}
 
     # Modify tool input for pre_tool_call (Hermes-canonical):
@@ -631,7 +634,13 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
                 return None
 
         r = _spawn(spec, _serialize_payload(spec.event, kwargs))
-        return _evaluate_result(spec, r)
+        result = _evaluate_result(spec, r)
+        if spec.event == "on_session_start" and isinstance(result, dict):
+            # Private provenance metadata lets the startup coordinator report
+            # and reject duplicate injectors without exposing command text in
+            # model context.  It is stripped from the persisted hook patch.
+            result["_hermes_hook_identity"] = spec.command
+        return result
 
     _callback.__name__ = f"shell_hook[{spec.event}:{spec.command}]"
     _callback.__qualname__ = _callback.__name__
@@ -787,7 +796,10 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     returned fields into the tool's ``args`` before dispatch.
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
-    unchanged to match the existing plugin-hook contract.
+    unchanged to match the existing plugin-hook contract.  At
+    ``on_session_start`` the same response may also carry a
+    ``receipt_patch`` object; the startup coordinator accepts exactly one
+    context injector and merges redacted receipt metadata.
 
     Anything else returns ``None``.
     """
@@ -835,6 +847,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
         return None
 
     context = data.get("context")
+    receipt_patch = data.get("receipt_patch")
+    if event == "on_session_start":
+        response: Dict[str, Any] = {}
+        if isinstance(context, str) and context.strip():
+            response["context"] = context
+        if isinstance(receipt_patch, dict):
+            response["receipt_patch"] = receipt_patch
+        return response or None
+
     if isinstance(context, str) and context.strip():
         return {"context": context}
 

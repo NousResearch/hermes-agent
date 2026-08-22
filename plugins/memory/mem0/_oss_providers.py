@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from hermes_constants import get_hermes_home
+
 LLM_PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {
         "label": "OpenAI",
@@ -46,7 +48,12 @@ EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
 VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
     "qdrant": {
         "label": "Qdrant",
-        "default_config": {"path": os.path.expanduser("~/.hermes/mem0_qdrant")},
+        # No frozen ``path`` here: the local storage path is resolved lazily
+        # from HERMES_HOME at use time (see ``default_qdrant_path``) so profile
+        # redirection takes effect. Baking ``os.path.expanduser("~/.hermes/..")``
+        # at import time froze the path to HOME and broke HERMES_HOME redirects
+        # (issue #85830).
+        "default_config": {},
         "pip_dep": "qdrant-client",
     },
     "pgvector": {
@@ -62,6 +69,17 @@ KNOWN_DIMS: dict[str, int] = {
     "text-embedding-ada-002": 1536,
     "nomic-embed-text": 768,
 }
+
+
+def default_qdrant_path() -> str:
+    """Resolve the default local Qdrant storage path under HERMES_HOME.
+
+    Evaluated lazily at call time (not import time) so the active
+    ``HERMES_HOME`` / profile redirection takes effect: a user running with a
+    redirected ``HERMES_HOME`` gets their vector store under the redirect, not
+    under the import-time ``HOME``. Returns ``<hermes_home>/mem0_qdrant``.
+    """
+    return str(get_hermes_home() / "mem0_qdrant")
 
 
 def validate_oss_config(oss_config: dict) -> list[str]:

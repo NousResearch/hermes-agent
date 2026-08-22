@@ -180,6 +180,15 @@ class OSSBackend(Mem0Backend):
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
 
+        # Local Qdrant with no explicit path/url: resolve the default lazily
+        # from HERMES_HOME so profile redirection takes effect. The setup wizard
+        # no longer bakes a HOME-derived path into mem0.json (issue #85830); this
+        # also covers hand-edited configs that omit the path.
+        if vector_store.get("provider") == "qdrant" and not vs_config.get("path") and not vs_config.get("url"):
+            from ._oss_providers import default_qdrant_path
+
+            vs_config["path"] = default_qdrant_path()
+
         if "path" in vs_config:
             vs_config["path"] = os.path.expanduser(vs_config["path"])
 

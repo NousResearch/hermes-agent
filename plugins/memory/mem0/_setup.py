@@ -20,6 +20,7 @@ from ._oss_providers import (
     EMBEDDER_PROVIDERS,
     VECTOR_PROVIDERS,
     KNOWN_DIMS,
+    default_qdrant_path,
     validate_oss_config,
 )
 
@@ -154,11 +155,15 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     vector_def = VECTOR_PROVIDERS[vector_id]
     vector_config = dict(vector_def["default_config"])
     if vector_id == "qdrant":
-        if flags.get("oss_vector_path"):
-            vector_config["path"] = flags["oss_vector_path"]
         if flags.get("oss_vector_url"):
+            # Remote Qdrant: drop any local path and use the URL instead.
             vector_config.pop("path", None)
             vector_config["url"] = flags["oss_vector_url"]
+        elif flags.get("oss_vector_path"):
+            vector_config["path"] = flags["oss_vector_path"]
+        # else: no path baked into mem0.json; resolved lazily from HERMES_HOME
+        # at runtime (see default_qdrant_path / issue #85830) so profile
+        # redirection is honored.
     elif vector_id == "pgvector":
         if flags.get("oss_vector_host"):
             vector_config["host"] = flags["oss_vector_host"]
@@ -725,7 +730,9 @@ def _provider_description(v: dict) -> str:
 def _vector_description(pid: str, v: dict) -> str:
     cfg = v.get("default_config", {})
     if pid == "qdrant":
-        return cfg.get("path", "local storage")
+        # Show the resolved HERMES_HOME-relative default so the picker reflects
+        # where memory will actually land under the active profile.
+        return cfg.get("path") or default_qdrant_path()
     if pid == "pgvector":
         return f"{cfg.get('host', 'localhost')}:{cfg.get('port', 5432)}"
     return pid
@@ -916,18 +923,21 @@ def _run_connectivity_checks(oss_config: dict) -> None:
     """Run connectivity checks and print warnings."""
     vs = oss_config.get("vector_store", {})
     if vs.get("provider") == "qdrant":
-        path = vs.get("config", {}).get("path")
-        url = vs.get("config", {}).get("url")
-        if path:
-            ok, msg = _check_qdrant_path(path)
-            if not ok:
-                print(f"  Warning: {msg}")
-        elif url:
+        cfg = vs.get("config", {})
+        url = cfg.get("url")
+        if url:
             try:
                 req = urllib.request.Request(f"{url.rstrip('/')}/healthz", method="GET")
                 urllib.request.urlopen(req, timeout=3)
             except Exception as e:
                 print(f"  Warning: Qdrant not reachable at {url}: {e}")
+        else:
+            # Local mode: resolve the HERMES_HOME-relative default when the
+            # config didn't bake an explicit path (issue #85830).
+            path = cfg.get("path") or default_qdrant_path()
+            ok, msg = _check_qdrant_path(path)
+            if not ok:
+                print(f"  Warning: {msg}")
     elif vs.get("provider") == "pgvector":
         cfg = vs.get("config", {})
         ok, msg = _check_pgvector(cfg.get("host", "localhost"), cfg.get("port", 5432))

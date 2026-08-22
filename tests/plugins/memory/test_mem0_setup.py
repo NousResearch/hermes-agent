@@ -16,6 +16,8 @@ from plugins.memory.mem0._setup import (
     _check_qdrant_path,
     _check_ollama,
     _check_pgvector,
+    _vector_description,
+    _run_connectivity_checks,
 )
 
 
@@ -122,6 +124,68 @@ class TestBuildOSSConfig:
         ])
         oss, _ = build_oss_config(flags)
         assert oss["vector_store"]["config"]["path"] == "/data/qdrant"
+
+    def test_qdrant_url_drops_local_path(self):
+        """Remote URL mode must not carry a local path (regression for #85830)."""
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-vector-url", "http://qdrant.local:6333",
+        ])
+        oss, _ = build_oss_config(flags)
+        cfg = oss["vector_store"]["config"]
+        assert cfg["url"] == "http://qdrant.local:6333"
+        assert "path" not in cfg
+
+    def test_qdrant_default_not_baked_into_config(self, monkeypatch, tmp_path):
+        """Regression for #85830: no vector flags → no frozen path in config.
+
+        The default must be resolved lazily from HERMES_HOME at runtime
+        (in _backend / connectivity checks), not persisted to mem0.json.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        flags = parse_flags(["--mode", "oss", "--oss-llm-key", "sk-oai"])
+        oss, _ = build_oss_config(flags)
+        cfg = oss["vector_store"]["config"]
+        assert "path" not in cfg
+        assert "url" not in cfg
+
+
+class TestVectorDescription:
+
+    def test_qdrant_resolves_default_under_hermes_home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        desc = _vector_description("qdrant", {"default_config": {}})
+        assert desc == str(tmp_path / "mem0_qdrant")
+
+    def test_qdrant_explicit_path_wins(self):
+        desc = _vector_description(
+            "qdrant", {"default_config": {"path": "/custom/qdrant"}}
+        )
+        assert desc == "/custom/qdrant"
+
+    def test_pgvector_unchanged(self):
+        desc = _vector_description(
+            "pgvector",
+            {"default_config": {"host": "db", "port": 5432}},
+        )
+        assert desc == "db:5432"
+
+
+class TestConnectivityChecksDefaultPath:
+
+    def test_qdrant_default_path_resolved_when_no_explicit_path(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Regression for #85830: connectivity check must still run against the
+        HERMES_HOME-resolved default when the config doesn't bake a path."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _run_connectivity_checks(
+            {"vector_store": {"provider": "qdrant", "config": {}}}
+        )
+        out = capsys.readouterr().out
+        # No warning means the resolved default dir was writable; the parent
+        # (HERMES_HOME) always exists in the test sandbox, so this passes.
+        assert "Warning" not in out
 
 
 class TestWriteEnv:

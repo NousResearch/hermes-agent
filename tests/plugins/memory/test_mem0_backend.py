@@ -152,6 +152,38 @@ class TestOSSBackend:
         assert "api_base" not in captured["embedder"]["config"]
         assert raw == before
 
+    def test_qdrant_default_path_filled_from_hermes_home(self, monkeypatch, tmp_path):
+        """Regression for #85830: when the qdrant config carries no explicit
+        path/url, OSSBackend must fill it lazily from HERMES_HOME so profile
+        redirection reaches the vector store."""
+        import sys
+        import types
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        captured = {}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        OSSBackend(raw)
+
+        vs_cfg = captured["vector_store"]["config"]
+        assert vs_cfg["path"] == str(tmp_path / "mem0_qdrant")
+        assert "url" not in vs_cfg
+
 
 httpx = pytest.importorskip("httpx")
 

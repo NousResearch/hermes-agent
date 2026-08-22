@@ -6715,7 +6715,31 @@ def validate_requested_model(
             ),
         }
 
-    # Probe the live API to check if the model actually exists
+    # A model chosen from an interactive picker is normally already present in
+    # the provider's disk-backed catalog. Avoid a second synchronous /models
+    # probe on that user-visible switch path; cache misses still follow the
+    # live validation path below so unknown IDs retain normal validation.
+    try:
+        cached_entry = _load_provider_models_cache().get(normalized)
+        cached_models = (
+            cached_entry.get("models", []) if isinstance(cached_entry, dict) else []
+        )
+        cached_ids = {
+            str(model_id).strip().lower()
+            for model_id in cached_models
+            if str(model_id).strip()
+        }
+        if requested_for_lookup.lower() in cached_ids:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+    except Exception:
+        pass
+
+    # Probe the live API to check if the model actually exists.
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:

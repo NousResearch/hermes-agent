@@ -564,3 +564,30 @@ class TestProbeApiModelsUserAgent:
         assert req.get_header("Authorization") is None
 
 
+
+
+class TestCachedModelValidation:
+    def test_known_cached_model_skips_live_api_validation(self):
+        """Picker-selected cached models must not block on a redundant /models probe."""
+        cache = {"zai": {"models": ["glm-5.2"]}}
+
+        with patch(
+            "hermes_cli.models._load_provider_models_cache",
+            return_value=cache,
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            side_effect=AssertionError("live /models validation must be skipped"),
+        ):
+            result = validate_requested_model(
+                "glm-5.2",
+                "zai",
+                api_key="test-key",
+                base_url="https://api.z.ai/api/coding/paas/v4",
+            )
+
+        assert result == {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }

@@ -1,0 +1,21 @@
+# Whoop Sync Cron Configuration
+# Add to Hermes cron for scheduled data pulls
+
+# Example: Pull Whoop data every 30 minutes
+# hermes cron create "30m" \
+#   --name whoop-sync \
+#   --prompt "Run Whoop data pull: cd /path/to/skills/health/whoop-api && python scripts/whoop_sync.py pull --data-dir /path/to/whoop_data" \
+#   --deliver local
+
+# Example: Pull Whoop data daily at 7am PDT
+# hermes cron create "0 7 * * *" \
+#   --name whoop-daily \
+#   --prompt "Run Whoop daily sync: cd /path/to/skills/health/whoop-api && python scripts/whoop_sync.py pull" \
+#   --deliver origin
+
+# Notes:
+# - Use absolute paths for data-dir when running from cron
+# - Access tokens auto-refresh on each pull
+# - First-time setup (whoop_sync.py setup) must be run manually before cron
+# - Rate limit: 100 req/min. Each pull uses 6 requests (one per endpoint)
+# - Minimum safe interval: 5 minutes (6 endpoints + 1 refresh = 7 requests)

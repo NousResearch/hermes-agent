@@ -238,3 +238,130 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
     )
+
+
+# ---------------------------------------------------------------------------
+# CJK (Chinese) retrieval — trigram tokenizer + LIKE fallback
+# ---------------------------------------------------------------------------
+# The default unicode61 tokenizer treats a run of CJK characters as a single
+# token, so Chinese queries could never match ("飞书" vs "飞书网关已配置可用").
+# The fix: build facts_fts with the trigram tokenizer (SQLite >= 3.34) and
+# fall back to a plain LIKE scan for 2-char queries trigram cannot match.
+
+@pytest.fixture
+def cjk_retriever(tmp_path):
+    """Store seeded with CJK facts (created with the trigram tokenizer)."""
+    store = MemoryStore(str(tmp_path / "cjk_facts.db"))
+    store.add_fact(
+        content="飞书网关已配置可用，WebSocket 长连接",
+        category="tool",
+        tags="feishu",
+    )
+    store.add_fact(
+        content="本机是 Rockchip RK3566 盒子，内存 3.8GB",
+        category="general",
+    )
+    store.add_fact(content="用户 roger 使用中文交流", category="user_pref", tags="roger")
+    retriever = FactRetriever(store=store)
+    yield retriever
+    store.close()
+
+
+def test_cjk_search_three_plus_chars_trigram(cjk_retriever):
+    """3+ char CJK queries match via the trigram tokenizer.
+
+    Before the fix, unicode61 tokenized the whole CJK run as one token, so
+    '飞书网关' could never match '飞书网关已配置可用'."""
+    results = cjk_retriever.search("飞书网关")
+    assert any("飞书网关" in r["content"] for r in results)
+
+
+def test_cjk_search_two_chars_like_fallback(cjk_retriever):
+    """2-char CJK queries match via the LIKE fallback.
+
+    trigram requires >= 3 chars to match anything, so a bare '飞书' query
+    must fall back to a substring scan."""
+    results = cjk_retriever.search("飞书")
+    assert any("飞书网关" in r["content"] for r in results)
+
+
+def test_cjk_search_mixed_with_latin(cjk_retriever):
+    """Mixed CJK + Latin queries still recall on both tokenizer paths."""
+    results = cjk_retriever.search("RK3566 盒子")
+    assert any("RK3566" in r["content"] for r in results)
+
+
+def test_ascii_search_unaffected_by_trigram(cjk_retriever):
+    """Trigram must not regress plain Latin/ASCII retrieval."""
+    results = cjk_retriever.search("roger")
+    assert any("roger" in r["content"].lower() for r in results)
+
+
+def test_unicode61_table_migrates_to_trigram(tmp_path):
+    """A pre-existing unicode61 facts_fts is rebuilt with trigram on first
+    init, after which CJK search works without relying on the LIKE fallback.
+
+    Simulates a database created by a pre-fix build: unicode61 FTS table
+    plus seeded facts. MemoryStore.__init__ must detect the old tokenizer
+    and rebuild + re-seed automatically."""
+    import sqlite3 as _sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    conn = _sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE facts (
+            fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            content         TEXT NOT NULL UNIQUE,
+            category        TEXT DEFAULT 'general',
+            tags            TEXT DEFAULT '',
+            trust_score     REAL DEFAULT 0.5,
+            retrieval_count INTEGER DEFAULT 0,
+            helpful_count   INTEGER DEFAULT 0,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE VIRTUAL TABLE facts_fts USING fts5(
+            content, tags, content=facts, content_rowid=fact_id);
+        INSERT INTO facts(content) VALUES ('飞书网关已配置可用，WebSocket 长连接');
+        INSERT INTO facts_fts(rowid, content, tags)
+            SELECT fact_id, content, tags FROM facts;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = MemoryStore(str(db_path))  # __init__ triggers the migration
+    try:
+        sql = store._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='facts_fts'"
+        ).fetchone()[0]
+        assert "trigram" in sql, "legacy unicode61 table was not rebuilt"
+        retriever = FactRetriever(store=store)
+        results = retriever.search("飞书网关")
+        assert any("飞书网关" in r["content"] for r in results)
+    finally:
+        store.close()
+
+
+def test_trigram_unavailable_falls_back_to_unicode61(tmp_path, monkeypatch):
+    """On SQLite < 3.34 (no trigram tokenizer) facts_fts stays unicode61,
+    and the LIKE fallback still serves CJK queries."""
+    import sqlite3 as _sqlite3
+
+    monkeypatch.setattr(_sqlite3, "sqlite_version_info", (3, 32, 0))
+    db_path = tmp_path / "old_sqlite.db"
+    store = MemoryStore(str(db_path))
+    try:
+        sql = store._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='facts_fts'"
+        ).fetchone()[0]
+        assert "trigram" not in sql, (
+            "trigram requested on a SQLite version that lacks it"
+        )
+        store.add_fact(content="飞书网关已配置可用", category="tool")
+        retriever = FactRetriever(store=store)
+        results = retriever.search("飞书")
+        assert any("飞书网关" in r["content"] for r in results)
+    finally:
+        store.close()

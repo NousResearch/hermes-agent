@@ -46,8 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_facts_trust    ON facts(trust_score DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+-- facts_fts is created dynamically by _ensure_fts_table(): its tokenizer is
+-- version-dependent (trigram needs SQLite >= 3.34), so it cannot live in
+-- this static schema string. The triggers below reference facts_fts by name
+-- and are bound lazily by SQLite, so creating them before the table is fine.
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
@@ -180,7 +182,53 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        self._ensure_fts_table()
         self._conn.commit()
+
+    def _ensure_fts_table(self) -> None:
+        """Create (or migrate) the facts_fts virtual table.
+
+        The default unicode61 tokenizer treats a run of CJK characters as a
+        single token, so Chinese queries never match. The trigram tokenizer
+        (SQLite >= 3.34) does substring matching and works for CJK and Latin
+        text alike. When trigram is unavailable we keep unicode61 — the LIKE
+        fallback in ``search_facts``/``_fts_candidates`` still covers CJK.
+
+        DROP+CREATE leaves the content= external-content triggers in place
+        (they reference facts_fts by name, bound lazily), then re-seeds from
+        the facts table.
+        """
+        use_trigram = sqlite3.sqlite_version_info >= (3, 34)
+        tokenizer_sql = "tokenize='trigram'" if use_trigram else ""
+
+        fts_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+        ).fetchone()
+
+        def _create() -> None:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE facts_fts USING fts5("
+                f"content, tags, content=facts, content_rowid=fact_id"
+                f"{', ' + tokenizer_sql if tokenizer_sql else ''});"
+            )
+            self._conn.execute(
+                "INSERT INTO facts_fts(rowid, content, tags) "
+                "SELECT fact_id, content, tags FROM facts;"
+            )
+
+        if fts_row is None:
+            _create()
+            return
+
+        current_sql = fts_row[0] or ""
+        needs_rebuild = (
+            use_trigram and "trigram" not in current_sql
+        ) or (
+            not use_trigram and "trigram" in current_sql
+        )
+        if needs_rebuild:
+            self._conn.execute("DROP TABLE facts_fts")
+            _create()
 
     # ------------------------------------------------------------------
     # Public API
@@ -276,6 +324,30 @@ class MemoryStore:
             """
 
             rows = self._conn.execute(sql, params).fetchall()
+
+            if not rows and len(query) >= 2:
+                # Fallback: FTS5 trigram needs >=3 chars to match, and the
+                # unicode61→trigram migration above only covers tables created
+                # before the tokenizer change. A plain LIKE scan catches
+                # 2-char CJK queries ("飞书") and any leftover tokenizer
+                # mismatch. Small table, so a full scan is cheap.
+                like_params: list = [f"%{query}%", min_trust]
+                if category is not None:
+                    like_params.append(category)
+                like_params.append(limit)
+                like_sql = f"""
+                    SELECT f.fact_id, f.content, f.category, f.tags,
+                           f.trust_score, f.retrieval_count, f.helpful_count,
+                           f.created_at, f.updated_at
+                    FROM facts f
+                    WHERE f.content LIKE ? COLLATE NOCASE
+                      AND f.trust_score >= ?
+                      {category_clause}
+                    ORDER BY f.trust_score DESC
+                    LIMIT ?
+                """
+                rows = self._conn.execute(like_sql, like_params).fetchall()
+
             results = [self._row_to_dict(r) for r in rows]
 
             if results:

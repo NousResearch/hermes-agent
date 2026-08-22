@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -163,7 +164,79 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     assert state.interrupted_prompt_text == "original request"
 
 
+@pytest.mark.asyncio
+async def test_acp_cancelled_prompt_task_does_not_wedge_session():
+    """A prompt task cancelled mid-turn (client disconnect after cancel) must
+    leave the session idle, not permanently stuck with is_running=True.
 
+    Regression (#79196): cancel() + client disconnect can cancel the prompt()
+    task while the agent runs in the executor. asyncio.CancelledError is a
+    BaseException in Python 3.11+, so the surrounding ``except Exception``
+    does not catch it, the ``state.is_running = False`` reset is skipped, and
+    every later prompt is appended to queued_prompts forever.
+    """
+    import threading
 
+    # Pre-warm the lazy heavy imports _run_agent performs on its first turn
+    # (gateway.session_context, tools.terminal_tool, edit_approval); otherwise
+    # the executor thread spends seconds importing them and run_started is not
+    # set within a short wait.
+    import gateway.session_context  # noqa: F401
+    import acp_adapter.edit_approval  # noqa: F401
+    from tools import terminal_tool  # noqa: F401
 
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    run_started = threading.Event()
+    release_run = threading.Event()
 
+    def run_conversation(**kwargs):
+        run_started.set()
+        release_run.wait(timeout=60)
+        fake.runs.append(kwargs["user_message"])
+        messages = list(kwargs.get("conversation_history") or [])
+        messages.append({"role": "user", "content": kwargs["user_message"]})
+        messages.append({"role": "assistant", "content": "ran"})
+        return {"final_response": "ran", "messages": messages}
+
+    fake.run_conversation = run_conversation
+
+    task = asyncio.create_task(
+        acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="long running prompt")],
+        )
+    )
+    # _run_agent performs heavy lazy imports on its first turn (session
+    # context, terminal approval wiring), so the executor thread may take
+    # several seconds to reach run_conversation. Poll with sleeps instead of a
+    # blocking threading.Event.wait(): this coroutine IS the event loop, and
+    # blocking it would starve the very prompt task we are waiting on.
+    import time
+
+    deadline = time.monotonic() + 30
+    while not run_started.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.1)
+    assert run_started.is_set(), "prompt task never reached run_conversation"
+    assert state.is_running is True
+
+    # Client hits stop then disconnects: the in-flight prompt task is cancelled.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release_run.set()
+
+    # The session must be idle again — not wedged.
+    assert state.is_running is False
+
+    # A subsequent prompt must run, not queue forever. (The executor thread
+    # finishes the cancelled first run in the background, so runs may hold
+    # both prompts in either order — what matters is that the follow-up was
+    # executed at all instead of being appended to queued_prompts.)
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="follow up")],
+    )
+    assert response.stop_reason == "end_turn"
+    assert state.is_running is False
+    assert state.queued_prompts == []
+    assert "follow up" in fake.runs

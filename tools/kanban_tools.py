@@ -534,6 +534,7 @@ def _handle_show(args: dict, **kw) -> str:
             runs = kb.list_runs(conn, tid)
             parents = kb.parent_ids(conn, tid)
             children = kb.child_ids(conn, tid)
+            dependency_edges = kb.list_dependency_edges(conn, tid)
 
             def _task_dict(t):
                 return {
@@ -555,6 +556,8 @@ def _handle_show(args: dict, **kw) -> str:
                 return {
                     "id": r.id, "profile": r.profile,
                     "status": r.status, "outcome": r.outcome,
+                    "outcome_code": r.outcome_code,
+                    "subject_sha": r.subject_sha,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
                     "started_at": r.started_at, "ended_at": r.ended_at,
@@ -564,6 +567,7 @@ def _handle_show(args: dict, **kw) -> str:
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
+                "dependency_edges": dependency_edges,
                 "comments": [
                     {"author": c.author, "body": c.body,
                      "created_at": c.created_at}
@@ -771,6 +775,8 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    outcome_code=args.get("outcome_code"),
+                    subject_sha=args.get("subject_sha"),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -1654,7 +1660,13 @@ def _handle_link(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                accepted_outcome_codes=args.get("accepted_outcome_codes"),
+                subject_sha=args.get("subject_sha"),
+            )
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
             conn.close()
@@ -1849,6 +1861,16 @@ KANBAN_COMPLETE_SCHEMA = {
                     "cleanup; a missing declared scratch artifact keeps the "
                     "task in-flight so you can fix the path and retry."
                 ),
+            },
+            "outcome_code": {
+                "type": "string",
+                "enum": ["APPROVED", "REJECT"],
+                "description": "Structured completion outcome for conditional dependencies.",
+            },
+            "subject_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$",
+                "description": "Exact lowercase full Git SHA reviewed.",
             },
             "board": _board_schema_prop(),
         },
@@ -2342,6 +2364,18 @@ KANBAN_LINK_SCHEMA = {
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "accepted_outcome_codes": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["APPROVED", "REJECT"]},
+                "minItems": 1,
+                "uniqueItems": True,
+                "description": "Accepted structured parent outcomes.",
+            },
+            "subject_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$",
+                "description": "Exact parent subject SHA required by the child.",
+            },
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],

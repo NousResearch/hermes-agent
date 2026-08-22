@@ -132,6 +132,38 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_and_link_support_structured_outcome_condition(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    sha = "a" * 40
+    completed = json.loads(kt._handle_complete({
+        "summary": "approved exact candidate",
+        "outcome_code": "APPROVED",
+        "subject_sha": sha,
+    }))
+    assert completed["ok"] is True
+
+    with kb.connect() as conn:
+        child = kb.create_task(conn, title="release", assignee="release")
+    linked = json.loads(kt._handle_link({
+        "parent_id": worker_env,
+        "child_id": child,
+        "accepted_outcome_codes": ["APPROVED"],
+        "subject_sha": sha,
+    }))
+    assert linked["ok"] is True
+
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome_code == "APPROVED"
+        assert run.subject_sha == sha
+        assert kb.get_task(conn, child).status == "ready"
+
+    assert "outcome_code" in kt.KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]
+    assert "accepted_outcome_codes" in kt.KANBAN_LINK_SCHEMA["parameters"]["properties"]
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

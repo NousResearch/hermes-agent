@@ -550,6 +550,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--accept-outcome", action="append", dest="accepted_outcome_codes",
+        choices=sorted(kb.VALID_COMPLETION_OUTCOME_CODES),
+        help="Accepted parent outcome code (repeatable)",
+    )
+    p_link.add_argument("--subject-sha", help="Required exact parent subject SHA")
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -600,6 +606,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--outcome-code", choices=sorted(kb.VALID_COMPLETION_OUTCOME_CODES),
+        help="Structured completion outcome for conditional dependencies",
+    )
+    p_complete.add_argument(
+        "--subject-sha", help="Exact lowercase 40-hex Git SHA reviewed",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -718,7 +731,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_promote.add_argument(
         "--force",
         action="store_true",
-        help="Promote even if parent dependencies are not yet done/archived",
+        help=(
+            "Promote even if unconditional parent dependencies are not yet "
+            "done/archived; cannot override conditional dependencies"
+        ),
     )
     p_promote.add_argument(
         "--dry-run",
@@ -1701,6 +1717,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
+        dependency_edges = kb.list_dependency_edges(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
@@ -1715,6 +1732,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "latest_summary": latest_summary,
             "parents": parents,
             "children": children,
+            "dependency_edges": dependency_edges,
             "comments": [
                 {"author": c.author, "body": c.body, "created_at": c.created_at}
                 for c in comments
@@ -1735,6 +1753,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "step_key": r.step_key,
                     "status": r.status,
                     "outcome": r.outcome,
+                    "outcome_code": r.outcome_code,
+                    "subject_sha": r.subject_sha,
                     "summary": r.summary,
                     "error": r.error,
                     "metadata": r.metadata,
@@ -2068,7 +2088,13 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        kb.link_tasks(
+            conn,
+            args.parent_id,
+            args.child_id,
+            accepted_outcome_codes=getattr(args, "accepted_outcome_codes", None),
+            subject_sha=getattr(args, "subject_sha", None),
+        )
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
@@ -2252,12 +2278,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    outcome_code = getattr(args, "outcome_code", None)
+    subject_sha = getattr(args, "subject_sha", None)
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
-    if len(ids) > 1 and (summary or raw_meta):
+    if len(ids) > 1 and (summary or raw_meta or outcome_code or subject_sha):
         print(
-            "kanban: --summary / --metadata are per-task and can't be used "
+            "kanban: structured handoff/evidence flags are per-task and can't be used "
             "with multiple ids (would apply the same handoff to every task). "
             "Complete tasks one at a time, or drop the flags for the bulk close.",
             file=sys.stderr,
@@ -2298,6 +2326,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                outcome_code=getattr(args, "outcome_code", None),
+                subject_sha=getattr(args, "subject_sha", None),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -3021,6 +3051,7 @@ def _cmd_runs(args: argparse.Namespace) -> int:
             {
                 "id": r.id, "profile": r.profile, "status": r.status,
                 "outcome": r.outcome, "started_at": r.started_at,
+                "outcome_code": r.outcome_code, "subject_sha": r.subject_sha,
                 "ended_at": r.ended_at, "summary": r.summary,
                 "error": r.error, "metadata": r.metadata,
                 "worker_pid": r.worker_pid, "step_key": r.step_key,

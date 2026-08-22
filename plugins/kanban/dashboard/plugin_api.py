@@ -42,7 +42,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
@@ -228,6 +228,8 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "started_at": r.started_at,
         "ended_at": r.ended_at,
         "outcome": r.outcome,
+        "outcome_code": r.outcome_code,
+        "subject_sha": r.subject_sha,
         "summary": r.summary,
         "metadata": r.metadata,
         "error": r.error,
@@ -354,8 +356,8 @@ def _warnings_summary_from_diagnostics(
     }
 
 
-def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
-    """Return {'parents': [...], 'children': [...]} for a task."""
+def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    """Return linked ids and inspectable edge conditions for a task."""
     parents = [
         r["parent_id"]
         for r in conn.execute(
@@ -370,7 +372,11 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
             (task_id,),
         )
     ]
-    return {"parents": parents, "children": children}
+    return {
+        "parents": parents,
+        "children": children,
+        "edges": kanban_db.list_dependency_edges(conn, task_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +844,8 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    outcome_code: Optional[Literal["APPROVED", "REJECT"]] = None
+    subject_sha: Optional[str] = Field(None, pattern=r"^[0-9a-f]{40}$")
     # Per-task model/provider override (the board's model dropdown).
     # ``model_override=""`` clears both. ``clear_model_override=True`` is
     # the explicit clear signal — needed because Optional[str]=None means
@@ -897,12 +905,17 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
+                try:
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=payload.metadata,
+                        outcome_code=payload.outcome_code,
+                        subject_sha=payload.subject_sha,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
@@ -1083,16 +1096,21 @@ def _parents_blocking_ready(
     no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
     parents, or all parents already done).
     """
-    rows = conn.execute(
-        "SELECT t.id, t.title, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
-        (task_id,),
-    ).fetchall()
-    return [
-        {"id": r["id"], "title": r["title"], "status": r["status"]}
-        for r in rows
-    ]
+    blockers = kanban_db.dependency_blockers(conn, task_id)
+    result: list[dict[str, Any]] = []
+    for blocker in blockers:
+        row = conn.execute(
+            "SELECT title, status FROM tasks WHERE id = ?",
+            (blocker["parent_id"],),
+        ).fetchone()
+        result.append({
+            "id": blocker["parent_id"],
+            "title": row["title"] if row else None,
+            "status": row["status"] if row else None,
+            "reason": blocker["reason"],
+            "conditional": blocker["conditional"],
+        })
+    return result
 
 
 def _invalidate_descendants_for_parent_reopen(
@@ -1157,15 +1175,7 @@ def _set_status_direct(
         # Prevents the dispatcher from spawning a child whose upstream work
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
         if effective_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] in {"done", "archived"} for p in parent_statuses
-            ):
+            if kanban_db.dependency_blockers(conn, task_id):
                 return False
 
         was_running = prev["status"] == "running"
@@ -1260,6 +1270,8 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 class LinkBody(BaseModel):
     parent_id: str
     child_id: str
+    accepted_outcome_codes: Optional[list[Literal["APPROVED", "REJECT"]]] = None
+    subject_sha: Optional[str] = Field(None, pattern=r"^[0-9a-f]{40}$")
 
 
 @router.post("/links")
@@ -1267,7 +1279,13 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        kanban_db.link_tasks(
+            conn,
+            payload.parent_id,
+            payload.child_id,
+            accepted_outcome_codes=payload.accepted_outcome_codes,
+            subject_sha=payload.subject_sha,
+        )
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

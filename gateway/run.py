@@ -886,14 +886,34 @@ def render_notice_line(notice) -> str:
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
-    Issue #30045: adapters that implement send_or_update_status (currently
-    Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Adapters without the method fall back to plain send.
+    Issue #30045: adapters that implement send_or_update_status edit the
+    previous bubble for the same status_key instead of appending a new one.
+    Adapters without the method fall back to plain send.
     """
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
     return await adapter.send(chat_id, content, metadata=metadata)
+
+
+def _turn_scoped_status_key(
+    event_type: str,
+    session_key: Optional[str],
+    run_generation: Optional[int],
+) -> str:
+    """Keep editable status bubbles inside one gateway turn.
+
+    ``send_or_update_status`` adapters retain their message-id caches across
+    turns.  A bare event type (for example ``"lifecycle"``) therefore makes a
+    later turn edit an old bubble.  The gateway session key identifies the
+    destination lane and the monotonic run generation identifies the turn.
+
+    Preserve the historical key for non-gateway/direct test callers that do
+    not provide a complete turn identity.
+    """
+    if not session_key or run_generation is None:
+        return event_type
+    return f"{session_key}:run:{run_generation}:{event_type}"
 
 
 def _approval_send_outcome(future, timeout: float) -> str:
@@ -5326,8 +5346,19 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        status_key = _turn_scoped_status_key(
+            event_type,
+            ctx.session_key,
+            ctx.run_generation,
+        )
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            _send_or_update_status_coro(
+                ctx._status_adapter,
+                ctx._status_chat_id,
+                status_key,
+                prepared_message,
+                ctx._status_thread_metadata,
+            ),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",

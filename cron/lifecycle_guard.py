@@ -43,6 +43,8 @@ import stat
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from tools.shell_heredoc import strip_inert_heredoc_bodies
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,8 +79,8 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    r"|(?:(?<![A-Za-z0-9_])p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:(?<![A-Za-z0-9_])p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 
@@ -104,10 +106,27 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_NON_SHELL_SHEBANG_EXECUTABLES = frozenset(
+    {"bun", "deno", "node", "perl", "php", "python", "python2", "python3", "ruby", "tsx"}
+)
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
-_CONTROL_CHARS = frozenset(";&|()")
+_CONTROL_CHARS = frozenset(";&|()\n")
+_CAT_HEREDOC_REDIRECTS = (
+    re.compile(
+        r"(?m)^\s*cat\s+>\s*(?P<quote>['\"]?)(?P<path>[^\s<>'\"]+)"
+        r"(?P=quote)\s+<<"
+    ),
+    re.compile(
+        r"(?m)^\s*cat\s+<<-?\s*(?:'[^']+'|\"[^\"]+\"|\S+)\s+>\s*"
+        r"(?P<quote>['\"]?)(?P<path>[^\s<>'\"]+)(?P=quote)"
+    ),
+)
+_NON_SHELL_PROCESS_CALL = re.compile(
+    r"(?:child_process\.)?(?:execFile|execFileSync|spawn|spawnSync)\s*\(\s*"
+    r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)"
+)
 
 
 # Directory names that sit directly under a `Library` path component and
@@ -180,29 +199,31 @@ _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
     normalized = command.replace("\\\n", "")
-    for line in normalized.splitlines() or [normalized]:
-        try:
-            lexer = shlex.shlex(
-                line,
-                posix=True,
-                punctuation_chars=";&|()",
-            )
-            lexer.whitespace_split = True
-            lexer.commenters = "#"
-            tokens = list(lexer)
-        except ValueError:
-            continue
+    try:
+        lexer = shlex.shlex(
+            normalized,
+            posix=True,
+            punctuation_chars=";&|()\n",
+        )
+        # Keep unquoted newlines as command separators while preserving
+        # newlines inside a quoted `sh -c` payload as part of that token.
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+    except ValueError:
+        return
 
-        segment: list[str] = []
-        for token in tokens:
-            if token and set(token) <= _CONTROL_CHARS:
-                if segment:
-                    yield segment
-                    segment = []
-                continue
-            segment.append(token)
-        if segment:
-            yield segment
+    segment: list[str] = []
+    for token in tokens:
+        if token and set(token) <= _CONTROL_CHARS:
+            if segment:
+                yield segment
+                segment = []
+            continue
+        segment.append(token)
+    if segment:
+        yield segment
 
 
 def _command_token_index(segment: list[str]) -> Optional[int]:
@@ -331,6 +352,62 @@ def _direct_lifecycle_scan(command: str) -> bool:
     ) or contains_launchctl_submit_command(command)
 
 
+def _direct_lifecycle_evidence(command: str) -> Optional[dict]:
+    """Return bounded diagnostic evidence for a direct lifecycle match."""
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", command)
+    candidate = _mask_data_sink_arguments(normalized)
+    match = _GATEWAY_LIFECYCLE_PATTERN.search(candidate)
+    if match is not None:
+        fragment = match.group(0)[:240]
+        lowered = fragment.lower().lstrip()
+        if lowered.startswith("hermes"):
+            rule_id = "hermes_gateway_lifecycle"
+        elif lowered.startswith("systemctl"):
+            rule_id = "systemctl_gateway_lifecycle"
+        elif lowered.startswith("launchctl"):
+            rule_id = "launchctl_gateway_lifecycle"
+        else:
+            rule_id = "signal_gateway_process"
+        return {
+            "ruleId": rule_id,
+            "evidenceSource": "shell_command",
+            "matchedFragment": fragment,
+            "referencedPath": None,
+        }
+    if contains_launchctl_submit_command(command):
+        return {
+            "ruleId": "launchctl_persistent_job",
+            "evidenceSource": "shell_command",
+            "matchedFragment": "launchctl submit/bootstrap",
+            "referencedPath": None,
+        }
+    return None
+
+
+def _non_shell_shebang(text: str) -> bool:
+    """Return True for a known non-shell interpreter shebang."""
+    first_line = text.splitlines()[0] if text else ""
+    if not first_line.startswith("#!"):
+        return False
+    try:
+        tokens = shlex.split(first_line[2:].strip())
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    interpreter = Path(tokens[0]).name.lower()
+    if interpreter == "env":
+        arguments = [token for token in tokens[1:] if not token.startswith("-")]
+        if not arguments:
+            return False
+        interpreter = Path(arguments[0]).name.lower()
+    if interpreter in _SHELL_EXECUTABLES:
+        return False
+    if interpreter.startswith("python"):
+        interpreter = "python3" if interpreter.startswith("python3") else "python"
+    return interpreter in _NON_SHELL_SHEBANG_EXECUTABLES
+
+
 def _expand_candidate_path(candidate: str) -> Optional[Path]:
     """Sanitize a tokenized path candidate at the ingestion boundary.
 
@@ -438,6 +515,49 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
             if argument in {"-c", "--command"}:
                 yield arguments[arg_index + 1]
                 break
+
+
+def _cat_heredoc_output_is_executed(command: str) -> bool:
+    """Return whether a cat heredoc target is subsequently shell-executed."""
+    for pattern in _CAT_HEREDOC_REDIRECTS:
+        for match in pattern.finditer(command):
+            path = match.group("path")
+            executed = re.compile(
+                rf"(?m)^\s*(?:(?:/[^\s]+/)?(?:sh|bash|dash|ksh|zsh)\s+)?"
+                rf"{re.escape(path)}(?:\s|$)"
+            )
+            if executed.search(command, match.end()):
+                return True
+    return False
+
+
+def _is_explicit_shell_script_reference(
+    command: str, script_path: Path, *, cwd: Optional[str]
+) -> bool:
+    """Return whether a POSIX shell explicitly interprets *script_path*."""
+    target = script_path.resolve(strict=False)
+    for segment in _iter_command_segments(command):
+        index = _command_token_index(segment)
+        if index is None or Path(segment[index]).name not in _SHELL_EXECUTABLES:
+            continue
+        for argument in segment[index + 1 :]:
+            if argument in {"-c", "--command"}:
+                break
+            if argument.startswith("-"):
+                continue
+            resolved = _resolve_terminal_script_path(argument, cwd)
+            if resolved is not None and resolved.resolve(strict=False) == target:
+                return True
+            break
+    return False
+
+
+def _iter_non_shell_process_paths(text: str, *, cwd: Optional[str]) -> Iterator[Path]:
+    """Yield literal paths passed to known Node process-execution APIs."""
+    for match in _NON_SHELL_PROCESS_CALL.finditer(text):
+        resolved = _resolve_terminal_script_path(match.group("path"), cwd)
+        if resolved is not None:
+            yield resolved
 
 
 def _resolve_script_directory(script_path: str) -> Optional[str]:
@@ -555,6 +675,117 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
     return text, False
 
 
+def _find_unsafe_gateway_action(
+    command: str,
+    *,
+    cwd: Optional[str],
+    depth: int,
+    visited: set[Path],
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+) -> Optional[dict]:
+    direct_evidence = _direct_lifecycle_evidence(command)
+    if direct_evidence is not None:
+        return direct_evidence
+    # Heredoc bodies may still execute direct lifecycle literals (checked above),
+    # but their data/path tokens are inert for referenced-script discovery.
+    if not _cat_heredoc_output_is_executed(command):
+        command = strip_inert_heredoc_bodies(command)
+    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
+        return {
+            "ruleId": "referenced_script_depth_limit",
+            "evidenceSource": "recursive_scan",
+            "matchedFragment": "maximum referenced-script depth reached",
+            "referencedPath": None,
+        }
+
+    for payload in _iter_shell_command_payloads(command):
+        evidence = _find_unsafe_gateway_action(
+            payload,
+            cwd=cwd,
+            depth=depth + 1,
+            visited=visited,
+            read_remote_script=read_remote_script,
+        )
+        if evidence is not None:
+            if evidence["evidenceSource"] == "shell_command":
+                evidence = {**evidence, "evidenceSource": "shell_payload"}
+            return evidence
+
+    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+        try:
+            resolved = script_path.resolve(strict=False)
+        except (OSError, ValueError):
+            resolved = script_path
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        script_text, unsafe = _read_referenced_script(script_path)
+        if unsafe:
+            return {
+                "ruleId": "unsafe_referenced_script",
+                "evidenceSource": "referenced_script",
+                "matchedFragment": "non-regular or oversized referenced script",
+                "referencedPath": str(script_path)[:500],
+            }
+        if script_text is None and read_remote_script is not None:
+            script_text, unsafe = _sanitize_remote_script_text(
+                read_remote_script(str(script_path))
+            )
+            if unsafe:
+                return {
+                    "ruleId": "unsafe_referenced_script",
+                    "evidenceSource": "referenced_script",
+                    "matchedFragment": "oversized referenced script",
+                    "referencedPath": str(script_path)[:500],
+                }
+        if not script_text:
+            continue
+        explicit_shell = _is_explicit_shell_script_reference(
+            command, script_path, cwd=cwd
+        )
+        if _non_shell_shebang(script_text) and not explicit_shell:
+            evidence = _direct_lifecycle_evidence(script_text)
+            if evidence is not None:
+                return {
+                    **evidence,
+                    "evidenceSource": "referenced_script",
+                    "referencedPath": str(script_path)[:500],
+                }
+            script_dir = _resolve_script_directory(str(resolved)) or cwd
+            for process_path in _iter_non_shell_process_paths(
+                script_text, cwd=script_dir
+            ):
+                evidence = _find_unsafe_gateway_action(
+                    f"sh {shlex.quote(str(process_path))}",
+                    cwd=script_dir,
+                    depth=depth + 1,
+                    visited=visited,
+                    read_remote_script=read_remote_script,
+                )
+                if evidence is not None:
+                    return {
+                        **evidence,
+                        "evidenceSource": "referenced_script",
+                        "referencedPath": str(process_path)[:500],
+                    }
+            continue
+        script_dir = _resolve_script_directory(str(resolved)) or cwd
+        evidence = _find_unsafe_gateway_action(
+            script_text,
+            cwd=script_dir,
+            depth=depth + 1,
+            visited=visited,
+            read_remote_script=read_remote_script,
+        )
+        if evidence is not None:
+            return {
+                **evidence,
+                "evidenceSource": "referenced_script",
+                "referencedPath": str(script_path)[:500],
+            }
+    return None
+
+
 def _contains_unsafe_gateway_action(
     command: str,
     *,
@@ -563,69 +794,48 @@ def _contains_unsafe_gateway_action(
     visited: set[Path],
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
-    if _direct_lifecycle_scan(command):
-        return True
-    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
-        return True
+    """Compatibility bool wrapper for callers and fault-injection tests."""
+    return _find_unsafe_gateway_action(
+        command,
+        cwd=cwd,
+        depth=depth,
+        visited=visited,
+        read_remote_script=read_remote_script,
+    ) is not None
 
-    for payload in _iter_shell_command_payloads(command):
-        if _contains_unsafe_gateway_action(
-            payload,
+
+def find_gateway_lifecycle_violation(
+    command: str,
+    *,
+    cwd: Optional[str] = None,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+) -> Optional[dict]:
+    """Return structured evidence when *command* would self-stop the gateway."""
+    try:
+        return _find_unsafe_gateway_action(
+            command,
             cwd=cwd,
-            depth=depth + 1,
-            visited=visited,
+            depth=0,
+            visited=set(),
             read_remote_script=read_remote_script,
-        ):
-            return True
-
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
-        # Do not touch a FileProvider path even to discover whether the file
-        # is hydrated. The lexical check covers direct cloud paths; the
-        # resolved check below covers local launchers that are symlinks into
-        # a cloud subtree. _read_referenced_script repeats both checks as the
-        # shared choke point, so every caller stays covered even if this
-        # walk-level short-circuit is bypassed.
-        if _is_cloud_placeholder_path(script_path):
-            return True
+        )
+    except Exception:
+        logger.warning(
+            "lifecycle guard referenced-script walk failed; "
+            "falling back to direct-scan verdict",
+            exc_info=True,
+        )
         try:
-            resolved = script_path.resolve(strict=False)
-        except (OSError, ValueError):
-            # OSError: unreadable/long paths. ValueError: embedded NUL byte
-            # from a binary's decoded contents tokenized as a path — a
-            # guarded path must never crash the guard (#76762).
-            resolved = script_path
-        if _is_cloud_placeholder_path(resolved):
-            return True
-        if resolved in visited:
-            continue
-        visited.add(resolved)
-        script_text, unsafe = _read_referenced_script(script_path)
-        if unsafe:
-            return True
-        if script_text is None and read_remote_script is not None:
-            # Local path missing; try the remote backend if one is available.
-            # The callback's output crosses the same trust boundary as a
-            # local read — sanitize it identically before it enters the
-            # recursion (binary skip + size fail-closed).
-            script_text, unsafe = _sanitize_remote_script_text(
-                read_remote_script(str(script_path))
-            )
-            if unsafe:
-                return True
-        if not script_text:
-            continue
-        # Relative references inside a script resolve against that script's
-        # directory, not the original command's cwd.
-        script_dir = _resolve_script_directory(str(resolved)) or cwd
-        if _contains_unsafe_gateway_action(
-            script_text,
-            cwd=script_dir,
-            depth=depth + 1,
-            visited=visited,
-            read_remote_script=read_remote_script,
-        ):
-            return True
-    return False
+            return _direct_lifecycle_evidence(command)
+        except Exception:
+            if contains_gateway_lifecycle_command(command):
+                return {
+                    "ruleId": "gateway_lifecycle_fallback",
+                    "evidenceSource": "shell_command",
+                    "matchedFragment": "gateway lifecycle command",
+                    "referencedPath": None,
+                }
+            return None
 
 
 def contains_gateway_lifecycle_command_or_referenced_script(
@@ -634,23 +844,8 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
-    """Detect lifecycle/submit commands, including bounded nested scripts.
-
-    Total by construction: this function returns a verdict for *every*
-    input and never raises. The direct scans below are pure string
-    operations; the referenced-script walk touches the filesystem, remote
-    backends, and shlex on arbitrary decoded bytes, so it is best-effort
-    defense-in-depth — any unexpected failure inside it is logged and
-    treated as "walk found nothing" rather than crashing the caller.
-
-    This is the contract #76762 established ("a guarded path must never
-    crash the guard") enforced at the boundary instead of per-syscall: a
-    guard crash propagates out of ``tools/terminal_tool.py`` and breaks
-    every terminal command until the gateway restarts (#77780, #78256),
-    which is strictly worse than either verdict.
-    """
+    """Detect lifecycle/submit commands, including bounded nested scripts."""
     try:
-        # Includes the direct regex/submit scans at depth 0.
         return _contains_unsafe_gateway_action(
             command,
             cwd=cwd,
@@ -664,13 +859,9 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             "falling back to direct-scan verdict",
             exc_info=True,
         )
-        # Pure string scans of the top-level command — cannot raise.
         try:
             return _direct_lifecycle_scan(command)
         except Exception:
-            # The data-argument masker tokenizes arbitrary text; if even
-            # that fails, fall to the raw regex + submit scan so the guard
-            # stays total.
             return contains_gateway_lifecycle_command(
                 command
             ) or contains_launchctl_submit_command(command)

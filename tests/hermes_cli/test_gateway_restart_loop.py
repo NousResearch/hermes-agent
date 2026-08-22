@@ -296,6 +296,21 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
+    def test_block_reports_structured_guard_evidence(self, monkeypatch):
+        """A rejection must identify the rule instead of forcing trial-and-error."""
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
+
+        assert result["guard"] == {
+            "ruleId": "hermes_gateway_lifecycle",
+            "evidenceSource": "shell_command",
+            "matchedFragment": "hermes gateway restart",
+            "referencedPath": None,
+        }
+
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -344,6 +359,12 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
+        assert result["guard"] == {
+            "ruleId": "launchctl_persistent_job",
+            "evidenceSource": "shell_command",
+            "matchedFragment": "launchctl submit/bootstrap",
+            "referencedPath": None,
+        }
 
     @pytest.mark.parametrize("command", [
         "launchctl submit -l com.foo -- /path/gateway",
@@ -694,6 +715,162 @@ class TestLifecycleGuardModule:
             '/usr/bin/python3 -c "print(1)"'
         )
         assert result is False
+
+    def test_skill_filename_before_gateway_path_does_not_match_kill(self):
+        """SKILL.md is a data path, not a kill command token."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        command = (
+            "git add skills/example/SKILL.md "
+            "skills/hermes/hermes-gateway-runtime/SKILL.md"
+        )
+        assert not contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    def test_quoted_python_heredoc_body_is_not_shell_scanned(self, tmp_path):
+        """Directory-looking Python values in an inert body are not scripts."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        data_dir = tmp_path / "profile" / "plugins" / "web-search-pool"
+        data_dir.mkdir(parents=True)
+        command = (
+            "env -u BASH_ENV bash --noprofile --norc -c \"python3 <<'PY'\n"
+            "from pathlib import Path\n"
+            f"plugin_dir = Path('{data_dir}')\n"
+            "print(plugin_dir)\n"
+            "PY\""
+        )
+        assert not contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    def test_python_heredoc_lifecycle_literal_is_still_blocked(self):
+        """Masking heredoc data must not hide an executable lifecycle literal."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        command = (
+            "python3 <<'PY'\n"
+            "import os\n"
+            "os.system('hermes gateway restart')\n"
+            "PY"
+        )
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    def test_non_shell_shebang_executable_is_not_recursively_scanned(self, tmp_path):
+        """Node/Python executables are programs, not referenced shell scripts."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        data_dir = tmp_path / "gateway-runtime-data"
+        data_dir.mkdir()
+        executable = tmp_path / "tsc"
+        executable.write_text(
+            "#!/usr/bin/env node\n"
+            f"/{str(data_dir).lstrip('/')}/\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+
+        assert not contains_gateway_lifecycle_command_or_referenced_script(
+            f"{executable} -p tsconfig.json --noEmit"
+        )
+
+    def test_non_shell_shebang_literal_lifecycle_command_still_blocks(self, tmp_path):
+        """Skipping shell recursion must not hide a direct process-control literal."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        executable = tmp_path / "unsafe.py"
+        executable.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "os.system('hermes gateway restart')\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(str(executable))
+
+    def test_generated_shell_wrapper_keeps_referenced_script_visible(self, tmp_path):
+        """A cat heredoc executed later in the command is code, not inert data."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        restart = tmp_path / "restart.sh"
+        restart.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        generated = tmp_path / "generated.sh"
+        command = (
+            f"cat > {generated} <<'EOF'\n"
+            "#!/bin/sh\n"
+            f"/bin/sh {restart}\n"
+            "EOF\n"
+            f"/bin/sh {generated}"
+        )
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    def test_generated_shell_wrapper_with_heredoc_first_is_scanned(self, tmp_path):
+        """Equivalent heredoc/redirection ordering keeps generated code visible."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        restart = tmp_path / "restart.sh"
+        restart.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        generated = tmp_path / "generated.sh"
+        command = (
+            f"cat <<'EOF' > {generated}\n"
+            f"/bin/sh {restart}\n"
+            "EOF\n"
+            f"/bin/sh {generated}"
+        )
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    def test_node_execfile_referenced_shell_script_is_scanned(self, tmp_path):
+        """Explicit Node process execution is scanned without treating data paths as code."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        restart = tmp_path / "restart.sh"
+        restart.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        wrapper = tmp_path / "wrapper.js"
+        wrapper.write_text(
+            "#!/usr/bin/env node\n"
+            "const child_process = require('child_process');\n"
+            f"child_process.execFile('{restart}');\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(str(wrapper))
+
+    def test_explicit_shell_interpreter_overrides_non_shell_shebang(self, tmp_path):
+        """bash executes a file as shell regardless of its misleading shebang."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        restart = tmp_path / "restart.sh"
+        restart.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        wrapper = tmp_path / "wrapper.py"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            f"{restart}\n",
+            encoding="utf-8",
+        )
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            f"bash {wrapper}"
+        )
 
     def test_nul_byte_in_path_token_does_not_crash_guard(self):
         """Residual #76762 class: when a NUL byte survives into the *path

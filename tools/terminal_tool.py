@@ -2879,8 +2879,8 @@ def terminal_tool(
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from cron.lifecycle_guard import (
                 _MAX_REFERENCED_SCRIPT_BYTES,
-                contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
+                find_gateway_lifecycle_violation,
             )
             if contains_launchctl_submit_command(command):
                 return json.dumps({
@@ -2892,6 +2892,12 @@ def terminal_tool(
                         "Use Hermes cron for one-shot delayed work, or install an "
                         "explicit LaunchAgent from a separate shell."
                     ),
+                    "guard": {
+                        "ruleId": "launchctl_persistent_job",
+                        "evidenceSource": "shell_command",
+                        "matchedFragment": "launchctl submit/bootstrap",
+                        "referencedPath": None,
+                    },
                     "status": "error",
                 }, ensure_ascii=False)
             guard_cwd_base = get_session_cwd(session_key)
@@ -2959,11 +2965,12 @@ def terminal_tool(
                     pass
                 return None
 
-            if contains_gateway_lifecycle_command_or_referenced_script(
+            lifecycle_violation = find_gateway_lifecycle_violation(
                 command,
                 cwd=guard_cwd,
                 read_remote_script=_read_script_in_env,
-            ):
+            )
+            if lifecycle_violation is not None:
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
@@ -2974,6 +2981,7 @@ def terminal_tool(
                         "to child processes). Run `hermes gateway restart` from a "
                         "separate shell outside the running gateway."
                     ),
+                    "guard": lifecycle_violation,
                     "status": "error",
                 }, ensure_ascii=False)
 

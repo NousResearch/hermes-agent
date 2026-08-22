@@ -202,12 +202,12 @@ def get_pending_for_session(
 
 
 def _label_matches(text: str, choice: object) -> bool:
-    """Case-insensitive label match that ignores the '(Recommended)' suffix.
+    """Case-insensitive label match that ignores the recommendation marker.
 
     The first choice reaches adapters already decorated (see
     ``tools.clarify_tool.mark_recommended``), so a user who types the option
-    text as the agent worded it — without the label — must still resolve the
-    prompt.
+    text as the agent worded it — without the ⭐ marker (or a legacy
+    "(Recommended)" suffix) — must still resolve the prompt.
     """
     from tools.clarify_tool import strip_recommended
 

@@ -63,7 +63,7 @@ class TestClarifyToolChoicesValidation:
             return "answer"
 
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
-        assert choices_received == ["1 (Recommended)", "2", "3"]
+        assert choices_received == ["\u2b50 1", "2", "3"]
 
 
 class TestClarifyToolCallbackHandling:
@@ -130,7 +130,7 @@ class TestClarifyDictChoices:
             callback=cb,
         ))  # type: ignore
         assert seen == [
-            "Tight, covers all 3 points (Recommended)",
+            "\u2b50 Tight, covers all 3 points",
             "Loose layout",
             "A plain string choice",
         ]
@@ -245,15 +245,17 @@ class TestClarifyToolMultiSelect:
 
 
 class TestClarifyRecommendedLabel:
-    """The first choice is the agent's pick and is labelled as such.
+    """The first choice is the agent's pick and is marked as such.
 
-    The schema tells the model to order choices best-first, so the tool tags
-    element 0 with "(Recommended)" at the one platform-agnostic entry point —
-    CLI, TUI, desktop, and messaging adapters all inherit the same label. The
-    label is presentation only: it never appears in the answer the agent reads.
+    The schema tells the model to order choices best-first, so the tool marks
+    element 0 with a ⭐ prefix at the one platform-agnostic entry point — CLI,
+    TUI, desktop, and messaging adapters all inherit the same marker. A prefix
+    (not a trailing label) survives tail truncation on space-constrained
+    surfaces like Discord buttons. The marker is presentation only: it never
+    appears in the answer the agent reads.
     """
 
-    def test_first_choice_is_labelled(self):
+    def test_first_choice_is_marked(self):
         seen = []
 
         def cb(question, choices):
@@ -261,9 +263,9 @@ class TestClarifyRecommendedLabel:
             return choices[1]
 
         clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb)
-        assert seen == ["Rebase (Recommended)", "Merge"]
+        assert seen == ["\u2b50 Rebase", "Merge"]
 
-    def test_answer_strips_the_label(self):
+    def test_answer_strips_the_marker(self):
         """Picking the recommended option returns the bare option text."""
         def cb(question, choices):
             return choices[0]
@@ -272,7 +274,7 @@ class TestClarifyRecommendedLabel:
         assert result["user_response"] == "Rebase"
         assert result["choices_offered"] == ["Rebase", "Merge"]
 
-    def test_multi_select_answers_strip_the_label(self):
+    def test_multi_select_answers_strip_the_marker(self):
         def cb(question, choices, multi_select=False):
             return ", ".join(choices[:2])
 
@@ -284,7 +286,7 @@ class TestClarifyRecommendedLabel:
         ))
         assert result["user_response"] == ["Rebase", "Merge"]
 
-    def test_single_choice_is_not_labelled(self):
+    def test_single_choice_is_not_marked(self):
         """One option isn't a recommendation — there's nothing to prefer it over."""
         seen = []
 
@@ -295,16 +297,22 @@ class TestClarifyRecommendedLabel:
         clarify_tool("Confirm", choices=["Ship it"], callback=cb)
         assert seen == ["Ship it"]
 
-    def test_label_is_not_doubled(self):
-        """A model that wrote its own label doesn't get a second one."""
+    def test_marker_is_not_doubled(self):
+        """A model that already wrote a recommendation marker doesn't get a second one."""
         seen = []
 
         def cb(question, choices):
             seen.extend(choices or [])
             return choices[0]
 
+        # Legacy trailing label written by the model is still recognised.
         clarify_tool("Pick", choices=["Rebase (recommended)", "Merge"], callback=cb)
         assert seen == ["Rebase (recommended)", "Merge"]
+
+        # New ⭐ prefix written by the model is also left alone.
+        seen.clear()
+        clarify_tool("Pick", choices=["\u2b50 Rebase", "Merge"], callback=cb)
+        assert seen == ["\u2b50 Rebase", "Merge"]
 
     def test_open_ended_unaffected(self):
         def cb(question, choices):
@@ -457,8 +465,8 @@ class TestClarifyBatchValidation:
         )
         q0, q1 = seen["questions"]
         assert len(q0["choices"]) == MAX_CHOICES
-        assert q0["choices"][0] == "a (Recommended)"
-        assert q1["choices"] == ["Loose layout (Recommended)", "Tight"]
+        assert q0["choices"][0] == "\u2b50 a"
+        assert q1["choices"] == ["\u2b50 Loose layout", "Tight"]
 
     def test_batch_internal_ids_are_stable_and_model_id_echoed(self):
         """Wire ids are q0..qN. A model-supplied id only shows in results."""
@@ -593,7 +601,7 @@ class TestClarifyBatchDispatch:
             callback=legacy_cb,
         ))
         assert [c[0] for c in calls] == ["One?", "Two?"]
-        assert calls[0][1] == ("a (Recommended)", "b")
+        assert calls[0][1] == ("\u2b50 a", "b")
         assert calls[1][1] is None
         assert [r["user_response"] for r in result["responses"]] == [
             "answer to One?", "answer to Two?",

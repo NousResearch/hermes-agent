@@ -34,9 +34,21 @@ TIMEOUT_RESPONSE = (
     "Use your best judgement to make the choice and proceed."
 )
 
-# Suffix appended to the first choice so the user can see, at a glance, which
-# option the agent actually recommends. Applied here rather than per-surface so
-# CLI, TUI, desktop, and messaging adapters all render the same label.
+# Marker PREPENDED to the first choice so the user can see, at a glance, which
+# option the agent recommends. A prefix (not a suffix) is deliberate: space-
+# constrained surfaces truncate choice labels from the tail — Discord button
+# labels are capped at 80 UTF-16 units and clipped even more aggressively on
+# mobile (often <40 visible chars) — so a trailing "(Recommended)" is the first
+# thing to disappear, hiding exactly the guidance the label exists to convey.
+# A leading marker survives truncation. Applied here rather than per-surface so
+# CLI, TUI, desktop, and messaging adapters all render the same marker.
+# U+2B50 ⭐ reads universally as "recommended/featured" and pops on mobile.
+RECOMMENDED_MARKER = "\u2b50"
+
+# Legacy trailing label. No longer emitted, but still RECOGNISED on input so
+# that (a) a model that writes its own "(Recommended)" into a choice isn't
+# double-marked, and (b) any answer produced by an older build still strips
+# cleanly back to the bare option text.
 RECOMMENDED_LABEL = "(Recommended)"
 
 
@@ -74,38 +86,49 @@ def _flatten_choice(c) -> str:
 
 
 def mark_recommended(choices: List[str]) -> List[str]:
-    """Label the first choice as the agent's recommendation.
+    """Mark the first choice as the agent's recommendation.
 
     The schema tells the model to order ``choices`` best-first, so element 0 is
-    always the option it would pick itself. Tagging it here — the one
+    always the option it would pick itself. Marking it here — the one
     platform-agnostic entry point — means every surface (CLI panel, TUI,
     desktop card, Telegram buttons) reads the same way without four copies of
-    the same string concatenation, and the label can never drift between them.
+    the same string concatenation, and the marker can never drift between them.
 
-    Idempotent: a model that writes its own "(recommended)" into the choice is
-    left alone rather than getting the suffix twice. A lone choice isn't a
-    recommendation — there's nothing to prefer it over — so single-choice lists
-    pass through untouched.
+    The marker is PREPENDED (see ``RECOMMENDED_MARKER``): space-constrained
+    surfaces truncate labels from the tail, so a trailing tag would be the
+    first thing clipped — exactly the guidance we want the user to see.
+
+    Idempotent: a model that already wrote its own recommendation marker (the
+    new ⭐ prefix or the legacy "(recommended)" suffix) is left alone rather
+    than getting a second one. A lone choice isn't a recommendation — there's
+    nothing to prefer it over — so single-choice lists pass through untouched.
     """
     if len(choices) < 2:
         return choices
     first = str(choices[0]).strip()
     if first != strip_recommended(first):
         return choices
-    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
+    return [f"{RECOMMENDED_MARKER} {first}"] + list(choices[1:])
 
 
 def strip_recommended(text: str) -> str:
-    """Remove the recommendation label from a resolved answer.
+    """Remove the recommendation marker from a resolved answer.
 
     The user picks the decorated string, but the agent asked about the bare
-    option — returning "Rebase onto main (Recommended)" as ``user_response``
-    would leak presentation into the answer the model reasons about and into
-    anything it echoes back.
+    option — returning "⭐ Rebase onto main" (or the legacy "Rebase onto main
+    (Recommended)") as ``user_response`` would leak presentation into the
+    answer the model reasons about and into anything it echoes back.
+
+    Both forms are stripped: the current ⭐ prefix and the legacy trailing
+    "(Recommended)" label, so answers from older builds still normalise.
     """
     stripped = str(text).strip()
+    # New form: leading ⭐ marker (with or without a following space).
+    if stripped.startswith(RECOMMENDED_MARKER):
+        stripped = stripped[len(RECOMMENDED_MARKER):].strip()
+    # Legacy form: trailing "(Recommended)" label.
     if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
-        return stripped[: -len(RECOMMENDED_LABEL)].strip()
+        stripped = stripped[: -len(RECOMMENDED_LABEL)].strip()
     return stripped
 
 
@@ -402,8 +425,8 @@ def clarify_tool(
         return tool_error("Clarify tool is not available in this execution context.")
 
     # The first choice is the agent's pick (the schema says order best-first),
-    # so it reaches every surface carrying the "(Recommended)" label. The bare
-    # list is what goes back to the agent — the label is presentation only.
+    # so it reaches every surface carrying the "⭐" recommendation marker. The
+    # bare list is what goes back to the agent — the marker is presentation only.
     offered = choices
     if choices is not None:
         choices = mark_recommended(choices)
@@ -441,7 +464,7 @@ CLARIFY_SCHEMA = {
         "decision before proceeding. Supports three modes:\n\n"
         "1. **Single-select multiple choice** — provide up to 4 choices. The user picks one "
         "or types their own answer via a 5th 'Other' option. List the choice you recommend "
-        "FIRST: the UI labels it '(Recommended)' and highlights it by default.\n"
+        "FIRST: the UI marks it with a ⭐ and highlights it by default.\n"
         "2. **Multi-select multiple choice** — set multi_select=true. The user can select "
         "multiple options via checkboxes. user_response will be a list of selected choices.\n"
         "3. **Open-ended** — omit choices entirely. The user types a free-form "
@@ -485,9 +508,10 @@ CLARIFY_SCHEMA = {
                     "REQUIRED whenever you are presenting selectable options: "
                     "each distinct option is its own array element (up to 4). "
                     "ORDER MATTERS: put the option you actually recommend "
-                    "FIRST — the UI labels it '(Recommended)' and pre-selects "
+                    "FIRST — the UI marks it with a ⭐ and pre-selects "
                     "it, so a list ordered arbitrarily recommends the wrong "
-                    "thing to the user. Do not write '(Recommended)' yourself. "
+                    "thing to the user. Do not add your own recommendation "
+                    "marker. "
                     "The UI renders these as pickable rows and auto-appends an "
                     "'Other (type your answer)' option. Omit this parameter "
                     "entirely ONLY for a genuinely open-ended free-text question."

@@ -714,11 +714,141 @@ class TestRenameProfile:
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""
 
+    def test_import_restores_from_archive(self, profile_env, tmp_path):
+        # Create and export a profile
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        (profile_dir / "marker.txt").write_text("hello")
 
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
 
+        # Delete the profile, then import it back under a new name
+        import shutil
+        shutil.rmtree(profile_dir)
+        assert not profile_dir.is_dir()
 
+        imported = import_profile(str(archive_path), name="coder")
+        assert imported.is_dir()
+        assert (imported / "marker.txt").read_text() == "hello"
 
+    def test_import_registers_s6_gateway_like_create(self, profile_env, tmp_path, monkeypatch):
+        """Import must register an s6 gateway slot the same way create_profile does (#69163)."""
+        from tests.hermes_cli.test_profiles_s6_hooks import _S6Manager, _patch_detect_s6
 
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        (profile_dir / "marker.txt").write_text("hello")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        import shutil
+        shutil.rmtree(profile_dir)
+
+        _patch_detect_s6(monkeypatch)
+        mgr = _S6Manager()
+        monkeypatch.setattr(
+            "hermes_cli.service_manager.get_service_manager", lambda: mgr
+        )
+
+        imported = import_profile(str(archive_path), name="coder")
+        assert imported.is_dir()
+        assert mgr.registered == ["coder"]
+        assert mgr.last_start_now is False
+
+    def test_import_to_existing_name_raises(self, profile_env, tmp_path):
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        # Importing to same existing name should fail
+        with pytest.raises(FileExistsError):
+            import_profile(str(archive_path), name="coder")
+
+    def test_import_with_explicit_name_does_not_mutate_existing_archive_root_profile(
+        self, profile_env, tmp_path
+    ):
+        create_profile("victim", no_alias=True)
+        victim_dir = get_profile_dir("victim")
+        (victim_dir / "marker.txt").write_text("original")
+
+        archive_path = tmp_path / "export" / "victim.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            data = b"imported"
+            info = tarfile.TarInfo("victim/marker.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        imported = import_profile(str(archive_path), name="renamed")
+
+        assert imported == get_profile_dir("renamed")
+        assert (imported / "marker.txt").read_text() == "imported"
+        assert (victim_dir / "marker.txt").read_text() == "original"
+
+    def test_import_rejects_archive_with_multiple_top_level_directories(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "multi-root.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_name, data in (
+                ("alpha/marker.txt", b"a"),
+                ("beta/marker.txt", b"b"),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="exactly one top-level directory"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        escape_path = tmp_path / "escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo("../../escape.txt")
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not escape_path.exists()
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_absolute_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil-abs.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_target = tmp_path / "abs-escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo(str(absolute_target))
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not absolute_target.exists()
+        assert not get_profile_dir("coder").exists()
+
+    def test_export_nonexistent_raises(self, profile_env, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            export_profile("nonexistent", str(tmp_path / "out.tar.gz"))
 
     # ---------------------------------------------------------------
     # Default profile export / import

@@ -4709,7 +4709,7 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "IRC_SERVER": {
-        "description": "IRC server hostname (e.g. irc.libera.chat)",
+        "description": "IRC server hostname (e.g. 127.0.0.1 for a local IRCd)",
         "prompt": "IRC server",
         "url": None,
         "password": False,

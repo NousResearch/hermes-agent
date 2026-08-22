@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import atexit
 import dataclasses
 import faulthandler
 import inspect
@@ -939,6 +940,60 @@ class TelegramAdapter(BasePlatformAdapter):
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+        # Persistent update-ID deduplication — prevents Telegram re-delivery
+        # duplicates (webhook/polling retries, reconnect windows). Telegram
+        # re-delivers unacknowledged updates; without dedup the same message
+        # can be processed twice (duplicate commands, double side effects).
+        self._processed_update_ids: Set[int] = set()
+        from hermes_constants import get_hermes_home
+        self._processed_update_ids_path = get_hermes_home() / ".telegram_processed_updates.json"
+        self._load_processed_update_ids()
+        # Register cleanup to save on exit
+        atexit.register(self._save_processed_update_ids)
+
+    def _load_processed_update_ids(self) -> None:
+        """Load processed update IDs from disk for deduplication."""
+        try:
+            if self._processed_update_ids_path.exists():
+                data = json.loads(self._processed_update_ids_path.read_text())
+                if isinstance(data, list):
+                    self._processed_update_ids = set(int(x) for x in data)
+                    logger.info(
+                        "[Telegram] Loaded %d processed update IDs for deduplication",
+                        len(self._processed_update_ids),
+                    )
+        except Exception as e:
+            logger.warning("[Telegram] Failed to load processed update IDs: %s", e)
+
+    def _save_processed_update_ids(self) -> None:
+        """Save processed update IDs to disk."""
+        try:
+            # Keep only the last 10000 to prevent unbounded growth
+            recent = sorted(self._processed_update_ids)[-10000:]
+            self._processed_update_ids_path.write_text(json.dumps(recent))
+        except Exception as e:
+            logger.warning("[Telegram] Failed to save processed update IDs: %s", e)
+
+    def _is_processed_update(self, update_id: Optional[int]) -> bool:
+        """Check if an update_id has already been processed."""
+        if update_id is None:
+            return False
+        processed = getattr(self, "_processed_update_ids", None)
+        if processed is None:
+            return False
+        return update_id in processed
+
+    def _mark_update_processed(self, update_id: Optional[int]) -> None:
+        """Mark an update_id as processed."""
+        if update_id is None:
+            return
+        processed = getattr(self, "_processed_update_ids", None)
+        if processed is None:
+            return
+        processed.add(update_id)
+        # Save periodically (every 100 updates) to avoid disk I/O on every message
+        if len(processed) % 100 == 0:
+            self._save_processed_update_ids()
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
@@ -9608,6 +9663,10 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        # Deduplicate based on update_id (Telegram re-delivers unacknowledged updates)
+        if self._is_processed_update(update.update_id):
+            logger.debug("[Telegram] Skipping duplicate update_id=%s", update.update_id)
+            return
         # Early user-level auth check: reject unauthorized users before any
         # text batching, observe-buffer persistence, event building, or response
         # generation. This prevents removed/blocked users from injecting prompts
@@ -9622,6 +9681,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            self._mark_update_processed(update.update_id)
             return
         await self._ensure_forum_commands(update.message)
 
@@ -9630,13 +9690,19 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
+        self._mark_update_processed(update.update_id)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        # Deduplicate based on update_id (Telegram re-delivers unacknowledged updates)
+        if self._is_processed_update(update.update_id):
+            logger.debug("[Telegram] Skipping duplicate update_id=%s", update.update_id)
+            return
         if not self._should_process_message(msg, is_command=True):
+            self._mark_update_processed(update.update_id)
             return
         if not self._is_user_authorized_from_message(msg):
             logger.warning(
@@ -9662,13 +9728,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # immediate path and are never delayed.
         if len(event.text or "") >= self._SPLIT_THRESHOLD:
             self._enqueue_text_event(event)
+            self._mark_update_processed(update.update_id)
             return
         await self.handle_message(event)
+        self._mark_update_processed(update.update_id)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         msg = self._effective_update_message(update)
         if not msg:
+            return
+        # Deduplicate based on update_id (Telegram re-delivers unacknowledged updates)
+        if self._is_processed_update(update.update_id):
+            logger.debug("[Telegram] Skipping duplicate update_id=%s", update.update_id)
             return
         if not self._is_user_authorized_from_message(msg):
             logger.warning(
@@ -9680,6 +9752,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            self._mark_update_processed(update.update_id)
             return
 
         venue = getattr(msg, "venue", None)
@@ -9711,6 +9784,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
+        self._mark_update_processed(update.update_id)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)
@@ -9890,6 +9964,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
+        # Deduplicate based on update_id (Telegram re-delivers unacknowledged updates)
+        if self._is_processed_update(update.update_id):
+            logger.debug("[Telegram] Skipping duplicate update_id=%s", update.update_id)
+            return
         if not self._is_user_authorized_from_message(update.message):
             logger.info(
                 "[Telegram] Blocked media from unauthorized user %s in chat %s",
@@ -9908,6 +9986,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
+            self._mark_update_processed(update.update_id)
             return
 
         msg = update.message
@@ -9925,6 +10004,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._handle_sticker(msg, event)
             event = self._apply_telegram_group_observe_attribution(event)
             await self.handle_message(event)
+            self._mark_update_processed(update.update_id)
             return
 
         # Apply observe attribution after caption is set; sticker is handled above
@@ -9958,6 +10038,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 else:
                     batch_key = self._photo_batch_key(event, msg)
                     self._enqueue_photo_event(batch_key, event)
+                self._mark_update_processed(update.update_id)
                 return
 
             except Exception as e:
@@ -10182,9 +10263,11 @@ class TelegramAdapter(BasePlatformAdapter):
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
+            self._mark_update_processed(update.update_id)
             return
 
         await self.handle_message(event)
+        self._mark_update_processed(update.update_id)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.

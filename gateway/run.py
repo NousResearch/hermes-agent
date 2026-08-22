@@ -5247,13 +5247,12 @@ class TurnRunner:
 
     def _event_callback_sync(self, event_type: str, context: dict) -> None:
         ctx = self._ctx
-        try:
-            asyncio.run_coroutine_threadsafe(
-                ctx._hooks_ref.emit(event_type, context),
-                ctx._loop_for_step,
-            )
-        except Exception as _e:
-            logger.debug("event_callback hook error: %s", _e)
+        safe_schedule_threadsafe(
+            ctx._hooks_ref.emit(event_type, context),
+            ctx._loop_for_step,
+            logger=logger,
+            log_message="event_callback hook scheduling error",
+        )
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.

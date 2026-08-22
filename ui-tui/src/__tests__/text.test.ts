@@ -4,6 +4,7 @@ import {
   boundedLiveRenderText,
   buildToolTrailLine,
   buildVerboseToolTrailLine,
+  cappedSystemPromptText,
   edgePreview,
   estimateRows,
   estimateTokensRough,
@@ -213,6 +214,47 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain('c\nd')
     expect(out).toContain('omitted 2 lines')
     expect(out).not.toContain('a\nb')
+  })
+})
+
+describe('cappedSystemPromptText', () => {
+  it('passes through short prompts untouched', () => {
+    const out = cappedSystemPromptText('one\ntwo', { maxChars: 100, maxLines: 10 })
+    expect(out.truncated).toBe(false)
+    expect(out.text).toBe('one\ntwo')
+    expect(out.omittedChars).toBe(0)
+    expect(out.omittedLines).toBe(0)
+  })
+
+  it('caps the head by character budget', () => {
+    const out = cappedSystemPromptText('abcdefghij', { maxChars: 4, maxLines: 10 })
+    expect(out.truncated).toBe(true)
+    expect(out.text).toBe('abcd')
+    expect(out.omittedChars).toBe(6)
+  })
+
+  it('caps the head by line budget and reports omitted lines', () => {
+    const text = ['a', 'b', 'c', 'd', 'e'].join('\n')
+    const out = cappedSystemPromptText(text, { maxChars: 100, maxLines: 2 })
+    expect(out.truncated).toBe(true)
+    expect(out.text).toBe('a\nb')
+    expect(out.omittedLines).toBe(2)
+    expect(out.omittedChars).toBe(text.length - out.text.length - 1)
+  })
+
+  it('preserves an exact line-limit trailing newline', () => {
+    const text = 'a\n'.repeat(80)
+    const out = cappedSystemPromptText(text, { maxChars: 1000, maxLines: 80 })
+
+    expect(out).toEqual({ omittedChars: 0, omittedLines: 0, text, truncated: false })
+  })
+
+  it('does not flood when the prompt is 18k+ chars (issue #20668)', () => {
+    const huge = 'a'.repeat(18_000)
+    const out = cappedSystemPromptText(huge)
+    expect(out.truncated).toBe(true)
+    expect(out.text.length).toBeLessThanOrEqual(4000)
+    expect(out.omittedChars).toBeGreaterThan(13_000)
   })
 })
 

@@ -86,6 +86,14 @@ describe('completionRequestForInput — inline skill references', () => {
     }
   })
 
+  it('routes the bare personality picker seed to argument completion', () => {
+    expect(completionRequestForInput('/personality ')).toEqual({
+      method: 'complete.slash',
+      params: { text: '/personality ' },
+      replaceFrom: 1
+    })
+  })
+
   it('routes a real mid-message path to path completion, not skills', () => {
     expect(completionRequestForInput('open src/foo/ba')).toMatchObject({ method: 'complete.path' })
     expect(completionRequestForInput('open /usr/lo')).toMatchObject({ method: 'complete.path' })

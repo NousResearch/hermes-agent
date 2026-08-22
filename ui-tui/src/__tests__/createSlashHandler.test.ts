@@ -213,6 +213,29 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('opens personality choices for bare /personality', async () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/personality')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+
+    await Promise.resolve()
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('/personality ')
+  })
+
+  it('sets an explicit personality without reopening choices', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/personality helpful')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'personality',
+      session_id: 'sid-abc',
+      value: 'helpful'
+    })
+    expect(ctx.composer.setInput).not.toHaveBeenCalled()
+  })
+
   it('honors TUI picker session scope without adding --global', async () => {
     patchUiState({ sid: 'sid-abc' })
 

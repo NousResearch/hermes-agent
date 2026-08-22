@@ -1091,6 +1091,125 @@ class TestEnvWriteDenylist:
             save_env_value_secure("LD_PRELOAD", "/tmp/evil.so")
 
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows ACL test")
+    def test_secure_file_restricts_acls_on_windows(self, tmp_path):
+        """#77462: ``_secure_file`` must restrict ACLs on Windows, where
+        ``os.chmod(0o600)`` only toggles the read-only bit and inherited
+        SYSTEM/Administrators entries keep full control.
+
+        E2E: write a real file with inherited ACLs, run the real
+        ``_secure_file``, then assert via ``icacls`` that (a) inheritance
+        is disabled and (b) only the current user retains access.
+        """
+        import subprocess as sp
+
+        from hermes_cli.config import _secure_file
+
+        target = tmp_path / "secret.env"
+        target.write_text("TOKEN=opaque\n", encoding="utf-8")
+
+        # The new file inherits ACLs from the temp dir (SYSTEM + Administrators).
+        # Some temp directories (e.g. D:\Temp) may not have inherited ACLs;
+        # in that case we verify the post-state only.
+        before = sp.run(
+            ["icacls", str(target)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+        _secure_file(target)
+
+        after = sp.run(
+            ["icacls", str(target)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        # /inheritance:r removed the inherited Administrators entry if present.
+        if "Administrators" in before:
+            assert "Administrators" not in after
+        # The owner's grant survives.
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        assert user and user.lower() in after.lower()
+
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX chmod path")
+    def test_secure_file_chmods_0600_on_posix(self, tmp_path):
+        """The POSIX branch still applies 0600 (regression guard)."""
+        from hermes_cli.config import _secure_file
+
+        target = tmp_path / "secret.env"
+        target.write_text("TOKEN=opaque\n", encoding="utf-8")
+        _secure_file(target)
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows ACL test")
+    def test_save_env_value_restricts_acls_on_existing_windows_env(self, tmp_path):
+        """#77462 (QA follow-up): the mode-preservation branch in
+        save_env_value must still restrict ACLs on Windows — a rotation on
+        a pre-existing .env (e.g. a Docker volume mount) otherwise keeps
+        the inherited SYSTEM/Administrators entries the fix removes on the
+        new-file path.
+
+        E2E: create an existing .env, rotate a value through the real
+        save_env_value, then assert via icacls that Administrators is gone
+        and the owner retains access.
+        """
+        import subprocess as sp
+
+        from hermes_cli.config import save_env_value
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("OLD_TOKEN=old\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("SOME_TOKEN", "new-value")
+
+        after = sp.run(
+            ["icacls", str(env_path)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "Administrators" not in after, "inherited Administrators ACL survived rotation"
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        assert user and user.lower() in after.lower()
+
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows ACL test")
+    def test_secure_file_windows_acl_principal_not_spoofable_via_env(self, tmp_path):
+        """#77527 (P1): The Windows ACL principal must be resolved from the
+        process token (GetUserNameW), not from mutable USERNAME/USER
+        environment variables. An authenticated dashboard caller can write
+        arbitrary env keys (including USERNAME=Everyone) via PUT /api/env,
+        and save_env_value updates os.environ. If the ACL helper trusts
+        the env var, the next .env write grants Everyone:(F) after removing
+        inheritance, reversing the owner-only boundary.
+
+        Regression: set USERNAME=Everyone in the environment, run
+        _secure_file_windows_acl, verify the ACL still grants only the
+        actual process owner (GetUserNameW result), not Everyone.
+        """
+        import subprocess as sp
+
+        from hermes_cli.config import _secure_file_windows_acl
+
+        target = tmp_path / "secret.env"
+        target.write_text("TOKEN=opaque\n", encoding="utf-8")
+
+        # Spoof the environment — this is what an attacker could do via
+        # PUT /api/env followed by a secret rotation that triggers
+        # _secure_file.
+        real_user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        with patch.dict(os.environ, {"USERNAME": "Everyone", "USER": "Everyone"}):
+            _secure_file_windows_acl(str(target))
+
+        after = sp.run(
+            ["icacls", str(target)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        # The ACL must grant the REAL user, not Everyone.
+        assert "Everyone" not in after, f"ACL was spoofed to grant Everyone: {after}"
+        assert real_user and real_user.lower() in after.lower(), \
+            f"Real user {real_user} not in ACL: {after}"
+
+
 
 class TestWriteApprovalMigration:
     """Version 28→29 renames memory/skills write_mode → write_approval (bool).

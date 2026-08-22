@@ -859,14 +859,83 @@ def _secure_file(path):
 
     Skipped in containers — Docker/Podman volume mounts often need broader
     permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
+
+    On Windows, ``os.chmod`` only toggles the read-only attribute and does
+    NOT restrict ACLs — ``NT AUTHORITY\\SYSTEM`` and ``BUILTIN\\Administrators``
+    keep full control over files written with an inherited ACL, so 0600 is
+    fictional there.  This branch uses ``icacls`` (present on every Windows
+    since Vista) to remove inherited entries and grant owner-only access,
+    matching the POSIX 0600 contract.  Failures are swallowed like the
+    POSIX branch (best-effort hardening; a file that keeps inherited ACLs
+    is no worse than the pre-fix state).
     """
     if is_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
-            os.chmod(path, 0o600)
+            if sys.platform == "win32":
+                _secure_file_windows_acl(str(path))
+            else:
+                os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+
+
+def _secure_file_windows_acl(path: str) -> None:
+    """Restrict a file to owner-only access via icacls on Windows.
+
+    Removes inherited ACL entries (``/inheritance:r``) and grants the
+    current user full control (``/grant:r <user>:(F)``), producing an
+    owner-only ACL equivalent to POSIX 0600.  ``icacls`` is invoked via
+    argv (never a shell) so no quoting/injection surface exists.
+
+    The user identity is resolved from the Windows process token via
+    ``GetUserNameW`` (advapi32), not from mutable environment variables
+    (USERNAME/USER). This prevents an authenticated dashboard caller from
+    spoofing the ACL principal by writing USERNAME=Everyone into the
+    process environment before triggering a secret write.
+    """
+    # Resolve the current Windows account from the process token (authoritative).
+    # Environment variables USERNAME/USER are writable via save_env_value and
+    # must not be trusted for security decisions.
+    user = ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        GetUserNameW = ctypes.windll.advapi32.GetUserNameW
+        size = wintypes.DWORD(0)
+        GetUserNameW(None, ctypes.byref(size))
+        if size.value > 0:
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if GetUserNameW(buffer, ctypes.byref(size)):
+                user = buffer.value
+    except Exception:
+        pass
+
+    if not user:
+        # Fallback to environment only if the authoritative lookup fails.
+        # This preserves best-effort hardening on unusual configurations.
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+
+    if not user:
+        return
+
+    cmd = [
+        "icacls", os.path.normpath(path),
+        "/inheritance:r",
+        "/grant:r", f"{user}:(F)",
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass  # best-effort hardening — same contract as the POSIX branch
 
 
 def _ensure_default_soul_md(home: Path) -> None:
@@ -4281,10 +4350,18 @@ def save_env_value(key: str, value: str):
         # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
         # instead of letting _secure_file unconditionally tighten to 0600.
         if original_mode is not None:
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
+            # On Windows, chmod cannot express POSIX group/other bits, and
+            # the real at-rest protection is the ACL.  A pre-existing .env
+            # that inherited SYSTEM/Administrators entries must still be
+            # restricted even when its mode is preserved — otherwise a
+            # rotation on a Docker-volume .env re-opens the #77462 hole.
+            if sys.platform == "win32":
+                _secure_file(env_path)
+            else:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
         else:
             _secure_file(env_path)
     except BaseException:
@@ -4372,10 +4449,16 @@ def remove_env_value(key: str) -> bool:
             # mounts) instead of letting _secure_file unconditionally tighten
             # to 0600. Mirrors save_env_value().
             if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
+                # On Windows, chmod cannot express POSIX group/other bits,
+                # and the real at-rest protection is the ACL.  Restrict an
+                # existing .env even when its mode is preserved (#77462).
+                if sys.platform == "win32":
+                    _secure_file(env_path)
+                else:
+                    try:
+                        os.chmod(env_path, original_mode)
+                    except OSError:
+                        pass
             else:
                 _secure_file(env_path)
         except BaseException:

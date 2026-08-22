@@ -178,8 +178,9 @@ def _load_config() -> dict:
 
 
 def _resolve_orchestrator_profile(cfg: dict) -> str:
-    """Resolve which profile owns the root/orchestration task after fan-out.
+    """Resolve the configured fallback owner for an unassigned root after fan-out.
 
+    Callers that already have an explicit task assignee should prefer that.
     Falls back to the active default profile when ``kanban.orchestrator_profile``
     is unset, so a task is never stranded for lack of an orchestrator.
     """
@@ -291,7 +292,10 @@ def decompose_task(
         )
 
     cfg = _load_config()
-    orchestrator = _resolve_orchestrator_profile(cfg)
+    # An assignee chosen when the triage task was created is explicit routing
+    # intent. Only unassigned roots fall back to the configured/active
+    # orchestrator profile.
+    orchestrator = task.assignee or _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))

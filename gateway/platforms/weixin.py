@@ -1947,6 +1947,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     await _deliver_media(media_path, is_voice)
                 except Exception as exc:
                     logger.warning("[%s] media delivery failed for %s: %s", self.name, media_path, exc)
+                    await self._notify_media_delivery_failure(
+                        chat_id, media_path, is_voice=is_voice, metadata=metadata,
+                    )
 
             # Deliver bare local file paths.
             for file_path in local_files:
@@ -1954,6 +1957,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     await _deliver_media(file_path, is_voice=False)
                 except Exception as exc:
                     logger.warning("[%s] local file delivery failed for %s: %s", self.name, file_path, exc)
+                    await self._notify_media_delivery_failure(
+                        chat_id, file_path, metadata=metadata,
+                    )
 
             # Deliver text content.
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]

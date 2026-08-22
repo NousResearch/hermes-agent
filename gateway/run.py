@@ -22266,6 +22266,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    try:
+                        for _img_path in image_paths:
+                            await adapter._notify_media_delivery_failure(
+                                event.source.chat_id, _img_path, metadata=_thread_meta,
+                            )
+                    except Exception as _notice_err:
+                        logger.warning(
+                            "[%s] Failed to send media-delivery-failure notice: %s",
+                            adapter.name, _notice_err,
+                        )
 
             for media_path, is_voice in non_image_media:
                 try:
@@ -22290,6 +22300,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    # A swallowed exception here previously left both the user and the
+                    # model with zero signal that delivery failed, so a model that
+                    # fabricated/forgot-to-copy a path would repeat the same broken
+                    # MEDIA: tag indefinitely. Reuse the same notify helper the
+                    # non-streaming path already uses for a graceful failure, so a
+                    # raised exception gets equivalent user-facing treatment.
+                    try:
+                        await adapter._notify_media_delivery_failure(
+                            event.source.chat_id,
+                            media_path,
+                            is_voice=is_voice,
+                            metadata=_thread_meta,
+                        )
+                    except Exception as _notice_err:
+                        logger.warning(
+                            "[%s] Failed to send media-delivery-failure notice: %s",
+                            adapter.name, _notice_err,
+                        )
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -22580,8 +22608,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             caption=alt_text,
                             metadata=_thread_metadata,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _img_err:
+                        logger.warning(
+                            "[%s] Background-task image delivery failed: %s", adapter.name, _img_err,
+                        )
+                        try:
+                            await adapter._notify_media_delivery_failure(
+                                source.chat_id, image_url, metadata=_thread_metadata,
+                            )
+                        except Exception:
+                            pass
 
                 # Send media files, routing each by type so a TTS clip
                 # arrives as a voice bubble / a clip as a video rather than
@@ -22618,8 +22654,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 file_path=media_path,
                                 metadata=_thread_metadata,
                             )
-                    except Exception:
-                        pass
+                    except Exception as _media_err:
+                        logger.warning(
+                            "[%s] Background-task media delivery failed: %s", adapter.name, _media_err,
+                        )
+                        try:
+                            await adapter._notify_media_delivery_failure(
+                                source.chat_id, media_path, is_voice=_is_voice, metadata=_thread_metadata,
+                            )
+                        except Exception:
+                            pass
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(

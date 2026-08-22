@@ -4454,8 +4454,10 @@ class BasePlatformAdapter(ABC):
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    await self._notify_media_delivery_failure(chat_id, image_url, metadata=metadata)
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                await self._notify_media_delivery_failure(chat_id, image_url, metadata=metadata)
 
     async def send_image(
         self,
@@ -6665,6 +6667,10 @@ class BasePlatformAdapter(ABC):
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        for _img_url, _ in images:
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id, _img_url, metadata=_final_thread_metadata,
+                            )
 
 
                 # Send extracted media files — route by file type
@@ -6707,6 +6713,10 @@ class BasePlatformAdapter(ABC):
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        for _img_path in _image_paths:
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id, _img_path, metadata=_final_thread_metadata,
+                            )
 
                 if _non_image_media:
                     logger.info(
@@ -6754,6 +6764,12 @@ class BasePlatformAdapter(ABC):
                             )
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
+                        await self._notify_media_delivery_failure(
+                            event.source.chat_id,
+                            media_path,
+                            is_voice=is_voice,
+                            metadata=_final_thread_metadata,
+                        )
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
@@ -6787,6 +6803,11 @@ class BasePlatformAdapter(ABC):
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+                        await self._notify_media_delivery_failure(
+                            event.source.chat_id,
+                            file_path,
+                            metadata=_final_thread_metadata,
+                        )
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

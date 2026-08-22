@@ -1,6 +1,5 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import {
-  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -136,7 +135,7 @@ export const ensureVirtualItemHeight = (
 }
 
 export function useVirtualHistory(
-  scrollRef: RefObject<ScrollBoxHandle | null>,
+  scrollHandle: ScrollBoxHandle | null,
   items: readonly { key: string }[],
   columns: number,
   {
@@ -158,6 +157,8 @@ export function useVirtualHistory(
   const measuredBottoms = useRef(new Map<string, number>())
   const unmountViewport = useRef<{ sticky: boolean; top: number } | null>(null)
   const onHeightsChangeRef = useRef(onHeightsChange)
+  // Measurement refs are cached by item key, so read the latest mounted box at callback time.
+  const scrollHandleRef = useRef(scrollHandle)
   // Bump whenever heightCache mutates so offsets rebuild on next read.
   // Ref (not state) — checked during render phase, zero extra commits.
   const offsetVersion = useRef(0)
@@ -171,7 +172,6 @@ export function useVirtualHistory(
     version: -1
   })
 
-  const [hasScrollRef, setHasScrollRef] = useState(false)
   // Height cache writes happen in layout effects; bump once so offsets and
   // clamp bounds rebuild without waiting for the next scroll/input event.
   const [measuredHeightVersion, bumpMeasuredHeightVersion] = useState(0)
@@ -191,6 +191,7 @@ export function useVirtualHistory(
   const generationRef = useRef<number | string>(generation)
 
   onHeightsChangeRef.current = onHeightsChange
+  scrollHandleRef.current = scrollHandle
 
   if (generationRef.current !== generation) {
     generationRef.current = generation
@@ -233,22 +234,18 @@ export function useVirtualHistory(
     freezeRenders.current = FREEZE_RENDERS
   }
 
-  useLayoutEffect(() => {
-    setHasScrollRef(Boolean(scrollRef.current))
-  }, [scrollRef])
-
   // Quantized snapshot: same-bin scrolls (most wheel ticks) produce the same
   // key → React.Object.is short-circuits the commit entirely. The key includes
   // sticky state, target scroll position, and viewport height so resize-only
   // changes still recompute the mounted transcript window.
   const subscribe = useCallback(
-    (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
-    [hasScrollRef, scrollRef]
+    (cb: () => void) => scrollHandle?.subscribe(cb) ?? NOOP,
+    [scrollHandle]
   )
 
   useSyncExternalStore(
     subscribe,
-    () => virtualHistorySnapshotKey(scrollRef.current),
+    () => virtualHistorySnapshotKey(scrollHandle),
     () => 'none'
   )
 
@@ -291,12 +288,12 @@ export function useVirtualHistory(
 
   const offsets = offsetsCache.current.arr
   const total = offsets[n] ?? 0
-  const top = safeUnsignedGeometry(scrollRef.current?.getScrollTop() ?? 0)
-  const pendingDelta = safeSignedGeometry(scrollRef.current?.getPendingDelta() ?? 0)
+  const top = safeUnsignedGeometry(scrollHandle?.getScrollTop() ?? 0)
+  const pendingDelta = safeSignedGeometry(scrollHandle?.getPendingDelta() ?? 0)
   const target = safeUnsignedGeometry(top + pendingDelta)
-  const vp = safeUnsignedGeometry(scrollRef.current?.getViewportHeight() ?? 0)
-  const sticky = scrollRef.current?.isSticky() ?? true
-  const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
+  const vp = safeUnsignedGeometry(scrollHandle?.getViewportHeight() ?? 0)
+  const sticky = scrollHandle?.isSticky() ?? true
+  const recentManual = Date.now() - (scrollHandle?.getLastManualScrollAt() ?? 0) < 1200
 
   // During a freeze, drop the frozen range if items shrank past its start
   // (/clear, compaction) — clamping would collapse to an empty mount and
@@ -509,7 +506,7 @@ export function useVirtualHistory(
           const previousHeight = heights.current.get(key)
 
           if (validVirtualItemHeight(h) && previousHeight !== h) {
-            const s = scrollRef.current
+            const s = scrollHandleRef.current
             const measuredBottom = measuredBottoms.current.get(key)
 
             // All null refs in this commit share the viewport boundary captured
@@ -545,12 +542,12 @@ export function useVirtualHistory(
 
       return fn
     },
-    [scrollRef]
+    []
   )
 
   useLayoutEffect(() => {
     unmountViewport.current = null
-    const s = scrollRef.current
+    const s = scrollHandle
     let dirty = false
     let heightDirty = false
     let anchorDelta = 0
@@ -660,7 +657,7 @@ export function useVirtualHistory(
     if (heightDirty) {
       bumpMeasuredHeightVersion(n => n + 1)
     }
-  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, top, total, vp])
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollHandle, sticky, top, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),

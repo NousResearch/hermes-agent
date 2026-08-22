@@ -1487,6 +1487,29 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     return False
 
 
+def _restore_primary_runtime_for_iteration(agent, active_system_prompt):
+    """Restore an expired primary fallback during a long-running turn.
+
+    ``build_turn_context`` handles the normal between-turn restoration. A
+    turn with many tool calls can remain inside ``run_conversation`` after the
+    primary cooldown expires, so the outer iteration loop needs the same
+    opportunity to recover the primary runtime. Keep the request-local system
+    prompt in sync with the restored runtime as well; otherwise the next
+    request would call the primary model with the fallback identity.
+    """
+    if not getattr(agent, "_fallback_activated", False):
+        return active_system_prompt
+    if not agent._restore_primary_runtime():
+        return active_system_prompt
+
+    restored_system_prompt = getattr(agent, "_cached_system_prompt", None)
+    return (
+        restored_system_prompt
+        if isinstance(restored_system_prompt, str)
+        else active_system_prompt
+    )
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -1957,6 +1980,14 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        # A fallback activated inside the retry loop normally gets restored at
+        # the next turn's prologue. Long tool-call turns can outlive the
+        # primary cooldown without leaving this loop, though, so re-check the
+        # restore gate before rebuilding the next request.
+        active_system_prompt = _restore_primary_runtime_for_iteration(
+            agent, active_system_prompt
+        )
+
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)

@@ -29,6 +29,11 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.chat_completion_validation import (
+    ROUTER_TIMEOUT_SHIM,
+    _has_positive_completion_tokens,
+    is_valid_chat_completion_response,
+)
 from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -3095,8 +3100,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     lambda request: summary_client.chat.completions.create(**request),
                     retry_count=0,
                 )
-                _summary_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_summary_result.content or "").strip()
+                _summary_transport = agent._get_transport()
+                if not _summary_transport.validate_response(summary_response):
+                    final_response = ""
+                else:
+                    _summary_result = _summary_transport.normalize_response(summary_response)
+                    final_response = (_summary_result.content or "").strip()
 
         if final_response:
             if "<think>" in final_response:
@@ -3160,8 +3169,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     lambda request: summary_client.chat.completions.create(**request),
                     retry_count=1,
                 )
-                _retry_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_retry_result.content or "").strip()
+                _retry_transport = agent._get_transport()
+                if not _retry_transport.validate_response(summary_response):
+                    final_response = ""
+                else:
+                    _retry_result = _retry_transport.normalize_response(summary_response)
+                    final_response = (_retry_result.content or "").strip()
 
             if final_response:
                 if "<think>" in final_response:
@@ -3886,6 +3899,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
         content_parts: list = []
         tool_calls_acc: dict = {}
+        # Providers may stream ``n > 1`` alternatives. Keep every non-primary
+        # choice separate so raw cardinality/content/tool evidence survives
+        # aggregation and timeout-shim validation.
+        additional_choice_states: dict[int, dict[str, Any]] = {}
+        additional_choice_order: list[int] = []
+        primary_choice_index: int | None = None
         tool_gen_notified: set = set()
         # Ollama-compatible endpoints reuse index 0 for every tool call
         # in a parallel batch, distinguishing them only by id.  Track
@@ -3898,6 +3917,149 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # Hold only a possible router-timeout shim until the completed stream
+        # can be classified. Ordinary text is released as soon as it diverges
+        # from the sentinel, preserving normal token streaming behavior.
+        pending_timeout_prefix: list[str] = []
+        pending_timeout_notifications: list[tuple[str, str | None]] = []
+        timeout_candidate_accepted = False
+
+        def _deliver_timeout_notification(kind: str, payload: str | None) -> None:
+            """Deliver one callback event after this attempt is accepted."""
+            if kind == "first":
+                _fire_first_delta()
+            elif kind == "reasoning" and payload is not None:
+                agent._fire_reasoning_delta(payload)
+            elif kind == "content" and payload is not None:
+                agent._fire_stream_delta(payload)
+                deltas_were_sent["yes"] = True
+
+        def _accept_timeout_candidate() -> None:
+            """Release held callbacks once raw evidence rules out the shim."""
+            nonlocal timeout_candidate_accepted
+            if timeout_candidate_accepted:
+                return
+            timeout_candidate_accepted = True
+            for kind, payload in pending_timeout_notifications:
+                _deliver_timeout_notification(kind, payload)
+            pending_timeout_notifications.clear()
+            pending_timeout_prefix.clear()
+
+        def _notify_first_delta() -> None:
+            if timeout_candidate_accepted:
+                _fire_first_delta()
+                return
+            if not any(kind == "first" for kind, _payload in pending_timeout_notifications):
+                pending_timeout_notifications.append(("first", None))
+
+        def _emit_reasoning_text(piece: str) -> None:
+            if timeout_candidate_accepted:
+                agent._fire_reasoning_delta(piece)
+                return
+            pending_timeout_notifications.append(("reasoning", piece))
+
+        def _emit_stream_text(piece: str) -> None:
+            if timeout_candidate_accepted:
+                _deliver_timeout_notification("content", piece)
+                return
+            candidate = "".join(pending_timeout_prefix) + piece
+            pending_timeout_prefix.append(piece)
+            pending_timeout_notifications.append(("content", piece))
+            if not ROUTER_TIMEOUT_SHIM.startswith(candidate):
+                # Classification is byte-exact: even one leading/trailing
+                # whitespace byte proves this is genuine model output.
+                _accept_timeout_candidate()
+
+        def _flush_valid_timeout_prefix(response: Any) -> None:
+            if is_valid_chat_completion_response(response):
+                _accept_timeout_candidate()
+            else:
+                # True timeout shim: discard every attempt-local notification,
+                # including reasoning and TTFB/on-first-delta signals.
+                pending_timeout_notifications.clear()
+                pending_timeout_prefix.clear()
+
+        def _accumulate_additional_choice(choice: Any, position: int) -> None:
+            raw_index = getattr(choice, "index", None)
+            index = raw_index if isinstance(raw_index, int) else position
+            if index not in additional_choice_states:
+                additional_choice_order.append(index)
+                additional_choice_states[index] = {
+                    "content": [],
+                    "reasoning": [],
+                    "tool_calls": {},
+                    "finish_reason": None,
+                }
+            state = additional_choice_states[index]
+            state["finish_reason"] = (
+                getattr(choice, "finish_reason", None) or state["finish_reason"]
+            )
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                return
+            text = getattr(delta, "content", None)
+            if isinstance(text, str) and text:
+                state["content"].append(text)
+                _fire_first_delta()
+                agent._fire_stream_delta(text)
+                deltas_were_sent["yes"] = True
+            reasoning_text = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+            )
+            if isinstance(reasoning_text, str) and reasoning_text:
+                state["reasoning"].append(reasoning_text)
+                _fire_first_delta()
+                agent._fire_reasoning_delta(reasoning_text)
+            for tc_delta in (getattr(delta, "tool_calls", None) or []):
+                tool_index = getattr(tc_delta, "index", 0) or 0
+                tool = state["tool_calls"].setdefault(
+                    tool_index,
+                    {"id": "", "type": "function", "name": "", "arguments": []},
+                )
+                tc_id = getattr(tc_delta, "id", None)
+                if tc_id is not None:
+                    tool["id"] = str(tc_id)
+                function = getattr(tc_delta, "function", None)
+                if function is not None:
+                    name = getattr(function, "name", None)
+                    if name:
+                        tool["name"] = name
+                        _fire_first_delta()
+                        agent._fire_tool_gen_started(name)
+                    arguments = getattr(function, "arguments", None)
+                    if arguments:
+                        tool["arguments"].append(arguments)
+
+        def _materialize_additional_choices() -> list[Any]:
+            materialized = []
+            for index in additional_choice_order:
+                state = additional_choice_states[index]
+                tool_calls = None
+                if state["tool_calls"]:
+                    tool_calls = [
+                        SimpleNamespace(
+                            id=tool["id"],
+                            type=tool["type"],
+                            function=SimpleNamespace(
+                                name=tool["name"],
+                                arguments="".join(tool["arguments"]),
+                            ),
+                        )
+                        for _tool_index, tool in sorted(state["tool_calls"].items())
+                    ]
+                materialized.append(SimpleNamespace(
+                    index=index,
+                    message=SimpleNamespace(
+                        role="assistant",
+                        content="".join(state["content"]) or None,
+                        tool_calls=tool_calls,
+                        reasoning_content="".join(state["reasoning"]) or None,
+                    ),
+                    finish_reason=state["finish_reason"] or "stop",
+                ))
+            return materialized
+
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         _writer_token = {"value": None}
@@ -3945,9 +4107,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # misclassify the attempt as a partial text response. The chunk
             # itself is still rejected below and never reaches callbacks.
             try:
-                choices = getattr(_chunk, "choices", None)
-                delta = getattr(choices[0], "delta", None) if choices else None
-                if getattr(delta, "tool_calls", None):
+                choices = getattr(_chunk, "choices", None) or []
+                if any(
+                    getattr(getattr(choice, "delta", None), "tool_calls", None)
+                    for choice in choices
+                ):
                     provider_tool_in_flight["yes"] = True
             except Exception:
                 pass
@@ -3971,19 +4135,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         def _relay_final_response() -> dict[str, Any]:
             tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
+            choices = [
+                {
+                    "index": primary_choice_index if primary_choice_index is not None else 0,
+                    "message": {
+                        "role": role,
+                        "content": "".join(content_parts) or None,
+                        "reasoning_content": "".join(reasoning_parts) or None,
+                        "tool_calls": tool_calls or None,
+                    },
+                    "finish_reason": finish_reason or "stop",
+                }
+            ]
+            for extra in _materialize_additional_choices():
+                choices.append({
+                    "index": extra.index,
+                    "message": {
+                        "role": extra.message.role,
+                        "content": extra.message.content,
+                        "reasoning_content": extra.message.reasoning_content,
+                        "tool_calls": extra.message.tool_calls,
+                    },
+                    "finish_reason": extra.finish_reason,
+                })
             return {
                 "model": model_name,
-                "choices": [
-                    {
-                        "message": {
-                            "role": role,
-                            "content": "".join(content_parts) or None,
-                            "reasoning_content": "".join(reasoning_parts) or None,
-                            "tool_calls": tool_calls or None,
-                        },
-                        "finish_reason": finish_reason or "stop",
-                    }
-                ],
+                "choices": choices,
                 "usage": usage_obj,
             }
 
@@ -4027,9 +4204,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             pending_text_parts.clear()
             if not tool_calls_acc:
                 for text in pending_parts:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(text)
-                    deltas_were_sent["yes"] = True
+                    _notify_first_delta()
+                    _emit_stream_text(text)
                 return
             if agent.stream_delta_callback:
                 for text in pending_parts:
@@ -4122,9 +4298,43 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         ),
                         raw_text=f"{_err_type}: {_err_msg}",
                     )
+                if _has_positive_completion_tokens(usage_obj):
+                    _accept_timeout_candidate()
                 continue
 
-            delta = chunk.choices[0].delta
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_obj = chunk.usage
+                if _has_positive_completion_tokens(usage_obj):
+                    _accept_timeout_candidate()
+
+            primary_choice = None
+            additional_choices_in_chunk: list[tuple[Any, int]] = []
+            for position, streamed_choice in enumerate(chunk.choices):
+                raw_index = getattr(streamed_choice, "index", None)
+                choice_index = raw_index if isinstance(raw_index, int) else position
+                if primary_choice_index is None:
+                    primary_choice_index = choice_index
+                if choice_index == primary_choice_index and primary_choice is None:
+                    primary_choice = streamed_choice
+                else:
+                    additional_choices_in_chunk.append((streamed_choice, position))
+
+            if additional_choices_in_chunk:
+                # A second raw choice is conclusive cardinality evidence. Flush
+                # before processing its callbacks, while retaining choice order.
+                _accept_timeout_candidate()
+
+            # Multi-choice providers may emit alternatives in separate chunks;
+            # a chunk carrying only a non-primary choice is still useful output.
+            if primary_choice is None:
+                for streamed_choice, position in additional_choices_in_chunk:
+                    _accumulate_additional_choice(streamed_choice, position)
+                continue
+            delta = getattr(primary_choice, "delta", None)
+            if delta is None:
+                for streamed_choice, position in additional_choices_in_chunk:
+                    _accumulate_additional_choice(streamed_choice, position)
+                continue
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
 
@@ -4140,8 +4350,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     reasoning_text,
                 )
                 reasoning_parts.append(reasoning_text)
-                _fire_first_delta()
-                agent._fire_reasoning_delta(reasoning_text)
+                _notify_first_delta()
+                _emit_reasoning_text(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             delta_content = getattr(delta, "content", None)
@@ -4155,9 +4365,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             continue
                         _flush_pending_stream_text()
                         continue
-                    _fire_first_delta()
-                    agent._fire_stream_delta(delta_content)
-                    deltas_were_sent["yes"] = True
+                    _notify_first_delta()
+                    _emit_stream_text(delta_content)
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
                 # tool calls).  But reasoning tags embedded in suppressed
@@ -4179,6 +4388,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Accumulate tool call deltas — notify display on first name
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
+                _accept_timeout_candidate()
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     raw_index = getattr(tc_delta, "index", None)
@@ -4260,13 +4470,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # discarding the attempted action.
                         result["partial_tool_names"].append(name)
 
-            chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+            chunk_finish_reason = getattr(primary_choice, "finish_reason", None)
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
 
-            # Usage in the final chunk
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_obj = chunk.usage
+            for streamed_choice, position in additional_choices_in_chunk:
+                _accumulate_additional_choice(streamed_choice, position)
 
         _close_managed_stream()
 
@@ -4288,24 +4497,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             agent._disable_streaming = True
             choices = final_response.choices
-            first_choice = (
-                choices[0]
-                if isinstance(choices, (list, tuple)) and choices
-                else None
-            )
-            message = getattr(first_choice, "message", None)
-            if message is not None:
-                reasoning_text = (
-                    getattr(message, "reasoning_content", None)
-                    or getattr(message, "reasoning", None)
-                )
-                if isinstance(reasoning_text, str) and reasoning_text:
-                    _fire_first_delta()
-                    agent._fire_reasoning_delta(reasoning_text)
-                content = getattr(message, "content", None)
-                if isinstance(content, str) and content:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(content)
+            if is_valid_chat_completion_response(final_response):
+                for choice in choices if isinstance(choices, (list, tuple)) else []:
+                    message = getattr(choice, "message", None)
+                    if message is None:
+                        continue
+                    reasoning_text = (
+                        getattr(message, "reasoning_content", None)
+                        or getattr(message, "reasoning", None)
+                    )
+                    if isinstance(reasoning_text, str) and reasoning_text:
+                        _fire_first_delta()
+                        agent._fire_reasoning_delta(reasoning_text)
+                    content = getattr(message, "content", None)
+                    if isinstance(content, str) and content:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(content)
             return final_response
 
         # Build mock response matching non-streaming shape
@@ -4367,6 +4574,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             and not content_parts
             and not reasoning_parts
             and not tool_calls_acc
+            and not additional_choice_states
         ):
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason "
@@ -4454,16 +4662,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_content=full_reasoning,
         )
         mock_choice = SimpleNamespace(
-            index=0,
+            index=primary_choice_index if primary_choice_index is not None else 0,
             message=mock_message,
             finish_reason=effective_finish_reason,
         )
-        return SimpleNamespace(
+        response = SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
             model=model_name,
-            choices=[mock_choice],
+            choices=[mock_choice, *_materialize_additional_choices()],
             usage=usage_obj,
         )
+        _flush_valid_timeout_prefix(response)
+        return response
 
     def _call_anthropic(request_client):
         """Stream an Anthropic Messages API response.

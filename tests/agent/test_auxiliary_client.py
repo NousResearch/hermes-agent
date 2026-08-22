@@ -4623,3 +4623,438 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+def _responses_output(text, *, usage):
+    return SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+        usage=usage,
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=SimpleNamespace(completion_tokens=0),
+        ),
+        SimpleNamespace(
+            output_text="Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        SimpleNamespace(
+            output=[],
+            output_text="Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        SimpleNamespace(
+            output=[SimpleNamespace(type="reasoning", summary=[])],
+            output_text="Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 0},
+        },
+        {
+            "output": [],
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 0},
+        },
+        {
+            "output": [{"type": "reasoning", "summary": []}],
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 0},
+        },
+        _responses_output(
+            "Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+    ],
+)
+def test_auxiliary_validation_rejects_router_timeout_shim(response):
+    """Auxiliary consumers must send HTTP-success timeout shims into recovery."""
+    from agent.auxiliary_client import (
+        _is_invalid_aux_response_error,
+        _validate_llm_response,
+    )
+
+    with pytest.raises(RuntimeError, match="router timeout shim") as exc_info:
+        _validate_llm_response(response, task="compression")
+
+    # Both sync and async auxiliary fallback gates share this classifier.
+    assert _is_invalid_aux_response_error(exc_info.value)
+    assert not _is_invalid_aux_response_error(
+        RuntimeError("Auxiliary compression: normal provider failure")
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            output=[SimpleNamespace(
+                content=[SimpleNamespace(
+                    text="Connect timeout, please try again later.",
+                )],
+            )],
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output": [{
+                "content": [{
+                    "text": "Connect timeout, please try again later.",
+                }],
+            }],
+            "usage": {"output_tokens": 0},
+        },
+    ],
+)
+def test_auxiliary_validation_rejects_untyped_responses_message_shim(response):
+    """Validation must classify the same untyped message shape as recovery."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    with pytest.raises(RuntimeError, match="router timeout shim"):
+        _validate_llm_response(response, task="compression")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            output_text="Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=1),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 1},
+        },
+        _responses_output(
+            "Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=1),
+        ),
+    ],
+)
+def test_auxiliary_validation_accepts_recovered_generated_timeout_text(response):
+    """Recovered Responses text retains token proof and remains usable."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert recovered.choices[0].message.content == (
+        "Connect timeout, please try again later."
+    )
+
+
+def test_auxiliary_recovery_classifies_whitespace_padded_sentinel_from_raw_text():
+    from agent.auxiliary_client import _validate_llm_response
+
+    raw = " \nConnect timeout, please try again later.\t"
+    response = SimpleNamespace(
+        output_text=raw,
+        usage=SimpleNamespace(output_tokens=0),
+    )
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert recovered.choices[0].message.content == raw
+
+
+def test_auxiliary_recovery_retains_responses_message_cardinality_and_siblings():
+    from agent.auxiliary_client import _validate_llm_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Connect timeout, please try again later.",
+                )],
+            ),
+            SimpleNamespace(type="reasoning", summary=[]),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="valid answer")],
+            ),
+        ],
+        usage=SimpleNamespace(output_tokens=0),
+    )
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert [choice.message.content for choice in recovered.choices] == [
+        "Connect timeout, please try again later.",
+        "valid answer",
+    ]
+
+
+def test_auxiliary_recovery_accepts_non_text_responses_sibling_as_raw_evidence():
+    from agent.auxiliary_client import _validate_llm_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Connect timeout, please try again later.",
+                )],
+            ),
+            SimpleNamespace(type="reasoning", summary=[]),
+        ],
+        usage=SimpleNamespace(output_tokens=0),
+    )
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert len(recovered.choices) == 1
+    assert recovered.choices[0].message.content == (
+        "Connect timeout, please try again later."
+    )
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_auxiliary_recovery_preserves_responses_function_calls(include_text):
+    from agent.auxiliary_client import _validate_llm_response
+
+    output = []
+    if include_text:
+        output.append(SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(
+                type="output_text",
+                text="Connect timeout, please try again later.",
+            )],
+        ))
+    output.append(SimpleNamespace(
+        type="function_call",
+        call_id="call_weather",
+        name="weather",
+        arguments='{"city":"Warsaw"}',
+    ))
+    response = SimpleNamespace(
+        output=output,
+        usage=SimpleNamespace(output_tokens=0),
+    )
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert len(recovered.choices) == 1
+    message = recovered.choices[0].message
+    assert message.content == (
+        "Connect timeout, please try again later." if include_text else None
+    )
+    assert len(message.tool_calls) == 1
+    tool_call = message.tool_calls[0]
+    assert tool_call.id == "call_weather"
+    assert tool_call.function.name == "weather"
+    assert tool_call.function.arguments == '{"city":"Warsaw"}'
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            output_text="Connect timeout, please try again later.",
+            output=[SimpleNamespace(
+                type="function_call",
+                call_id="call_weather",
+                name="weather",
+                arguments='{"city":"Warsaw"}',
+            )],
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "weather",
+                "arguments": '{"city":"Warsaw"}',
+            }],
+            "usage": {"output_tokens": 0},
+        },
+    ],
+)
+def test_auxiliary_recovery_combines_top_level_text_with_output_tool(response):
+    """The Responses compatibility text must survive beside output tools."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    message = recovered.choices[0].message
+    assert message.content == "Connect timeout, please try again later."
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0].id == "call_weather"
+    assert message.tool_calls[0].function.name == "weather"
+    assert message.tool_calls[0].function.arguments == '{"city":"Warsaw"}'
+
+
+def _multi_choice_stream_chunks():
+    return [
+        SimpleNamespace(
+            id="chunk-1",
+            model="test/model",
+            usage=None,
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    delta=SimpleNamespace(
+                        content="Connect timeout, please try again later.",
+                        reasoning=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                ),
+                SimpleNamespace(
+                    index=1,
+                    delta=SimpleNamespace(
+                        content="valid second choice",
+                        reasoning=None,
+                        reasoning_content=None,
+                        tool_calls=[SimpleNamespace(
+                            index=0,
+                            id="call_streamed",
+                            function=SimpleNamespace(
+                                name="weather",
+                                arguments='{"city":"Warsaw"}',
+                            ),
+                        )],
+                    ),
+                    finish_reason="tool_calls",
+                ),
+            ],
+        ),
+        SimpleNamespace(
+            id="chunk-2",
+            model="test/model",
+            usage=SimpleNamespace(completion_tokens=0),
+            choices=[],
+        ),
+    ]
+
+
+def test_sync_auxiliary_stream_aggregation_preserves_multiple_choices():
+    from agent.auxiliary_client import _aggregate_chat_stream, _validate_llm_response
+
+    response = _aggregate_chat_stream(iter(_multi_choice_stream_chunks()))
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert [choice.message.content for choice in recovered.choices] == [
+        "Connect timeout, please try again later.",
+        "valid second choice",
+    ]
+    assert recovered.choices[1].message.tool_calls[0].function.name == "weather"
+
+
+@pytest.mark.asyncio
+async def test_async_auxiliary_stream_aggregation_preserves_multiple_choices():
+    from agent.auxiliary_client import (
+        _aggregate_chat_stream_async,
+        _validate_llm_response,
+    )
+
+    async def chunks():
+        for chunk in _multi_choice_stream_chunks():
+            yield chunk
+
+    response = await _aggregate_chat_stream_async(chunks())
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert [choice.message.content for choice in recovered.choices] == [
+        "Connect timeout, please try again later.",
+        "valid second choice",
+    ]
+    assert recovered.choices[1].message.tool_calls[0].function.name == "weather"
+
+
+def test_sync_auxiliary_router_timeout_shim_continues_to_fallback():
+    """The sync consumer must recover instead of returning the provider shim."""
+    primary = MagicMock()
+    primary.base_url = "https://primary.example/v1"
+    primary.chat.completions.create.return_value = SimpleNamespace(
+        output=[],
+        output_text="Connect timeout, please try again later.",
+        usage=SimpleNamespace(output_tokens=0),
+    )
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create.return_value = _DummyResponse("recovered sync")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary/model", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "primary/model"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback, "fallback/model", "openrouter"),
+        ) as fallback_resolver,
+    ):
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+    assert result.choices[0].message.content == "recovered sync"
+    fallback_resolver.assert_called()
+    fallback.chat.completions.create.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_auxiliary_router_timeout_shim_continues_to_fallback():
+    """The async consumer mirrors the sync invalid-response recovery path."""
+    primary = MagicMock()
+    primary.base_url = "https://primary.example/v1"
+    primary.chat.completions.create = AsyncMock(
+        return_value={
+            "output": [],
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 0},
+        }
+    )
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create = AsyncMock(
+        return_value=_DummyResponse("recovered async")
+    )
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary/model", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "primary/model"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback, "fallback/model", "openrouter"),
+        ) as fallback_resolver,
+        patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(fallback, "fallback/model"),
+        ),
+    ):
+        result = await async_call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+    assert result.choices[0].message.content == "recovered async"
+    fallback_resolver.assert_called()
+    fallback.chat.completions.create.assert_awaited_once()

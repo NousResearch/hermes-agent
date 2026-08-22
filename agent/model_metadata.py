@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -3357,6 +3358,9 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
 # fingerprint that uniquely determines the value is exactly equivalent.
 #
 # Fingerprint design (soundness argument):
+#   * fingerprints are built from ``_wire_message_shadow`` plus the image-token
+#     charge, so base64 payloads and other provider-stripped fields never enter
+#     the key or its retained pins.
 #   * strings are fingerprinted by ``id()`` AND pinned (a strong reference is
 #     stored in the cache entry). While the entry lives, that id cannot be
 #     reused by another object, so id-equality implies object-equality —
@@ -3365,14 +3369,20 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
 #   * dicts/lists recurse structurally, preserving key order — ``str(shadow)``
 #     depends on insertion order, so order is part of the key.
 #   * any other type aborts the memo and falls through to a direct compute.
-# Equal fingerprints therefore imply deep-equal messages built from identical
-# immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical estimate.
+# Equal fingerprints therefore imply deep-equal shadows built from identical
+# immutable leaves plus equal image charges ⇒ identical estimate.
 #
 # Because the api_messages build shallow-copies history dicts each iteration,
 # the copies share the same content strings — so unchanged history messages
 # hit the memo even though the outer dicts are fresh objects every turn.
-_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int, int]] = {}
 _MSG_TOKENS_CACHE_MAX = 4096
+# Count limits alone do not constrain retained payload bytes. Entries above the
+# per-message ceiling bypass the memo; the aggregate ceiling evicts oldest
+# entries. ``sys.getsizeof`` measures the pinned string allocation without
+# allocating an encoded copy of large text.
+_MSG_TOKENS_CACHE_ENTRY_MAX_BYTES = 256 * 1024
+_MSG_TOKENS_CACHE_MAX_BYTES = 16 * 1024 * 1024
 
 
 def _msg_fingerprint(value: Any, pins: list) -> Any:
@@ -3397,26 +3407,30 @@ def _msg_fingerprint(value: Any, pins: list) -> Any:
 
 
 def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
+    image_tokens = _count_image_tokens(msg, image_cost)
+    shadow = _wire_message_shadow(msg) if isinstance(msg, dict) else msg
     try:
         pins: list = []
-        key = _msg_fingerprint(msg, pins)
+        key = (image_tokens, _msg_fingerprint(shadow, pins))
         hash(key)
     except Exception:
-        return (
-            _estimate_message_tokens_without_images(msg)
-            + _count_image_tokens(msg, image_cost)
-        )
+        return estimate_tokens_rough(str(shadow)) + image_tokens
     cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
         return cached[1]
-    tokens = (
-        _estimate_message_tokens_without_images(msg)
-        + _count_image_tokens(msg, image_cost)
-    )
-    _MSG_TOKENS_CACHE[key] = (pins, tokens)
-    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
+    tokens = estimate_tokens_rough(str(shadow)) + image_tokens
+    retained_bytes = sum(sys.getsizeof(pin) for pin in pins)
+    if retained_bytes > _MSG_TOKENS_CACHE_ENTRY_MAX_BYTES:
+        return tokens
+    _MSG_TOKENS_CACHE[key] = (pins, tokens, retained_bytes)
+    total_retained_bytes = sum(entry[2] for entry in _MSG_TOKENS_CACHE.values())
+    while (
+        len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX
+        or total_retained_bytes > _MSG_TOKENS_CACHE_MAX_BYTES
+    ):
         try:
-            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
+            evicted = _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
+            total_retained_bytes -= evicted[2]
         except (StopIteration, KeyError, RuntimeError):
             break
     return tokens

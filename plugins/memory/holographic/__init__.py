@@ -398,14 +398,42 @@ class HolographicMemoryProvider(MemoryProvider):
             pre = pre.strip()
             return pre or None
 
-        _PREF_PATTERNS = [
-            re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
-            re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
-        ]
-        _DECISION_PATTERNS = [
-            re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
-            re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+        # Auto-extraction is deliberately conservative: it only accepts a
+        # complete, first-person declarative statement. Request fragments and
+        # prose which merely mentions a preference must not become memories.
+        _TERMINATOR = r"(?:[.!]\s*$|$)"
+        _FACT_PATTERNS = [
+            (
+                re.compile(r"^\s*I\s+prefer\s+(.+?)" + _TERMINATOR, re.IGNORECASE),
+                "user_pref",
+                lambda match: f"User prefers {match.group(1)}.",
+            ),
+            (
+                re.compile(
+                    r"^\s*my\s+(favorite|preferred|default)\s+(.+?)\s+is\s+(.+?)" + _TERMINATOR,
+                    re.IGNORECASE,
+                ),
+                "user_pref",
+                lambda match: (
+                    f"User's {match.group(1).lower()} "
+                    f"{' '.join(match.group(2).split())} is {match.group(3)}."
+                ),
+            ),
+            (
+                re.compile(r"^\s*I\s+(always|never|usually)\s+(.+?)" + _TERMINATOR, re.IGNORECASE),
+                "user_pref",
+                lambda match: f"User habit: {match.group(1).lower()} {match.group(2)}.",
+            ),
+            (
+                re.compile(r"^\s*we\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+?)" + _TERMINATOR, re.IGNORECASE),
+                "project",
+                lambda match: f"Project decision: {match.group(1)}.",
+            ),
+            (
+                re.compile(r"^\s*the\s+project\s+(uses|needs|requires)\s+(.+?)" + _TERMINATOR, re.IGNORECASE),
+                "project",
+                lambda match: f"Project {match.group(1).lower()} {match.group(2)}.",
+            ),
         ]
 
         extracted = 0
@@ -429,23 +457,24 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
-            for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
-
-            for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
+            for pattern, category, format_fact in _FACT_PATTERNS:
+                match = pattern.match(content)
+                if not match:
+                    continue
+                matched_text = match.group(0)
+                if "?" in matched_text or re.search(
+                    r",\s*(?:can|could|would|will|please|do)\b", matched_text, re.IGNORECASE
+                ):
+                    continue
+                fact = " ".join(format_fact(match).split())[:400]
+                if len(fact) < 10:
+                    continue
+                try:
+                    self._store.add_fact(fact, category=category)
+                    extracted += 1
+                except Exception:
+                    pass
+                break
 
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)

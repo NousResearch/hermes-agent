@@ -507,6 +507,41 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
     setActiveIndex(index => Math.min(index, choices.length))
   }, [choices.length])
 
+  // Claim keyboard ownership when the card becomes interactive: move focus
+  // onto the panel container (tabIndex=-1) so the global handler below sees a
+  // neutral focus target instead of the composer's contenteditable/input —
+  // otherwise Arrow keys and letter shortcuts are swallowed by the composer
+  // and a pure-keyboard user can't drive the choices at all. Only when the
+  // card actually owns choices; a free-text-only clarify keeps composer focus.
+  const panelRef = useRef<HTMLFormElement | null>(null)
+  const claimedFocus = useRef(false)
+
+  useEffect(() => {
+    if (!ready || !hasChoices || submitting || claimedFocus.current) {
+      return
+    }
+
+    // Don't yank focus from an input the user is actively typing in (the
+    // composer contenteditable, the Other free-text box, a terminal input,
+    // etc.). If the user is mid-draft they'd lose keystrokes to the choices.
+    // Only claim when focus is neutral or on a non-editable element, so a
+    // pure-keyboard user still gets a usable target but a typist isn't
+    // interrupted. `hasChoices` in the deps re-runs this when choices resolve
+    // after an initial no-choice render, so the late-arriving case is covered.
+    const el = document.activeElement
+    const editing =
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      (el instanceof HTMLElement && el.isContentEditable)
+
+    if (editing) {
+      return
+    }
+
+    claimedFocus.current = true
+    panelRef.current?.focus()
+  }, [hasChoices, ready, submitting])
+
   const moveActive = useCallback(
     (delta: number) => {
       const itemCount = choices.length + 1
@@ -692,6 +727,8 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
       className="my-1.5 grid gap-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onSubmit={handleSubmit}
+      ref={panelRef}
+      tabIndex={-1}
     >
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">

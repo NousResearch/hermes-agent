@@ -89,6 +89,16 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
 }
 
 describe('ClarifyTool choice selection', () => {
+  it('moves focus onto the panel so keyboard shortcuts work without a mouse', async () => {
+    renderLiveClarify()
+
+    await waitFor(() => {
+      const panel = document.querySelector('[data-clarify-choices]')
+      expect(panel).not.toBeNull()
+      expect(document.activeElement).toBe(panel)
+    })
+  })
+
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
     const request = renderLiveClarify({ multiSelect: true })
     const staging = screen.getByRole('button', { name: /staging/ })

@@ -263,6 +263,17 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("depth limit", result["error"].lower())
 
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_spawn_depth": 0})
+    def test_max_spawn_depth_zero_blocks_first_delegation(self, mock_cfg):
+        """An operator setting delegation.max_spawn_depth: 0 must actually
+        disable delegation for the top-level agent (depth 0), not just have
+        the config value silently coerced back to the default of 1."""
+        parent = _make_mock_parent(depth=0)
+        result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("depth limit", result["error"].lower())
+
 
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
@@ -1505,13 +1516,23 @@ class TestMaxSpawnDepth(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": 0})
-    def test_max_spawn_depth_clamped_below_one(self, mock_cfg):
+    def test_max_spawn_depth_zero_disables_delegation(self, mock_cfg):
+        """max_spawn_depth=0 is the documented way to disable delegation
+        entirely (parent depth 0 >= max_spawn_depth 0 blocks the first
+        delegate_task call) — it must be honored, not silently clamped
+        back up to 1."""
+        from tools.delegate_tool import _get_max_spawn_depth
+        self.assertEqual(_get_max_spawn_depth(), 0)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_spawn_depth": -3})
+    def test_max_spawn_depth_clamped_below_zero(self, mock_cfg):
         import logging
         from tools.delegate_tool import _get_max_spawn_depth
         with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
             result = _get_max_spawn_depth()
-        self.assertEqual(result, 1)
-        self.assertTrue(any("below floor 1" in m for m in cm.output))
+        self.assertEqual(result, 0)
+        self.assertTrue(any("below floor 0" in m for m in cm.output))
 
 # =========================================================================
 # role param plumbing

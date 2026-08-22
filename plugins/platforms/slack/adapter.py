@@ -7102,21 +7102,28 @@ class SlackAdapter(BasePlatformAdapter):
             # wrapper never pushes the block over the limit (overflow →
             # invalid_blocks → no buttons).
             q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            body = f"❓ {q}"
-            budget = 3000 - len("...")
-            if len(body) > budget:
-                body = body[:budget] + "..."
-
-            # One button per choice + a free-text "Other" button.  Slack caps
-            # an actions block at 5 elements; the clarify tool caps choices at
-            # 4 (+ Other = 5) so this is normally one block, but chunk anyway
-            # so a larger choice list degrades gracefully instead of 400ing.
-            elements = []
+            choice_lines = []
             for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+                full_choice = str(choice).strip() or f"Option {idx + 1}"
+                escaped_choice = full_choice.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                choice_lines.append(f"{idx + 1}. {escaped_choice}")
+            body = f"❓ {q}\n\n" + "\n".join(choice_lines)
+
+            # Slack button labels are single-line and capped at 75 characters.
+            # Keep the complete choices in readable section text and make the
+            # buttons compact numeric shortcuts. Split oversized section text
+            # across blocks rather than silently truncating any option.
+            section_texts = [body[start:start + 3000] for start in range(0, len(body), 3000)] or ["❓"]
+
+            # One numbered button per choice + a free-text "Other" button.
+            # Slack caps an actions block at 5 elements; the clarify tool caps
+            # choices at 4 (+ Other = 5) so this is normally one block, but
+            # chunk anyway so a larger choice list degrades gracefully.
+            elements = []
+            for idx, _choice in enumerate(choices):
                 elements.append({
                     "type": "button",
-                    "text": {"type": "plain_text", "text": label[:75], "emoji": True},
+                    "text": {"type": "plain_text", "text": str(idx + 1), "emoji": True},
                     "action_id": f"hermes_clarify_choice_{idx}",
                     "value": f"{clarify_id}|{idx}",
                 })
@@ -7128,7 +7135,8 @@ class SlackAdapter(BasePlatformAdapter):
             })
 
             blocks: list = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": section_text}}
+                for section_text in section_texts
             ]
             for start in range(0, len(elements), 5):
                 blocks.append({"type": "actions", "elements": elements[start:start + 5]})

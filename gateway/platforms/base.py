@@ -4840,6 +4840,25 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
+    def filter_media_delivery_paths_with_rejected(media_files) -> Tuple[List[Tuple[str, bool]], List[str]]:
+        """Like filter_media_delivery_paths, but also return rejected paths.
+
+        Returns ``(safe_media, rejected_paths)`` so the caller can surface
+        rejections to the model (#78932).
+        """
+        safe_media: List[Tuple[str, bool]] = []
+        rejected: List[str] = []
+        for media_path, is_voice in media_files or []:
+            raw = str(media_path)
+            safe_path = validate_media_delivery_path(raw)
+            if safe_path:
+                safe_media.append((safe_path, bool(is_voice)))
+            else:
+                rejected.append(raw)
+                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+        return safe_media, rejected
+
+    @staticmethod
     def filter_local_delivery_paths(file_paths) -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
@@ -6384,7 +6403,9 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                media_files, rejected_media = self.filter_media_delivery_paths_with_rejected(media_files)
+                if rejected_media:
+                    response = (response or "") + "\n[MEDIA path was outside the delivery allowlist and was not attached]"
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)

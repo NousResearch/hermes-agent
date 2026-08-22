@@ -22346,7 +22346,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files, rejected_media = BasePlatformAdapter.filter_media_delivery_paths_with_rejected(media_files)
+            if rejected_media:
+                response = response + "\n[MEDIA path was outside the delivery allowlist and was not attached]"
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -22685,7 +22687,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if response:
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                media_files, rejected_media = BasePlatformAdapter.filter_media_delivery_paths_with_rejected(media_files)
+                if rejected_media:
+                    response = response + "\n[MEDIA path was outside the delivery allowlist and was not attached]"
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")

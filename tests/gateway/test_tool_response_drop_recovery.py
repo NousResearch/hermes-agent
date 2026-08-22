@@ -151,8 +151,9 @@ class TestRecoveryDoesNotLeakMediaFragments:
         # but force the path to be filtered out (unsafe/nonexistent) so we hit
         # the empty-text + no-attachment recovery branch deterministically.
         monkeypatch.setattr(
-            type(adapter), "filter_media_delivery_paths", staticmethod(lambda m: [])
-        )
+                    type(adapter), "filter_media_delivery_paths_with_rejected",
+                    staticmethod(lambda m: ([], ["/tmp/nope_dir_zzz/my vacation photo.png"])),
+                )
 
         event = _make_event(Platform.DISCORD)
         with caplog.at_level(logging.ERROR, logger="gateway.platforms.base"):
@@ -160,17 +161,20 @@ class TestRecoveryDoesNotLeakMediaFragments:
                 event, build_session_key(event.source)
             )
 
-        # No fragment of the media path may reach the user.
+        # No fragment of the raw media path may reach the user.
+        # A generic note about rejected paths is expected, but the raw path
+        # itself (file name, directory) must not appear in the response.
         leaked = [
             s for s in adapter.sent
-            if "vacation" in s["content"] or "photo" in s["content"] or "MEDIA" in s["content"]
+            if "vacation" in s["content"] or "photo" in s["content"]
         ]
         assert leaked == [], f"media-path fragment leaked to user: {leaked}"
-        # The genuinely-undeliverable response is logged loudly, not silent.
+        # The rejected path is surfaced as a generic note (no raw path), so
+        # the model knows the attachment was not delivered (#78932).
         assert any(
-            "response_delivery_dropped" in r.getMessage()
-            for r in caplog.records if r.levelno == logging.ERROR
-        ), [r.getMessage() for r in caplog.records]
+            "was outside the delivery allowlist" in s["content"]
+            for s in adapter.sent
+        ), f"no rejection note delivered: {adapter.sent}"
 
 
 class TestUnrecoverableDropIsLoud:

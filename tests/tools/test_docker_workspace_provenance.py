@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
+
 import pytest
 
 from tools import code_execution_tool, file_tools, terminal_tool
@@ -82,6 +84,58 @@ def test_live_host_cwd_keeps_relative_suffix_below_workspace(tmp_path):
     assert resolved.container_cwd == "/workspace/src/pkg"
 
 
+def test_windows_suffix_is_joined_with_container_path_semantics(monkeypatch):
+    monkeypatch.setattr(
+        terminal_tool,
+        "_relative_host_suffix",
+        lambda _cwd, _host_root: r"src\pkg",
+    )
+    monkeypatch.setattr(terminal_tool, "_HOST_PURE_PATH", PureWindowsPath)
+
+    assert (
+        terminal_tool._container_cwd_for_host_path(
+            r"C:\project\src\pkg", r"C:\project"
+        )
+        == "/workspace/src/pkg"
+    )
+
+
+@pytest.mark.windows_only
+def test_native_windows_host_path_maps_to_posix_container_cwd(tmp_path):
+    host_root = tmp_path / "project"
+    live_cwd = host_root / "src" / "pkg"
+    live_cwd.mkdir(parents=True)
+
+    assert (
+        terminal_tool._container_cwd_for_host_path(
+            str(live_cwd), str(host_root)
+        )
+        == "/workspace/src/pkg"
+    )
+
+
+def test_recorded_host_cwd_is_not_remapped_without_an_active_mount():
+    host_root = "/Users/example/project"
+    terminal_tool.register_task_env_overrides(
+        "session", {"cwd": host_root, "cwd_source": "session"}
+    )
+    workspace = terminal_tool._resolve_task_workspace(
+        _config(docker_mount_cwd_to_workspace=False), "session"
+    )
+
+    resolved = terminal_tool._resolve_command_cwd(
+        workdir=None,
+        default_cwd=workspace.container_cwd,
+        session_key="session",
+        env_type="docker",
+        host_workspace_root=workspace.host_cwd,
+    )
+
+    assert workspace.host_cwd is None
+    assert workspace.container_cwd == "/root"
+    assert resolved == "/root"
+
+
 @pytest.mark.parametrize("cwd_source", [None, "container"])
 def test_non_session_cwd_never_becomes_host_mount_by_coincidence(tmp_path, cwd_source):
     container_cwd = tmp_path / "benchmark"
@@ -159,6 +213,98 @@ def test_explicit_workspace_reset_replaces_preserved_mount_root(tmp_path):
 
     assert resolved.host_cwd == str(second)
     assert resolved.container_cwd == "/workspace"
+
+
+def test_workspace_reset_recreates_live_environment_and_file_cache(
+    monkeypatch, tmp_path
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _config())
+    terminal_tool.register_task_env_overrides(
+        "session", {"cwd": str(first), "cwd_source": "session"}
+    )
+
+    cleanup_calls = []
+
+    class _OldEnv:
+        cwd = "/workspace"
+
+        def cleanup(self, *, force_remove=False):
+            cleanup_calls.append(("cleanup", force_remove))
+
+        def wait_for_cleanup(self, timeout=30.0):
+            cleanup_calls.append(("wait", timeout))
+            return True
+
+    terminal_tool._active_environments["session"] = _OldEnv()
+    file_tools._file_ops_cache["session"] = object()
+
+    terminal_tool.register_task_env_overrides(
+        "session",
+        {
+            "cwd": str(second),
+            "cwd_source": "session",
+            "workspace_reset": True,
+        },
+    )
+
+    captured = {}
+
+    class _NewEnv:
+        cwd = "/workspace"
+
+    def _capture_environment(**kwargs):
+        captured.update(kwargs)
+        return _NewEnv()
+
+    monkeypatch.setattr(terminal_tool, "_create_environment", _capture_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+
+    recreated = terminal_tool.ensure_task_env("session")
+
+    assert cleanup_calls == [("cleanup", True), ("wait", 60.0)]
+    assert "session" not in file_tools._file_ops_cache
+    assert recreated is not None
+    assert captured["host_cwd"] == str(second)
+    assert captured["cwd"] == "/workspace"
+
+
+def test_workspace_reset_without_mount_keeps_live_environment(monkeypatch):
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: _config(docker_mount_cwd_to_workspace=False),
+    )
+    terminal_tool.register_task_env_overrides(
+        "session", {"cwd": "/Users/example/first", "cwd_source": "session"}
+    )
+
+    class _ExistingEnv:
+        cwd = "/workspace"
+
+        def cleanup(self, *, force_remove=False):
+            raise AssertionError("an unmounted workspace must not retire the sandbox")
+
+    existing = _ExistingEnv()
+    cached = object()
+    terminal_tool._active_environments["session"] = existing
+    file_tools._file_ops_cache["session"] = cached
+
+    terminal_tool.register_task_env_overrides(
+        "session",
+        {
+            "cwd": "/Users/example/second",
+            "cwd_source": "session",
+            "workspace_reset": True,
+        },
+    )
+
+    assert terminal_tool._active_environments["session"] is existing
+    assert existing.cwd == "/root"
+    assert file_tools._file_ops_cache["session"] is cached
 
 
 def test_workspace_root_read_modify_write_holds_override_lock(monkeypatch):

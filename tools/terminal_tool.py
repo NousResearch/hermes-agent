@@ -47,12 +47,13 @@ import atexit
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
+_HOST_PURE_PATH = PureWindowsPath if os.name == "nt" else PurePosixPath
 
 
 def _redact_terminal_error_text(value: Any) -> str:
@@ -1240,6 +1241,54 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+def _workspace_roots_differ(previous: Any, current: Any) -> bool:
+    """Return whether two host workspace roots name different paths."""
+    if not isinstance(previous, str) or not previous.strip():
+        return True
+    if not isinstance(current, str) or not current.strip():
+        return True
+    return os.path.normcase(os.path.abspath(os.path.expanduser(previous))) != (
+        os.path.normcase(os.path.abspath(os.path.expanduser(current)))
+    )
+
+
+def _invalidate_workspace_environment(task_id: str) -> None:
+    """Retire environments and file caches tied to a replaced bind source."""
+    effective_task_id = _resolve_container_task_id(task_id)
+    keys = tuple(dict.fromkeys((effective_task_id, task_id)))
+    with _env_lock:
+        active_keys = [key for key in keys if key in _active_environments]
+
+    for key in active_keys:
+        cleanup_vm(key, force_remove=True, wait_for_cleanup=True)
+
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        # A collapsed "default" environment is shared by multiple raw session
+        # keys, so every file-ops wrapper may hold the retired environment.
+        if effective_task_id == "default":
+            clear_file_ops_cache()
+        else:
+            clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+
+
+def _workspace_reset_rebinds_environment(task_id: str) -> bool:
+    """Return whether a reset changes this task's Docker bind source."""
+    try:
+        config = _get_env_config()
+    except Exception:
+        return True
+    return bool(
+        config.get("env_type") == "docker"
+        and config.get("docker_mount_cwd_to_workspace")
+        and _docker_session_isolation_enabled()
+        and _resolve_container_task_id(task_id) != "default"
+    )
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -1259,6 +1308,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     normalized = dict(overrides)
     workspace_reset = bool(normalized.pop("workspace_reset", False))
     cwd = normalized.get("cwd")
+    workspace_root_changed = False
     with _task_env_overrides_lock:
         previous = _task_env_overrides.get(task_id, {})
         if (
@@ -1268,6 +1318,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         ):
             if workspace_reset or not previous.get("host_workspace_root"):
                 normalized["host_workspace_root"] = cwd
+                workspace_root_changed = workspace_reset and _workspace_roots_differ(
+                    previous.get("host_workspace_root"), cwd
+                )
             else:
                 normalized["host_workspace_root"] = previous[
                     "host_workspace_root"
@@ -1284,6 +1337,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # A registered workspace cwd IS the session's working directory until
         # a `cd` changes it.
         record_session_cwd(task_id, new_cwd)
+        if workspace_root_changed and _workspace_reset_rebinds_environment(task_id):
+            _invalidate_workspace_environment(task_id)
+            return
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1293,7 +1349,12 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            try:
+                env.cwd = _resolve_task_workspace(
+                    _get_env_config(), task_id, new_cwd
+                ).container_cwd
+            except Exception:
+                env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1457,7 +1518,8 @@ def _container_cwd_for_host_path(cwd: str, host_root: str) -> str:
     if suffix == ".":
         return "/workspace"
     if suffix is not None:
-        return str(Path("/workspace") / suffix)
+        host_path = _HOST_PURE_PATH(suffix)
+        return str(PurePosixPath("/workspace", *host_path.parts))
     if cwd == "/workspace" or cwd.startswith("/workspace/"):
         return cwd
     return "/workspace"
@@ -2242,7 +2304,12 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(
+    task_id: str,
+    *,
+    force_remove: bool = False,
+    wait_for_cleanup: bool = False,
+):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* (default False) is forwarded to backends that accept it
@@ -2295,6 +2362,12 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
                 env.cleanup(force_remove=force_remove)
             else:
                 env.cleanup()
+            if wait_for_cleanup and hasattr(env, "wait_for_cleanup"):
+                if not env.wait_for_cleanup(timeout=60.0):
+                    logger.warning(
+                        "Timed out waiting for environment cleanup for task: %s",
+                        task_id,
+                    )
         elif hasattr(env, 'stop'):
             env.stop()
         elif hasattr(env, 'terminate'):
@@ -2621,6 +2694,7 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
+    host_workspace_root: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -2641,11 +2715,8 @@ def _resolve_command_cwd(
     if workdir:
         return workdir
     recorded = get_session_cwd(session_key)
-    if recorded and env_type == "docker":
-        overrides = resolve_task_overrides(session_key)
-        host_root = overrides.get("host_workspace_root")
-        if overrides.get("cwd_source") == "session" and isinstance(host_root, str):
-            return _container_cwd_for_host_path(recorded, host_root)
+    if recorded and env_type == "docker" and host_workspace_root:
+        return _container_cwd_for_host_path(recorded, host_workspace_root)
     if (
         recorded
         and env_type in _CONTAINER_BACKENDS
@@ -2918,6 +2989,7 @@ def terminal_tool(
                 default_cwd=guard_cwd_base,
                 session_key=session_key,
                 env_type=env_type,
+                host_workspace_root=host_cwd,
             )
 
             def _read_script_in_env(script_path: str) -> Optional[str]:
@@ -3020,6 +3092,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
+                host_workspace_root=host_cwd,
             )
             _self_repo_hit, _self_repo_msg = (
                 detect_self_repo_git_mutation(command, guard_cwd)
@@ -3111,6 +3184,7 @@ def terminal_tool(
                 default_cwd=cwd,
                 session_key=session_key,
                 env_type=env_type,
+                host_workspace_root=host_cwd,
             )
             try:
                 if env_type == "local":
@@ -3384,6 +3458,7 @@ def terminal_tool(
                         default_cwd=cwd,
                         session_key=session_key,
                         env_type=env_type,
+                        host_workspace_root=host_cwd,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

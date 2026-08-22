@@ -78,6 +78,10 @@ Speech-to-text supports eight providers: local faster-whisper (free, runs on-dev
 
 - **[IDE Integration (ACP)](/user-guide/features/acp)** — Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Hermes runs as an ACP server, rendering chat messages, tool activity, file diffs, and terminal commands inside your editor.
 
+## Voice Frontends
+
+- **[qwen-audio-agent](/integrations/qwen-audio-agent)** — Open-source realtime full-duplex voice frontend. Drives `hermes acp` hands-free with barge-in, a fully local wake word, and background task results read back into the conversation. Ships a macOS desktop orb, terminal TUI, and web UI.
+
 ## Programmatic Access
 
 - **[API Server](/user-guide/features/api-server)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox — can connect and use Hermes as a backend with its full toolset.

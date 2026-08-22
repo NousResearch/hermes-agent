@@ -230,6 +230,80 @@ class TestContinuationCeilingWedge:
         assert "second turn partial" in result2["final_response"]
         assert "and the rest." in result2["final_response"]
 
+    def test_successful_continuation_drops_nudge_and_fragments(self, loop_agent):
+        """A continuation that RECOVERS must not leave the "[System: ...]"
+        nudge (or the partial-fragment rows) in the durable transcript.
+
+        The nudge is role=user scaffolding that only drives the retry; if it
+        persists it renders as a user bubble in desktop/TUI transcripts and
+        confuses the model on replay. The recovered turn must collapse to one
+        clean assistant row carrying the full stitched answer."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _stub("part one "),
+            _mock_response(content="the rest.", finish_reason="stop"),
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is True
+        msgs = [m for m in result["messages"] if isinstance(m, dict)]
+
+        nudges = [
+            m for m in msgs
+            if m.get("role") == "user"
+            and "Continue exactly where you left off" in (m.get("content") or "")
+        ]
+        assert nudges == [], (
+            "The continuation nudge must not survive a recovered turn — it "
+            "renders as a user bubble and steers replay."
+        )
+
+        assistants = [m for m in msgs if m.get("role") == "assistant"]
+        assert len(assistants) == 1, (
+            "The fragment trail must collapse into one settled assistant turn."
+        )
+        content = assistants[0].get("content") or ""
+        assert "part one" in content, "Stitched answer must keep the partial."
+        assert "the rest." in content, "Stitched answer must keep the continuation."
+
+        # No scaffolding marks may remain on any durable row.
+        for m in msgs:
+            assert not m.get("_length_continuation_fragment")
+            assert not m.get("_length_continuation_nudge")
+
+    def test_successful_continuation_keeps_prior_turn_marked_rows(self, loop_agent):
+        """The success-path cleanup is scoped to the current turn: a marked
+        row reloaded from a prior turn's crash must survive (mirrors
+        test_prior_turn_marked_message_survives_later_ceiling)."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        reloaded_history = [
+            {"role": "user", "content": "earlier question"},
+            {
+                "role": "assistant",
+                "content": "earlier answer fragment",
+                "_length_continuation_fragment": True,
+            },
+        ]
+        loop_agent.client.chat.completions.create.side_effect = [
+            _stub("part one "),
+            _mock_response(content="the rest.", finish_reason="stop"),
+        ]
+        result = _run(loop_agent, "write me a long report", history=reloaded_history)
+
+        assert result["completed"] is True
+        prior = [
+            m for m in result["messages"]
+            if isinstance(m, dict)
+            and m.get("role") == "assistant"
+            and "earlier answer fragment" in (m.get("content") or "")
+        ]
+        assert len(prior) == 1, (
+            "The prior turn's reloaded message must survive the success-path "
+            "cleanup."
+        )
+
 
 class TestTruncatedPartJoining:
     """#78577 — parts joined with no separator glued text together."""

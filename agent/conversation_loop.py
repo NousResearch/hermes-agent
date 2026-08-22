@@ -8021,11 +8021,39 @@ def run_conversation(
                     final_response = _join_truncated_parts([*truncated_response_parts, final_response])
                     truncated_response_parts = []
                     length_continue_retries = 0
-                    # The continuation recovered, so the fragments stay in the transcript.
-                    for _frag in messages:
-                        if isinstance(_frag, dict):
-                            _frag.pop("_length_continuation_fragment", None)
-                            _frag.pop("_length_continuation_nudge", None)
+                    # The continuation recovered. The partial-fragment rows and
+                    # the "[System: ...]" continuation nudge were scaffolding
+                    # that only drove the retry — they must not persist. The
+                    # nudge in particular would otherwise survive as a plain
+                    # role=user row and render as a user bubble in desktop/TUI
+                    # transcripts (and confuse the model on replay). Drop both
+                    # and carry the full stitched answer on the final assistant
+                    # row so the durable transcript reads as one clean turn.
+                    # Scoped to the CURRENT turn, mirroring the ceiling exit
+                    # above: a mark that reached disk mid-crash and was
+                    # reloaded on a PRIOR turn's message must never be deleted
+                    # by this turn's cleanup.
+                    _stitched = final_response
+                    _turn_start = (
+                        current_turn_user_idx + 1
+                        if isinstance(current_turn_user_idx, int)
+                        and current_turn_user_idx >= 0
+                        else 0
+                    )
+                    messages[_turn_start:] = [
+                        m
+                        for m in messages[_turn_start:]
+                        if not (
+                            isinstance(m, dict)
+                            and (
+                                m.get("_length_continuation_fragment")
+                                or m.get("_length_continuation_nudge")
+                            )
+                        )
+                    ]
+                    agent._session_messages = messages
+                    if isinstance(assistant_message.content, str):
+                        assistant_message.content = _stitched
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

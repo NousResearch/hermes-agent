@@ -1087,6 +1087,82 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+def _sync_session_db(session_db: Any) -> Any:
+    """Unwrap a possibly-async session DB handle to its sync ``SessionDB``.
+
+    ``GatewayRunner._session_db`` is an ``AsyncSessionDB`` (a thin
+    ``asyncio.to_thread`` forwarder over a sync ``SessionDB``); other callers
+    hold the sync ``SessionDB`` directly. Both expose the sync handle under
+    ``_db`` when wrapped, so normalize here so the recovery helpers can call
+    the sync binding lookups directly.
+    """
+    if session_db is None:
+        return None
+    return getattr(session_db, "_db", session_db)
+
+
+def recover_telegram_dm_thread_id(
+    session_db: Any,
+    *,
+    source: Optional[SessionSource] = None,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    """Recover a Telegram DM topic ``thread_id`` for an outbound send with no anchor.
+
+    Synthetic / recovered / post-session-split events carry a ``SessionSource``
+    whose ``thread_id`` is ``None``. Sent as-is, the Telegram adapter emits no
+    ``message_thread_id`` and the reply lands in the General (home) topic. When
+    the target session has a DM topic binding, recover its ``thread_id`` so the
+    reply routes to the correct topic instead.
+
+    Two lookup modes, both best-effort and fail-open (return ``None`` on any
+    miss or error — never raise):
+
+    * ``session_id`` provided -> ``get_telegram_topic_binding_by_session``
+      (primary path; the kanban-watcher wake-synth / orchestrator reply knows
+      the raw session id of the task being woken).
+    * otherwise a Telegram DM ``source`` -> the newest topic binding for the
+      chat, mirroring ``GatewayRunner._recover_telegram_topic_thread_id``
+      (covers the outbound reply path before a session id is resolved).
+
+    ``session_db`` may be either the sync ``SessionDB`` or an ``AsyncSessionDB``
+    wrapper; both are handled.
+    """
+    db = _sync_session_db(session_db)
+    if db is None:
+        return None
+    try:
+        if session_id:
+            binding = db.get_telegram_topic_binding_by_session(
+                session_id=str(session_id),
+            )
+            if binding and binding.get("thread_id"):
+                return str(binding["thread_id"])
+            # A resolved session id with no binding is authoritative: there is
+            # no topic lane to recover, so do not fall through to the chat-wide
+            # scan (which could pin the reply to a different session's topic).
+            return None
+        if (
+            source is None
+            or source.platform != Platform.TELEGRAM
+            or source.chat_type != "dm"
+            or not source.chat_id
+        ):
+            return None
+        bindings = db.list_telegram_topic_bindings_for_chat(
+            chat_id=str(source.chat_id),
+        )
+        user_id = str(source.user_id or "")
+        for b in bindings:  # newest-first
+            if user_id and str(b.get("user_id") or "") == user_id:
+                recovered = str(b.get("thread_id") or "")
+                if recovered:
+                    return recovered
+    except Exception:
+        return None
+    return None
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,

@@ -92,7 +92,12 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: str | None = None,
+    *,
+    session_db=None,
+) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
@@ -101,8 +106,30 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
+
+    ``session_db`` (optional) is the sync ``SessionDB`` (or ``AsyncSessionDB``
+    wrapper). When a Telegram DM source has no ``thread_id`` (synthetic /
+    recovered / post-session-split events), it is used to recover the topic's
+    ``thread_id`` from the DM topic binding so the reply routes to the correct
+    topic instead of the General home topic.
     """
     thread_id = getattr(source, "thread_id", None)
+    if (
+        thread_id is None
+        and session_db is not None
+        and _platform_name(getattr(source, "platform", None)) == "telegram"
+        and getattr(source, "chat_type", None) == "dm"
+    ):
+        # Lazy import to keep gateway.platforms.base's import graph light and
+        # avoid a hard dependency at module load.
+        from gateway.session import recover_telegram_dm_thread_id
+
+        recovered = recover_telegram_dm_thread_id(
+            session_db,
+            source=source,
+        )
+        if recovered:
+            thread_id = recovered
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
     # Slack workspace identity is durable routing state, not ephemeral event
     # metadata. Carry it on every outbound path (including unthreaded sends)
@@ -3810,6 +3837,21 @@ class BasePlatformAdapter(ABC):
             if isinstance(resolved, str) and resolved.strip():
                 return resolved
         return None
+    def _sync_session_db(self) -> Any:
+        """Return the sync ``SessionDB`` reachable from this adapter, if any.
+
+        The gateway runner hosts the session DB (``_runner._session_db``, an
+        ``AsyncSessionDB`` wrapper). Unwrap it to the sync ``SessionDB`` so the
+        reply path can run the Telegram DM topic-binding recovery synchronously.
+        Returns None when no runner / DB is attached (tests, bare adapters).
+        """
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return None
+        session_db = getattr(runner, "_session_db", None)
+        if session_db is None:
+            return None
+        return getattr(session_db, "_db", session_db)
     
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
@@ -5993,7 +6035,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event), session_db=self._sync_session_db())
 
         try:
             response = await self._message_handler(event)
@@ -6135,7 +6177,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event), session_db=self._sync_session_db())
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
@@ -6310,7 +6352,7 @@ class BasePlatformAdapter(ABC):
         # Gated per-platform: when typing_indicator=False the refresh loop is
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event), session_db=self._sync_session_db())
         typing_task: Optional[asyncio.Task] = None
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
@@ -6877,7 +6919,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event), session_db=self._sync_session_db())
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

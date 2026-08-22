@@ -897,11 +897,36 @@ class GatewayKanbanWatchersMixin:
                                         _delivery_meta.get("chat_type") or ""
                                     ).strip()
                             _chat_type = _chat_type or "group"
+                            _thread_id = sub.get("thread_id") or None
+                            # KNOWN LIMITATION (preserved): chat_type is not
+                            # persisted reliably on every subscription row
+                            # (legacy/#60600 rows fall back to delivery_metadata
+                            # then "group"), so a DM whose thread_id we recover
+                            # here is still gated on the actual platform below.
+                            if not _thread_id and plat == _Platform.TELEGRAM and _chat_type == "dm":
+                                # Defense-in-depth: a Telegram DM subscription
+                                # whose row has no thread_id (synthetic /
+                                # recovered creator) must not wake the agent
+                                # into the General topic. Recover the task's
+                                # session topic binding and stamp it so the
+                                # synthetic wake routes to the correct lane.
+                                try:
+                                    from gateway.session import recover_telegram_dm_thread_id
+                                    _session_db = getattr(self, "_session_db", None)
+                                    if _session_db is not None:
+                                        _recovered_tid = recover_telegram_dm_thread_id(
+                                            _session_db,
+                                            session_id=_session_key,
+                                        )
+                                        if _recovered_tid:
+                                            _thread_id = _recovered_tid
+                                except Exception:
+                                    _thread_id = None
                             _source = SessionSource(
                                 platform=plat,
                                 chat_id=sub["chat_id"],
                                 chat_type=_chat_type,
-                                thread_id=sub.get("thread_id") or None,
+                                thread_id=_thread_id,
                                 user_id=sub.get("user_id"),
                                 user_id_alt=sub.get("user_id_alt"),
                                 profile=sub_profile or None,

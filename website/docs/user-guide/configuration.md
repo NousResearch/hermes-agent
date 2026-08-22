@@ -2086,6 +2086,8 @@ stt:
 
 **Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
 
+**Prompt echo.** Whisper conditions on the prompt as if it were transcript text that came immediately before the audio, so a low confidence decode can continue or repeat the prompt and return that as the transcript. It arrives as an ordinary success response, so nothing downstream can tell it apart from real speech. When a transcript comes back matching the prompt it was given, Hermes repeats the transcription once with the prompt withheld and uses that result instead: an unbiased decode cannot echo a prompt it was never given. If the echo survives the retry the transcript is discarded rather than passed to the agent. Both cases are logged at WARNING, and the extra request is only made when an echo is actually detected. For hosted providers that retry re-uploads the same audio, so a detected echo on a long recording costs a second upload. A short reply that merely reuses vocabulary from the prompt is not treated as an echo.
+
 :::warning Prompts are uploaded with your audio
 The final prompt is sent to the configured STT provider alongside the audio file. Keep secrets and session-derived context out of `stt.prompt` and out of anything a `pre_transcription` hook returns, especially when the provider is a hosted API rather than local `faster-whisper`.
 :::

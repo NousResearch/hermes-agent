@@ -314,6 +314,12 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
+| `DISCORD_ACTIVITY` | No | — | Presence/activity text shown on the bot profile (e.g. `"Hermes Agent"`). Attached to the bot's own application with a start timestamp, so it renders as a real app presence (icon + elapsed time) instead of bare text. Without any presence the bot shows as visually offline. |
+| `DISCORD_ACTIVITY_TYPE` | No | `"playing"` | Presence type: `playing`, `watching`, `listening`, or `custom`. |
+| `DISCORD_ACTIVITY_DETAILS` | No | — | Rich Presence details line (second row of text). |
+| `DISCORD_ACTIVITY_STATE` | No | — | Rich Presence state line (third row of text). |
+| `DISCORD_ACTIVITY_LARGE_IMAGE` / `DISCORD_ACTIVITY_LARGE_TEXT` | No | — | Large image asset key + hover text. Asset keys come from the owning application's **Rich Presence → Art Assets** page in the Discord Developer Portal. |
+| `DISCORD_ACTIVITY_SMALL_IMAGE` / `DISCORD_ACTIVITY_SMALL_TEXT` | No | — | Small (corner) image asset key + hover text. Same asset registration as above. |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |

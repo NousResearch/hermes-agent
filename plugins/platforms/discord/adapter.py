@@ -1391,6 +1391,63 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
+                # Set presence/activity ("Playing <X>") when configured.
+                # Sources (first wins): DISCORD_ACTIVITY / DISCORD_ACTIVITY_TYPE
+                # env vars, else config.yaml's discord.activity /
+                # discord.activity_type keys — bridged to those same env vars by
+                # _apply_yaml_config below, so this read is env-only.
+                # change_presence lives in on_ready so the presence re-applies
+                # after every reconnect/RESUME, not just first boot — without a
+                # presence the bot shows as visually offline (#64932).
+                #
+                # The activity is attached to the bot's own application_id
+                # (fetched once here) so Discord renders it as a real app
+                # presence (game icon + elapsed time) rather than bare text.
+                # Optional Rich-Presence keys in config.yaml's discord: block
+                # (or DISCORD_ACTIVITY_* env): activity_details, activity_state,
+                # activity_large_image / activity_large_text,
+                # activity_small_image / activity_small_text (asset keys from
+                # the app's Rich Presence Assets page in the dev portal).
+                _act = (os.getenv("DISCORD_ACTIVITY", "") or "").strip()
+                if _act:
+                    try:
+                        _atype = (os.getenv("DISCORD_ACTIVITY_TYPE", "") or "playing").strip().lower()
+                        _app_id = None
+                        try:
+                            _app_id = (await adapter_self._client.application_info()).id
+                        except Exception:
+                            logger.debug("[%s] application_info() failed; presence without app id", adapter_self.name)
+                        _rp_kwargs: dict = {}
+                        for _k in ("details", "state", "large_image", "large_text", "small_image", "small_text"):
+                            _v = (os.getenv(f"DISCORD_ACTIVITY_{_k.upper()}", "") or "").strip()
+                            if _v:
+                                _rp_kwargs[_k] = _v
+                        if _atype == "custom":
+                            _activity = discord.CustomActivity(name=_act)
+                        else:
+                            _type_map = {
+                                "watching": discord.ActivityType.watching,
+                                "listening": discord.ActivityType.listening,
+                            }
+                            _activity = discord.Activity(
+                                type=_type_map.get(_atype, discord.ActivityType.playing),
+                                name=_act,
+                                application_id=_app_id,
+                                details=_rp_kwargs.get("details"),
+                                state=_rp_kwargs.get("state"),
+                                timestamps={"start": int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)},
+                                assets={k: v for k, v in {
+                                    "large_image": _rp_kwargs.get("large_image"),
+                                    "large_text": _rp_kwargs.get("large_text"),
+                                    "small_image": _rp_kwargs.get("small_image"),
+                                    "small_text": _rp_kwargs.get("small_text"),
+                                }.items() if v},
+                            )
+                        await adapter_self._client.change_presence(activity=_activity)
+                        logger.info("[%s] Presence set: %s '%s' (app_id=%s)", adapter_self.name, _atype, _act, _app_id)
+                    except Exception:
+                        logger.debug("[%s] Failed to set Discord presence", adapter_self.name, exc_info=True)
+
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
@@ -10379,6 +10436,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     """
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+    if "activity" in discord_cfg and not os.getenv("DISCORD_ACTIVITY"):
+        os.environ["DISCORD_ACTIVITY"] = str(discord_cfg["activity"])
+    if "activity_type" in discord_cfg and not os.getenv("DISCORD_ACTIVITY_TYPE"):
+        os.environ["DISCORD_ACTIVITY_TYPE"] = str(discord_cfg["activity_type"])
+    # Optional Rich Presence fields (asset keys come from the owning app's
+    # Rich Presence → Art Assets page in the Discord dev portal).
+    for _rp_key in ("details", "state", "large_image", "large_text", "small_image", "small_text"):
+        _cfg_key = f"activity_{_rp_key}"
+        _env_key = f"DISCORD_ACTIVITY_{_rp_key.upper()}"
+        if _cfg_key in discord_cfg and not os.getenv(_env_key):
+            os.environ[_env_key] = str(discord_cfg[_cfg_key])
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):

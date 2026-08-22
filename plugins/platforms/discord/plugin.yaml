@@ -32,3 +32,11 @@ optional_env:
     description: "Display name for the Discord home channel"
     prompt: "Home channel display name"
     password: false
+  - name: DISCORD_ACTIVITY
+    description: "Presence activity text shown on the bot profile (e.g. \"Hermes Agent\"). Without a presence the bot shows as offline. Can also be set via the discord.activity config key; env wins."
+    prompt: "Bot presence activity text (optional)"
+    password: false
+  - name: DISCORD_ACTIVITY_TYPE
+    description: "Presence type: playing (default), watching, listening, or custom. Config equivalent: discord.activity_type."
+    prompt: "Activity type (playing/watching/listening/custom)"
+    password: false

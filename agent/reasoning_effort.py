@@ -140,6 +140,23 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 #: Upstage Solar Pro/Open: low/medium/high.
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: Local Ollama qwen3.8 renderer template levels (low / medium / xhigh).
+#: ``high`` is not in the template, so clamp_effort maps it to medium
+#: (nearest weaker). ``max`` / ``ultra`` map down to ``xhigh``.
+QWEN38_LOCAL_EFFORTS: tuple[str, ...] = ("low", "medium", "xhigh")
+
+
+def custom_endpoint_efforts(model: Optional[str]) -> tuple[str, ...]:
+    """Supported effort set for provider=custom and unnamed local Ollama.
+
+    Named local keys (``ollama-launch``) reuse CustomProfile. Stock
+    qwen3.8 rejects ``high`` / ``max``; other custom OpenAI-compat
+    endpoints keep the wide wire vocabulary.
+    """
+    if "qwen3.8" in (model or "").lower():
+        return QWEN38_LOCAL_EFFORTS
+    return OPENAI_COMPAT_WIRE_EFFORTS
+
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for a Moonshot/Kimi model slug.

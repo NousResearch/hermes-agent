@@ -24,7 +24,9 @@ from agent.reasoning_effort import (
     KIMI_K3_EFFORTS,
     KIMI_K3_OVERRIDES,
     OPENAI_COMPAT_WIRE_EFFORTS,
+    QWEN38_LOCAL_EFFORTS,
     clamp_effort,
+    custom_endpoint_efforts,
     kimi_supported_efforts,
     requested_effort,
 )
@@ -159,6 +161,17 @@ class TestCodexVocabulary:
         assert clamp_effort("max", CODEX_LEGACY_EFFORTS) == "xhigh"
         assert clamp_effort("ultra", CODEX_LEGACY_EFFORTS) == "xhigh"
         assert clamp_effort("minimal", CODEX_LEGACY_EFFORTS) == "low"
+
+
+class TestCustomEndpointVocabulary:
+    def test_qwen38_uses_template_levels(self):
+        assert custom_endpoint_efforts("qwen3.8:latest") is QWEN38_LOCAL_EFFORTS
+        assert clamp_effort("high", QWEN38_LOCAL_EFFORTS) == "medium"
+        assert clamp_effort("max", QWEN38_LOCAL_EFFORTS) == "xhigh"
+
+    def test_other_custom_models_keep_wide_wire(self):
+        assert custom_endpoint_efforts("qwen3:8b") is OPENAI_COMPAT_WIRE_EFFORTS
+        assert custom_endpoint_efforts("glm-5.2") is OPENAI_COMPAT_WIRE_EFFORTS
 
 
 class TestRequestedEffort:

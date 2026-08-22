@@ -1821,6 +1821,38 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return result["response"]
 
 
+def _resolve_chat_provider_profile(agent):
+    """Return the registered profile, or CustomProfile for unnamed local Ollama.
+
+    Named local endpoints (``ollama-launch``, user-defined keys) are not in
+    the provider registry, so they otherwise skip CustomProfile's max_tokens
+    floor, reasoning_effort, num_ctx, and Qwen 3.8 user-query injection.
+    """
+    from providers import get_provider_profile
+
+    provider = getattr(agent, "provider", None)
+    profile = get_provider_profile(provider)
+    if profile is not None:
+        return profile
+
+    base_url = (getattr(agent, "base_url", None) or "").strip()
+    if not base_url or not is_local_endpoint(base_url):
+        return None
+
+    try:
+        from agent.model_metadata import detect_local_server_type
+
+        server_type = detect_local_server_type(
+            base_url,
+            api_key=getattr(agent, "api_key", "") or "",
+        )
+    except Exception:
+        return None
+
+    if server_type in ("ollama", "vllm", "llamacpp"):
+        return get_provider_profile("custom")
+    return None
+
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
@@ -2023,9 +2055,10 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
+    # Named local Ollama endpoints (e.g. ollama-launch) are not registered,
+    # so resolve them onto CustomProfile when the base_url is local Ollama.
     try:
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        _profile = _resolve_chat_provider_profile(agent)
     except Exception:
         _profile = None
 
@@ -3020,9 +3053,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             provider_preferences = _provider_preferences_for_agent(agent)
             profile_extra_body = {}
             try:
-                from providers import get_provider_profile
-
-                provider_profile = get_provider_profile(agent.provider)
+                provider_profile = _resolve_chat_provider_profile(agent)
                 if provider_profile is not None:
                     profile_extra_body = provider_profile.build_extra_body(
                         session_id=getattr(agent, "session_id", None),

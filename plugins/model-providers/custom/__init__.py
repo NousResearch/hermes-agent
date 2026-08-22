@@ -10,6 +10,8 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
+  - tool-loop payloads with no plain user query get a synthetic user
+    turn (Ollama qwen3.8 renderer 500s otherwise — ollama#17778)
 """
 
 from typing import Any
@@ -17,9 +19,79 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Ollama's qwen3.8 renderer validateMessages() requires at least one
+# user-role message that is not a <tool_response> wrapper. Hermes tool
+# loops and compaction can legally send [system, assistant(tool_calls),
+# tool] — inject a continuation user turn for the wire only.
+_OLLAMA_USER_QUERY_PLACEHOLDER = (
+    "Continue with the current task using the latest tool results."
+)
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _has_plain_user_query(messages: list[dict[str, Any]]) -> bool:
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        text = _message_text(msg.get("content")).strip()
+        if text and "<tool_response>" not in text:
+            return True
+    return False
+
+
+def _looks_like_tool_loop(messages: list[dict[str, Any]]) -> bool:
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or msg.get("tool_calls"):
+            return True
+        if msg.get("role") == "user" and "<tool_response>" in _message_text(
+            msg.get("content")
+        ):
+            return True
+    return False
+
 
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep a plain user query on the wire for local Ollama tool loops.
+
+        Does not mutate the caller's list. The placeholder is request-only.
+        """
+        if not messages or _has_plain_user_query(messages):
+            return messages
+        if not _looks_like_tool_loop(messages):
+            return messages
+
+        prepared = list(messages)
+        insert_at = 0
+        while insert_at < len(prepared):
+            msg = prepared[insert_at]
+            if not isinstance(msg, dict) or msg.get("role") != "system":
+                break
+            insert_at += 1
+        prepared.insert(
+            insert_at,
+            {"role": "user", "content": _OLLAMA_USER_QUERY_PLACEHOLDER},
+        )
+        return prepared
 
     def build_api_kwargs_extras(
         self,
@@ -64,17 +136,18 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
-                # Clamp the internal ladder onto the widest OpenAI-compatible
-                # wire vocabulary (shared policy in agent.reasoning_effort) —
-                # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding
-                # "ultra" verbatim is a guaranteed 400 (#89503).
+                # Clamp the internal ladder onto the endpoint's wire
+                # vocabulary (shared policy in agent.reasoning_effort).
+                # qwen3.8 is a narrower local-Ollama set; other custom
+                # OpenAI-compat endpoints keep the wide vocabulary.
+                # Forwarding "ultra" verbatim is a guaranteed 400 (#89503).
                 from agent.reasoning_effort import (
-                    OPENAI_COMPAT_WIRE_EFFORTS,
                     clamp_effort,
+                    custom_endpoint_efforts,
                 )
 
                 top_level["reasoning_effort"] = clamp_effort(
-                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
+                    _effort, custom_endpoint_efforts(ctx.get("model"))
                 )
 
         return extra_body, top_level

@@ -2783,6 +2783,35 @@ def init_agent(
         compression_idle_compact_after_seconds
     )
 
+    # Opt-in large-context overflow model (#86070). Empty / omitted
+    # large_context keeps compress-until-exhausted. A later helper
+    # flips ``_overflow_model_activated`` after a successful switch.
+    _overflow_cfg = _agent_cfg.get("context_overflow", {})
+    if not isinstance(_overflow_cfg, dict):
+        _overflow_cfg = {}
+    _large_ctx = _overflow_cfg.get("large_context", {})
+    if not isinstance(_large_ctx, dict):
+        _large_ctx = {}
+    _lc_provider = str(_large_ctx.get("provider") or "").strip() or None
+    _lc_model = str(_large_ctx.get("model") or "").strip() or None
+    if _lc_provider and _lc_model:
+        _large_context_model = {"provider": _lc_provider, "model": _lc_model}
+        _lc_base_url = str(_large_ctx.get("base_url") or "").strip() or None
+        _lc_api_key = str(_large_ctx.get("api_key") or "").strip() or None
+        if _lc_base_url:
+            _large_context_model["base_url"] = _lc_base_url
+        if _lc_api_key:
+            _large_context_model["api_key"] = _lc_api_key
+        agent._large_context_model = _large_context_model
+        _ra().logger.debug(
+            "Context overflow large_context model configured: %s/%s",
+            _lc_provider,
+            _lc_model,
+        )
+    else:
+        agent._large_context_model = None
+    agent._overflow_model_activated = False
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

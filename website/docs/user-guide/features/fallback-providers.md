@@ -110,6 +110,8 @@ The fallback activates automatically when the primary model fails with:
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly
 
+Context-window overflow is **not** a fallback trigger; configure [`context_overflow.large_context`](/user-guide/configuration#large-context-model-on-overflow) instead.
+
 When triggered, Hermes:
 
 1. Resolves credentials for the fallback provider

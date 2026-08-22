@@ -2845,6 +2845,143 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return agent._try_activate_fallback(reason)  # try next in chain
 
 
+def try_activate_overflow_model(agent, request_tokens: int) -> bool:
+    """Switch to the configured large-context model after a genuine overflow.
+
+    Opt-in via ``agent._large_context_model`` (``{provider, model}`` plus
+    optional ``base_url`` / ``api_key``). Uses ``agent.switch_model`` so
+    ``_primary_runtime`` is rewritten and the session stays on the larger
+    window. Does **not** touch ``fallback_providers`` /
+    ``try_activate_fallback`` — those remain the 429 / transport path.
+    """
+    lc = getattr(agent, "_large_context_model", None)
+    if not isinstance(lc, dict):
+        return False
+    lc_provider = str(lc.get("provider") or "").strip()
+    lc_model = str(lc.get("model") or "").strip()
+    if not lc_provider or not lc_model:
+        return False
+
+    if getattr(agent, "_overflow_model_activated", False):
+        return False
+
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    current_model = (getattr(agent, "model", "") or "").strip()
+    if current_provider == lc_provider.lower() and current_model == lc_model:
+        return False
+
+    lc_base_url_hint = str(lc.get("base_url") or "").strip() or None
+    lc_api_key_hint = str(lc.get("api_key") or "").strip() or None
+    if not lc_api_key_hint:
+        # key_env and api_key_env are both documented aliases (see
+        # _normalize_custom_provider_entry in hermes_cli/config.py).
+        lc_key_env = str(lc.get("key_env") or lc.get("api_key_env") or "").strip()
+        if lc_key_env:
+            lc_api_key_hint = os.getenv(lc_key_env, "").strip() or None
+
+    # Import inside the function so tests patching
+    # ``agent.model_metadata.get_model_context_length`` hit this call.
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        window = get_model_context_length(
+            lc_model,
+            base_url=lc_base_url_hint or "",
+            api_key=lc_api_key_hint or "",
+            provider=lc_provider,
+            custom_providers=getattr(agent, "_custom_providers", None),
+        )
+    except Exception:
+        # Unknown window — same as aux compression #52392: do not block.
+        window = None
+
+    if isinstance(window, int) and window > 0 and window < request_tokens:
+        logger.info(
+            "Overflow model %s/%s window (%s) is smaller than request (%s); "
+            "not switching",
+            lc_provider,
+            lc_model,
+            window,
+            request_tokens,
+        )
+        return False
+
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+
+        lc_client, _resolved = resolve_provider_client(
+            lc_provider,
+            model=lc_model,
+            raw_codex=True,
+            explicit_base_url=lc_base_url_hint,
+            explicit_api_key=lc_api_key_hint,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Overflow model %s/%s: credential resolve failed: %s",
+            lc_provider,
+            lc_model,
+            exc,
+        )
+        return False
+    if lc_client is None:
+        logger.warning(
+            "Overflow model %s/%s: provider not configured; compressing instead",
+            lc_provider,
+            lc_model,
+        )
+        return False
+
+    # yaml base_url/api_key are optional — resolve_provider_client may have
+    # filled them from env (e.g. GEMINI_API_KEY). switch_model only applies
+    # truthy key/URL, so empty hints would keep the small primary's creds.
+    # Explicit yaml hints still win when present (same as CLI /model).
+    if not lc_api_key_hint:
+        resolved_key = getattr(lc_client, "api_key", None)
+        if isinstance(resolved_key, str):
+            lc_api_key_hint = resolved_key.strip() or None
+        elif resolved_key is not None and not callable(resolved_key):
+            lc_api_key_hint = resolved_key
+    if not lc_base_url_hint:
+        lc_base_url_hint = str(getattr(lc_client, "base_url", "") or "").strip() or None
+
+    old_model = getattr(agent, "model", "")
+    try:
+        agent.switch_model(
+            new_model=lc_model,
+            new_provider=lc_provider,
+            api_key=lc_api_key_hint or "",
+            base_url=lc_base_url_hint or "",
+        )
+    except Exception as exc:
+        # switch_model already rolled back. Do not set _overflow_model_activated.
+        logger.warning(
+            "Overflow model switch failed (%s/%s): %s",
+            lc_provider,
+            lc_model,
+            exc,
+        )
+        return False
+
+    agent._overflow_model_activated = True
+    emit = getattr(agent, "_emit_status", None)
+    if callable(emit):
+        try:
+            emit(
+                "🔄 Context overflow — switched to large-context model "
+                f"{lc_model} via {lc_provider}; staying for this session"
+            )
+        except Exception:
+            pass
+    logger.info(
+        "Overflow model activated because of context overflow: %s → %s (%s); "
+        "staying for this session",
+        old_model,
+        lc_model,
+        lc_provider,
+    )
+    return True
+
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
@@ -5345,6 +5482,7 @@ __all__ = [
     "build_api_kwargs",
     "build_assistant_message",
     "try_activate_fallback",
+    "try_activate_overflow_model",
     "handle_max_iterations",
     "cleanup_task_resources",
     "interruptible_streaming_api_call",

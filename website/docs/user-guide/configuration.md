@@ -920,6 +920,22 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+### Large-context model on overflow
+
+When the **primary** model returns a genuine **input** context-window overflow (`context length exceeded`), Hermes can switch to an opt-in larger-window model **before** compressing. The switch is **session-sticky** — it stays for the rest of the session until `/model` or `/new`. This is not [`fallback_providers`](/user-guide/features/fallback-providers): those are turn-scoped and fire on 429/auth/overload.
+
+Omitted or empty `context_overflow.large_context` keeps today's compress-until-exhausted behavior. No default model is enabled.
+
+```yaml
+context_overflow:
+  large_context:
+    provider: gemini
+    model: gemini-2.5-flash
+    # base_url: optional
+    # api_key: optional  # or rely on the provider's env key
+```
+
+If the large model's window still cannot hold the request, or the session is already on that model, Hermes compresses (or, if `compression.enabled: false`, surfaces the existing terminal error). Output-cap errors (`max_tokens` too large for the remaining window) do not trigger this switch.
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

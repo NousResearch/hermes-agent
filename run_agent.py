@@ -7059,6 +7059,10 @@ class AIAgent:
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
 
+    def _try_activate_overflow_model(self, request_tokens: int) -> bool:
+        from agent.chat_completion_helpers import try_activate_overflow_model
+        return try_activate_overflow_model(self, request_tokens)
+
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider is actually available to switch to.
 

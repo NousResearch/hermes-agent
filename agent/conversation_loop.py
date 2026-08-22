@@ -5207,6 +5207,19 @@ def run_conversation(
                     and not getattr(agent, "compression_enabled", True)
                     and not _is_output_cap_error
                 ):
+                    # Opt-in session-sticky large-context model (#86070).
+                    # Escalate before the compaction_disabled terminal error.
+                    # Only genuine context_overflow — long_context_tier and
+                    # payload_too_large keep the existing terminal return.
+                    if (
+                        classified.reason == FailoverReason.context_overflow
+                        and agent._try_activate_overflow_model(request_pressure_tokens)
+                    ):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        continue
                     agent._flush_status_buffer()
                     agent._vprint(
                         f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
@@ -5784,6 +5797,16 @@ def run_conversation(
                             "partial": True,
                             "failed": True,
                         }
+
+                    # Opt-in session-sticky large-context model (#86070).
+                    # Escalate before compressing. Output-cap errors above
+                    # are not window overflow and must not reach this.
+                    if agent._try_activate_overflow_model(request_pressure_tokens):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        continue
 
                     # Error is about the INPUT being too large.  Only reduce
                     # context_length when the provider explicitly reports the

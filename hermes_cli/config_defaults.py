@@ -945,6 +945,17 @@ DEFAULT_CONFIG = {
                                       # Example: 1800 = compact after 30 min idle.
     },
 
+    # Dedicated large-context model for genuine window overflow (#86070).
+    # Opt-in: empty large_context keeps today's compress-until-exhausted
+    # behavior. Set provider + model (optional base_url / api_key) to
+    # escalate to a larger-window model instead of compressing first.
+    # Do NOT put a default provider/model here — that would escalate
+    # every user on overflow. Root is derived into _KNOWN_ROOT_KEYS
+    # automatically via DEFAULT_CONFIG.keys().
+    "context_overflow": {
+        "large_context": {},
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
     # values are silently ignored. Falsy values (false, null, "off",

@@ -2,9 +2,9 @@
 
 The Buzz adapter connects Hermes to a [Buzz](https://github.com/block/buzz) community — Block's open-source human+agent collaboration platform built on the Nostr protocol — and relays messages between Buzz channels (or DMs) and the agent. Outbound traffic shells out to the `buzz` CLI binary ("JSON in, JSON out"); inbound uses a native Nostr WebSocket subscription (via the already-bundled `websockets` package) with CLI polling as fallback. **No extra Python packages are required** — just the `buzz` binary.
 
-Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id.
+Buzz renders markdown, so agent replies keep their formatting. Images are delivered as native uploads (local files) or links (URLs). Replies use the stable NIP-10 thread root: a response to a root message opens one thread, and responses to nested replies stay attached to that original root instead of creating deeper subthreads. Recent event-to-root relationships are rebuilt from history after a gateway restart.
 
-Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription by default (near-instant delivery), with automatic fallback to CLI polling when the WebSocket can't be established. Outbound messages always go through the `buzz` CLI. Control it with `transport` / `BUZZ_TRANSPORT`: `auto` (default), `websocket` (require WS, fail otherwise), or `poll`. If your relay membership uses NIP-OA owner attestation, set `BUZZ_AUTH_TAG` to the four-string auth tag JSON.
+Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription by default (near-instant delivery), with CLI polling as a startup fallback when `auto` cannot establish the WebSocket. An established WebSocket reconnects with bounded backoff if it disconnects; it does not switch to polling mid-connection. Outbound messages always go through the `buzz` CLI. Control inbound transport with `transport` / `BUZZ_TRANSPORT`: `auto` (default), `websocket` (require WS at startup), or `poll`. If your relay membership uses NIP-OA owner attestation, set `BUZZ_AUTH_TAG` to the four-string auth tag JSON.
 
 > Run `hermes gateway setup` and pick **Buzz** for a guided walk-through.
 
@@ -97,9 +97,15 @@ gateway:
 
 ## Mentions, channels, and DMs
 
-- In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- In shared channels the agent only responds when **explicitly addressed**. A display-name mention must include the `@` marker (for example, `@Chip`); a bare name in prose, a path, or a URL does not count. The agent's npub and hex pubkey identity forms are also recognized.
 - Direct messages always reach the agent, no mention needed.
+- Configuring `channels` restricts joined community channel discovery; DM discovery remains independent. New DMs can still be discovered through the DM roster or the relay's DM-shaped channel fallback, while other unconfigured community channels are not watched.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
+
+## Images
+
+- When you supply an existing local image path and ask Hermes to send it, Hermes can return `MEDIA:/absolute/path/to/image.png`; the Buzz adapter uploads that image through the native CLI attachment path. It does not need to open Computer Use or another UI.
+- For inbound protected Buzz images, the adapter recognizes exact image URLs on the configured relay and fetches them with the configured Buzz identity. Protected images are fetched only for authorized senders. It validates the size, content hash, image type, and filename extension before placing the file in a private local cache. URLs on other hosts, malformed URLs, failed downloads, or failed validation remain links in the message.
 
 ## Access control
 
@@ -117,7 +123,8 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- Inbound defaults to an authenticated WebSocket subscription. Poll mode uses `buzz messages get` per watched conversation every `poll_interval` seconds (default 4), so poll-mode delivery can take up to one interval.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
-- New DM conversations are discovered automatically (every few poll sweeps).
+- The adapter reconciles WebSocket subscriptions from the authoritative joined-channel roster when Buzz emits membership add/remove events. Poll mode refreshes the same roster periodically. An explicit `channels` / `BUZZ_CHANNELS` list remains a restrictive watch list and is never broadened by discovery.
+- New DM conversations are discovered automatically. Joined community channels are kept distinct from DM-shaped fallback metadata.
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

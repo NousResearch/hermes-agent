@@ -37,16 +37,19 @@ environment and is never logged.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import tempfile
 import time
+import unicodedata
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -74,12 +77,37 @@ def _get_scoped_secret(name, default=None):
 
 
 logger = logging.getLogger(__name__)
+_MEMBER_MENTION_ERROR = re.compile(
+    r"mention '(@.+?)' (?:does not match a current channel member|is ambiguous)",
+    re.IGNORECASE,
+)
+_MAX_MENTIONS_ERROR = "too many unique message mentions"
+_OUTBOUND_MENTION_MARKER = re.compile(r"(?<![\w@])@(?=[^\s@])")
+_MENTION_FALLBACK_MAX_RETRIES = 3
+_BUZZ_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]\r\n]*\]\((https?://[^)\s]+)\)")
+_BUZZ_MEDIA_IMAGE_PATH_RE = re.compile(
+    r"/media/([0-9a-f]{64})\.(png|jpe?g|gif|webp|bmp)",
+    re.IGNORECASE,
+)
+_BUZZ_IMAGE_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+}
+_MAX_BUZZ_IMAGES_PER_MESSAGE = 4
+_BUZZ_MEDIA_RETRY_DELAYS = (0.25, 0.75)
+_BUZZ_MEDIA_TOTAL_TIMEOUT = 30.0
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     MessageEvent,
     MessageType,
+    cache_image_from_bytes,
+    validate_inbound_media_size,
 )
 from gateway.config import Platform
 
@@ -95,6 +123,124 @@ _SEEN_CAP = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
+_CHANNEL_DISCOVERY_EVERY = 5
+
+
+def _detected_image_family(data: bytes) -> Optional[str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data.startswith(b"BM"):
+        return "bmp"
+    return None
+
+
+def _cli_failure_is_retryable(stderr: str, returncode: int) -> bool:
+    try:
+        data = json.loads((stderr or "").strip())
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("retryable"), bool):
+        return data["retryable"]
+    return returncode == 2
+
+
+def _is_mention_continuation(char: str) -> bool:
+    return bool(
+        char
+        and (
+            char.isalnum()
+            or char == "_"
+            or char in ".-"
+            or unicodedata.category(char).startswith("M")
+        )
+    )
+
+
+def _complete_mention_spans(content: str, mention: str) -> List[Tuple[int, int]]:
+    target = mention if mention.startswith("@") else f"@{mention}"
+    normalized_target = target.casefold()
+    spans = []
+    for start, char in enumerate(content or ""):
+        if char != "@":
+            continue
+        if start and (
+            content[start - 1] == "@" or _is_mention_continuation(content[start - 1])
+        ):
+            continue
+        for end in range(start + 2, len(content) + 1):
+            normalized_candidate = content[start:end].casefold()
+            if len(normalized_candidate) > len(normalized_target):
+                break
+            if normalized_candidate != normalized_target:
+                continue
+            if end < len(content) and _is_mention_continuation(content[end]):
+                continue
+            spans.append((start, end))
+            break
+    return spans
+
+
+def unresolved_mention_fallback(
+    content: str,
+    error: str,
+    protected_mentions: Optional[Set[str]] = None,
+) -> Optional[str]:
+    """Neutralize only the mention marker rejected by Buzz."""
+    error = error or ""
+    protected_mentions = protected_mentions or set()
+    match = _MEMBER_MENTION_ERROR.search(error)
+    if match:
+        mention = match.group(1)
+        if mention.casefold() in protected_mentions:
+            return None
+        spans = _complete_mention_spans(content or "", mention)
+        if not spans:
+            return None
+        pieces = []
+        cursor = 0
+        for start, end in spans:
+            pieces.extend((content[cursor:start], content[start + 1 : end]))
+            cursor = end
+        pieces.append(content[cursor:])
+        fallback = "".join(pieces)
+    elif _MAX_MENTIONS_ERROR in error.lower() and not protected_mentions:
+        fallback = _OUTBOUND_MENTION_MARKER.sub("", content or "")
+    else:
+        return None
+    return fallback if fallback != content else None
+
+
+def buzz_event_thread_root(event: dict) -> Optional[str]:
+    """Return the NIP-10 root, falling back to the direct reply target."""
+
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return None
+    root = None
+    reply = None
+    unmarked = []
+    for tag in tags:
+        if not isinstance(tag, list) or len(tag) < 2 or tag[0] != "e":
+            continue
+        target = str(tag[1] or "").strip()
+        if not target:
+            continue
+        marker = str(tag[3] or "") if len(tag) > 3 else ""
+        if marker == "root":
+            root = target
+        elif marker == "reply":
+            reply = target
+        elif marker == "":
+            unmarked.append(target)
+    # Legacy positional NIP-10: first unmarked e tag is the stable root and,
+    # when two or more exist, the last is the direct reply target.
+    return root or (unmarked[0] if unmarked else None) or reply
 
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -105,6 +251,7 @@ _CLI_TIMEOUT = 30.0
 _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
+_WS_MEMBERSHIP_REMOVED_KIND = 44101
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
@@ -223,6 +370,29 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
     if re.fullmatch(r"[0-9a-f]{64}", ref):
         return ref
     return None
+
+
+def _parse_outbound_mention_pubkeys(value) -> Dict[str, Tuple[str, str]]:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Buzz outbound_mention_pubkeys must be a mapping")
+    parsed = {}
+    for raw_name, raw_pubkey in value.items():
+        name = str(raw_name or "").strip().lstrip("@").strip()
+        pubkey = _normalize_user_ref(str(raw_pubkey or ""))
+        if not name or not pubkey:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys entries require a display name "
+                "and a valid hex or npub identity"
+            )
+        normalized_name = name.casefold()
+        if normalized_name in parsed:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys contains a duplicate display name"
+            )
+        parsed[normalized_name] = (name, pubkey)
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +514,17 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _is_valid_authoritative_channel_row(channel: object) -> bool:
+    """Validate required fields before an authoritative roster is applied."""
+    return bool(
+        isinstance(channel, dict)
+        and isinstance(channel.get("channel_id"), str)
+        and channel["channel_id"].strip()
+        and isinstance(channel.get("type"), str)
+        and channel["type"].strip()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -360,6 +541,9 @@ class BuzzAdapter(BasePlatformAdapter):
 
         extra = getattr(config, "extra", {}) or {}
         self._extra = extra
+        self.outbound_mention_pubkeys = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
 
         # Connection settings (env vars override config.yaml)
         self.relay_url = (os.getenv("BUZZ_RELAY_URL") or extra.get("relay_url", "")).strip()
@@ -430,6 +614,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._lock_key: Optional[str] = None
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
+        self._joined_channel_ids: Set[str] = set()
         self._channel_names: Dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
         # classification (see _may_reclassify_as_dm).
@@ -477,16 +662,56 @@ class BuzzAdapter(BasePlatformAdapter):
         code, out, err = await self._run_cli(["users", "get"])
         if code != 0:
             message = _cli_error_message(err, code)
+            retryable = _cli_failure_is_retryable(err, code)
             logger.error("Buzz: failed to fetch own profile from %s — %s", self.relay_url, message)
-            self._set_fatal_error("connect_failed", message, retryable=code == 2)
+            self._set_fatal_error(
+                "network_error" if retryable else "connect_failed",
+                message,
+                retryable=retryable,
+            )
             return False
-        profiles = _parse_json_list(out)
-        if not profiles or not profiles[0].get("pubkey"):
+        if not out.strip():
+            raw_profiles = []
+        else:
+            try:
+                raw_profiles = json.loads(out)
+            except (json.JSONDecodeError, TypeError):
+                raw_profiles = None
+        if not isinstance(raw_profiles, list):
+            logger.error("Buzz: 'users get' returned a malformed profile payload")
+            self._set_fatal_error(
+                "connect_failed",
+                "buzz users get returned malformed profile payload",
+                retryable=False,
+            )
+            return False
+        if not raw_profiles:
             logger.error("Buzz: 'users get' returned no profile — is the key a member of this community?")
-            self._set_fatal_error("connect_failed", "buzz users get returned no profile", retryable=True)
+            self._set_fatal_error(
+                "connect_failed", "buzz users get returned no profile", retryable=True
+            )
             return False
-        self._self_pubkey = str(profiles[0]["pubkey"]).lower()
-        self._display_name = str(profiles[0].get("display_name") or "").strip()
+        if not all(isinstance(item, dict) for item in raw_profiles):
+            logger.error("Buzz: 'users get' returned a malformed profile object")
+            self._set_fatal_error(
+                "connect_failed",
+                "buzz users get returned malformed profile object",
+                retryable=False,
+            )
+            return False
+        profile = raw_profiles[0]
+        raw_pubkey = profile.get("pubkey")
+        pubkey = raw_pubkey.strip().lower() if isinstance(raw_pubkey, str) else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", pubkey):
+            logger.error("Buzz: 'users get' returned an incomplete profile object")
+            self._set_fatal_error(
+                "connect_failed",
+                "buzz users get returned incomplete profile object",
+                retryable=False,
+            )
+            return False
+        self._self_pubkey = pubkey
+        self._display_name = str(profile.get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
 
         # Prevent two profiles from driving the same Buzz identity on the
@@ -496,7 +721,8 @@ class BuzzAdapter(BasePlatformAdapter):
             from gateway.status import acquire_scoped_lock
 
             lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
+            acquired, _existing = acquire_scoped_lock("buzz", lock_key)
+            if not acquired:
                 logger.error(
                     "Buzz: identity %s… on %s already in use by another profile",
                     self._self_pubkey[:8],
@@ -510,33 +736,82 @@ class BuzzAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
 
-        # Map channel ids to names and pick the watch set.
-        code, out, err = await self._run_cli(["channels", "list"])
+        connected = False
+        try:
+            connected = await self._connect_after_identity_lock()
+            return connected
+        finally:
+            if not connected:
+                await self.disconnect()
+
+    async def _connect_after_identity_lock(self) -> bool:
+        """Finish setup while the caller owns the scoped identity lock."""
+
+        # Fetch the authoritative joined-channel roster and apply any explicit
+        # configured restriction before seeding history.
+        code, out, err = await self._run_cli(["channels", "list", "--member"])
         if code != 0:
             message = _cli_error_message(err, code)
-            logger.error("Buzz: failed to list channels — %s", message)
-            self._set_fatal_error("connect_failed", message, retryable=code == 2)
+            retryable = _cli_failure_is_retryable(err, code)
+            logger.error("Buzz: failed to list joined channels — %s", message)
+            self._set_fatal_error(
+                "network_error" if retryable else "connect_failed",
+                message,
+                retryable=retryable,
+            )
+            self._release_identity_lock()
             return False
-        listed = _parse_json_list(out)
-        self._channel_names = {
-            str(ch.get("channel_id")): str(ch.get("name") or ch.get("channel_id"))
-            for ch in listed
-            if ch.get("channel_id")
+        try:
+            listed = json.loads(out)
+        except (json.JSONDecodeError, TypeError):
+            listed = None
+        if not isinstance(listed, list) or not all(
+            _is_valid_authoritative_channel_row(channel) for channel in listed
+        ):
+            logger.error("Buzz: joined-channel query returned a malformed payload")
+            self._set_fatal_error(
+                "connect_failed",
+                "buzz channels list returned malformed joined-channel payload",
+                retryable=False,
+            )
+            self._release_identity_lock()
+            return False
+        configured_ids = set(self.channels)
+        joined = [
+            channel
+            for channel in listed
+            if channel.get("channel_id")
+            and (
+                not configured_ids
+                or str(channel.get("channel_id")) in configured_ids
+            )
+        ]
+        self._joined_channel_ids = {
+            str(channel["channel_id"]) for channel in joined
         }
-        for ch in listed:
-            if ch.get("channel_id"):
-                self._channel_meta[str(ch["channel_id"])] = ch
-        watch = self.channels or list(self._channel_names)
-        if not watch:
-            logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
-            self._set_fatal_error("config_missing", "no Buzz channels to watch", retryable=False)
-            return False
-
+        self._channel_names = {
+            str(channel["channel_id"]): str(
+                channel.get("name") or channel["channel_id"]
+            )
+            for channel in joined
+        }
+        self._channel_meta = {
+            str(channel["channel_id"]): channel for channel in joined
+        }
         # Seed high-water marks from the newest events so a (re)start never
         # replays channel history into the agent.
-        for channel_id in watch:
+        for channel_id in self._joined_channel_ids:
             await self._seed_channel(channel_id, chat_type="group")
         await self._discover_dms(seed=True)
+
+        if not self._channel_state:
+            logger.error("Buzz: no joined channels or direct messages are available")
+            self._set_fatal_error(
+                "config_missing",
+                "no joined Buzz channels or direct messages to watch",
+                retryable=False,
+            )
+            return False
 
         # Inbound transport: prefer the NIP-42-authenticated WebSocket
         # subscription (push, near-zero latency); fall back to CLI polling
@@ -570,15 +845,7 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
-        lock_key = getattr(self, "_lock_key", None)
-        if lock_key:
-            try:
-                from gateway.status import release_scoped_lock
-
-                release_scoped_lock("buzz", lock_key)
-            except Exception:
-                pass
-            self._lock_key = None
+        self._release_identity_lock()
         self._ws_active = False
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
@@ -597,6 +864,18 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_state = {}
         self._poll_count = 0
 
+    def _release_identity_lock(self) -> None:
+        """Release the scoped Buzz identity lock when this adapter owns it."""
+        lock_key = getattr(self, "_lock_key", None)
+        if lock_key:
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("buzz", lock_key)
+            except Exception:
+                pass
+            self._lock_key = None
+
     # ── Sending ───────────────────────────────────────────────────────────
 
     async def send(
@@ -609,15 +888,43 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
+        configured_mentions = [
+            (name, pubkey)
+            for name, pubkey in self.outbound_mention_pubkeys.values()
+            if _complete_mention_spans(content or "", name)
+        ]
+        for _name, pubkey in configured_mentions:
+            args += ["--mention", pubkey]
+        protected_mentions = {
+            f"@{name}".casefold() for name, _pubkey in configured_mentions
+        }
         reply_target = reply_to or (metadata or {}).get("thread_id")
+        state = self._channel_state.get(str(chat_id))
+        if reply_target and state is not None:
+            reply_target = self._resolve_thread_root(state, str(reply_target))
         if reply_target:
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=content)
+        send_content = content
+        code, out, err = await self._run_cli(args, input_text=send_content)
+        for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+            fallback = (
+                unresolved_mention_fallback(
+                    send_content,
+                    err,
+                    protected_mentions,
+                )
+                if code != 0
+                else None
+            )
+            if fallback is None:
+                break
+            send_content = fallback
+            code, out, err = await self._run_cli(args, input_text=send_content)
         if code != 0:
             return SendResult(
                 success=False,
                 error=_cli_error_message(err, code),
-                retryable=code == 2,
+                retryable=_cli_failure_is_retryable(err, code),
             )
         try:
             data = json.loads(out or "{}")
@@ -628,6 +935,8 @@ class BuzzAdapter(BasePlatformAdapter):
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
             self._mark_seen(str(chat_id), str(event_id))
+            if state is not None and reply_target:
+                self._remember_thread_root(state, str(event_id), str(reply_target))
         return SendResult(
             success=bool(data.get("accepted", True)),
             message_id=str(event_id) if event_id else None,
@@ -681,11 +990,42 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
+            configured_mentions = [
+                (name, pubkey)
+                for name, pubkey in self.outbound_mention_pubkeys.values()
+                if _complete_mention_spans(caption or "", name)
+            ]
+            for _name, pubkey in configured_mentions:
+                args += ["--mention", pubkey]
+            protected_mentions = {
+                f"@{name}".casefold() for name, _pubkey in configured_mentions
+            }
+            reply_target = reply_to or (metadata or {}).get("thread_id")
+            state = self._channel_state.get(str(chat_id))
+            if reply_target and state is not None:
+                reply_target = self._resolve_thread_root(state, str(reply_target))
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
+            send_caption = caption or ""
+            code, out, err = await self._run_cli(args, input_text=send_caption)
+            for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+                fallback = (
+                    unresolved_mention_fallback(
+                        send_caption, err, protected_mentions
+                    )
+                    if code != 0 and send_caption
+                    else None
+                )
+                if fallback is None:
+                    break
+                send_caption = fallback
+                code, out, err = await self._run_cli(args, input_text=send_caption)
             if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+                return SendResult(
+                    success=False,
+                    error=_cli_error_message(err, code),
+                    retryable=_cli_failure_is_retryable(err, code),
+                )
             try:
                 data = json.loads(out or "{}")
             except ValueError:
@@ -693,6 +1033,8 @@ class BuzzAdapter(BasePlatformAdapter):
             event_id = data.get("event_id")
             if event_id:
                 self._mark_seen(str(chat_id), str(event_id))
+                if state is not None and reply_target:
+                    self._remember_thread_root(state, str(event_id), str(reply_target))
             return SendResult(
                 success=bool(data.get("accepted", True)),
                 message_id=str(event_id) if event_id else None,
@@ -701,6 +1043,35 @@ class BuzzAdapter(BasePlatformAdapter):
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **_kwargs,
+    ) -> SendResult:
+        """Send a local image through Buzz's native attachment path."""
+
+        local = Path(image_path).expanduser()
+        if not local.is_file():
+            notice = "⚠️ Couldn't deliver the image attachment."
+            content = f"{caption}\n{notice}" if caption else notice
+            return await self.send(
+                chat_id,
+                content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return await self.send_image(
+            chat_id,
+            str(local),
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)
@@ -813,7 +1184,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 "REQ",
                 _WS_MEMBERSHIP_SUB_ID,
                 {
-                    "kinds": [_WS_MEMBERSHIP_KIND],
+                    "kinds": [_WS_MEMBERSHIP_KIND, _WS_MEMBERSHIP_REMOVED_KIND],
                     "#p": [self._self_pubkey],
                     "since": max(self._membership_since - 1, 0),
                 },
@@ -823,18 +1194,47 @@ class BuzzAdapter(BasePlatformAdapter):
         return subscriptions
 
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
-        """A membership event p-tagged to us: rediscover conversations and
-        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        """Reconcile live subscriptions from the authoritative joined roster."""
+        created_at = int(event.get("created_at") or 0)
+        self._membership_since = max(self._membership_since, created_at)
+        target_channel_id = ""
+        for tag in event.get("tags") or []:
+            if isinstance(tag, list) and len(tag) > 1 and tag[0] == "h":
+                target_channel_id = str(tag[1] or "")
+                break
         before = set(self._channel_state)
+        await self._discover_joined_channels(
+            since=created_at,
+            target_channel_id=target_channel_id,
+        )
+        for subscription_id, channel_id in list(subscriptions.items()):
+            if channel_id is not None and channel_id not in self._channel_state:
+                await websocket.send(
+                    json.dumps(["CLOSE", subscription_id], separators=(",", ":"))
+                )
+                subscriptions.pop(subscription_id, None)
+
+        async def subscribe_discovered() -> None:
+            for channel_id in self._channel_state:
+                if channel_id in before:
+                    continue
+                subscription_index = len(subscriptions)
+                subscription_id = f"hermes-buzz-{subscription_index}"
+                while subscription_id in subscriptions:
+                    subscription_index += 1
+                    subscription_id = f"hermes-buzz-{subscription_index}"
+                subscriptions[subscription_id] = channel_id
+                await self._send_channel_subscription(
+                    websocket,
+                    subscription_id,
+                    channel_id,
+                )
+                before.add(channel_id)
+                logger.info("Buzz: subscribed to new conversation %s", channel_id)
+
+        await subscribe_discovered()
         await self._discover_dms(seed=False)
-        for channel_id in self._channel_state:
-            if channel_id in before:
-                continue
-            subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
-            subscriptions[subscription_id] = channel_id
-            await self._send_channel_subscription(websocket, subscription_id, channel_id)
-            logger.info("Buzz: subscribed to new conversation %s", channel_id)
+        await subscribe_discovered()
 
     async def _websocket_loop(self) -> None:
         """Persistent authenticated subscription with bounded reconnect
@@ -907,7 +1307,10 @@ class BuzzAdapter(BasePlatformAdapter):
                 await asyncio.sleep(self.poll_interval)
                 self._poll_count += 1
                 try:
-                    if self._poll_count % _DM_DISCOVERY_EVERY == 0:
+                    if self._poll_count % _CHANNEL_DISCOVERY_EVERY == 0:
+                        await self._discover_joined_channels()
+                        await self._discover_dms(seed=False)
+                    elif self._poll_count % _DM_DISCOVERY_EVERY == 0:
                         await self._discover_dms(seed=False)
                     for channel_id in list(self._channel_state):
                         await self._poll_channel(channel_id)
@@ -917,6 +1320,67 @@ class BuzzAdapter(BasePlatformAdapter):
                     logger.warning("Buzz: poll sweep failed", exc_info=True)
         except asyncio.CancelledError:
             raise
+
+    async def _discover_joined_channels(
+        self,
+        *,
+        since: int = 0,
+        target_channel_id: str = "",
+    ) -> Optional[bool]:
+        code, out, _err = await self._run_cli(["channels", "list", "--member"])
+        if code != 0:
+            return None
+        try:
+            channels = json.loads(out)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(channels, list) or not all(
+            _is_valid_authoritative_channel_row(channel) for channel in channels
+        ):
+            return None
+        listed_ids = {
+            str(channel.get("channel_id") or "") for channel in channels
+        }
+        listed_ids.discard("")
+        configured_ids = set(self.channels)
+        joined_ids = listed_ids & configured_ids if configured_ids else listed_ids
+        before = set(self._joined_channel_ids)
+        if (
+            target_channel_id
+            and target_channel_id not in joined_ids
+            and target_channel_id not in self._channel_state
+        ):
+            return None
+        self._joined_channel_ids = joined_ids
+        changed = False
+        for watched_channel_id, state in list(self._channel_state.items()):
+            if (
+                state.get("chat_type") == "group"
+                and watched_channel_id not in joined_ids
+                and not self._may_reclassify_as_dm(watched_channel_id)
+            ):
+                self._channel_state.pop(watched_channel_id, None)
+                self._channel_names.pop(watched_channel_id, None)
+                self._channel_meta.pop(watched_channel_id, None)
+                changed = True
+        for channel in channels:
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id or channel_id not in joined_ids:
+                continue
+            self._channel_names[channel_id] = str(channel.get("name") or channel_id)
+            self._channel_meta[channel_id] = channel
+            if channel_id in self._channel_state:
+                continue
+            if target_channel_id and channel_id == target_channel_id and since > 0:
+                self._channel_state[channel_id] = {
+                    "chat_type": "group",
+                    "last_ts": int(since),
+                    "seen": OrderedDict(),
+                }
+            else:
+                await self._seed_channel(channel_id, chat_type="group")
+            changed = True
+        return changed or joined_ids != before
 
     async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
         """Initialize a channel's high-water mark from its newest events."""
@@ -943,6 +1407,7 @@ class BuzzAdapter(BasePlatformAdapter):
             # leaked in via ``channels list`` latches to chat_type="dm" here,
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
+            self._remember_event_thread_root(state, event)
         self._trim_seen(state)
 
     async def _discover_dms(self, *, seed: bool) -> None:
@@ -1021,6 +1486,8 @@ class BuzzAdapter(BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not content.strip():
             return
 
+        self._remember_event_thread_root(state, event)
+
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
             return
@@ -1056,6 +1523,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=buzz_event_thread_root(event),
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1092,6 +1560,8 @@ class BuzzAdapter(BasePlatformAdapter):
         p-tags us.  A conversation with no metadata at all is trusted only
         when the user did not explicitly configure it as a watched channel.
         """
+        if channel_id in self._joined_channel_ids:
+            return False
         meta = self._channel_meta.get(channel_id)
         if meta is None:
             return channel_id not in self.channels
@@ -1144,7 +1614,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if self._self_npub and self._self_npub in lowered:
             return True
         if self._display_name:
-            pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            pattern = rf"(?<!\w)@{re.escape(self._display_name.lower())}(?!\w)"
             if re.search(pattern, lowered):
                 return True
         return False
@@ -1204,11 +1674,181 @@ class BuzzAdapter(BasePlatformAdapter):
         while len(seen) > _SEEN_CAP:
             seen.popitem(last=False)
 
+    @staticmethod
+    def _remember_thread_root(state: dict, event_id: str, reply_target: str) -> None:
+        if not event_id or not reply_target:
+            return
+        roots = state.setdefault("thread_roots", OrderedDict())
+        root = str(reply_target)
+        visited = set()
+        while root in roots and root not in visited:
+            visited.add(root)
+            root = str(roots[root])
+        roots[str(event_id)] = root
+        roots.move_to_end(str(event_id))
+        while len(roots) > _SEEN_CAP:
+            roots.popitem(last=False)
+
+    @staticmethod
+    def _resolve_thread_root(state: dict, event_id: str) -> str:
+        roots = state.get("thread_roots", {})
+        root = str(event_id)
+        visited = set()
+        while root in roots and root not in visited:
+            visited.add(root)
+            root = str(roots[root])
+        return root
+
+    def _remember_event_thread_root(self, state: dict, event: dict) -> None:
+        self._remember_thread_root(
+            state,
+            str(event.get("id") or ""),
+            buzz_event_thread_root(event) or "",
+        )
+
     def _mark_seen(self, channel_id: str, event_id: str) -> None:
         state = self._channel_state.get(channel_id)
         if state is not None:
             state["seen"][event_id] = None
             self._trim_seen(state)
+
+    def _media_sender_authorized(self, user_id: str) -> bool:
+        allow_all = str(
+            os.getenv("BUZZ_ALLOW_ALL_USERS")
+            or self._extra.get("allow_all_users", "")
+        ).lower() in {"true", "1", "yes"}
+        if allow_all:
+            return True
+        return bool(self._allowed_pubkeys and user_id in self._allowed_pubkeys)
+
+    def _buzz_image_metadata(self, url: str) -> Optional[Tuple[str, str, str]]:
+        relay = urlsplit(self.relay_url)
+        candidate = urlsplit(url)
+        relay_scheme = {"ws": "http", "wss": "https"}.get(
+            relay.scheme.lower(), relay.scheme.lower()
+        )
+        if (
+            candidate.scheme.lower() != relay_scheme
+            or candidate.netloc.lower() != relay.netloc.lower()
+            or candidate.username is not None
+            or candidate.password is not None
+            or candidate.query
+            or candidate.fragment
+        ):
+            return None
+        match = _BUZZ_MEDIA_IMAGE_PATH_RE.fullmatch(candidate.path)
+        if match is None:
+            return None
+        digest, extension = match.groups()
+        extension = extension.lower()
+        return digest.lower(), f".{extension}", _BUZZ_IMAGE_MIME[extension]
+
+    @staticmethod
+    def _buzz_image_removal_span(
+        text: str, span: Tuple[int, int]
+    ) -> Tuple[int, int]:
+        start, end = span
+        line_start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        if line_end < 0:
+            line_end = len(text)
+        if text[line_start:start].strip() or text[end:line_end].strip():
+            return span
+        if line_end < len(text):
+            return line_start, line_end + 1
+        if line_start > 0:
+            return line_start - 1, line_end
+        return line_start, line_end
+
+    async def _ingest_buzz_images(
+        self, text: str
+    ) -> Tuple[str, List[str], List[str]]:
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        consumed_spans: List[Tuple[int, int]] = []
+        download_attempts = 0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _BUZZ_MEDIA_TOTAL_TIMEOUT
+        for match in _BUZZ_MARKDOWN_IMAGE_RE.finditer(text):
+            if loop.time() >= deadline:
+                logger.warning("Buzz: inbound image deadline exhausted")
+                break
+            url = match.group(1)
+            metadata = self._buzz_image_metadata(url)
+            if metadata is None:
+                continue
+            if download_attempts >= _MAX_BUZZ_IMAGES_PER_MESSAGE:
+                break
+            download_attempts += 1
+            expected_digest, extension, mime = metadata
+            fd, temporary_path = tempfile.mkstemp(
+                prefix="hermes_buzz_media_", suffix=extension
+            )
+            os.close(fd)
+            cached_path: Optional[str] = None
+            try:
+                code = 4
+                error_text = ""
+                for delay in (0, *_BUZZ_MEDIA_RETRY_DELAYS):
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    if delay:
+                        await asyncio.wait_for(asyncio.sleep(delay), timeout=remaining)
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    code, _out, error_text = await asyncio.wait_for(
+                        self._run_cli(
+                            ["media", "get", url, "--output", temporary_path]
+                        ),
+                        timeout=remaining,
+                    )
+                    if code == 0 or not _cli_failure_is_retryable(error_text, code):
+                        break
+                if code != 0:
+                    logger.warning("Buzz: authenticated inbound image download failed")
+                    continue
+                path = Path(temporary_path)
+                validate_inbound_media_size(path.stat().st_size, media_type="image")
+                data = path.read_bytes()
+                if hashlib.sha256(data).hexdigest() != expected_digest:
+                    logger.warning("Buzz: inbound image hash did not match media URL")
+                    continue
+                family = _detected_image_family(data)
+                expected_family = extension.lstrip(".").lower()
+                if expected_family == "jpg":
+                    expected_family = "jpeg"
+                if family != expected_family:
+                    logger.warning("Buzz: inbound image content did not match URL extension")
+                    continue
+                cached_path = cache_image_from_bytes(data, ext=extension)
+                os.chmod(cached_path, 0o600)
+                media_urls.append(cached_path)
+                media_types.append(mime)
+                consumed_spans.append(
+                    self._buzz_image_removal_span(text, match.span())
+                )
+            except TimeoutError:
+                logger.warning("Buzz: inbound image deadline exhausted")
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Buzz: could not cache authenticated inbound image (%s)",
+                    type(exc).__name__,
+                )
+            finally:
+                if cached_path and cached_path not in media_urls:
+                    try:
+                        Path(cached_path).unlink()
+                    except OSError:
+                        pass
+                try:
+                    Path(temporary_path).unlink()
+                except OSError:
+                    pass
+        for start, end in reversed(sorted(consumed_spans)):
+            text = text[:start] + text[end:]
+        return text, media_urls, media_types
 
     async def _dispatch_message(
         self,
@@ -1219,6 +1859,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: str | None = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,13 +1871,21 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id or (message_id if chat_type != "dm" else None),
         )
+        dispatch_text = text
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        if not getattr(source, "profile_route_rejected", False) and self._media_sender_authorized(user_id):
+            dispatch_text, media_urls, media_types = await self._ingest_buzz_images(text)
 
         event = MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
+            text=dispatch_text,
+            message_type=MessageType.PHOTO if media_urls else MessageType.TEXT,
             source=source,
             message_id=message_id,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
         )
 
@@ -1385,15 +2034,56 @@ async def _standalone_send(
     if not target:
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
+    try:
+        outbound_mentions = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
+    except ValueError:
+        return {"error": "Buzz standalone send: invalid outbound_mention_pubkeys"}
+    configured_mentions = [
+        (name, pubkey)
+        for name, pubkey in outbound_mentions.values()
+        if _complete_mention_spans(message or "", name)
+    ]
+    protected_mentions = {
+        f"@{name}".casefold() for name, _pubkey in configured_mentions
+    }
     args = ["messages", "send", "--channel", target, "--content", "-"]
+    for _name, pubkey in configured_mentions:
+        args += ["--mention", pubkey]
     if thread_id:
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
         args += ["--file", str(path)]
+    send_content = message
     try:
         code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+            cli_path,
+            args,
+            relay_url=relay,
+            private_key=private_key,
+            input_text=send_content,
         )
+        for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+            fallback = (
+                unresolved_mention_fallback(
+                    send_content,
+                    err,
+                    protected_mentions,
+                )
+                if code != 0
+                else None
+            )
+            if fallback is None:
+                break
+            send_content = fallback
+            code, out, err = await _exec_buzz(
+                cli_path,
+                args,
+                relay_url=relay,
+                private_key=private_key,
+                input_text=send_content,
+            )
     except asyncio.CancelledError:
         raise
     except OSError as e:
@@ -1523,6 +2213,9 @@ def register(ctx):
             "You are collaborating in a Buzz workspace (Block's Nostr-based "
             "human+agent platform). Markdown IS supported. Users address you "
             "by @-mentioning your name or npub in channels; direct messages "
-            "reach you without a mention. Keep responses conversational."
+            "reach you without a mention. Keep responses conversational. "
+            "You can send local images natively. When the user supplies the path "
+            "to an existing local image, respond with MEDIA:/absolute/path to that "
+            "image directly; do not use Computer Use or open a UI."
         ),
     )

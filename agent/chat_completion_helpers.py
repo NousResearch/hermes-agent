@@ -4842,7 +4842,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         first_delta_fired["done"] = False
                         agent._emit_stream_drop(
                             error=e,
-                            attempt=_stream_attempt + 2,
+                            attempt=_stream_attempt + 1,
                             max_attempts=_max_stream_retries + 1,
                             mid_tool_call=True,
                             diag=request_client_holder.get("diag"),
@@ -4900,7 +4900,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         if _stream_attempt < _max_stream_retries:
                             agent._emit_stream_drop(
                                 error=e,
-                                attempt=_stream_attempt + 2,
+                                attempt=_stream_attempt + 1,
                                 max_attempts=_max_stream_retries + 1,
                                 mid_tool_call=False,
                                 diag=request_client_holder.get("diag"),

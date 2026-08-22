@@ -212,6 +212,27 @@ def test_emit_stream_drop_ui_includes_elapsed_when_available():
 
 
 
+def test_emit_stream_drop_attempt_numbering_1_indexed(caplog):
+    """Verify that _emit_stream_drop reflects 1-indexed attempt number in UI and logs."""
+    agent = _make_agent()
+    agent.provider = "openrouter"
+
+    with caplog.at_level(logging.WARNING, logger="agent.stream_diag"):
+        with patch.object(agent, "_buffer_status") as mock_emit:
+            agent._emit_stream_drop(
+                error=ConnectionError("drop"),
+                attempt=1,
+                max_attempts=3,
+                mid_tool_call=False,
+            )
+
+    msg = mock_emit.call_args.args[0]
+    assert "retry 1/3" in msg
+
+    log_msg = next(r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage())
+    assert "Stream drop on attempt 1/3" in log_msg
+
+
 def test_quiet_mode_does_not_clobber_runagent_logger_level():
     """Regression guard for the parent fix — must persist across this PR."""
     _ = _make_agent()

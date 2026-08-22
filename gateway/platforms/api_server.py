@@ -7638,6 +7638,21 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
+                # Reopen a session that a previous run closed. strategy="issue"
+                # (Paperclip's resolveSessionKey) deliberately reuses one
+                # session_id across runs on the same issue, and neither
+                # _insert_session_row's ON CONFLICT nor append_message clears or
+                # checks ended_at -- so without this a reused session would stay
+                # marked ended while still accreting messages, i.e. prune bait.
+                # MUST stay paired with the end_session() in the finally below.
+                try:
+                    _db = self._ensure_session_db()
+                    if _db is not None:
+                        _row = _db.get_session(session_id) or {}
+                        if _row.get("ended_at") is not None:
+                            _db.reopen_session(session_id)
+                except Exception:
+                    logger.debug("[api_server] session reopen failed", exc_info=True)
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -7899,6 +7914,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
+                # Close the persisted session row -- the ghost-session leak.
+                #
+                # Despite the name, _run_and_close() closed no session: it never
+                # called agent.close() and never called SessionDB.end_session(),
+                # so every /v1/runs session kept ended_at NULL forever. Because
+                # prune_sessions() only ever reaps rows with ended_at set, those
+                # sessions were permanently unreclaimable and state.db grew
+                # without bound. cron/scheduler.py already closes in its own
+                # finally, and webhook.py's _end_webhook_session fixed this
+                # exact bug on the sibling path -- see its docstring, which
+                # names "the ghost-session leak" and "state.db bloat".
+                #
+                # The guard runs AFTER the pops so a run never sees itself.
+                # end_session() is first-reason-wins and no-ops on an
+                # already-ended row, so this cannot clobber a
+                # 'compression'/'agent_close' reason.
+                try:
+                    _still_active = any(
+                        (self._run_statuses.get(_other) or {}).get("session_id") == session_id
+                        for _other in self._active_run_tasks
+                    )
+                    if not _still_active:
+                        _db = self._ensure_session_db()
+                        if _db is not None:
+                            _db.end_session(session_id, "api_run_complete")
+                except Exception:
+                    logger.debug("[api_server] failed to end session", exc_info=True)
 
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())

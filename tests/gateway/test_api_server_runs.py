@@ -123,6 +123,76 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_completed_run_ends_persisted_session(self, adapter):
+        app = _create_runs_app(adapter)
+        session_db = MagicMock()
+        session_db.get_session.return_value = {"id": "runs-session", "ended_at": None}
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_ensure_session_db", return_value=session_db),
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "runs-session"},
+                )
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+        session_db.end_session.assert_called_once_with(
+            "runs-session", "api_run_complete"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reused_ended_session_is_reopened_before_run(self, adapter):
+        app = _create_runs_app(adapter)
+        session_db = MagicMock()
+        session_db.get_session.return_value = {
+            "id": "runs-session",
+            "ended_at": "2026-08-01T00:00:00Z",
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_ensure_session_db", return_value=session_db),
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_agent = MagicMock()
+
+                def _run(**_kwargs):
+                    session_db.reopen_session.assert_called_once_with("runs-session")
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "runs-session"},
+                )
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+        session_db.reopen_session.assert_called_once_with("runs-session")
+
+    @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

@@ -4586,6 +4586,36 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _block_and_pause_job(
+    job_id: str, job_name: str, reason: str
+) -> tuple[bool, str, str, Optional[str]]:
+    """Fail a run closed and pause the job so it stops being scheduled.
+
+    Used for job shapes that can never run (a5e29e688dc0). Returning an error
+    alone is not enough — an unrunnable job that stays enabled re-fires on
+    every tick forever. Pausing writes ``paused_at``/``paused_reason``, giving
+    an auditable record of why the scheduler stopped it.
+    """
+    from cron.jobs import pause_job
+
+    logger.error("Job '%s': %s", job_id, reason)
+    try:
+        pause_job(job_id, f"Auto-paused by scheduler: {reason}")
+    except Exception:
+        logger.exception("Job '%s': failed to auto-pause unrunnable job", job_id)
+
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Status:** blocked (unrunnable job) — auto-paused\n\n"
+        f"{reason}\n"
+    )
+    alert = f"⚠ Cron job '{job_name}' was auto-paused\n\n{reason}"
+    return False, doc, alert, reason
+
+
 # Marker prefix stamped into the error string returned by ``run_job`` when the
 # pre-dispatch configuration validation (T1-26) refuses to run the agent.
 # ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
@@ -5096,10 +5126,17 @@ def run_job(
             )
 
         script_path = job.get("script")
-        if not script_path:
-            err = "no_agent=True but no script is set for this job"
-            logger.error("Job '%s': %s", job_id, err)
-            return False, "", "", err
+        # Legacy/hand-edited records can still carry no_agent with a missing or
+        # whitespace-only script. Erroring alone left the job enabled, so it
+        # re-fired every tick — pause it instead (a5e29e688dc0).
+        if not str(script_path or "").strip():
+            from cron.jobs import NO_AGENT_WITHOUT_SCRIPT_ERROR
+
+            return _block_and_pause_job(
+                job_id,
+                job_name,
+                NO_AGENT_WITHOUT_SCRIPT_ERROR,
+            )
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is passed as the subprocess cwd so the
@@ -5179,6 +5216,23 @@ def run_job(
             f"{output}\n"
         )
         return True, doc, output, None
+
+    # ---------------------------------------------------------------
+    # Fail-closed guard for legacy / hand-edited agent jobs that have nothing
+    # to run: blank prompt, no script, no skills (a5e29e688dc0). create_job /
+    # update_job now reject this shape, but jobs.json records written before
+    # that guard — or edited by hand since — can still reach here and would
+    # otherwise wake the LLM with an empty instruction on every fire. Pause
+    # the job so it stops being scheduled, and never construct the agent.
+    # ---------------------------------------------------------------
+    from cron.jobs import job_payload_is_empty
+
+    if job_payload_is_empty(job):
+        return _block_and_pause_job(
+            job_id,
+            job_name,
+            "Cron job has nothing to run: prompt is blank and no script or skills are set",
+        )
 
     # ---------------------------------------------------------------
     # Monitor gate — hash-suppressed change detection (see cron/monitor.py).

@@ -1526,7 +1526,11 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
                 updates["prompt"] = prompt
-            if name is not None:
+            if name is not None and name.strip():
+                # Blank name is a no-op, not a clear. The `is not None` sentinel
+                # treats every supplied field as an explicit edit, and a model
+                # that re-sends the whole schema with type-default empties ("", [], 0)
+                # then wipes fields it never meant to touch.
                 updates["name"] = name
             if deliver is not None:
                 bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))

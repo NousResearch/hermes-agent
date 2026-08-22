@@ -509,6 +509,47 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+# Fields whose presence in an update can turn a runnable job into an empty one.
+_PAYLOAD_FIELDS = frozenset({"prompt", "script", "skill", "skills", "no_agent"})
+
+EMPTY_PAYLOAD_ERROR = (
+    "Cron job has nothing to run: the prompt is blank and no script or "
+    "skill(s) are set. Provide a prompt, a script, or at least one skill."
+)
+
+NO_AGENT_WITHOUT_SCRIPT_ERROR = (
+    "no_agent=True requires a script — with no agent and no script "
+    "there is nothing for the job to run."
+)
+
+
+def job_no_agent_without_script(job: Dict[str, Any]) -> bool:
+    """True when a job record claims ``no_agent`` but has no usable script.
+
+    The script IS the job in no_agent mode, so this shape can never run.
+    """
+    return bool(job.get("no_agent")) and not _coerce_job_text(job.get("script")).strip()
+
+
+def job_payload_is_empty(job: Dict[str, Any]) -> bool:
+    """True when a job record has nothing runnable at all.
+
+    A blank/whitespace prompt with no script and no skills would hand the
+    agent an empty instruction on every fire (incident a5e29e688dc0).
+    ``no_agent`` needs no special case here — it already requires a script.
+    """
+    if _coerce_job_text(job.get("prompt")).strip():
+        return False
+    if _coerce_job_text(job.get("script")).strip():
+        return False
+    if _normalize_skill_list(job.get("skill"), job.get("skills")):
+        return False
+    # Only flag if at least one payload field is explicitly present in the record
+    if "prompt" in job or "script" in job or "skills" in job:
+        return True
+    return False
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -2029,7 +2070,10 @@ def create_job(
     else:
         context_from = None
 
-    prompt_text = _coerce_job_text(prompt)
+    prompt_text = _coerce_job_text(prompt).strip()
+
+    if not prompt_text and not normalized_script and not normalized_skills:
+        raise ValueError(EMPTY_PAYLOAD_ERROR)
 
     # Reject cron jobs that schedule gateway-lifecycle commands. Prevents
     # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
@@ -2260,6 +2304,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     bool(updated.get("no_agent")),
                     _upd_script or None,
                 )
+
+            if any(k in updates for k in _PAYLOAD_FIELDS):
+                if job_payload_is_empty(updated):
+                    raise ValueError(EMPTY_PAYLOAD_ERROR)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

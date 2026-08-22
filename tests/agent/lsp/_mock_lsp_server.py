@@ -65,6 +65,21 @@ def write_message(obj):
 def main():
     script = os.environ.get("MOCK_LSP_SCRIPT", "clean")
 
+    if script == "large_stderr":
+        # Emit a single stderr line larger than asyncio's 64 KiB default limit
+        # to verify the client drain task doesn't crash or deadlock.
+        sys.stderr.write("X" * 131_072 + "\n")  # 128 KiB
+        sys.stderr.flush()
+        script = "clean"
+
+    if script == "oversized_stderr":
+        # Exceed the client's 16 MiB StreamReader limit. readline() converts
+        # this into ValueError after discarding the buffered line; the client
+        # must keep draining stderr and serve requests normally.
+        sys.stderr.write("X" * (16 * 1024 * 1024 + 1) + "\n")
+        sys.stderr.flush()
+        script = "clean"
+
     while True:
         msg = read_message()
         if msg is None:

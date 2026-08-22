@@ -316,38 +316,158 @@ class SessionSchemaMixin:
         )
 
     @staticmethod
+    def _is_malformed_fts_index_error(exc: BaseException) -> bool:
+        """True when *exc* is the corrupt-inline-index class that justifies a
+        drop-and-recreate rebuild, rather than a transient lock/busy/IO error.
+        """
+        if not isinstance(exc, sqlite3.DatabaseError):
+            return False
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "malformed inverted index",
+                "database disk image is malformed",
+                "malformed database schema",
+            )
+        )
+
+    _FTS_INTEGRITY_ENGINE_KEY = "fts_integrity_engine"
+
+    def _fts_integrity_engine_id(self, cursor: sqlite3.Cursor) -> str:
+        try:
+            row = cursor.execute("SELECT sqlite_version()").fetchone()
+        except sqlite3.DatabaseError:
+            return "fts5:unknown"
+        return f"fts5:{row[0] if row else 'unknown'}"
+
+    def _legacy_fts_integrity_probe_needed(self, cursor: sqlite3.Cursor) -> bool:
+        """True until a clean integrity-check has run on this SQLite engine."""
+        try:
+            row = cursor.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (self._FTS_INTEGRITY_ENGINE_KEY,),
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return True
+        return not row or str(row[0] or "") != self._fts_integrity_engine_id(cursor)
+
+    def _record_legacy_fts_integrity_engine(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (self._FTS_INTEGRITY_ENGINE_KEY, self._fts_integrity_engine_id(cursor)),
+        )
+
+    def _legacy_fts_index_corrupt(
+        self, cursor: sqlite3.Cursor, *, include_trigram: bool
+    ) -> bool:
+        """True when a legacy inline FTS index fails FTS5's integrity-check.
+
+        Runs the cheap, non-mutating ``'integrity-check'`` command against each
+        legacy inline index. A corrupt shadow table (e.g. ``malformed inverted
+        index``) raises there even when ordinary reads and trigger-driven
+        writes still succeed, which is exactly the class #86027 reports on a
+        trigger-complete legacy install.
+        """
+        tables = ["messages_fts"]
+        if include_trigram:
+            tables.append("messages_fts_trigram")
+        for table in tables:
+            try:
+                cursor.execute(
+                    f"INSERT INTO {table}({table}) VALUES('integrity-check')"
+                )
+            except sqlite3.DatabaseError as exc:
+                if self._is_malformed_fts_index_error(exc):
+                    return True
+                raise
+            except sqlite3.OperationalError as exc:
+                # Missing table or tokenizer — not the corruption class.
+                if "no such table" in str(exc).lower() or "no such module" in str(exc).lower():
+                    continue
+                raise
+        return False
+
     def _rebuild_legacy_fts_indexes(
+        self,
         cursor: sqlite3.Cursor,
         *,
         include_trigram: bool = True,
     ) -> None:
         """Rebuild the LEGACY inline FTS indexes (pre-v23) from messages.
 
-        Used only to repair a legacy DB whose triggers degraded under an
-        earlier no-FTS5 runtime. Inline tables have no external-content
-        'rebuild' source, so we DELETE + reinsert the concatenated content
-        the legacy triggers produced. Never touches the v23 shape.
+        The fast path DELETEs and reinserts the concatenated content the
+        legacy triggers produced. When the DELETE raises the malformed-index
+        class (``malformed inverted index`` / ``database disk image is
+        malformed``) the whole index is atomically dropped + recreated +
+        backfilled inside one ``BEGIN IMMEDIATE`` transaction — the same shape
+        ``_recover_stale_fts`` uses — so a concurrent writer can never observe
+        a half-dropped index. Lock/busy/disk-IO errors are re-raised so the
+        outer open retry still applies. Never touches the v23 shape.
         """
-        cursor.execute("DELETE FROM messages_fts")
-        cursor.execute(
-            "INSERT INTO messages_fts(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
-        if not include_trigram:
+        try:
+            cursor.execute("DELETE FROM messages_fts")
+            cursor.execute(
+                "INSERT INTO messages_fts(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            if include_trigram:
+                cursor.execute("DELETE FROM messages_fts_trigram")
+                cursor.execute(
+                    "INSERT INTO messages_fts_trigram(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
             return
-        cursor.execute("DELETE FROM messages_fts_trigram")
-        cursor.execute(
-            "INSERT INTO messages_fts_trigram(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
+        except sqlite3.DatabaseError as exc:
+            if not self._is_malformed_fts_index_error(exc):
+                raise
+
+        # Corrupt inline index: atomically drop triggers + vtable, recreate the
+        # legacy schema, and backfill, in a single write transaction.
+        drop_sql = "".join(
+            f"DROP TRIGGER IF EXISTS {trigger};" for trigger in _FTS_TRIGGERS
         )
+        if include_trigram:
+            drop_sql += "DROP TABLE IF EXISTS messages_fts_trigram;"
+        drop_sql += "DROP TABLE IF EXISTS messages_fts;"
+        rebuild_sql = LEGACY_FTS_SQL
+        if include_trigram:
+            rebuild_sql += LEGACY_FTS_TRIGRAM_SQL
+        rebuild_sql += """
+            INSERT INTO messages_fts(rowid, content)
+            SELECT id,
+                   COALESCE(content, '') || ' ' ||
+                   COALESCE(tool_name, '') || ' ' ||
+                   COALESCE(tool_calls, '')
+            FROM messages;
+        """
+        if include_trigram:
+            rebuild_sql += """
+                INSERT INTO messages_fts_trigram(rowid, content)
+                SELECT id,
+                       COALESCE(content, '') || ' ' ||
+                       COALESCE(tool_name, '') || ' ' ||
+                       COALESCE(tool_calls, '')
+                FROM messages;
+            """
+        recovery_sql = "BEGIN IMMEDIATE;" + drop_sql + rebuild_sql + "COMMIT;"
+        try:
+            cursor.executescript(recovery_sql)
+        except sqlite3.DatabaseError:
+            try:
+                self._conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
         try:
@@ -407,7 +527,6 @@ class SessionSchemaMixin:
             """
             if include_trigram:
                 rebuild_sql += """
-                    DELETE FROM messages_fts_trigram;
                     INSERT INTO messages_fts_trigram(rowid, content)
                     SELECT id,
                            COALESCE(content, '') || ' ' ||
@@ -1263,10 +1382,18 @@ class SessionSchemaMixin:
                         cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
                     )
                     self._trigram_available = trigram_enabled
-                    if triggers_need_repair:
+                    probe_needed = self._legacy_fts_integrity_probe_needed(cursor)
+                    if triggers_need_repair or (
+                        probe_needed
+                        and self._legacy_fts_index_corrupt(
+                            cursor, include_trigram=trigram_enabled
+                        )
+                    ):
                         self._rebuild_legacy_fts_indexes(
                             cursor, include_trigram=trigram_enabled
                         )
+                    if probe_needed:
+                        self._record_legacy_fts_integrity_engine(cursor)
             else:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)

@@ -1487,6 +1487,75 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
+    # Mutating git subcommands. Read-only git (rev-parse, log, status,
+    # diff, ls-files, ...) is deliberately absent: tests legitimately probe
+    # the checkout's state.
+    _GIT_WRITE_SUBCOMMANDS = frozenset({
+        "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge",
+        "pull", "rebase", "reset", "restore", "stash", "switch",
+    })
+
+    def _git_write_target(cmd, cwd):
+        """Return (subcommand, target_dir) for mutating git, else (None, None).
+
+        ``git -C <path>`` (and --work-tree/--git-dir) redirect the command at a
+        different repo, so the tests' own tmp_path fixtures legitimately run
+        `git -C /tmp/... commit` while cwd is still the source tree. The
+        redirect wins over cwd; only what actually lands on PROJECT_ROOT counts.
+        """
+        parts = _cmd_to_string(cmd).split()
+        if not parts or "git" not in Path(parts[0]).name:
+            return None, None
+        base = Path(cwd) if cwd is not None else Path.cwd()
+        redirect = None
+        i = 1
+        while i < len(parts):
+            token = parts[i]
+            if token in ("-C", "--work-tree", "--git-dir"):
+                if i + 1 < len(parts):
+                    redirect = parts[i + 1]
+                i += 2
+                continue
+            if token == "-c":
+                i += 2
+                continue
+            if token.startswith("-"):
+                i += 1
+                continue
+            if token not in _GIT_WRITE_SUBCOMMANDS:
+                return None, None
+            target = base if redirect is None else base / redirect
+            return token, target
+        return None, None
+
+    def _check_git_repo_mutation(name, cmd, cwd):
+        """Block mutating git aimed at THIS checkout.
+
+        The `hermes update` argv check above only catches the *spawned* CLI.
+        Called in-process (cli_main._cmd_update_impl(...)), the same code runs
+        bare `git checkout / merge / stash / reset` against PROJECT_ROOT, whose
+        argv contains no "update" at all. A test whose PROJECT_ROOT patch has
+        come unstuck -- e.g. because something replaced hermes_cli.main in
+        sys.modules, orphaning the object the patch was applied to -- then
+        rewrites the developer's real working tree mid-run: uncommitted work
+        stashed away, branch switched, origin merged. Loud failure beats that.
+        """
+        try:
+            subcommand, target = _git_write_target(cmd, cwd)
+            if not subcommand or target.resolve() != PROJECT_ROOT.resolve():
+                return
+        except (OSError, TypeError, ValueError):
+            return
+        raise RuntimeError(
+            f"tests/conftest.py live-system guard: blocked "
+            f"subprocess.{name}({cmd!r}) — `git {subcommand}` with cwd set to "
+            f"the real checkout ({target}). This rewrites the working tree the "
+            "tests are running from (stashing uncommitted work, switching "
+            "branches, merging origin). Point the command at a tmp_path repo, "
+            "or check that the test's PROJECT_ROOT patch is still reaching the "
+            "module under test."
+        )
+
     def _check_subprocess_cmd(name, cmd):
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
@@ -1543,6 +1612,7 @@ def _live_system_guard(request, monkeypatch):
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
             _check_subprocess_cmd(name, cmd)
+            _check_git_repo_mutation(name, cmd, kwargs.get("cwd"))
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -1561,6 +1631,7 @@ def _live_system_guard(request, monkeypatch):
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd)
+                _check_git_repo_mutation("Popen", cmd, kwargs.get("cwd"))
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"

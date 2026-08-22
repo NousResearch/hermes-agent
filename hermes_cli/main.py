@@ -5000,10 +5000,15 @@ def __getattr__(name):
         return value
     alias = _LAZY_COMMAND_ALIASES.get(name)
     if alias is not None:
-        import importlib
-
-        module_name, attr = alias
-        value = getattr(importlib.import_module(module_name), attr)
+        _module_name, attr = alias
+        # Resolve through THIS module's own attribute, not a second
+        # import_module of the backing module, so the alias and the canonical
+        # name share one cache entry. Caching them independently let them
+        # drift apart: whichever was read first pinned the function object
+        # from the module as it stood then, and if the backing module was
+        # re-imported before the other was read, the alias kept pointing at a
+        # dead function while the real name pointed at the live one.
+        value = getattr(_self(), attr)
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

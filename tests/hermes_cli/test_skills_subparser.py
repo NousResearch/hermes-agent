@@ -3,7 +3,7 @@
 import argparse
 
 
-def test_no_duplicate_skills_subparser():
+def test_no_duplicate_skills_subparser(monkeypatch):
     """Ensure 'skills' subparser is only registered once to avoid Python 3.11+ crash.
 
     Python 3.11 changed argparse to raise an exception on duplicate subparser
@@ -19,9 +19,26 @@ def test_no_duplicate_skills_subparser():
     # argparse.ArgumentError at module load time
     import sys
 
-    # Remove cached module if present
-    if 'hermes_cli.main' in sys.modules:
-        del sys.modules['hermes_cli.main']
+    # Drop the cached module so the import below really re-executes -- but
+    # put BOTH bindings back afterwards. A bare `del sys.modules[...]` leaves
+    # a second hermes_cli.main object installed for the rest of the session,
+    # while every module that already did `from hermes_cli import main as
+    # cli_main` still holds the first one. Their patch.object(cli_main, ...)
+    # then patches an orphan and never reaches the module under test: that is
+    # how test_update_orphan_backend_reap.py lost its PROJECT_ROOT patch and
+    # let _cmd_update_impl run git checkout/merge/stash against the real
+    # checkout, stashing the developer's uncommitted work mid-run.
+    #
+    # `from hermes_cli import main` resolves through the PACKAGE ATTRIBUTE,
+    # which the re-import rebinds too -- so restoring sys.modules alone is not
+    # enough. monkeypatch records the current value of each and restores both
+    # at teardown.
+    import hermes_cli
+
+    cached_main = sys.modules.get('hermes_cli.main')
+    if cached_main is not None:
+        monkeypatch.setattr(hermes_cli, 'main', cached_main, raising=False)
+    monkeypatch.delitem(sys.modules, 'hermes_cli.main', raising=False)
 
     try:
         import hermes_cli.main  # noqa: F401

@@ -151,6 +151,53 @@ def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> Tuple[s
     command = command if command and _has_path_separator(command) else driver_cmd
     return command, _mcp_args_with_overlay_flag(args, driver_cmd=command)
 
+def _configured_daemon_socket() -> Optional[str]:
+    """Standard-mode endpoint. Invalid explicit selectors must never choose another desktop."""
+    raw = _cb()._computer_use_cfg().get("daemon_socket")
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("computer_use.daemon_socket must be a string; use an absolute path or leave it empty")
+    value = os.path.expanduser(raw.strip())
+    if not value:
+        return None
+    if "\x00" in value:
+        raise ValueError("computer_use.daemon_socket must not contain NUL characters")
+    if not os.path.isabs(value):
+        raise ValueError("computer_use.daemon_socket must be an absolute path or Windows named pipe")
+    return value
+
+
+def _split_mcp_socket(args: List[str]) -> Tuple[List[str], Optional[str]]:
+    """Separate one unambiguous selector without changing its endpoint or other argv entries."""
+    remaining, sockets = [], []
+    values = iter(args)
+    for arg in values:
+        if arg == "--socket":
+            value = next(values, "")
+        elif arg.startswith("--socket="):
+            value = arg.partition("=")[2]
+        else:
+            remaining.append(arg)
+            continue
+        if not value.strip() or value.startswith("--") or "\x00" in value:
+            raise ValueError("cua-driver manifest --socket requires a non-empty endpoint")
+        sockets.append(value)
+    if len(sockets) > 1:
+        raise ValueError("cua-driver manifest must select only one --socket endpoint")
+    return remaining, sockets[0] if sockets else None
+
+
+def _resolve_standard_mcp_invocation(driver_cmd: str) -> Tuple[str, List[str]]:
+    """Select an external daemon only for standard mode; private runtimes choose their own socket."""
+    socket = _configured_daemon_socket()
+    command, args = _resolve_mcp_invocation(driver_cmd)
+    _, manifest_socket = _split_mcp_socket(args)
+    if socket and manifest_socket is not None:
+        raise ValueError("cua-driver manifest and computer_use.daemon_socket both select a socket; remove one selector")
+    return command, [*args, "--socket", socket] if socket else args
+
+
 def _manifest_contract_reason(manifest: Optional[Dict[str, Any]]) -> str:
     """Why a parsed manifest fails the 0.20 contract, or ``""`` when it passes (version floor, MCP launch
     command, then the ``"<verb> <flag>"`` entries the advertised subcommands lack)."""

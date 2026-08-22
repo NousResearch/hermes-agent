@@ -2441,6 +2441,10 @@ DEFAULT_CONFIG = {
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # Optional already-running daemon endpoint for standard mode (absolute path / Windows pipe).
+        # Hermes owns only the MCP proxy, not the shared daemon or its permission policy.
+        # Empty keeps the driver's default runtime; bounded/YOLO sessions stay private.
+        "daemon_socket": "",
         # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.

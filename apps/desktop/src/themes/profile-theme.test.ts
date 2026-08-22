@@ -15,13 +15,12 @@ const cases = [
     pref: skinPref as unknown as Pref,
     fallback: DEFAULT_SKIN_NAME,
     a: 'ember',
-    b: 'catppuccin',
-    junk: 'nope'
+    b: 'catppuccin'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light', junk: 'dusk' }
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light' }
 ]
 
-describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
+describe.each(cases)('per-profile $name', ({ pref, fallback, a, b }) => {
   beforeEach(() => window.localStorage.clear())
 
   it('falls back to the default when unassigned', () => {
@@ -40,10 +39,23 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     pref.assign('default', a)
     expect(pref.resolve('never-themed')).toBe(a)
   })
+})
 
-  it('normalizes an unknown stored value back to the default', () => {
-    pref.assign('work', junk)
-    expect(pref.resolve('work')).toBe(fallback)
+describe('mode validation', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('normalizes an unknown stored mode back to system', () => {
+    modePref.assign('work', 'dusk' as never)
+    expect(modePref.resolve('work')).toBe('system')
+  })
+})
+
+describe('custom backend skin persistence', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('preserves a stored skin name that may be registered by the backend after startup', () => {
+    skinPref.assign('work', 'custom-backend-skin')
+    expect(skinPref.resolve('work')).toBe('custom-backend-skin')
   })
 })
 

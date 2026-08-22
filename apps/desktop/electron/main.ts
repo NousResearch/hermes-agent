@@ -1279,7 +1279,8 @@ function registerMediaProtocol() {
 
       return resolvedPath
     },
-    resolveRemoteConnection: profile => ensureBackend(profile)
+    resolveRemoteConnection: (profile, connectionId) =>
+      connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
   })
 
   protocol.handle(MEDIA_PROTOCOL, handler)

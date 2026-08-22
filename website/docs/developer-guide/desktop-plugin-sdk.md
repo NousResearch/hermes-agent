@@ -45,8 +45,9 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
-- **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
-  (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
+- **`ctx.rest` / `ctx.socket` / `ctx.mediaUrl`** — your plugin's own backend
+  namespace (`/api/plugins/<id>`), including authenticated seekable audio/video
+  streams, if you ship a `plugin_api.py`.
 - **`ui.*`** — the design language: the app's real components, theme variables,
   icons, and formatters, so your UI matches the app pixel-for-pixel.
 
@@ -173,6 +174,9 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Seekable URL for audio/video served by this plugin's own backend route.
+   *  Returns null outside a Desktop renderer. */
+  mediaUrl: (path: string) => string | null
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -798,12 +802,26 @@ register(ctx) {
   const stop = ctx.socket('/events', frame => {
     queryClient.invalidateQueries({ queryKey: [ctx.source, 'board'] })
   })
+
+  // Seekable audio/video — Electron authenticates this URL and forwards Range
+  // requests without exposing gateway credentials to the plugin or the DOM.
+  const clip = ctx.mediaUrl('/outputs/clip/stream')
 }
 ```
 
 `ctx.rest` is profile-aware and rejects path traversal (`..`) so you can never
 address another plugin's API or a core route through it. `PluginRestOptions` is
 `{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
+
+`ctx.mediaUrl` is the corresponding door for a `<audio>` or `<video>` element.
+It accepts only a route relative to your own plugin namespace, returns a
+credential-free seekable URL, and resolves to `null` outside a Desktop renderer.
+The backend route must return successful `audio/*` or `video/*` content; use a
+normal `ctx.rest` request for JSON or image data.
+
+Like the rest of the local runtime-plugin SDK, this is a convenience namespace
+scope, not an authorization boundary between local plugins: disk plugins run
+with full renderer authority. See [Security model](#security-model).
 
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { createPluginContext } from './plugin'
@@ -21,6 +22,64 @@ describe('createPluginContext.onDispose', () => {
     expect(disposers).toHaveLength(1)
     disposers.forEach(dispose => dispose())
     expect(cleaned).toBe(true)
+  })
+})
+
+describe('createPluginContext.mediaUrl', () => {
+  it('returns null when the desktop media bridge is unavailable', () => {
+    const ctx = createPluginContext('studio-rail')
+
+    expect(ctx.mediaUrl('/outputs/clip/stream')).toBeNull()
+  })
+
+  it('creates a confined plugin-media URL scoped to the active profile and registry connection', () => {
+    const host = window as unknown as { hermesDesktop?: unknown }
+
+    host.hermesDesktop = {}
+    setApiRequestProfile('video')
+    setApiRequestConnection('mac-mini')
+
+    try {
+      const ctx = createPluginContext('studio-rail')
+
+      expect(ctx.mediaUrl('/outputs/clip 1/stream')).toBe(
+        'hermes-media://plugin/studio-rail/outputs/clip%201/stream?profile=video&connectionId=mac-mini'
+      )
+    } finally {
+      setApiRequestProfile(null)
+      setApiRequestConnection(null)
+      delete host.hermesDesktop
+    }
+  })
+
+  it('rejects encoded traversal in a media path', () => {
+    const host = window as unknown as { hermesDesktop?: unknown }
+
+    host.hermesDesktop = {}
+
+    try {
+      const ctx = createPluginContext('studio-rail')
+
+      expect(() => ctx.mediaUrl('/outputs/%2e%2e/stream')).toThrow('illegal path traversal')
+      expect(() => ctx.mediaUrl('/outputs/%252e%252e/stream')).toThrow('illegal path traversal')
+    } finally {
+      delete host.hermesDesktop
+    }
+  })
+
+  it('rejects a plugin id that could escape its namespace', () => {
+    const host = window as unknown as { hermesDesktop?: unknown }
+
+    host.hermesDesktop = {}
+
+    try {
+      const ctx = createPluginContext('../other-plugin')
+
+      expect(() => ctx.mediaUrl('/outputs/clip/stream')).toThrow('invalid plugin id')
+      expect(() => createPluginContext('%252e%252e').mediaUrl('/outputs/clip/stream')).toThrow('invalid plugin id')
+    } finally {
+      delete host.hermesDesktop
+    }
   })
 })
 

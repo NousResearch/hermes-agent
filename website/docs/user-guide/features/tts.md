@@ -52,6 +52,18 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
+    language_code: "en"          # Optional; e.g. "pl" with multilingual/v3 models
+    voice_settings:              # Optional ElevenLabs VoiceSettings
+      stability: 0.5
+      similarity_boost: 0.75
+      style: 0.0
+      use_speaker_boost: true
+      speed: 1.0                 # Overrides global tts.speed for ElevenLabs
+    convert_options:             # Optional extra text_to_speech.convert kwargs
+      seed: 1234
+      previous_text: "Optional preceding context."
+      next_text: "Optional following context."
+      apply_text_normalization: "auto"
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -111,6 +123,11 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - `region: "cn"` uses `https://api.minimaxi.com/v1/t2a_v2` with `MINIMAX_CN_API_KEY`.
 - If `region` is omitted, `MINIMAX_API_KEY` keeps precedence for backward compatibility. If only `MINIMAX_CN_API_KEY` is configured, Hermes selects `cn`.
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
+
+For ElevenLabs, nested `voice_settings` takes precedence over the legacy
+top-level voice-setting keys. `voice_settings.speed` takes precedence over
+global `tts.speed`, which is used as a fallback. The older `options` key remains
+accepted as an alias for `convert_options`.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 

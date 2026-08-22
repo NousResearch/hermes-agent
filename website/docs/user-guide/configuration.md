@@ -1768,6 +1768,18 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"
     model_id: "eleven_multilingual_v2"
+    language_code: "en"          # Optional; e.g. "pl" with multilingual/v3 models
+    voice_settings:              # Optional ElevenLabs VoiceSettings
+      stability: 0.5
+      similarity_boost: 0.75
+      style: 0.0
+      use_speaker_boost: true
+      speed: 1.0                 # Overrides global tts.speed for ElevenLabs
+    convert_options:             # Optional extra text_to_speech.convert kwargs
+      seed: 1234
+      previous_text: "Optional preceding context."
+      next_text: "Optional following context."
+      apply_text_normalization: "auto"
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
@@ -1796,6 +1808,11 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+For ElevenLabs, nested `voice_settings` takes precedence over the legacy
+top-level voice-setting keys. `voice_settings.speed` takes precedence over
+global `tts.speed`, which is used as a fallback. The older `options` key remains
+accepted as an alias for `convert_options`.
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
 

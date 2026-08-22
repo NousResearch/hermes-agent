@@ -65,6 +65,68 @@ class TestMattermostDisplayHygiene:
 
 class TestMattermostConfigLoading:
 
+    def test_reply_mode_from_config_yaml_reaches_adapter(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n"
+            "  reply_mode: thread\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
+        # Register the key with monkeypatch so teardown removes the value that
+        # the YAML bridge writes directly to os.environ.
+        monkeypatch.setenv("MATTERMOST_REPLY_MODE", "__sentinel__")
+        monkeypatch.delenv("MATTERMOST_REPLY_MODE")
+
+        from gateway.config import load_gateway_config
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config = load_gateway_config()
+        adapter = MattermostAdapter(config.platforms[Platform.MATTERMOST])
+
+        assert adapter._reply_mode == "thread"
+
+    def test_reply_mode_env_overrides_config_yaml(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n"
+            "  reply_mode: thread\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
+        monkeypatch.setenv("MATTERMOST_REPLY_MODE", "off")
+
+        from gateway.config import load_gateway_config
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config = load_gateway_config()
+        adapter = MattermostAdapter(config.platforms[Platform.MATTERMOST])
+
+        assert adapter._reply_mode == "off"
+
+    def test_reply_mode_yaml_off_normalizes_env_value(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n"
+            "  reply_mode: off\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATTERMOST_REPLY_MODE", "__sentinel__")
+        monkeypatch.delenv("MATTERMOST_REPLY_MODE")
+
+        from gateway.config import load_gateway_config
+
+        load_gateway_config()
+
+        assert os.environ["MATTERMOST_REPLY_MODE"] == "off"
 
     def test_mattermost_home_channel(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
@@ -592,5 +654,4 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.source.thread_id == "top_post_123"
     assert msg_event.source.message_id == "top_post_123"
     assert msg_event.message_id == "top_post_123"
-
 

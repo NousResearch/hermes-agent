@@ -2136,10 +2136,25 @@ class WeixinAdapter(BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
 
-        # Native outbound Weixin voice bubbles are not proven-working in the
-        # upstream reference implementation. Prefer a reliable file attachment
-        # fallback so users at least receive playable audio, even for .silk.
         fallback_caption = caption or "[voice message as attachment]"
+        _is_silk = audio_path.endswith(".silk")
+
+        # For .silk files, try native voice delivery first; fall back to
+        # file attachment so the user at least receives playable audio.
+        if _is_silk:
+            try:
+                message_id = await self._send_file(
+                    chat_id, audio_path, fallback_caption,
+                    force_file_attachment=False,
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception:
+                logger.info(
+                    "[%s] silk native voice failed for %s, falling back to file attachment",
+                    self.name, _safe_id(chat_id),
+                )
+
+        # Fallback: send as a file attachment (non-.silk always goes here).
         try:
             message_id = await self._send_file(
                 chat_id,

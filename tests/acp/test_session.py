@@ -279,6 +279,33 @@ class TestPersistence:
 
 
 
+    def test_restore_failure_records_and_exposes_reason(self, manager):
+        """Robustness: a rebuild failure during restore records the real reason
+        (so the server can surface it) instead of a bare None → 'not found'."""
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        manager.save_session(sid)
+        with manager._lock:
+            del manager._sessions[sid]
+        with patch.object(
+            manager, "_make_agent",
+            side_effect=RuntimeError("No LLM provider configured"),
+        ):
+            restored = manager.get_session(sid)
+        assert restored is None
+        assert "No LLM provider configured" in (manager.last_restore_error(sid) or "")
+
+    def test_successful_restore_clears_prior_reason(self, manager):
+        """A clean restore clears any stale recorded failure reason."""
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        manager.save_session(sid)
+        manager._restore_errors[sid] = "stale failure"
+        with manager._lock:
+            del manager._sessions[sid]
+        restored = manager.get_session(sid)
+        assert restored is not None
+        assert manager.last_restore_error(sid) is None
 
 
     def test_only_restores_acp_sessions(self, manager):

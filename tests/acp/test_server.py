@@ -178,6 +178,69 @@ class TestAuthenticate:
 class TestSessionOps:
 
     @pytest.mark.asyncio
+    async def test_failed_turn_surfaces_error_not_empty(self, tmp_path):
+        """Robustness (ACP fail-silent fix): a non-retryable provider error
+        returns final_response=None + failed=True; the adapter must surface the
+        reason to the client instead of an empty 'completed' turn."""
+        def _failing_agent():
+            a = MagicMock(name="FailingAgent")
+            a.model = "gpt-5.5"
+            a.provider = "openai-codex"
+            a.run_conversation.return_value = {
+                "final_response": None,
+                "messages": [],
+                "failed": True,
+                "error": "HTTP 401 token_expired",
+            }
+            return a
+
+        manager = SessionManager(
+            agent_factory=_failing_agent, db=SessionDB(tmp_path / "state.db")
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        acp_agent._conn = mock_conn
+
+        resp = await acp_agent.new_session(cwd="/tmp")
+        await acp_agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
+
+        blob = " ".join(str(c) for c in mock_conn.session_update.await_args_list)
+        assert "Turn failed" in blob
+        assert "401" in blob
+
+    @pytest.mark.asyncio
+    async def test_load_session_surfaces_restore_failure(self, tmp_path):
+        """Robustness (ACP fail-silent fix): a failed agent rebuild during
+        session/load must produce a JSON-RPC error carrying the real reason —
+        a bare ``return None`` is normalized to a silent ``{}`` success on the
+        wire and the client believes the load worked."""
+        from unittest.mock import patch
+        from acp.exceptions import RequestError
+
+        manager = SessionManager(
+            agent_factory=lambda: MagicMock(name="MockAIAgent"),
+            db=SessionDB(tmp_path / "state.db"),
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        manager.save_session(sid)
+        with manager._lock:
+            del manager._sessions[sid]
+
+        with patch.object(
+            manager, "_make_agent",
+            side_effect=RuntimeError("No LLM provider configured"),
+        ):
+            with pytest.raises(RequestError) as exc_info:
+                await acp_agent.load_session(cwd="/work", session_id=sid)
+        assert "No LLM provider configured" in str(exc_info.value)
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(

@@ -1618,6 +1618,25 @@ class HermesACPAgent(acp.Agent):
     ) -> LoadSessionResponse | None:
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
+            reason = self.session_manager.last_restore_error(session_id)
+            if reason:
+                # Fail loud: the session exists in the DB but its agent could
+                # not be rebuilt (e.g. its provider/model was removed). A bare
+                # ``return None`` is normalized to a silent ``{}`` SUCCESS on
+                # the wire (acp normalize_result), so the client believes the
+                # load worked and only discovers the problem on its next
+                # prompt. Surface the real reason as a JSON-RPC error instead.
+                logger.warning(
+                    "load_session: session %s could not be restored: %s",
+                    session_id, reason,
+                )
+                from acp.exceptions import RequestError
+
+                raise RequestError(
+                    -32603,
+                    f"Session {session_id} could not be restored: {reason}",
+                    {"sessionId": session_id},
+                )
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
@@ -1796,7 +1815,22 @@ class HermesACPAgent(acp.Agent):
         """Run Hermes on the user's prompt and stream events back to the editor."""
         state = self.session_manager.get_session(session_id)
         if state is None:
-            logger.error("prompt: session %s not found", session_id)
+            # Fail loud (robustness): if the session exists in the DB but its
+            # agent could not be rebuilt, tell the client the real reason rather
+            # than a bare "not found" (e.g. its provider/model was removed).
+            reason = self.session_manager.last_restore_error(session_id)
+            if reason:
+                logger.error("prompt: session %s could not be restored: %s", session_id, reason)
+                if self._conn:
+                    await self._conn.session_update(
+                        session_id,
+                        acp.update_agent_message_text(
+                            f"⚠️ This session can't run: {reason}. Its model or provider may "
+                            "have been removed — start a new session, or restore that provider."
+                        ),
+                    )
+            else:
+                logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
@@ -2180,6 +2214,26 @@ class HermesACPAgent(acp.Agent):
             # rewritten text never reaches the client.
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
+
+        # Fail loud (robustness — ACP fail-silent fix): a non-retryable provider
+        # error (e.g. 401 token_expired, billing exhausted) returns the
+        # conversation loop result with final_response=None + failed=True and the
+        # reason in `error` (agent/conversation_loop.py). Previously the adapter
+        # sent nothing and the client saw an EMPTY "completed" turn with no
+        # explanation. Surface the reason as a visible message (only when nothing
+        # was already streamed) so the user knows to act — re-authenticate,
+        # switch model, etc.
+        if (
+            result.get("failed")
+            and not final_response
+            and not streamed_message
+            and conn
+        ):
+            reason = (result.get("error") or "the model provider returned an error").strip()
+            await conn.session_update(
+                session_id,
+                acp.update_agent_message_text(f"⚠️ Turn failed: {reason}"),
+            )
 
         # Mark this turn idle before draining queued work so recursive prompt()
         # calls can acquire the session. Queued turns are intentionally run as

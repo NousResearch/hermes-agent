@@ -8307,17 +8307,17 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     return effective
 
 
-def _get_task_extra_body(task: str) -> Dict[str, Any]:
-    """Read auxiliary.<task>.extra_body and return a shallow copy when valid.
+def _get_task_request_config(
+    task: str,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Return task extra-body fields and Hermes reasoning configuration.
 
-    Also folds in ``auxiliary.<task>.reasoning_effort`` as an
-    ``extra_body.reasoning`` config dict ({"enabled": ..., "effort": ...})
-    when set. An explicit ``extra_body.reasoning`` in config wins over the
-    ``reasoning_effort`` shorthand (it is the more specific wire control).
-    Downstream, each wire already translates ``extra_body.reasoning``:
-    chat.completions passes it through, the Codex Responses adapter maps it
-    to top-level ``reasoning``/``include``, and the Anthropic auxiliary
-    client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
+    ``auxiliary.<task>.reasoning_effort`` is a provider-neutral Hermes knob.
+    Preserve the legacy ``extra_body.reasoning`` projection for compatible
+    callers, and also return the parsed config separately so provider profiles
+    can translate it to the active endpoint's wire shape. An explicit
+    ``extra_body.reasoning`` wins and suppresses profile projection because it
+    is the more specific wire control.
 
     MoA tasks are excluded by design: reasoning depth for MoA is a per-slot
     setting in the MoA preset (``moa.presets.<name>.reference_models[].
@@ -8328,29 +8328,41 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
     result = dict(raw) if isinstance(raw, dict) else {}
-    if "reasoning" not in result:
-        effort = task_config.get("reasoning_effort")
-        if effort is not None and effort != "":
-            if task in ("moa_reference", "moa_aggregator"):
-                logger.warning(
-                    "auxiliary.%s.reasoning_effort is not supported — MoA "
-                    "reasoning depth is per-slot: set reasoning_effort on the "
-                    "preset's reference_models entries / aggregator instead "
-                    "(moa.presets.<name>...). Ignoring.",
-                    task,
-                )
-                return result
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(effort)
-            if parsed is not None:
-                result["reasoning"] = parsed
-            else:
-                logger.warning(
-                    "auxiliary.%s.reasoning_effort %r is not a valid level "
-                    "(none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
-                    task, effort,
-                )
-    return result
+    if "reasoning" in result:
+        return result, None
+
+    effort = task_config.get("reasoning_effort")
+    if effort is None or effort == "":
+        return result, None
+    if task in ("moa_reference", "moa_aggregator"):
+        logger.warning(
+            "auxiliary.%s.reasoning_effort is not supported — MoA "
+            "reasoning depth is per-slot: set reasoning_effort on the "
+            "preset's reference_models entries / aggregator instead "
+            "(moa.presets.<name>...). Ignoring.",
+            task,
+        )
+        return result, None
+
+    from hermes_constants import parse_reasoning_effort
+
+    parsed = parse_reasoning_effort(effort)
+    if parsed is not None:
+        result["reasoning"] = parsed
+        return result, parsed
+
+    logger.warning(
+        "auxiliary.%s.reasoning_effort %r is not a valid level "
+        "(none, minimal, low, medium, high, xhigh, max, ultra) — ignoring",
+        task, effort,
+    )
+    return result, None
+
+
+def _get_task_extra_body(task: str) -> Dict[str, Any]:
+    """Return the legacy extra-body projection for a configured task."""
+    extra_body, _reasoning_config = _get_task_request_config(task)
+    return extra_body
 
 
 # ---------------------------------------------------------------------------
@@ -9416,8 +9428,12 @@ def _call_llm_impl(
         task, provider, model, base_url, api_key)
     if api_mode:
         resolved_api_mode = api_mode
-    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body, task_reasoning_config = _get_task_request_config(task)
     effective_extra_body.update(extra_body or {})
+    if isinstance(extra_body, dict) and "reasoning" in extra_body:
+        task_reasoning_config = None
+    if reasoning_config is None:
+        reasoning_config = task_reasoning_config
     effective_provider = resolved_provider
 
     if task == "vision":
@@ -10239,8 +10255,12 @@ async def _async_call_llm_impl(
     main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
-    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body, task_reasoning_config = _get_task_request_config(task)
     effective_extra_body.update(extra_body or {})
+    if isinstance(extra_body, dict) and "reasoning" in extra_body:
+        task_reasoning_config = None
+    if reasoning_config is None:
+        reasoning_config = task_reasoning_config
     effective_provider = resolved_provider
 
     if task == "vision":

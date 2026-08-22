@@ -1899,6 +1899,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    output_cap_retry_attempts = 0
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -3455,6 +3456,18 @@ def run_conversation(
                     continue  # Retry the API call
 
                 agent._turn_received_provider_response = True
+
+                # Output-cap recovery has its own consecutive-failure budget.
+                # A valid provider response proves the most recent clamp was
+                # effective and rearms later tool iterations in this turn.
+                if output_cap_retry_attempts:
+                    logger.info(
+                        "Output-cap retry budget rearmed after successful "
+                        "provider response (attempts were %s/%s)",
+                        output_cap_retry_attempts,
+                        max_compression_attempts,
+                    )
+                    output_cap_retry_attempts = 0
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
@@ -5086,6 +5099,7 @@ def run_conversation(
                     agent._client_log_context(),
                     _error_summary,
                 )
+                logger.debug("API call failed full error: %s", api_error)
 
                 _provider = getattr(agent, "provider", "unknown")
                 _base = getattr(agent, "base_url", "unknown")
@@ -5678,24 +5692,37 @@ def run_conversation(
                             # budget, which is authoritative for the failed
                             # request.
                             safe_out = max(1, available_out - 64)
-                        agent._ephemeral_max_output_tokens = safe_out
-                        agent._buffer_vprint(
-                            f"⚠️  Output cap too large for current prompt — "
-                            f"retrying with max_tokens={safe_out:,} "
-                            f"(provider_available={available_out:,}, "
-                            f"estimated_request_tokens={request_input_estimate:,}; "
-                            f"context_length unchanged at {old_ctx:,})"
-                        )
-                        # Still count against compression_attempts so we don't
-                        # loop forever if the error keeps recurring.
-                        compression_attempts += 1
-                        if compression_attempts > max_compression_attempts:
+                        # Output-cap clamps and context compactions are separate
+                        # recovery mechanisms. Preflight/post-tool compression
+                        # can legitimately consume its whole budget before the
+                        # provider reveals that this request's output cap is too
+                        # large. Charging the clamp to that shared counter made
+                        # the first output-cap error terminate without ever
+                        # sending the reduced request. Keep a dedicated bounded
+                        # counter, rearmed by the next valid provider response.
+                        output_cap_retry_attempts += 1
+                        if output_cap_retry_attempts > max_compression_attempts:
                             agent._flush_status_buffer()
-                            agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                            agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                            logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
+                            agent._vprint(
+                                f"{agent.log_prefix}❌ Max output-cap recovery "
+                                f"attempts ({max_compression_attempts}) reached.",
+                                force=True,
+                            )
+                            agent._vprint(
+                                f"{agent.log_prefix}   💡 Lower model.max_tokens, "
+                                "run /compress, or start a fresh conversation with /new.",
+                                force=True,
+                            )
+                            logger.error(
+                                "%sOutput-cap recovery failed after %d attempts.",
+                                agent.log_prefix,
+                                max_compression_attempts,
+                            )
                             agent._persist_session(messages, conversation_history)
-                            _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                            _final_response = (
+                                "Context length exceeded: max output-cap recovery "
+                                f"attempts ({max_compression_attempts}) reached."
+                            )
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,
@@ -5705,7 +5732,29 @@ def run_conversation(
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
+                                "output_cap_recovery_exhausted": True,
                             }
+                        agent._ephemeral_max_output_tokens = safe_out
+                        agent._buffer_vprint(
+                            f"⚠️  Output cap too large for current prompt — "
+                            f"retrying with max_tokens={safe_out:,} "
+                            f"(provider_available={available_out:,}, "
+                            f"estimated_request_tokens={request_input_estimate:,}; "
+                            f"context_length unchanged at {old_ctx:,})"
+                        )
+                        logger.info(
+                            "%sOutput cap too large for current prompt; retrying "
+                            "with max_tokens=%s (attempt %s/%s, "
+                            "provider_available=%s, estimated_request_tokens=%s, "
+                            "context_length=%s)",
+                            agent.log_prefix,
+                            safe_out,
+                            output_cap_retry_attempts,
+                            max_compression_attempts,
+                            available_out,
+                            request_input_estimate,
+                            old_ctx,
+                        )
                         # Also compress the message history so the output-cap
                         # retry does not just spin on max_tokens alone.  The
                         # compressor drops the middle window, freeing enough

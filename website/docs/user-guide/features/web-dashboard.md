@@ -947,6 +947,23 @@ Same precedence as the other dashboard settings — env wins over `config.yaml`:
 | `HERMES_DASHBOARD_PUBLIC_URL` env var | — | Hosting-platform secrets / CI |
 | (unset) | — | Default — reconstruct from `X-Forwarded-*` headers |
 
+### Loopback bind behind a reverse proxy
+
+The dashboard Host check (GHSA-ppp5-vxwm-4cf7) rejects any hostname that is not the bound interface. That is correct for DNS rebinding, but it also rejects a Tailscale/nginx name in front of a `127.0.0.1` bind — so the only remaining workaround used to be binding `0.0.0.0`, which is a larger exposure.
+
+Keep the loopback bind and name the host(s) you trust:
+
+```yaml
+dashboard:
+  allowed_hosts:
+    - don-vps.tailnet.ts.net
+  base_path: /hermes
+```
+
+`allowed_hosts` is opt-in and fail-closed: empty keeps the old loopback-only rule, and `*` is ignored. `base_path` is used only when the proxy does not send `X-Forwarded-Prefix` (`tailscale serve` is the common case). The header still wins when present.
+
+Env overrides (same precedence as `public_url`): `HERMES_DASHBOARD_ALLOWED_HOSTS` (comma-separated) and `HERMES_DASHBOARD_BASE_PATH`.
+
 Validation rejects values without `http://` / `https://` scheme, without a host, or containing quote / angle / whitespace / control characters. A malformed value silently falls through to header reconstruction so the login flow keeps working rather than dispatching the user to a hostile URL.
 
 > **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme` (X-Forwarded-Proto under proxy_headers), so an `http://` `public_url` on a TLS-terminated public deploy will produce non-Secure cookies. This is an operator footgun — pair `public_url` with proper TLS termination upstream.

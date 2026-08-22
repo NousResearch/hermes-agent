@@ -148,6 +148,32 @@ class TestForwardedPrefixNormalisation:
         assert "longer than 256 characters" in warnings[0].getMessage()
 
 
+class _HeaderRequest:
+    def __init__(self, headers):
+        self.headers = headers
+
+
+class TestBasePathFallback:
+    def test_configured_base_path_used_when_header_absent(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DASHBOARD_BASE_PATH", raising=False)
+        monkeypatch.setattr(prefix_mod, "resolve_base_path", lambda: "/hermes")
+        assert prefix_mod.prefix_from_request(_HeaderRequest({})) == "/hermes"
+
+    def test_header_wins_over_configured_base_path(self, monkeypatch):
+        monkeypatch.setattr(prefix_mod, "resolve_base_path", lambda: "/from-config")
+        assert (
+            prefix_mod.prefix_from_request(
+                _HeaderRequest({"x-forwarded-prefix": "/from-header"})
+            )
+            == "/from-header"
+        )
+
+    def test_resolve_base_path_reads_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_BASE_PATH", "/hermes")
+        monkeypatch.setattr(prefix_mod, "_load_dashboard_section", lambda: {})
+        assert prefix_mod.resolve_base_path() == "/hermes"
+
+
 # ---------------------------------------------------------------------------
 # Gate middleware: Location: header and 401 envelope respect prefix
 # ---------------------------------------------------------------------------

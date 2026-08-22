@@ -132,10 +132,17 @@ def normalise_prefix(raw: Optional[str]) -> str:
 
 
 def prefix_from_request(request) -> str:
-    """Convenience wrapper that reads the header off a Starlette/FastAPI
-    Request and normalises it. Returns ``""`` when no prefix.
+    """Read X-Forwarded-Prefix, then fall back to the operator base path.
+
+    Several common proxies (``tailscale serve``, unconfigured nginx/Caddy)
+    do not inject the header. ``dashboard.base_path`` /
+    ``HERMES_DASHBOARD_BASE_PATH`` fills that gap. The header still wins
+    when present so a correctly configured proxy is not shadowed.
     """
-    return normalise_prefix(request.headers.get("x-forwarded-prefix"))
+    header = normalise_prefix(request.headers.get("x-forwarded-prefix"))
+    if header:
+        return header
+    return resolve_base_path()
 
 
 # ---------------------------------------------------------------------------
@@ -230,3 +237,64 @@ def resolve_public_url() -> str:
     if not cfg_clean:
         _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
     return cfg_clean
+
+
+_HOST_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-")
+
+
+def _normalise_allowed_host(raw: object) -> str:
+    """Return a lowercase hostname, or empty if the entry is unsafe."""
+    host = str(raw or "").strip().lower()
+    if not host or host == "*":
+        return ""
+    if host.startswith("["):
+        close = host.find("]")
+        host = host[1:close] if close != -1 else host.strip("[]")
+    elif host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    if not host or host == "*" or ".." in host:
+        return ""
+    if not set(host) <= _HOST_CHARS:
+        return ""
+    return host
+
+
+def resolve_allowed_hosts() -> tuple[str, ...]:
+    """Opt-in Host allowlist for a loopback-bound dashboard behind a proxy.
+
+    Precedence: ``HERMES_DASHBOARD_ALLOWED_HOSTS`` (comma-separated), then
+    ``dashboard.allowed_hosts`` in config.yaml. Empty / ``*`` entries are
+    dropped so the GHSA-ppp5-vxwm-4cf7 default stays fail-closed.
+    """
+    env_raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if env_raw.strip():
+        values = env_raw.split(",")
+    else:
+        cfg = _load_dashboard_section().get("allowed_hosts", [])
+        if isinstance(cfg, str):
+            values = cfg.split(",")
+        elif isinstance(cfg, (list, tuple)):
+            values = cfg
+        else:
+            values = []
+    hosts = []
+    seen = set()
+    for item in values:
+        host = _normalise_allowed_host(item)
+        if host and host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return tuple(hosts)
+
+
+def resolve_base_path() -> str:
+    """Operator-declared dashboard path prefix when the proxy omits the header.
+
+    Precedence: ``HERMES_DASHBOARD_BASE_PATH``, then ``dashboard.base_path``.
+    Values go through :func:`normalise_prefix`.
+    """
+    env_raw = os.environ.get("HERMES_DASHBOARD_BASE_PATH", "")
+    env_clean = normalise_prefix(env_raw)
+    if env_clean:
+        return env_clean
+    return normalise_prefix(str(_load_dashboard_section().get("base_path", "") or ""))

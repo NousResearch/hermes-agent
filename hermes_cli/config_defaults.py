@@ -1628,6 +1628,17 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Opt-in Host allowlist when the dashboard stays bound to
+        # loopback but is reached through a reverse proxy under a real
+        # hostname (Tailscale MagicDNS, nginx). Empty keeps the
+        # GHSA-ppp5-vxwm-4cf7 default (loopback names only). ``*`` is
+        # ignored. Env: ``HERMES_DASHBOARD_ALLOWED_HOSTS`` (comma-separated)
+        # wins when set.
+        "allowed_hosts": [],
+        # Path prefix used when the proxy does not send
+        # ``X-Forwarded-Prefix`` (common with ``tailscale serve``).
+        # Header still wins when present. Env: ``HERMES_DASHBOARD_BASE_PATH``.
+        "base_path": "",
     },
 
     # Privacy settings

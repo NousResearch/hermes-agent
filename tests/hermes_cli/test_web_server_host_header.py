@@ -47,6 +47,33 @@ class TestHostHeaderValidator:
         # Loopback — reject (we bound to a specific non-loopback name)
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
+    def test_loopback_bind_rejects_named_host_without_allowlist(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert not _is_accepted_host(
+            "don-vps.tailnet.ts.net", "127.0.0.1", allowed_hosts=()
+        )
+
+    def test_loopback_bind_accepts_allowlisted_host(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert _is_accepted_host(
+            "don-vps.tailnet.ts.net:9119",
+            "127.0.0.1",
+            allowed_hosts=("don-vps.tailnet.ts.net",),
+        )
+        assert not _is_accepted_host(
+            "evil.example",
+            "127.0.0.1",
+            allowed_hosts=("don-vps.tailnet.ts.net",),
+        )
+
+    def test_wildcard_allowlist_is_ignored(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert not _is_accepted_host(
+            "evil.example", "127.0.0.1", allowed_hosts=("*",)
+        )
 
 
 class TestHostHeaderMiddleware:

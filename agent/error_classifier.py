@@ -65,7 +65,9 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    # Direct replay rejection; see codex_reasoning_replay_rejected for the masked Codex envelope.
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    codex_reasoning_replay_rejected = "codex_reasoning_replay_rejected"  # ChatGPT Codex masked a replay rejection as invalid_prompt
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
@@ -907,6 +909,49 @@ def classify_api_error(
             FailoverReason.content_policy_blocked,
             retryable=False,
             should_fallback=True,
+        )
+
+    # ChatGPT Codex OAuth masks encrypted-reasoning replay failures behind a
+    # generic ``invalid_prompt: Request blocked.`` envelope. The primary
+    # trigger (reserved Harmony tokens in outbound text) is defanged by the
+    # request preflight; this exact signature catches the remaining masked
+    # case so the conversation loop can attempt its one-shot replay-strip.
+    # The strip stays gated on cached ``codex_reasoning_items``, so when
+    # Harmony tokens were the real cause this classifies the error but the
+    # strip is a harmless no-op. Status None covers SSE APIError, which
+    # carries the structured body but no ``.status_code``.
+    _error_obj = body.get("error")
+    if not isinstance(_error_obj, dict):
+        _error_obj = body
+    _is_codex_invalid_prompt = (
+        provider_lower == "openai-codex"
+        and error_code.lower() == "invalid_prompt"
+    )
+    if _is_codex_invalid_prompt:
+        _codex_message = str(_error_obj.get("message") or "").strip().lower()
+        _matches_masked_replay_signature = (
+            # Streaming Responses failures are surfaced by the OpenAI SDK as
+            # APIError, which preserves the structured body but has no status_code.
+            status_code in {None, 400}
+            and _codex_message == "request blocked."
+            and _error_obj.get("type") == "invalid_request_error"
+            and "param" in _error_obj
+            and _error_obj.get("param") is None
+        )
+        if _matches_masked_replay_signature:
+            return _result(
+                FailoverReason.codex_reasoning_replay_rejected,
+                retryable=False,
+                should_fallback=False,
+            )
+        logger.debug(
+            "OpenAI Codex invalid_prompt did not match the masked replay "
+            "signature: status=%r message=%r type=%r param_present=%s param_is_null=%s",
+            status_code,
+            _codex_message[:160],
+            _error_obj.get("type"),
+            "param" in _error_obj,
+            _error_obj.get("param") is None,
         )
 
     # Anthropic thinking block recovery (400).  Two distinct failure modes,

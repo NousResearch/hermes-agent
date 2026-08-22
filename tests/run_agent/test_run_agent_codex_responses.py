@@ -2,7 +2,9 @@ import sys
 import types
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIError as OpenAIAPIError
 
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
@@ -2391,3 +2393,143 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     )
 
     assert "".join(reasoning_streamed) == "Need to inspect files."
+
+
+def test_run_conversation_openai_codex_recovers_generic_invalid_prompt_by_stripping_reasoning_replay(monkeypatch):
+    """ChatGPT Codex can mask an invalid replay carrier as generic invalid_prompt."""
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *args, **kwargs: 0)
+
+    request_payloads = []
+
+    live_sse_error = OpenAIAPIError(
+        message="Request blocked.",
+        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+        body={
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        },
+    )
+    assert not hasattr(live_sse_error, "status_code")
+    responses = [live_sse_error, _codex_message_response("Recovered without replay.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    history = [{
+        "role": "assistant",
+        "content": "",
+        "finish_reason": "incomplete",
+        "codex_reasoning_items": [
+            {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_bad", "summary": []},
+        ],
+    }]
+
+    result = agent.run_conversation("continue", conversation_history=history)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered without replay."
+    assert len(request_payloads) == 2
+    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
+    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
+    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
+    assert request_payloads[1].get("include") == []
+    assert result["messages"][0].get("codex_reasoning_items") is None
+    assert agent._codex_reasoning_replay_enabled is False
+
+
+def test_run_conversation_codex_masked_replay_rejection_without_cached_items_logs_noop(
+    monkeypatch,
+    caplog,
+):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    request_payloads = []
+
+    live_sse_error = OpenAIAPIError(
+        message="Request blocked.",
+        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+        body={
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        },
+    )
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        raise live_sse_error
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    with caplog.at_level("DEBUG", logger="agent.conversation_loop"):
+        result = agent.run_conversation(
+            "continue",
+            conversation_history=[
+                {"role": "assistant", "content": "No replay state here."}
+            ],
+        )
+
+    assert result["completed"] is False
+    assert len(request_payloads) == 1
+    assert agent._codex_reasoning_replay_enabled is True
+    assert any(
+        "no cached codex_reasoning_items were present" in record.getMessage()
+        and "replay-strip recovery is a no-op" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_does_not_disable_replay(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "custom"
+    agent.base_url = "https://api.example.com/v1"
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *args, **kwargs: 0)
+
+    request_payloads = []
+
+    class _InvalidEncryptedContentError(Exception):
+        def __init__(self):
+            super().__init__("Error code: 400 - bad request")
+            self.status_code = 400
+            self.body = {
+                "error": {
+                    "code": "INVALID_ENCRYPTED_CONTENT",
+                    "message": "Bad request",
+                }
+            }
+
+    responses = [_InvalidEncryptedContentError(), _codex_message_response("Recovered after generic retry.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation(
+        "continue",
+        conversation_history=[{"role": "assistant", "content": "No replay state here."}],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after generic retry."
+    assert len(request_payloads) == 2
+    assert all(payload.get("include") == ["reasoning.encrypted_content"] for payload in request_payloads)
+    assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
+    assert agent._codex_reasoning_replay_enabled is True
+    assert result["messages"][0].get("codex_reasoning_items") is None

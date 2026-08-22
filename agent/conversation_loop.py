@@ -4954,18 +4954,23 @@ def run_conversation(
                 # OpenAI Responses API surfaces (and some compatible relays)
                 # return HTTP 400 ``invalid_encrypted_content`` when a
                 # replayed ``codex_reasoning_items`` blob from a previous
-                # turn fails verification (provider rotated the encryption
-                # key, the route doesn't actually persist reasoning state,
-                # etc.).  Recovery: disable replay for the rest of the
-                # session, strip cached items from history, retry once.
-                # One-shot — if a second 400 fires we fall through to the
-                # normal retry/backoff path.  Only fires for codex_responses
-                # mode with at least one assistant message that has cached
-                # ``codex_reasoning_items``; without replay state, the
-                # error is unrelated to our cache so the normal retry path
-                # handles it (the provider is rejecting something else).
+                # turn fails verification. Recovery: disable replay for the
+                # rest of the session, strip cached items from history, retry
+                # once.
+                #
+                # ChatGPT Codex can mask a rejected encrypted-reasoning
+                # replay as ``invalid_prompt: Request blocked.`` (classified
+                # as codex_reasoning_replay_rejected). Recovery is the same
+                # one-shot replay-strip as invalid_encrypted_content: it only
+                # fires when cached ``codex_reasoning_items`` exist, so when
+                # the real cause was reserved tokens (already defanged by the
+                # preflight) the strip is a harmless no-op and the normal
+                # classified-error path takes over.
                 if (
-                    classified.reason == FailoverReason.invalid_encrypted_content
+                    classified.reason in {
+                        FailoverReason.invalid_encrypted_content,
+                        FailoverReason.codex_reasoning_replay_rejected,
+                    }
                     and not _retry.invalid_encrypted_content_retry_attempted
                     and agent.api_mode == "codex_responses"
                     and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
@@ -4992,6 +4997,18 @@ def run_conversation(
                         replay_stats["messages"],
                     )
                     continue
+                elif (
+                    classified.reason == FailoverReason.codex_reasoning_replay_rejected
+                    and not _retry.invalid_encrypted_content_retry_attempted
+                    and agent.api_mode == "codex_responses"
+                    and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+                ):
+                    logger.debug(
+                        "%sCodex masked replay rejection matched, but no cached "
+                        "codex_reasoning_items were present; replay-strip recovery "
+                        "is a no-op and normal classified-error handling continues",
+                        agent.log_prefix,
+                    )
 
                 # ── Native compaction rejection recovery ──────────────
                 # Provider explicitly rejected the ``context_management``

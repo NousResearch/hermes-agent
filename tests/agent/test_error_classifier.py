@@ -1,6 +1,8 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
+import httpx
 import pytest
+from openai import APIError as OpenAIAPIError
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
@@ -60,6 +62,7 @@ class TestFailoverReason:
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
+            "codex_reasoning_replay_rejected",
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "content_policy_blocked",
@@ -537,6 +540,108 @@ class TestClassifyApiError:
 
 
 
+    def test_openai_codex_invalid_prompt_request_blocked_is_replay_rejection_candidate(self):
+        """The ChatGPT Codex OAuth signature is narrow enough for a one-shot repair."""
+        e = MockAPIError(
+            "Error code: 400 - Request blocked.",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Request blocked.",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "invalid_prompt",
+                }
+            },
+        )
+
+        codex = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+        other = classify_api_error(e, provider="openai", model="gpt-5.6-terra")
+
+        assert codex.reason == FailoverReason.codex_reasoning_replay_rejected
+        assert codex.retryable is False
+        assert codex.should_fallback is False
+        assert other.reason == FailoverReason.format_error
+
+    def test_openai_codex_direct_invalid_prompt_body_is_replay_rejection_candidate(self):
+        """The actual Codex SDK exposes this 400 body without an ``error`` wrapper."""
+        e = MockAPIError(
+            "Error code: 400 - Request blocked.",
+            status_code=400,
+            body={
+                "message": "Request blocked.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "invalid_prompt",
+            },
+        )
+
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+
+        assert result.reason == FailoverReason.codex_reasoning_replay_rejected
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_openai_codex_sse_api_error_without_status_is_replay_rejection_candidate(self):
+        """SSE ``APIError`` has the live body but no ``status_code`` attribute."""
+        e = OpenAIAPIError(
+            message="Request blocked.",
+            request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+            body={
+                "message": "Request blocked.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "invalid_prompt",
+            },
+        )
+
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+
+        assert not hasattr(e, "status_code")
+        assert result.reason == FailoverReason.codex_reasoning_replay_rejected
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_openai_codex_invalid_prompt_near_miss_logs_signature_drift(self, caplog):
+        e = MockAPIError(
+            "Error code: 400 - Request blocked",
+            status_code=400,
+            body={
+                "message": "Request blocked",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "invalid_prompt",
+            },
+        )
+
+        with caplog.at_level("DEBUG", logger="agent.error_classifier"):
+            result = classify_api_error(
+                e,
+                provider="openai-codex",
+                model="gpt-5.6-terra",
+            )
+
+        assert result.reason == FailoverReason.format_error
+        assert any(
+            "OpenAI Codex invalid_prompt did not match the masked replay signature"
+            in record.getMessage()
+            and "message='request blocked'" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_xai_invalid_encrypted_content_wording_uses_replay_recovery(self):
+        e = MockAPIError(
+            "Error code: 400 - Could not decrypt the provided encrypted_content. "
+            "Ensure the value is the unmodified encrypted_content from a previous response.",
+            status_code=400,
+            body={
+                "code": "Client specified an invalid argument",
+                "error": (
+                    "Could not decrypt the provided encrypted_content. Ensure the value "
+                    "is the unmodified encrypted_content from a previous response."
+                ),
+            },
+        )
 
 
     @pytest.mark.parametrize("error_code", ["Invalid_Encrypted_Content", "INVALID_ENCRYPTED_CONTENT"])

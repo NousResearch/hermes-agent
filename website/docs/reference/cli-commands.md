@@ -818,6 +818,34 @@ hermes doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
+### Skipping optional integrations
+
+`hermes doctor` warns about integrations that are not configured. On a
+machine that intentionally never uses a given provider or toolset, those
+warnings are just noise. Two `doctor` config keys let an operator declare
+integrations optional so they are skipped instead of flagged:
+
+```yaml
+doctor:
+  # Auth-provider rows to skip (case-insensitive; match by label or alias).
+  # Skipped rows print a single info line and stay out of the final summary.
+  #   nous / nous portal   -> Nous Portal auth
+  #   codex / openai codex -> OpenAI Codex auth
+  #   minimax              -> MiniMax OAuth
+  #   xai                  -> xAI OAuth
+  ignore_auth_providers:
+    - minimax
+    - xai
+  # Toolset ids/names to drop from the "Tool Availability" warnings and the
+  # summary tally (case-insensitive; use the id/name shown in doctor output).
+  ignore_toolsets:
+    - discord
+    - home-assistant
+```
+
+Both default to empty, so out of the box every provider and toolset is
+still reported.
+
 ## `hermes dump`
 
 ```bash

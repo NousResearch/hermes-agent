@@ -225,7 +225,35 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [kanban_entry]
 
+    def test_drops_operator_ignored_toolsets_from_doctor_warnings(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor,
+            "load_config",
+            lambda: {"doctor": {"ignore_toolsets": ["discord", "browser-cdp"]}},
+        )
 
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [
+                {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"]},
+                {"name": "browser-cdp", "env_vars": []},
+                {"name": "spotify", "env_vars": []},
+            ],
+        )
+
+        assert available == []
+        assert unavailable == [{"name": "spotify", "env_vars": []}]
+
+    def test_doctor_auth_ignore_matching_supports_aliases(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor,
+            "load_config",
+            lambda: {"doctor": {"ignore_auth_providers": ["nous", "minimax oauth"]}},
+        )
+
+        assert doctor._is_doctor_auth_ignored("Nous Portal", "nous")
+        assert doctor._is_doctor_auth_ignored("minimax oauth")
+        assert not doctor._is_doctor_auth_ignored("google gemini")
 
 
 class TestHonchoDoctorConfigDetection:
@@ -338,6 +366,151 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+
+class TestDoctorAuthProviderIgnore:
+    """End-to-end: doctor.ignore_auth_providers must suppress the warning
+    ROWS (not just a helper predicate) for EVERY auth provider, including
+    OpenAI Codex and xAI OAuth."""
+
+    def _run(self, monkeypatch, tmp_path, ignore_auth_providers=None,
+             ignore_toolsets=None):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        import yaml
+        doctor_cfg = {}
+        if ignore_auth_providers is not None:
+            doctor_cfg["ignore_auth_providers"] = ignore_auth_providers
+        if ignore_toolsets is not None:
+            doctor_cfg["ignore_toolsets"] = ignore_toolsets
+        config = {"doctor": doctor_cfg} if doctor_cfg else {}
+        (home / "config.yaml").write_text(yaml.dump(config))
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        # The doctor helpers call load_config() directly; point it at our file.
+        monkeypatch.setattr(doctor_mod, "load_config", lambda: config)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # All providers report "not logged in" so, without the ignore config,
+        # each would emit a warning row.
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        except Exception:
+            pass
+
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_all_auth_rows_warn_without_ignore(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path)
+        # Baseline: every provider prints its "not logged in" warning row.
+        assert "Nous Portal auth" in out
+        assert "OpenAI Codex auth" in out
+        assert "MiniMax OAuth" in out
+        assert "xAI OAuth" in out
+        assert "not logged in" in out
+        assert "doctor.ignore_auth_providers" not in out
+
+    def test_codex_and_xai_rows_are_suppressed(self, monkeypatch, tmp_path):
+        # Sweeper's key ask: Codex and xAI must honor ignore_auth_providers.
+        out = self._run(
+            monkeypatch, tmp_path,
+            ignore_auth_providers=["codex", "xai"],
+        )
+        assert "OpenAI Codex auth skipped (disabled in doctor.ignore_auth_providers)" in out
+        assert "xAI OAuth skipped (disabled in doctor.ignore_auth_providers)" in out
+        # Their "not logged in" warnings must be gone…
+        assert "OpenAI Codex auth (not logged in)" not in out
+        assert "xAI OAuth (not logged in)" not in out
+        # …while the providers NOT ignored still warn.
+        assert "Nous Portal auth" in out
+        assert "MiniMax OAuth" in out
+
+    def test_nous_and_minimax_rows_are_suppressed(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            ignore_auth_providers=["nous portal", "minimax"],
+        )
+        assert "Nous Portal auth skipped (disabled in doctor.ignore_auth_providers)" in out
+        assert "MiniMax OAuth skipped (disabled in doctor.ignore_auth_providers)" in out
+        # Non-ignored providers still emit their real warning rows.
+        assert "OpenAI Codex auth" in out
+        assert "xAI OAuth" in out
+
+
+class TestDoctorToolsetIgnoreEndToEnd:
+    """End-to-end: doctor.ignore_toolsets must suppress the Tool Availability
+    warning ROW, not merely the summary tally."""
+
+    def _run(self, monkeypatch, tmp_path, ignore_toolsets=None):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        import yaml
+        config = {"doctor": {"ignore_toolsets": ignore_toolsets or []}}
+        (home / "config.yaml").write_text(yaml.dump(config))
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+        monkeypatch.setattr(doctor_mod, "load_config", lambda: config)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (
+                [],
+                [
+                    {"name": "discord", "env_vars": ["DISCORD_BOT_TOKEN"]},
+                    {"name": "spotify", "env_vars": ["SPOTIFY_CLIENT_ID"]},
+                ],
+            ),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_ignored_toolset_row_is_dropped(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, ignore_toolsets=["discord"])
+        # The ignored toolset's warning ROW must be gone entirely. Match the
+        # specific "(missing DISCORD_BOT_TOKEN)" row rather than the bare word
+        # "discord", which also appears in the unrelated discord.py dep check.
+        assert "DISCORD_BOT_TOKEN" not in out
+        # A non-ignored missing toolset still warns.
+        assert "SPOTIFY_CLIENT_ID" in out
+
+    def test_no_ignore_shows_all_toolset_warnings(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, ignore_toolsets=[])
+        assert "DISCORD_BOT_TOKEN" in out
+        assert "SPOTIFY_CLIENT_ID" in out
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):

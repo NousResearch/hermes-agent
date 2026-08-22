@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: typewhisper
+description: Transcribe files and manage local speech-to-text workflows with TypeWhisper.
+source: https://github.com/TypeWhisper/typewhisper-mcp
+
+# The TypeWhisper MCP server is published on npm and communicates with the
+# TypeWhisper desktop app over its authenticated local HTTP API. Pinning the
+# package keeps catalog installs reproducible; update this version deliberately
+# when a newer server release has been reviewed.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@typewhisper/mcp@0.1.2"
+
+# Local installations discover the API port and bearer token from TypeWhisper's
+# app-data directory on macOS or Windows. Remote installations can pass
+# TYPEWHISPER_API_BASE_URL and TYPEWHISPER_API_TOKEN through the server's `env`
+# block in ~/.hermes/config.yaml.
+auth:
+  type: none
+
+# Keep the default surface useful and non-destructive. The install-time tool
+# checklist still lets users opt into dictionary writes and deletes.
+tools:
+  default_enabled:
+    - typewhisper_status
+    - typewhisper_list_models
+    - typewhisper_transcribe_file
+    - typewhisper_search_history
+    - typewhisper_list_dictionary_terms
+    - typewhisper_list_dictionary_corrections
+
+post_install: |
+  TypeWhisper must be running with its local API enabled under
+  Settings > Advanced. Start a new Hermes session after enabling the API.
+
+  Local macOS and Windows installations discover the API connection and bearer
+  token automatically. For a remote TypeWhisper host, forward its loopback API
+  through a private tunnel and add TYPEWHISPER_API_BASE_URL plus
+  TYPEWHISPER_API_TOKEN to mcp_servers.typewhisper.env in your Hermes config.
+
+  File paths passed to typewhisper_transcribe_file must exist on the machine
+  running TypeWhisper. Shared or synchronized directories work for remote use.
+
+  Dictionary write and delete tools are disabled by default. Re-run the tool
+  checklist to enable them when needed:
+    hermes mcp configure typewhisper

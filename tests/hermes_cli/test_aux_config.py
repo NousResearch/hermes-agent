@@ -46,6 +46,38 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
+def test_every_default_aux_slot_is_pickable():
+    """Every DEFAULT_CONFIG["auxiliary"] routing slot must appear in _AUX_TASKS.
+
+    #88618: background_review ships in DEFAULT_CONFIG and is read by
+    agent/background_review.py, but was missing from _AUX_TASKS — the
+    interactive picker never surfaced it and "Reset all to auto" skipped it.
+    A slot that exists in config but not in the picker is undiscoverable.
+    """
+    # Keys that are settings or internal-only tasks with no picker entry by
+    # design (pre-existing state, not part of #88618): tuning knobs like
+    # free_only/stream_only_base_urls/transient_retries/openrouter_model,
+    # and internal call_llm tasks surfaced elsewhere.
+    _NON_TASK_KEYS = {
+        "defaults",
+        "free_only",
+        "goal_judge",
+        "moa_aggregator",
+        "moa_reference",
+        "monitor",
+        "openrouter_model",
+        "stream_only_base_urls",
+        "transient_retries",
+    }
+    missing = [
+        key
+        for key in DEFAULT_CONFIG["auxiliary"]
+        if key not in _NON_TASK_KEYS
+        and not any(task_key == key for task_key, _n, _d in _AUX_TASKS)
+    ]
+    assert not missing, f"aux slots invisible in the picker: {missing}"
+
+
 
 
 

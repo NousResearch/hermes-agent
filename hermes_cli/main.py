@@ -4084,6 +4084,11 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass"),
+    # The post-turn memory/skill review fork: agent/background_review.py
+    # reads auxiliary.background_review.{provider,model} and the slot ships
+    # in DEFAULT_CONFIG, but it was missing here so the picker — and "Reset
+    # all to auto" — never surfaced it (#88618).
+    ("background_review", "Background review", "post-turn memory/skill review"),
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.

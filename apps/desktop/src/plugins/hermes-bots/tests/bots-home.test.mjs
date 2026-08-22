@@ -41,6 +41,8 @@ function load({ focusedStoredSessionId = null, paneVisibility = true, openWorksp
   const notifications = []
   const requests = []
   const invalidations = []
+  const sessionOpens = []
+  const workspaceScopes = []
   const paneVisible = new Map()
   const focused = atom(focusedStoredSessionId)
 
@@ -53,6 +55,23 @@ function load({ focusedStoredSessionId = null, paneVisibility = true, openWorksp
     request: (method, params) => {
       requests.push({ method, params })
       return Promise.resolve({})
+    },
+    requestProfile: (route, method, params) => {
+      requests.push({ method, params, route })
+      if (method === 'profiles.list') {
+        return Promise.resolve({ profiles: [{ name: route.targetProfile || route.profile }] })
+      }
+      if (method === 'session.list') {
+        return Promise.resolve({
+          sessions: [{ id: `chat-${route.connectionId}-${route.profile}`, title: 'Bot Chat', message_count: 1 }]
+        })
+      }
+      return Promise.resolve({})
+    },
+    openSession: async (id, options) => sessionOpens.push({ id, options }),
+    setWorkspaceScope: (mode, ownerKey = null) => {
+      workspaceScopes.push({ mode, ownerKey })
+      return true
     },
     notify: params => notifications.push(params),
     notifyError: (error, fallback) => notifications.push({ kind: 'error', message: fallback, error }),
@@ -142,7 +161,19 @@ globalThis.__home = {
 
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
 
-  return { ...context.__home, closed, focused, host, invalidations, notifications, opened, paneVisible, requests }
+  return {
+    ...context.__home,
+    closed,
+    focused,
+    host,
+    invalidations,
+    notifications,
+    opened,
+    paneVisible,
+    requests,
+    sessionOpens,
+    workspaceScopes
+  }
 }
 
 /** Every door that would create, activate, or route something. A passive
@@ -398,9 +429,9 @@ test('an unknown source list is not proof of deletion', () => {
   assert.equal(t.ghostRosterOwner('work-vps::researcher', [{ connectionId: 'local', reachable: true }]), null)
 })
 
-// ── explicit open: local routes, remote never does ──────────────────────────
+// ── explicit open: every reachable owner routes exactly ────────────────────
 
-test('opening a remote bot selects it and routes nothing', async () => {
+test('opening a remote bot selects and opens its exact owner chat', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
   t.$botsPaneVisible.set(true)
@@ -415,13 +446,20 @@ test('opening a remote bot selects it and routes nothing', async () => {
 
   const result = await t.openRosterBot(bot)
 
-  assert.equal(result, false, 'a remote row does not open a chat')
+  assert.equal(result, true)
   assert.equal(t.$selectedRosterKey.get(), 'work-vps::researcher')
-  assert.equal(t.$openBotChat.get(), null)
-  assertNothingRouted(t, 'clicking a remote row')
+  const openBotChat = t.$openBotChat.get()
+  assert.equal(openBotChat?.key, 'work-vps::researcher')
+  assert.equal(openBotChat?.openedRegistryId, 'chat-work-vps-researcher')
+  assert.equal(t.sessionOpens.length, 1)
+  assert.equal(t.sessionOpens[0].options.workspaceMode, 'bots')
+  assert.equal(t.sessionOpens[0].options.workspaceOwnerKey, 'bot:work-vps::researcher')
+  assert.equal(t.sessionOpens[0].options.keepAllProfilesScope, true)
+  assert.equal(t.sessionOpens[0].options.route.connectionId, 'work-vps')
+  assert.ok(t.requests.every(request => request.route?.connectionId === 'work-vps'))
 })
 
-test('a remote owner fronts the Bots home without closing the group tab', async () => {
+test('a remote owner opens its chat without closing an unrelated group tab', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
   t.$botsPaneVisible.set(true)
@@ -435,13 +473,14 @@ test('a remote owner fronts the Bots home without closing the group tab', async 
     remoteSource: true
   })
 
-  assert.equal(result, false)
-  assert.equal(t.botsHomeVisible(), true)
+  assert.equal(result, true)
+  assert.equal(t.botsHomeVisible(), false)
   assert.equal(t.$groupChatWorkspace.get(), null)
   assert.equal(groupEntry.disposed, false, 'explicit selection must not close an unrelated group tab')
+  assert.equal(t.sessionOpens.length, 1)
 })
 
-test('a remote owner preserves a group when the Bots home cannot open', async () => {
+test('a remote owner does not depend on the informational home surface', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
   t.$botsPaneVisible.set(true)
@@ -458,9 +497,10 @@ test('a remote owner preserves a group when the Bots home cannot open', async ()
     remoteSource: true
   })
 
-  assert.equal(result, false)
-  assert.equal(t.$groupChatWorkspace.get(), 'Launch room')
+  assert.equal(result, true)
+  assert.equal(t.$groupChatWorkspace.get(), null)
   assert.equal(groupEntry.disposed, false)
+  assert.equal(t.sessionOpens.length, 1)
 })
 
 test('a failed local open leaves no phantom owner in the center', async () => {
@@ -469,9 +509,9 @@ test('a failed local open leaves no phantom owner in the center', async () => {
   t.$botsPaneVisible.set(true)
   t.$openBotChat.set({ key: 'local::writer', openedRegistryId: 'previous' })
 
-  // A source-scoped row on a desktop that cannot activate it: prepareBotSource
+  // A source-scoped row on a desktop that cannot address it: prepareBotSource
   // refuses rather than letting the open fall through to the live gateway.
-  delete t.host.ensureAgent
+  delete t.host.requestProfile
   const bot = { connectionId: 'work-vps', name: 'writer', sourceScoped: true }
 
   const result = await t.openRosterBot(bot)
@@ -480,6 +520,26 @@ test('a failed local open leaves no phantom owner in the center', async () => {
   assert.equal(t.$openBotChat.get(), null, 'a failed open must release the center back to the home')
   assert.equal(t.notifications.at(-1).kind, 'error', 'and the failure is surfaced, not swallowed')
   assertNothingRouted(t, 'a refused local open')
+})
+
+test('an older gateway gets an actionable Bot Mode update message', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.host.requestProfile = async () => {
+    throw new Error('Unknown method profiles.list')
+  }
+
+  const result = await t.openRosterBot({
+    connectionId: 'work-vps',
+    connectionLabel: 'Work',
+    name: 'writer',
+    sourceScoped: true
+  })
+
+  assert.equal(result, false)
+  assert.equal(t.notifications.at(-1).title, 'Update this gateway to use Bot Mode')
+  assert.equal(t.notifications.at(-1).message, 'Update Work, then try again.')
 })
 
 test('a missing profile-scoped draft API returns to the home without navigating', async () => {
@@ -662,7 +722,7 @@ test('a persisted layout that restored the home behind the draft gets re-fronted
   assert.equal(t.botsHomeVisible(), true)
 })
 
-test('an explicit remote selection fronts the home over a focused chat', async () => {
+test('an explicit remote selection opens its owner tab without moving the focused Sessions chat', async () => {
   const t = load({ focusedStoredSessionId: 'local-scout-chat' })
   t.setPluginCtx({ storage: { set: () => undefined } })
   t.$botsPaneVisible.set(true)
@@ -671,19 +731,19 @@ test('an explicit remote selection fronts the home over a focused chat', async (
   t.syncBotsHomeWorkspace()
   assert.deepEqual(t.opened, [])
 
-  // …but clicking the same-named twin on another gateway is a gesture at
-  // that owner: the home fronts, the chat stays alive underneath.
+  // …but clicking the same-named twin on another gateway opens that owner in
+  // Bot Mode while the Sessions chat stays alive underneath.
   await t.openRosterBot({ connectionId: 'work-vps', connectionLabel: 'Work', name: 'scout', remoteSource: true })
 
-  assert.equal(t.opened.length, 1)
+  assert.equal(t.opened.length, 0)
+  assert.equal(t.sessionOpens.length, 1)
   assert.equal(t.$selectedRosterKey.get(), 'work-vps::scout')
-  assert.equal(t.$openBotChat.get(), null)
-  assertNothingRouted(t, 'explicit remote selection')
+  assert.equal(t.$openBotChat.get().key, 'work-vps::scout')
+  assert.equal(t.focused.get(), 'local-scout-chat')
 
-  // Browsing more remote owners reuses the fronted home instead of
-  // re-registering it (a stale disposer would tear down the newer one).
+  // Browsing more remote owners opens that owner without reusing the first.
   await t.openRosterBot({ connectionId: 'work-vps', connectionLabel: 'Work', name: 'relay', remoteSource: true })
-  assert.equal(t.opened.length, 1)
+  assert.equal(t.sessionOpens.length, 2)
   assert.equal(t.$selectedRosterKey.get(), 'work-vps::relay')
 })
 
@@ -701,8 +761,8 @@ test('an explicit Bots-home gesture fronts the selected owner over a Sessions co
 
 test('source contract: sidebar entry and boot restore reconcile passively after layout hydration', () => {
   assert.match(pluginSource, /const syncWorkspaceSurfaces = \(\) =>/)
-  assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(\)/)
-  assert.doesNotMatch(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
+  assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,1500}?syncWorkspaceSurfaces\(\)/)
+  assert.doesNotMatch(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,1500}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
   assert.match(
     pluginSource,
     /\$botChatFocused\.set\(sessionOwnsWorkspace\(\)\)[\s\S]{0,500}?syncWorkspaceSurfaces\(\)[\s\S]{0,120}?scheduleSurfaceSync\(\)/
@@ -818,20 +878,28 @@ test('the home never yanks the center back from a sibling tab the user chose', (
   assert.deepEqual(t.closed, [])
 })
 
-test('older shells without the main-area door simply have no home', async () => {
+test('older shells without owner routing fail with an update path', async () => {
   const t = load({ openWorkspace: false, paneVisibility: false })
   t.setPluginCtx({ storage: { set: () => undefined } })
   t.$botsPaneVisible.set(true)
+  delete t.host.requestProfile
+  delete t.host.openSession
 
   t.syncBotsHomeWorkspace()
   assert.deepEqual(t.opened, [])
 
-  // And the remote row keeps its previous guidance toast instead.
-  await t.openRosterBot({ connectionId: 'work-vps', connectionLabel: 'Work', name: 'researcher', remoteSource: true })
+  // A remote row cannot guess through the active gateway on an old shell.
+  await t.openRosterBot({
+    connectionId: 'work-vps',
+    connectionLabel: 'Work',
+    name: 'researcher',
+    remoteSource: true,
+    sourceScoped: true
+  })
 
   assert.equal(t.notifications.length, 1)
-  // Guidance is presentation only; remote mention delivery remains backend-owned.
-  assert.match(t.notifications[0].message, /message @researcher from a Bot Chat/)
+  assert.match(t.notifications[0].message, /Could not reach Work/)
+  assert.match(String(t.notifications[0].error), /Update Hermes Desktop/)
   assertNothingRouted(t, 'remote row on an older shell')
 })
 
@@ -906,15 +974,15 @@ test('an unavailable owner offers retry instead of a dead Open chat button', () 
   assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })
 
-test('an available remote owner explains the supported Bot Chat path without a fake direct action', () => {
+test('an available remote owner offers the same direct chat action', () => {
   const start = pluginSource.indexOf('function BotsHomeView(')
   const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
 
-  assert.match(view, /unavailable \|\| !bot\.remoteSource/)
-  assert.match(view, /This bot lives on \$\{gateway\}\. Mention it from any Bot Chat to send it a message\./)
+  assert.match(view, /children: 'Open chat'/)
+  assert.match(view, /Open this bot’s continuous chat/)
   assert.doesNotMatch(view, /Copy @/)
   assert.doesNotMatch(view, /remoteCopy/)
-  assert.doesNotMatch(view, /ensureAgent|requestProfile|newChat/)
+  assert.doesNotMatch(view, /Mention it from any Bot Chat/)
 })
 
 test('an unavailable owner never presents a guessed mention handle', () => {

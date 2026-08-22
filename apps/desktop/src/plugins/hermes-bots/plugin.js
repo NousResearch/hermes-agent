@@ -5104,6 +5104,28 @@ function isCanonicalBotChatHistory(history) {
   return rootTitle === CANONICAL_CHAT_TITLE || (!rootTitle && title === CANONICAL_CHAT_TITLE)
 }
 
+function botModeGatewayNeedsUpdate(error) {
+  const message = String(error?.message || error || '')
+
+  return /(?:method not found|no handler for|unknown method|unsupported rpc)/i.test(message)
+}
+
+function notifyBotOpenFailure(error, bot, fallbackMessage) {
+  if (botModeGatewayNeedsUpdate(error)) {
+    const gateway = bot.connectionLabel || bot.connectionId || 'this gateway'
+
+    host.notify?.({
+      kind: 'error',
+      title: 'Update this gateway to use Bot Mode',
+      message: `Update ${gateway}, then try again.`
+    })
+
+    return
+  }
+
+  host.notifyError?.(error, fallbackMessage)
+}
+
 /** THE identity lookup: the profile's session titled exactly "Bot Chat",
  *  consulted on the bot's OWN source. The core UNIQUE title index guarantees
  *  at most ONE such row per profile db — Profile → Named Session is an exact
@@ -5115,7 +5137,6 @@ function isCanonicalBotChatHistory(history) {
  *  authorizes this RPC. */
 async function findExistingCanonicalChat(owner) {
   const { bot, name, route } = botOwner(owner)
-
   // FAIL CLOSED. A failed registry lookup MUST NOT read as "no Bot Chat
   // exists" — that is the one remaining way to fork a bot's forever chat.
   // The failure lives exactly in the post-update window: the desktop
@@ -5346,7 +5367,8 @@ async function openRosterBot(bot) {
         $groupChatWorkspace.set(previousGroup)
       }
       syncBotsHomeWorkspace()
-      host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
+
+      notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
     }
 
     return false
@@ -5378,7 +5400,8 @@ async function openRosterBot(bot) {
         $groupChatWorkspace.set(previousGroup)
       }
       syncBotsHomeWorkspace()
-      host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat — try again`)
+
+      notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
     }
 
     return false
@@ -13947,6 +13970,11 @@ export default {
             group ? 'New group conversations start in the group composer.' : 'Select a Bot or group first.'
           )
         } else {
+          // Strand any owner wake still dialing. Its SDK open will fail the
+          // workspace token too; this plugin generation prevents that expected
+          // cancellation from repainting Bots home or showing an error after
+          // the user deliberately returned to Sessions.
+          botOpenGeneration += 1
           host.setWorkspaceScope?.('sessions')
         }
         // A generic composer has no stored-session owner, so passive sync

@@ -33,6 +33,8 @@ import {
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import {
+  $workspaceMode,
+  $workspaceOwnerKey,
   setWorkspaceScope as publishWorkspaceScope,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
@@ -255,6 +257,31 @@ async function requestPluginProfile<T>(
   )
 }
 
+/** Re-read Electron's current registry before retrying an exact-owner wake.
+ *  A route that was removed or replaced while the first hydration wait ran is
+ *  no longer authority to touch that backend, even when its labels still look
+ *  identical. */
+async function pluginRouteStillRegistered(route: PluginProfileRoute): Promise<boolean> {
+  const getProfileRoutes = window.hermesDesktop?.getProfileRoutes
+
+  if (!getProfileRoutes) {
+    return false
+  }
+
+  try {
+    const routes = await getProfileRoutes($profiles.get().map(profile => profile.name))
+
+    return routes.some(
+      candidate =>
+        candidate.connectionId === route.connectionId &&
+        candidate.profile === route.profile &&
+        candidate.targetProfile === route.targetProfile
+    )
+  } catch {
+    return false
+  }
+}
+
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
   window.addEventListener('resize', refresh)
@@ -307,17 +334,17 @@ export interface PluginNewChatOptions {
 }
 
 function waitForFocusedSessionHydration({
-  connectionId,
   expectHistory,
   generation,
+  isCurrent,
   profile,
   requireActiveProfile,
   storedSessionId,
   timeoutMs
 }: {
-  connectionId?: string
   expectHistory: boolean
   generation: number
+  isCurrent?: () => boolean
   profile: string
   requireActiveProfile: boolean
   storedSessionId: string
@@ -351,17 +378,27 @@ function waitForFocusedSessionHydration({
     }
 
     const check = () => {
-      if (generation !== openSessionGeneration) {
+      if (generation !== openSessionGeneration || (isCurrent && !isCurrent())) {
         finish(new Error('Session open was superseded by a newer selection.'))
 
         return
       }
 
       const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
-      const connectionMatches = !connectionId || $activeConnectionId.get() === connectionId
-      const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
-      const runtimeReady = Boolean($activeSessionId.get())
-      const historyPainted = Boolean($messages.get().length)
+      const mainMatches = $selectedStoredSessionId.get() === storedSessionId
+      const tileMatches = $focusedStoredSessionId.get() === storedSessionId
+
+      const runtimeReady = mainMatches
+        ? Boolean($activeSessionId.get())
+        : tileMatches
+          ? Boolean($focusedRuntimeId.get())
+          : false
+
+      const historyPainted = mainMatches
+        ? Boolean($messages.get().length)
+        : tileMatches
+          ? Boolean($focusedSessionState.get()?.messages.length)
+          : false
 
       // Paint-first hydration: for a history-bearing chat, the wake is DONE
       // the moment the persisted transcript is painted on the right session —
@@ -377,7 +414,7 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if (profileMatches && connectionMatches && sessionMatches && hydrated) {
+      if (profileMatches && (mainMatches || tileMatches) && hydrated) {
         finish()
       }
     }
@@ -387,6 +424,11 @@ function waitForFocusedSessionHydration({
     unbinds.push($selectedStoredSessionId.listen(check))
     unbinds.push($activeSessionId.listen(check))
     unbinds.push($messages.listen(check))
+    unbinds.push($focusedStoredSessionId.listen(check))
+    unbinds.push($focusedRuntimeId.listen(check))
+    unbinds.push($focusedSessionState.listen(check))
+    unbinds.push($workspaceMode.listen(check))
+    unbinds.push($workspaceOwnerKey.listen(check))
 
     timer = window.setTimeout(() => {
       finish(new Error(`Timed out loading ${profile}'s session history.`))
@@ -671,6 +713,19 @@ export const host = {
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
     const expectHistory = options.expectHistory ?? false
 
+    if (options.workspaceMode === 'bots') {
+      publishWorkspaceScope(
+        'bots',
+        options.workspaceOwnerKey ?? null,
+        ownerRoute ? { kind: 'route', route: ownerRoute } : null
+      )
+    }
+
+    const openingStillCurrent = () =>
+      generation === openSessionGeneration &&
+      (options.workspaceMode !== 'bots' ||
+        ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
+
     const plan = planPluginOpenSession({
       activeProfile: $activeGatewayProfile.get(),
       keepAllProfilesScope: options.keepAllProfilesScope,
@@ -720,6 +775,10 @@ export const host = {
         profileActiveAt = Date.now()
       }
 
+      if (!openingStillCurrent()) {
+        throw new Error('Session open was superseded by a newer selection.')
+      }
+
       if (ownerRoute) {
         setShowAllProfiles(true)
       } else if (plan.showAllProfiles !== null) {
@@ -728,7 +787,7 @@ export const host = {
 
       wakePhase = 'hydration'
 
-      if (generation !== openSessionGeneration) {
+      if (!openingStillCurrent()) {
         throw new Error('Session open was superseded by a newer selection.')
       }
 
@@ -756,11 +815,6 @@ export const host = {
           const intent = options.intent ?? 'in-place'
 
           if (options.workspaceMode === 'bots') {
-            publishWorkspaceScope(
-              'bots',
-              options.workspaceOwnerKey ?? null,
-              ownerRoute ? { kind: 'route', route: ownerRoute } : null
-            )
             openSession(storedSessionId, navigate, intent, {
               workspaceMode: 'bots',
               workspaceOwnerKey: options.workspaceOwnerKey
@@ -790,9 +844,9 @@ export const host = {
 
           if (options.awaitHydration) {
             await waitForFocusedSessionHydration({
-              connectionId: ownerRoute?.connectionId,
               expectHistory,
               generation,
+              isCurrent: openingStillCurrent,
               profile: targetProfile,
               // A background dial never moves $activeGatewayProfile, so gating
               // hydration on it would wait for something that is not coming.
@@ -815,6 +869,10 @@ export const host = {
             throw error
           }
 
+          if (ownerRoute && !(await pluginRouteStillRegistered(ownerRoute))) {
+            throw new Error(`The ${targetProfile} gateway is no longer available.`)
+          }
+
           // Logged per attempt so a support bundle shows the retry happened at
           // all; the terminal failure is reported once by the catch below.
           console.warn('[bot-wake] hydration timed out, retrying', {
@@ -828,7 +886,7 @@ export const host = {
     } catch (error) {
       if (
         options.awaitHydration &&
-        generation === openSessionGeneration &&
+        openingStillCurrent() &&
         error instanceof Error &&
         error.message.startsWith('Timed out loading ')
       ) {

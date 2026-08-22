@@ -44,14 +44,45 @@ def read_mapping_file(path: Path) -> str | None:
     return None
 
 
-def _legacy_login(email: str) -> str | None:
-    """Look the email up in the frozen legacy AUTHOR_MAP in release.py."""
+def _nonfile_login(email: str) -> str | None:
+    """Look up mappings stored outside contributors/emails/."""
     try:
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
-        from release import LEGACY_AUTHOR_MAP  # noqa: PLC0415
+        from release import (  # noqa: PLC0415
+            CASEFOLD_COLLISION_AUTHOR_MAP,
+            LEGACY_AUTHOR_MAP,
+        )
 
-        return LEGACY_AUTHOR_MAP.get(email)
+        return CASEFOLD_COLLISION_AUTHOR_MAP.get(
+            email, LEGACY_AUTHOR_MAP.get(email)
+        )
     except Exception:
+        return None
+
+
+def _exact_mapping_path(email: str) -> Path | None:
+    """Return an exact-case mapping path without filesystem aliasing."""
+    try:
+        return next(
+            path
+            for path in EMAILS_DIR.iterdir()
+            if path.is_file() and path.name == email
+        )
+    except (OSError, StopIteration):
+        return None
+
+
+def _casefold_collision(email: str) -> str | None:
+    """Return a differently-cased filename that aliases email, if any."""
+    try:
+        return next(
+            path.name
+            for path in EMAILS_DIR.iterdir()
+            if path.is_file()
+            and path.name != email
+            and path.name.casefold() == email.casefold()
+        )
+    except (OSError, StopIteration):
         return None
 
 
@@ -67,9 +98,10 @@ def add_contributor(email: str, login: str, comment: str = "") -> int:
         return 2
 
     path = EMAILS_DIR / email
-    existing = read_mapping_file(path) if path.is_file() else None
+    exact_path = _exact_mapping_path(email)
+    existing = read_mapping_file(exact_path) if exact_path is not None else None
     if existing is None:
-        existing = _legacy_login(email)
+        existing = _nonfile_login(email)
     if existing is not None:
         if existing == login:
             print("present")
@@ -77,6 +109,16 @@ def add_contributor(email: str, login: str, comment: str = "") -> int:
         print(
             f"error: {email} already maps to {existing!r} (asked for {login!r}) — "
             "resolve manually",
+            file=sys.stderr,
+        )
+        return 1
+
+    collision = _casefold_collision(email)
+    if collision is not None:
+        print(
+            f"error: {email} cannot be stored beside {collision} on "
+            "case-insensitive filesystems — add the exact mapping to "
+            "CASEFOLD_COLLISION_AUTHOR_MAP in scripts/release.py",
             file=sys.stderr,
         )
         return 1

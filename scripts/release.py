@@ -2078,6 +2078,14 @@ LEGACY_AUTHOR_MAP = {
 # ──────────────────────────────────────────────────────────────────────
 CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
 
+# Exact-case mappings that cannot coexist as filenames on the default
+# case-insensitive filesystems used by macOS and Windows. Keep this table
+# limited to real collisions; ordinary additions still belong in
+# contributors/emails/ so parallel contribution branches remain conflict-free.
+CASEFOLD_COLLISION_AUTHOR_MAP = {
+    "agent@Agents-Mac-mini.local": "skip-agent",
+}
+
 
 def _load_contributor_dir(directory: "Path | None" = None) -> dict:
     """Load one-file-per-email mappings from contributors/emails/.
@@ -2104,8 +2112,13 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
     return mapping
 
 
-# Effective map: frozen legacy dict + directory entries (directory wins).
-AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
+# Effective map: frozen legacy dict + portable exact-case exceptions +
+# directory entries (directory wins).
+AUTHOR_MAP = {
+    **LEGACY_AUTHOR_MAP,
+    **CASEFOLD_COLLISION_AUTHOR_MAP,
+    **_load_contributor_dir(),
+}
 
 
 def git(*args, cwd=None):

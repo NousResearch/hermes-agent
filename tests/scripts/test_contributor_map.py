@@ -46,6 +46,17 @@ def test_effective_map_merges_legacy_and_directory():
         assert release.AUTHOR_MAP[email] == login
 
 
+def test_mapping_filenames_are_portable_to_case_insensitive_filesystems():
+    names = [path.name for path in release.CONTRIBUTORS_EMAILS_DIR.iterdir()]
+    folded = [name.casefold() for name in names]
+    assert len(folded) == len(set(folded))
+
+
+def test_casefold_collision_mappings_preserve_exact_authorship():
+    assert release.AUTHOR_MAP["agent@Agents-Mac-mini.local"] == "skip-agent"
+    assert release.AUTHOR_MAP["agent@agents-Mac-mini.local"] == "momomojo"
+
+
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
@@ -77,6 +88,19 @@ def test_add_refuses_login_conflicting_with_legacy_map(emails_dir):
     email, login = next(iter(release.LEGACY_AUTHOR_MAP.items()))
     assert add_contributor(email, login + "x") == 1
     assert not (emails_dir / email).exists()
+
+
+def test_add_accepts_existing_casefold_collision_mapping(emails_dir):
+    assert add_contributor("agent@Agents-Mac-mini.local", "skip-agent") == 0
+    assert not (emails_dir / "agent@Agents-Mac-mini.local").exists()
+
+
+def test_add_refuses_new_casefold_filename_collision(emails_dir, capsys):
+    (emails_dir / "Alice@example.com").parent.mkdir(parents=True)
+    (emails_dir / "Alice@example.com").write_text("alice\n", encoding="utf-8")
+
+    assert add_contributor("alice@example.com", "different") == 1
+    assert "CASEFOLD_COLLISION_AUTHOR_MAP" in capsys.readouterr().err
 
 
 

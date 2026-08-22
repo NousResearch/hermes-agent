@@ -1853,6 +1853,13 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
 
 _MAX_PERSISTENT_REPAIR_ATTEMPTS = 3
 _MAX_MALFORMED_BACKUPS = 3
+# Safety valve for SessionDB.get_delegation_tree_usage: caps how many
+# sessions one lineage-tree walk will visit so a pathological/corrupted
+# tree can't turn one read into an unbounded scan. Real observed fan-out
+# is ~10 direct children; this leaves generous headroom for legitimate
+# nested delegation while still being far below where the read-conn-pool
+# walk would become noticeable.
+_MAX_DELEGATION_TREE_NODES = 2000
 
 # Sidecars copied alongside a damaged DB and pruned with it. ``-journal`` is
 # included because rollback-journal (DELETE) mode — Hermes's fallback on
@@ -11526,6 +11533,130 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     break
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
         return list(reversed(chain)) or [session_id]
+
+    def get_delegation_tree_usage(self, session_id: str) -> Dict[str, Any]:
+        """Sum token/cost usage across *session_id*'s entire lineage tree.
+
+        ``get_conversation_root`` already documents that compression
+        rotation AND delegate subagents both hang off ``parent_session_id``:
+        "walking to the root gives every segment of one user-facing
+        conversation (and its delegation tree) a single identifier."
+        Nothing walked back *down* from that root to sum usage, though —
+        the web insights dashboard (``hermes_cli/web_server.py``) only
+        aggregates globally across all sessions in a time window, and
+        session search (``hermes_cli/web_routers/sessions.py``)
+        deliberately stops at branch/delegate edges for relevance. Every
+        per-conversation view reads exactly one ``sessions`` row and
+        silently omits every subagent it spawned.
+
+        Measured impact (issue tracked in this repo): a 10-subagent
+        delegation fan-out undercounted input tokens by 2.35x
+        (3.66M read vs 8.62M actually spent) and cache-read tokens by
+        2.14x (86.8M vs 185.6M) when only the root row was read.
+
+        Returns summed counters plus the list of session ids visited, so
+        callers can render "N sessions, $X total" instead of one row.
+
+        Uses ``_read_ctx()`` (bounded read-only connection pool), NOT
+        ``self._lock`` / ``self._conn`` — that lock guards the single
+        shared writer connection and is documented at ``_read_ctx`` as
+        "a global choke point" because the gateway shares one SessionDB
+        across every agent. An unbounded multi-query walk holding that
+        lock would serialize every other session in the whole gateway
+        behind this one traversal for its entire duration.
+
+        Calls ``flush_token_counts()`` first: token deltas are applied by
+        an async background writer, so an in-flight session's row can
+        lag its queued counts — reading around the flush would silently
+        reintroduce the same undercount class this method exists to fix.
+
+        Traversal is capped at ``_MAX_DELEGATION_TREE_NODES`` sessions
+        (mirrors the 100-hop cap on the compression-chain walk above);
+        ``totals["truncated"]`` is True if the cap was hit, so callers
+        can tell a capped total from a complete one instead of silently
+        under-reporting again.
+
+        Two known limitations, inherited rather than introduced here —
+        noted so a reader doesn't mistake either for this function
+        being wrong:
+
+        - ``get_conversation_root`` itself caps its up-walk at 100 hops
+          (``_session_lineage_root_to_tip``). A conversation with more
+          than 100 compression rotations resolves to a non-root
+          ancestor there, and this function then only sums the subtree
+          below *that* node — silently missing earlier segments, the
+          same undercount class this function exists to fix, just one
+          layer up in a dependency this reuses rather than duplicates.
+        - ``estimated_cost_usd``/``actual_cost_usd`` are 0.0 for any
+          session with ``cost_status == 'included'`` (subscription
+          billing, e.g. ``openai-codex`` — confirmed against real local
+          data). That's correct upstream behavior, not a bug: there is
+          no meaningful per-token price to attribute on a flat-fee
+          plan. It means the cost fields of the returned totals are
+          only informative for pay-per-token providers; the token
+          count fields remain meaningful regardless of billing mode.
+        """
+        self.flush_token_counts()
+        root = self.get_conversation_root(session_id)
+        totals: Dict[str, Any] = {
+            "root_session_id": root,
+            "session_count": 0,
+            "session_ids": [],
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+            "tool_call_count": 0,
+            "message_count": 0,
+            "truncated": False,
+        }
+        # Named "pending", not "queue": this function lives in a module that
+        # `import queue`s the stdlib module for the read-conn pool (see
+        # _checkout_read_conn's queue.Empty/queue.Full) — a local `queue`
+        # would shadow it for this whole method, a landmine for the next
+        # edit that needs the module here.
+        pending = deque([root])
+        seen: set = set()
+        with self._read_ctx() as conn:
+            while pending:
+                if len(seen) >= _MAX_DELEGATION_TREE_NODES:
+                    totals["truncated"] = True
+                    break
+                sid = pending.popleft()
+                if not sid or sid in seen:
+                    continue
+                seen.add(sid)
+                row = conn.execute(
+                    "SELECT input_tokens, output_tokens, cache_read_tokens, "
+                    "cache_write_tokens, reasoning_tokens, tool_call_count, "
+                    "message_count, estimated_cost_usd, actual_cost_usd "
+                    "FROM sessions WHERE id = ?",
+                    (sid,),
+                ).fetchone()
+                if row is None:
+                    continue
+                session = dict(row)
+                totals["session_ids"].append(sid)
+                totals["session_count"] += 1
+                for key in (
+                    "input_tokens", "output_tokens", "cache_read_tokens",
+                    "cache_write_tokens", "reasoning_tokens",
+                    "tool_call_count", "message_count",
+                ):
+                    totals[key] += session.get(key) or 0
+                for key in ("estimated_cost_usd", "actual_cost_usd"):
+                    totals[key] += session.get(key) or 0.0
+                children = conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ?", (sid,)
+                ).fetchall()
+                for child in children:
+                    child_id = dict(child)["id"]
+                    if child_id not in seen:
+                        pending.append(child_id)
+        return totals
 
     @staticmethod
     def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:

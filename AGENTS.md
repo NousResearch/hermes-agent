@@ -1482,6 +1482,44 @@ has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #
 ### All CLI menu-pickers MUST use curses.
 Interactive menus must use `hermes_cli/curses_ui.py`. See `hermes_cli/tools_config.py` for an example.
 
+### `shutil.copytree` from a read-only filesystem preserves unwritable mode bits
+`shutil.copytree` and `shutil.copy2` both copy source-file permissions by
+default. When the source lives on the Nix store
+(`/nix/store/.../share/hermes-agent/skills`, mode `0444`/`0555`) — or any
+other read-only filesystem (squashfs, OCI image layer) — the user copy in
+`~/.hermes/skills/` inherits those bits. Later edits via `skill_manage`,
+the curator, or even a follow-up `shutil.rmtree(..., ignore_errors=True)`
+of a `*.bak` directory then fail with `PermissionError`, which gets
+silently swallowed and accumulates stale `*.bak` directories.
+
+Use `tools.skills_sync._copytree_writable(src, dst)` (drop-in replacement
+for `shutil.copytree`) or `_copy_file_writable(src, dst)` (drop-in
+replacement for `shutil.copy2`) whenever the source might be a Nix-store
+path. For trees that already exist on disk and might still carry the
+inherited bits, `_make_tree_owner_writable(root)` repairs them in place.
+
+Affected call sites that already use these helpers:
+
+- `tools/skills_sync.py` — `sync_skills` (new + update paths, including the
+  no-op "bundled unchanged, user unchanged" and v1-migration branches, which
+  repair pre-existing hash-identical read-only copies that predate this fix),
+  `restore_official_optional_skill`, `reset_bundled_skill`, DESCRIPTION.md
+  copy
+- `hermes_cli/profiles.py` — `--clone` and `--clone-all`
+- `hermes_cli/profile_distribution.py` — `apply_distribution`
+
+`_make_tree_owner_writable` / `_ensure_owner_writable` skip symlink entries
+(`path.is_symlink()`) rather than chmod-ing them. `os.chmod` follows
+symlinks by default, so walking a copied tree without that guard would
+mutate the mode of whatever external file a symlink still points at, not
+anything the copy owns. This matters because `hermes_cli/profiles.py` clones
+skills with `shutil.copytree(..., symlinks=True, ...)`, which preserves
+symlinks as symlinks (does not traverse into their targets) — a skill that
+is itself a symlink to a shared/vendored directory outside the profile is a
+real, not hypothetical, case.
+
+
+
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
 

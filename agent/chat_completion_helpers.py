@@ -2971,7 +2971,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         )
         _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
         _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
-        _is_nous = "nousresearch" in agent._base_url_lower
+        _is_nous = base_url_host_matches(agent._base_url_lower, "nousresearch.com")
         # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
         # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
         # — which calls chat.completions.create() directly without going

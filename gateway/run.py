@@ -19233,6 +19233,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+            elif reset_reason == "daily_and_idle":
+                context_note = "[System note: The user's session was automatically reset after both the daily boundary and inactivity timeout passed. This is a fresh conversation with no prior context.]"
             elif reset_reason == "resume_pending_expired":
                 context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
             else:
@@ -19279,6 +19281,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             reason_text = "gateway restart recovery timed out"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
+                        elif reset_reason == "daily_and_idle":
+                            reason_text = "daily boundary and inactivity timeout both passed"
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60

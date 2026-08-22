@@ -11750,6 +11750,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"    Mode: {policy.mode}")
             print(f"    Daily reset at: {policy.at_hour}:00")
             print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            if policy.mode == "daily_and_idle":
+                print("    (Daily reset fires only when also idle past the timeout)")
             
             print()
             print("  To start the gateway:")

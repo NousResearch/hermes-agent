@@ -3920,8 +3920,9 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     ["agent:main:telegram:dm:chat-1", None],
     ids=["exact-key", "peer-fallback"],
 )
+@pytest.mark.parametrize("end_reason", ["session_reset", "daily_and_idle"])
 def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
-    db, persisted_session_key
+    db, persisted_session_key, end_reason
 ):
     """A newer session_reset row fences recovery for the peer (#68539).
 
@@ -3939,7 +3940,7 @@ def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
     db.append_message("gw-before-reset", "user", "old context")
     db.create_session("gw-reset", "telegram", **peer)
     db.append_message("gw-reset", "user", "/new")
-    db.end_session("gw-reset", "session_reset")
+    db.end_session("gw-reset", end_reason)
 
     assert db.find_latest_gateway_session_for_peer(
         source="telegram",

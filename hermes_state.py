@@ -6478,7 +6478,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reopen must be promotable here.
 
         ``reason`` lets reset paths keep their auditable specific reasons
-        (``idle``, ``daily``, ``suspended``, ``resume_pending_expired``).
+        (``idle``, ``daily``, ``daily_and_idle``, ``suspended``,
+        ``resume_pending_expired``).
 
         Returns ``True`` when the row was promoted, ``False`` when skipped
         (already has a different explicit end_reason, or row not found).

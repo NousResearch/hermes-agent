@@ -64,6 +64,47 @@ class TestShouldResetReason:
         source = _make_source()
         assert store._should_reset(entry, source) == "idle"
 
+    def test_returns_daily_when_daily_and_idle_conditions_are_both_met(self, tmp_path):
+        """Inbound routing must apply daily_and_idle, not only the watcher."""
+        store = _make_store(
+            SessionResetPolicy(mode="daily_and_idle", at_hour=4, idle_minutes=60),
+            tmp_path,
+        )
+        source = _make_source()
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime(2026, 8, 22, 1, 0, 0),
+            updated_at=datetime(2026, 8, 23, 1, 0, 0),
+        )
+        with patch("gateway.session._now", return_value=datetime(2026, 8, 23, 4, 30, 0)):
+            assert store._should_reset(entry, source) == "daily_and_idle"
+
+    def test_daily_and_idle_requires_each_condition_in_routing_path(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="daily_and_idle", at_hour=4, idle_minutes=60),
+            tmp_path,
+        )
+        source = _make_source()
+        now = datetime(2026, 8, 23, 4, 30, 0)
+        entries = (
+            # Activity after today's boundary has not crossed the daily gate.
+            SessionEntry("test", "s1", datetime(2026, 8, 23, 4, 5), datetime(2026, 8, 23, 4, 5)),
+            # Before today's boundary, but not yet idle for the full timeout.
+            SessionEntry("test", "s2", datetime(2026, 8, 23, 3, 45), datetime(2026, 8, 23, 3, 45)),
+            # At the idle deadline: expiry is strictly greater than the deadline.
+            SessionEntry("test", "s3", datetime(2026, 8, 23, 3, 30), datetime(2026, 8, 23, 3, 30)),
+        )
+        with patch("gateway.session._now", return_value=now):
+            for entry in entries:
+                assert store._should_reset(entry, source) is None
+
+        # Before the next day's boundary, a session updated after the prior
+        # boundary must survive even when it is long past the idle timeout.
+        with patch("gateway.session._now", return_value=datetime(2026, 8, 23, 3, 0, 0)):
+            entry = SessionEntry("test", "s4", datetime(2026, 8, 22, 5), datetime(2026, 8, 22, 5))
+            assert store._should_reset(entry, source) is None
+
 
     def test_returns_none_when_active_process_check_raises(self, tmp_path):
         def _raise(_session_key):

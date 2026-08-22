@@ -668,6 +668,11 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `decompose <id>` / `decompose --all` | Fan a triage-column task out into a graph of child tasks routed to specialist profiles by description. Falls back to specify-style single-task promotion when the LLM decides the task doesn't benefit from fan-out. Same flags as `specify`. Configure the decomposer model under `auxiliary.kanban_decomposer` in `config.yaml`; `kanban.orchestrator_profile` only controls who owns the root/orchestration task after fan-out. Also runs automatically every dispatcher tick when `kanban.auto_decompose: true` (the default). See [Auto vs Manual orchestration](/user-guide/features/kanban#auto-vs-manual-orchestration). |
 | `gc` | Remove scratch workspaces for archived tasks. |
 
+The task objects emitted by `create --json` and `list --json`, and the `task`
+object emitted by `show --json`, include `max_runtime_seconds`. The value is an
+integer number of seconds when a per-task cap is configured, or JSON `null`
+when the task has no cap.
+
 Examples:
 
 ```bash

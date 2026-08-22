@@ -256,6 +256,12 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+Machine-readable task objects expose the persisted timeout as
+`max_runtime_seconds`: an integer number of seconds when configured, or JSON
+`null` when unset. This field is present in CLI `create --json` / `list --json`,
+the `task` object from CLI `show --json`, `kanban_list` task summaries, and the
+`task` object returned by `kanban_show`.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch

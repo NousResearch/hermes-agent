@@ -501,6 +501,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "started_at": task.started_at,
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
+        "max_runtime_seconds": task.max_runtime_seconds,
         "model_override": task.model_override,
         "provider_override": task.provider_override,
         "parents": parents,
@@ -547,6 +548,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "completed_at": t.completed_at,
                     "result": t.result,
                     "current_run_id": t.current_run_id,
+                    "max_runtime_seconds": t.max_runtime_seconds,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
                 }

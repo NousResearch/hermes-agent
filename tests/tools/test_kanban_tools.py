@@ -111,6 +111,40 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
+def test_show_and_list_include_max_runtime_for_set_and_unset_tasks(
+    monkeypatch, worker_env,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        limited = kb.create_task(
+            conn,
+            title="limited",
+            assignee="runtime-reader",
+            max_runtime_seconds=4377,
+        )
+        uncapped = kb.create_task(
+            conn,
+            title="uncapped",
+            assignee="runtime-reader",
+        )
+    finally:
+        conn.close()
+
+    limited_show = json.loads(kt._handle_show({"task_id": limited}))
+    uncapped_show = json.loads(kt._handle_show({"task_id": uncapped}))
+    assert limited_show["task"]["max_runtime_seconds"] == 4377
+    assert uncapped_show["task"]["max_runtime_seconds"] is None
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    listing = json.loads(kt._handle_list({"assignee": "runtime-reader"}))
+    tasks = {task["id"]: task for task in listing["tasks"]}
+    assert tasks[limited]["max_runtime_seconds"] == 4377
+    assert tasks[uncapped]["max_runtime_seconds"] is None
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

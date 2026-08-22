@@ -524,7 +524,86 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
+        """Persist *tokens*, preserving a refresh token the response omitted.
+
+        .. note::
+           ``tokens`` MAY BE MUTATED. When the incoming token carries no
+           ``refresh_token`` and one is already stored, it is assigned onto
+           ``tokens`` before serialization. This is deliberate: the MCP SDK
+           passes the same object it holds as ``context.current_tokens``, so
+           the assignment is what keeps the *live* provider able to refresh —
+           see the comment below. Callers that need an unmutated instance
+           should pass a copy.
+        """
+        # Per RFC 6749 §6, when a client uses ``grant_type=refresh_token``,
+        # the authorization server MAY rotate the refresh token (return a new
+        # one) OR keep the existing one (return no refresh_token field in the
+        # response). Both are spec-compliant, and §6 is explicit that the
+        # client must replace its stored token only "if the authorization
+        # server issued a new refresh token".
+        #
+        # Bug: when the server's refresh response omits the refresh_token,
+        # ``model_dump(exclude_none=True)`` below drops the field, and the
+        # unconditional ``_write_json`` overwrites the stored file with no
+        # refresh_token at all — not even an explicit null. The original
+        # refresh_token is lost. On the NEXT access-token expiry the SDK has
+        # nothing to refresh with and falls back to a full
+        # ``authorization_code`` browser flow, so the user re-does the OAuth
+        # dance roughly one TTL after their last successful auth, forever. On
+        # a headless gateway there is no browser, so the server is instead
+        # marked "failed initial OAuth authentication, not retrying
+        # automatically" and its tools disappear for the life of the process.
+        #
+        # Fix: if the refresh response carried no refresh_token, restore the
+        # stored one.
+        #
+        # This MUST be done on the ``tokens`` object and not merely on the
+        # serialized ``payload``. The MCP SDK's
+        # ``OAuthClientProvider._handle_refresh_response`` does::
+        #
+        #     token_response = OAuthToken.model_validate_json(content)
+        #     self.context.current_tokens = token_response
+        #     await self.context.storage.set_tokens(token_response)
+        #
+        # i.e. the object handed to us *is* ``context.current_tokens``.
+        # Repairing only the payload leaves the live provider holding
+        # ``refresh_token=None``, so ``context.can_refresh_token()`` is False
+        # at the next expiry and the connector still dies inside this
+        # process — it would only recover on restart, when ``_initialize``
+        # re-reads the file. Assigning through the model repairs both the
+        # running provider and the file, because ``payload`` is derived
+        # afterwards.
+        if not tokens.refresh_token:
+            # Never let reading the previous token block persisting the new
+            # one. ``get_tokens`` tolerates a missing file and a schema-invalid
+            # payload, but not every shape: ``_read_json`` returns whatever
+            # ``json.loads`` produced, so a file holding a JSON list, or a
+            # string ``expires_at``, raises before the ``model_validate``
+            # guard. Without this catch a damaged token file would fail the
+            # write and leave the SDK believing it had persisted a token it
+            # had not — strictly worse than the pre-carry-forward behaviour,
+            # which simply overwrote.
+            try:
+                previous = await self.get_tokens()
+            except Exception as exc:  # noqa: BLE001 — persistence must not fail.
+                logger.warning(
+                    "OAuth tokens for %s: could not read the stored token to "
+                    "preserve its refresh_token (%s); writing the new token "
+                    "without carry-forward",
+                    self._server_name,
+                    exc,
+                )
+                previous = None
+            if previous is not None and previous.refresh_token:
+                tokens.refresh_token = previous.refresh_token
+                logger.debug(
+                    "OAuth refresh response for %s omitted refresh_token; "
+                    "preserving the existing one",
+                    self._server_name,
+                )
+
         payload = tokens.model_dump(mode="json", exclude_none=True)
+
         # Persist an absolute ``expires_at`` so a process restart can
         # reconstruct the correct remaining TTL. Without this the MCP SDK's
         # ``_initialize`` reloads a relative ``expires_in`` which has no

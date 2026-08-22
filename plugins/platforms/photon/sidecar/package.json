@@ -6,17 +6,17 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "start": "node index.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22.22.0"
   },
   "dependencies": {
-    "spectrum-ts": "8.0.0"
+    "ffmpeg-static": "^5.3.0",
+    "spectrum-ts": "12.8.0"
   },
   "overrides": {
-    "protobufjs": "8.7.1",
+    "protobufjs": "^8.7.1",
     "@opentelemetry/otlp-transformer": "0.218.0",
     "@opentelemetry/otlp-exporter-base": "0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.218.0",

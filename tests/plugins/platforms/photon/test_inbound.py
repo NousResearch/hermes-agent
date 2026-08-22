@@ -99,6 +99,21 @@ def _voice_event(
 
 
 @pytest.mark.asyncio
+async def test_read_receipt_event_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider read receipts never become fake user prompts."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("", msg_id="spc-msg-read")
+    event["content"] = {"type": "read", "messageId": "spc-msg-target"}
+    await adapter._dispatch_inbound(event)
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
 async def test_on_inbound_line_dispatches_and_dedups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

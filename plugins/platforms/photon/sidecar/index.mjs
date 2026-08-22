@@ -46,7 +46,7 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
+// Requires spectrum-ts 12.x — pinned exactly in package.json because the SDK
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):
@@ -65,7 +65,6 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
-import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
@@ -278,25 +277,7 @@ if (!projectId || !projectSecret || !sharedToken) {
 }
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
-// instead of a cryptic module-resolution error during import. Apply Hermes'
-// pinned-sdk compatibility patch first so existing installs self-heal at
-// runtime, not only during npm postinstall.
-try {
-  const patchResult = patchSpectrumTs();
-  if (patchResult.patched) {
-    console.error(
-      `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
-    );
-  }
-} catch (e) {
-  console.error(
-    "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
-      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
-      "Original error: " +
-      (e && e.stack ? e.stack : String(e))
-  );
-}
+// instead of a cryptic module-resolution error during import.
 let Spectrum,
   imessage,
   attachment,
@@ -1055,29 +1036,48 @@ const server = http.createServer(async (req, res) => {
       // spectrum-ts infers name + MIME from the file extension; pass
       // overrides only when Hermes supplied them so a known-good
       // inference isn't clobbered with an empty string.
+      let sendPath = path;
       const opts = {};
       if (name) opts.name = name;
       if (mimeType) opts.mimeType = mimeType;
-      const builder =
-        kind === "voice"
-          ? voice(path, Object.keys(opts).length ? opts : undefined)
-          : attachment(path, Object.keys(opts).length ? opts : undefined);
-
-      const result = await space.send(builder);
-
-      // iMessage delivers the caption as a separate bubble; send it
-      // after the media so the attachment renders first.
-      if (caption && typeof caption === "string") {
-        try {
-          await space.send(spectrumText(caption));
-        } catch (e) {
-          console.error(
-            "photon-sidecar: attachment sent but caption failed: " +
-              (e && e.stack ? e.stack : String(e))
-          );
-        }
+      let cleanup = async () => {};
+      if (kind === "voice") {
+        // Materialize a unique M4A before voice() so converted TTS bytes,
+        // filename, and MIME identity cannot collide with inbound CAF.
+        const { prepareVoiceAttachment } = await import("./voice-send.mjs");
+        const prepared = await prepareVoiceAttachment(path);
+        sendPath = prepared.path;
+        opts.name = prepared.opts.name;
+        opts.mimeType = prepared.opts.mimeType;
+        cleanup = prepared.cleanup;
       }
-      return ok(res, { messageId: result?.id || null });
+      try {
+        const builder =
+          kind === "voice"
+            ? voice(sendPath, opts)
+            : attachment(
+                sendPath,
+                Object.keys(opts).length ? opts : undefined
+              );
+
+        const result = await space.send(builder);
+
+        // iMessage delivers the caption as a separate bubble; send it
+        // after the media so the attachment renders first.
+        if (caption && typeof caption === "string") {
+          try {
+            await space.send(spectrumText(caption));
+          } catch (e) {
+            console.error(
+              "photon-sidecar: attachment sent but caption failed: " +
+                (e && e.stack ? e.stack : String(e))
+            );
+          }
+        }
+        return ok(res, { messageId: result?.id || null });
+      } finally {
+        await cleanup();
+      }
     }
     if (req.url === "/react") {
       const { spaceId, messageId, emoji } = body || {};

@@ -160,6 +160,76 @@ class TestDoctorToolAvailabilitySummary:
             ("ok", "web extract", "(ddgs)"),
         ]
 
+    def test_anthropic_backend_warns_when_the_model_is_not_anthropic(self, monkeypatch):
+        """The registry cannot see that anthropic is unrunnable here.
+
+        ``anthropic`` is not a registered backend, so the active-provider walk
+        falls through it to the keyless ring and hands these rows a healthy
+        provider this install never reaches — the false green #78412 asked the
+        rows to prevent, one backend over.
+        """
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_extract_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._anthropic_native_endpoint_selected", lambda: False
+        )
+
+        detail = doctor_tools._doctor_unrunnable_web_backend_detail("search")
+
+        assert "switch the model to Anthropic" in detail
+
+    def test_anthropic_backend_warns_when_the_credential_is_missing(self, monkeypatch):
+        """An Anthropic-served model still needs the credential.
+
+        Keying the gate on the endpoint alone would print a green row for a
+        capability the ``web`` toolset has switched off, with a remedy that
+        does not apply.
+        """
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_extract_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._anthropic_native_endpoint_selected", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._is_backend_available", lambda _backend: False
+        )
+
+        detail = doctor_tools._doctor_unrunnable_web_backend_detail("search")
+
+        assert "no Anthropic credential" in detail
+        assert "switch the model" not in detail
+
+    def test_anthropic_backend_is_silent_when_it_can_actually_run(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_extract_backend", lambda: "anthropic"
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._anthropic_native_endpoint_selected", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._is_backend_available", lambda _backend: True
+        )
+
+        assert doctor_tools._doctor_unrunnable_web_backend_detail("search") == ""
+
+    def test_other_backends_are_not_second_guessed(self, monkeypatch):
+        """Only the anthropic selection is special-cased here."""
+        monkeypatch.setattr("tools.web_tools._get_search_backend", lambda: "tavily")
+        monkeypatch.setattr("tools.web_tools._get_extract_backend", lambda: "tavily")
+
+        assert doctor_tools._doctor_unrunnable_web_backend_detail("search") == ""
+
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows

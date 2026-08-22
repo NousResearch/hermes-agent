@@ -744,6 +744,14 @@ class TestSendTelegramHtmlDetection:
         assert kwargs["parse_mode"] == "HTML"
         assert kwargs["text"] == "<b>Hello</b> world"
 
+    def test_unsupported_html_like_tag_uses_markdown_v2(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "technical text <urlopen>"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "MarkdownV2"
 
     def test_transient_bad_gateway_retries_text_send(self, monkeypatch):
         bot = self._make_bot()

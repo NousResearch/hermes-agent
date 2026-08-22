@@ -990,6 +990,16 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
         except Exception:
             pass
 
+    # Resolve reasoning through the shared chokepoint, against the model this
+    # run actually uses (post provider-default fallback) so per-model
+    # ``agent.reasoning_overrides`` key off the right model. Without this the
+    # agent falls back to the provider default and ``reasoning_effort: none``
+    # is ignored — non-reasoning models then reject the request outright.
+    # ``_resolve_runtime_agent_kwargs()`` resolves credentials only.
+    from hermes_constants import resolve_reasoning_config
+
+    runtime_kwargs["reasoning_config"] = resolve_reasoning_config(user_config, model)
+
     return model, runtime_kwargs
 
 
@@ -1078,6 +1088,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             provider=runtime_kwargs.get("provider"),
             api_mode=runtime_kwargs.get("api_mode"),
             credential_pool=runtime_kwargs.get("credential_pool"),
+            reasoning_config=runtime_kwargs.get("reasoning_config"),
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

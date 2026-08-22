@@ -615,6 +615,7 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_constants import resolve_reasoning_config
 
         config = load_config()
         model_cfg = config.get("model")
@@ -642,6 +643,14 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            # Resolve reasoning against the model this session will actually
+            # run so per-model ``agent.reasoning_overrides`` key off the
+            # session's model, not ``model.default``. Without this the agent
+            # falls back to the provider default and ``reasoning_effort: none``
+            # is ignored — non-reasoning models then reject the request.
+            "reasoning_config": resolve_reasoning_config(
+                config, model or default_model
+            ),
         }
 
         try:

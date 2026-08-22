@@ -473,6 +473,14 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        # Resolve reasoning against the model this run will actually use
+        # (post alias/provider detection) so per-model
+        # ``agent.reasoning_overrides`` and ``agent.reasoning_effort`` apply
+        # to oneshot exactly as they do to an interactive CLI session.
+        from hermes_constants import resolve_reasoning_config
+
+        reasoning_config = resolve_reasoning_config(cfg, effective_model)
+
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -487,6 +495,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

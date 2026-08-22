@@ -414,7 +414,17 @@ async function openSecondary(entry: Secondary): Promise<void> {
 
     const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
 
-    await entry.gateway.connect(wsUrl)
+    try {
+      await entry.gateway.connect(wsUrl)
+    } catch (error) {
+      // Log the dial target for support, but RETHROW THE ORIGINAL ERROR —
+      // reconnectSecondary classifies failures by message ("No connection
+      // with id", "no longer exists") to fail-stop permanent conditions, and
+      // wrapping here would break that. Callers decide surfacing (#81094).
+      console.error(`[gateway] dial for profile "${entry.profile}" failed:`, error)
+      throw error
+    }
+
     entry.openedOnce = true
     openedScopes.add(entry.scope)
 
@@ -1082,8 +1092,16 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
     try {
       await openSecondary(entry)
-    } catch {
+    } catch (error) {
+      // #81094: a failed secondary dial must NOT fall through to setActive()
+      // with a closed socket — that silently routes the user's messages to the
+      // primary backend (cross-profile session writes). Keep the reconnect
+      // schedule (transient failures still self-heal via the backoff below)
+      // but RE-THROW so the profile-door caller surfaces the failure and skips
+      // the activation. The agent-door twin (ensureGatewayForAgent) keeps its
+      // boolean contract and is guarded by the activeGateway() null invariant.
       scheduleReconnect(entry)
+      throw error
     }
   }
 

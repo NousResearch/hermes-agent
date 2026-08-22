@@ -113,7 +113,7 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect($gateway.get()).not.toBe(primary)
   })
 
-  it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {
+  it('rejects the failed dial without publishing an activation, then activates once the backend returns', async () => {
     const connection = {
       authMode: 'token',
       baseUrl: 'https://worker.invalid',
@@ -130,14 +130,20 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
 
     gatewayMocks.connect.mockRejectedValueOnce(new Error('temporarily offline')).mockResolvedValueOnce(undefined)
 
+    // #81094: a failed dial must REJECT instead of silently activating a
+    // closed socket that would route messages to the primary backend.
+    await expect(ensureGatewayForProfile('worker')).rejects.toThrow('temporarily offline')
+
+    // No activation was published for the dead dial — $connection keeps the
+    // primary's descriptor (set by setPrimaryGateway), never the unreachable
+    // secondary's.
+    expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
+
+    // Once the backend is reachable again, retrying the switch activates and
+    // publishes the live connection descriptor.
     await ensureGatewayForProfile('worker')
 
-    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
-    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
-
-    await ensureActiveGatewayOpen()
-
-    expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(1)
     expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
   })
 })

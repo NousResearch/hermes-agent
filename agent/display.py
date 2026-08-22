@@ -48,7 +48,7 @@ def _diff_ansi() -> dict[str, str]:
     if _diff_colors_cached is not None:
         return _diff_colors_cached
 
-    # Defaults that work on dark terminals
+    # Defaults that work on dark terminals (white fg on dark tinted bg)
     dim = "\033[38;2;150;150;150m"
     file_c = "\033[38;2;180;160;255m"
     hunk = "\033[38;2;120;120;140m"
@@ -70,16 +70,32 @@ def _diff_ansi() -> dict[str, str]:
         dim = _hex_fg("banner_dim", (150, 150, 150))
         file_c = _hex_fg("session_label", (180, 160, 255))
         hunk = _hex_fg("session_border", (120, 120, 140))
-        # minus/plus use background colors — derive from ui_error/ui_ok
-        err_h = skin.get_color("ui_error", "#ef5350")
-        ok_h = skin.get_color("ui_ok", "#4caf50")
-        if err_h and len(err_h) == 7:
-            er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
-            # Use a dark tinted version as background
-            minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
-        if ok_h and len(ok_h) == 7:
-            or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
-            plus = f"\033[38;2;255;255;255;48;2;{max(or_//4,10)};{max(og//2,20)};{max(ob//4,10)}m"
+
+        # Added/removed lines. When the skin defines dedicated diff colors
+        # (diff_added/diff_removed backgrounds + diff_*_word foregrounds —
+        # the same keys the TUI uses), use them so diffs render in the skin's
+        # intended low-saturation light green / light red. Otherwise fall back
+        # to a dark tinted background derived from ui_ok/ui_error + white text.
+        def _diff_line(bg_key: str, word_key: str, fallback_bg_rgb) -> str:
+            bg_h = skin.get_color(bg_key, "")
+            word_h = skin.get_color(word_key, "")
+            if (
+                bg_h and word_h
+                and len(bg_h) == 7 and bg_h[0] == "#"
+                and len(word_h) == 7 and word_h[0] == "#"
+            ):
+                br = int(bg_h[1:3], 16)
+                bg2 = int(bg_h[3:5], 16)
+                bb = int(bg_h[5:7], 16)
+                fr = int(word_h[1:3], 16)
+                fg2 = int(word_h[3:5], 16)
+                fb = int(word_h[5:7], 16)
+                return f"\033[38;2;{fr};{fg2};{fb};48;2;{br};{bg2};{bb}m"
+            br, bg2_, bb_ = fallback_bg_rgb
+            return f"\033[38;2;255;255;255;48;2;{br};{bg2_};{bb_}m"
+
+        minus = _diff_line("diff_removed", "diff_removed_word", (120, 20, 20))
+        plus = _diff_line("diff_added", "diff_added_word", (20, 90, 20))
     except Exception:
         pass
 

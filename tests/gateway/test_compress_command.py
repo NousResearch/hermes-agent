@@ -264,6 +264,135 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "concurrent_growth", "expected_compressor_input"),
+    [
+        ("/compress", False, ["one", "two", "three", "four"]),
+        ("/compress", True, ["one", "two", "three", "four", "five", "six"]),
+        ("/compress here 1", False, ["one", "two"]),
+        ("/compress here 1", True, None),
+    ],
+)
+async def test_compress_command_does_not_reappend_db_loaded_parent_history(
+    tmp_path, command, concurrent_growth, expected_compressor_input
+):
+    """Manual /compress must identify its entire DB-loaded head as durable.
+
+    Unlike a normal turn, the fresh temporary agent has no current user-message
+    anchor.  The real rotation path must therefore receive an explicit boundary
+    or its best-effort parent flush appends every loaded row a second time.
+    """
+    import os
+    import time
+
+    from hermes_state import SessionDB
+    from run_agent import AIAgent as RealAIAgent
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "MANUAL_COMPRESS_PARENT"
+    db.create_session(parent_sid, source="telegram")
+    for message in _make_history():
+        db.append_message(parent_sid, message["role"], message["content"])
+
+    history = db.get_messages_as_conversation(parent_sid)
+    if concurrent_growth:
+        db.append_message(parent_sid, "user", "five")
+        db.append_message(parent_sid, "assistant", "six")
+    runner = _make_runner(history)
+    runner.session_store.get_or_create_session.return_value.session_id = parent_sid
+    runner._session_db = type("SessionDBAdapter", (), {"_db": db})()
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("test-model", {"api_key": "test-key"})
+    )
+    rewritten_children = []
+
+    def _rewrite_child(session_id, messages):
+        rewritten_children.append((session_id, list(messages)))
+        db.replace_messages(session_id, messages)
+        return True
+
+    runner.session_store.rewrite_transcript.side_effect = _rewrite_child
+
+    created_agents = []
+    compressor_inputs = []
+
+    def _build_real_agent(**kwargs):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            agent = RealAIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model=kwargs["model"],
+                quiet_mode=True,
+                session_db=db,
+                session_id=kwargs["session_id"],
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=["memory"],
+                platform=kwargs.get("platform"),
+                gateway_session_key=kwargs.get("gateway_session_key"),
+            )
+
+        compressor = MagicMock()
+
+        def _compress(*_args, **_kwargs):
+            compressor_inputs.append(
+                [message.get("content") for message in _args[0]]
+            )
+            time.sleep(0.01)
+            return [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "tail"},
+            ]
+
+        compressor.compress.side_effect = _compress
+        compressor.has_content_to_compress.return_value = True
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        compressor._last_summary_fallback_used = False
+        compressor._last_summary_dropped_count = 0
+        compressor._last_aux_model_failure_model = None
+        compressor._last_aux_model_failure_error = None
+        agent.context_compressor = compressor
+        agent.compression_in_place = False
+        created_agents.append(agent)
+        return agent
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", side_effect=_build_real_agent),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_make_event(command))
+
+    assert "Compression failed" not in result
+    assert created_agents
+    if expected_compressor_input is None:
+        assert compressor_inputs == []
+        assert rewritten_children == []
+    else:
+        assert compressor_inputs == [expected_compressor_input]
+        assert len(rewritten_children) == 1
+        child_session_id, rewritten = rewritten_children[0]
+        child_rows = db.get_messages_as_conversation(child_session_id)
+        assert [row.get("content") for row in child_rows] == [
+            message.get("content") for message in rewritten
+        ]
+        if command == "/compress here 1":
+            child_contents = [row.get("content") or "" for row in child_rows]
+            assert sum(content.count("three") for content in child_contents) == 1
+            assert sum(content.count("four") for content in child_contents) == 1
+    parent_rows = db.get_messages_as_conversation(parent_sid, include_inactive=True)
+    expected_parent = ["one", "two", "three", "four"]
+    if concurrent_growth:
+        expected_parent.extend(["five", "six"])
+    assert [row.get("content") for row in parent_rows] == expected_parent
+
+
+@pytest.mark.asyncio
 async def test_compress_command_passes_tool_messages_to_compressor():
     """Tool results must reach _compress_context (#3854).
 

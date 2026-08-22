@@ -4354,6 +4354,18 @@ class GatewaySlashCommandsMixin:
                 if not compressor.has_content_to_compress(head):
                     return t("gateway.compress.nothing_to_do")
 
+                # Manual compression passes only rows loaded from the canonical
+                # session store; unlike a normal turn, it has no new user tail.
+                # Anchor the established rotation-flush boundary at the end of
+                # that durable head (#68196). Without this, the fresh temporary
+                # agent has no _persist_user_message_idx, so rotation's
+                # best-effort parent flush treats every loaded row as new and
+                # appends the complete head to the parent a second time.
+                # Partial /compress passes only its durable head here; the
+                # verbatim tail remains outside the rotation flush and is
+                # rejoined below.
+                setattr(tmp_agent, "_persist_user_message_idx", len(head))
+
                 # _run_in_executor_with_context (not a bare run_in_executor):
                 # the profile secret scope installed by the wrapper is a
                 # contextvar, and the default-executor hop would drop it —
@@ -4368,6 +4380,7 @@ class GatewaySlashCommandsMixin:
                         focus_topic=focus_topic,
                         force=True,
                         defer_context_engine_notification=True,
+                        durable_snapshot_length=len(msgs),
                     )
                 )
 
@@ -4385,6 +4398,16 @@ class GatewaySlashCommandsMixin:
                         describe_compression_lock_skip,
                     )
                     return describe_compression_lock_skip(_lock_skipped)
+
+                if (
+                    getattr(
+                        tmp_agent,
+                        "_compression_skipped_due_to_snapshot_growth",
+                        False,
+                    )
+                    is True
+                ):
+                    return t("gateway.compress.nothing_to_do")
 
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)

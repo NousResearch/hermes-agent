@@ -2242,6 +2242,7 @@ def compress_context(
     force: bool = False,
     defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None,
+    durable_snapshot_length: Optional[int] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -2264,6 +2265,10 @@ def compress_context(
         commit_fence: Optional cooperative fence for executor callers that
             may time out. It prevents a late worker from mutating session state
             after its caller has moved on.
+        durable_snapshot_length: Number of durable rows represented by the
+            caller's snapshot when ``messages`` is an intentional prefix of
+            that snapshot. This distinguishes an excluded durable tail from
+            rows committed concurrently.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -2297,6 +2302,7 @@ def compress_context(
     # second clear before lock acquisition below stays for the same reason
     # it was added in #69870 and is simply idempotent now.
     agent._compression_skipped_due_to_lock = None
+    agent._compression_skipped_due_to_snapshot_growth = False
 
     _attempt_started_at = time.monotonic()
     _attempt_id = uuid.uuid4().hex
@@ -2856,7 +2862,52 @@ def compress_context(
             )
             if callable(durable_loader):
                 durable_parent = durable_loader(_lock_db, _lock_sid)
-                if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
+                _snapshot_length = len(messages)
+                _intentional_durable_prefix = False
+                if (
+                    isinstance(durable_snapshot_length, int)
+                    and durable_snapshot_length >= len(messages)
+                ):
+                    _snapshot_length = durable_snapshot_length
+                    _intentional_durable_prefix = durable_snapshot_length > len(messages)
+
+                if (
+                    isinstance(durable_parent, list)
+                    and len(durable_parent) > _snapshot_length
+                    and _intentional_durable_prefix
+                ):
+                    # This caller intentionally excluded a durable tail from
+                    # summary input. Adopting the full parent after concurrent
+                    # growth would summarize that protected tail and the caller
+                    # would rejoin it again. Preserve the canonical parent and
+                    # retry later against a fresh snapshot instead.
+                    logger.warning(
+                        "compression: partial durable snapshot for session=%s "
+                        "grew before lease (%d → %d msgs); preserving parent "
+                        "and skipping this attempt",
+                        _lock_sid,
+                        _snapshot_length,
+                        len(durable_parent),
+                    )
+                    agent._compression_skipped_due_to_snapshot_growth = True
+                    agent._last_compaction_in_place = False
+                    _emit_compression_attempt_telemetry(
+                        agent,
+                        started_at=_attempt_started_at,
+                        commit_status="aborted",
+                        split_status="aborted",
+                        failure_class="durable_snapshot_grew",
+                    )
+                    _release_lock()
+                    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+                    if not existing_prompt:
+                        existing_prompt = agent._build_system_prompt(system_message)
+                    return messages, existing_prompt
+
+                if (
+                    isinstance(durable_parent, list)
+                    and len(durable_parent) > _snapshot_length
+                ):
                     # The in-memory transcript carries the CURRENT turn's
                     # un-persisted user tail (anchored by
                     # _persist_user_message_idx) that the durable snapshot read

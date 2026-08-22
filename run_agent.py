@@ -8004,6 +8004,7 @@ class AIAgent:
         force: bool = False,
         defer_context_engine_notification: bool = False,
         commit_fence=None,
+        durable_snapshot_length: Optional[int] = None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
@@ -8071,6 +8072,7 @@ class AIAgent:
                         defer_context_engine_notification
                     ),
                     commit_fence=fence,
+                    durable_snapshot_length=durable_snapshot_length,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

@@ -155,10 +155,13 @@ def _read_allowlist_env(env_var: str) -> str:
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.
 
-    TODO(profile-secrets): the grant mirror below still WRITES through
-    ``hermes_cli.config.save_env_value`` / ``remove_env_value``, which target
-    the root ``.env`` — those writes need a profile-aware counterpart before
-    pairing grants can be mirrored correctly under multiplexing.
+    NOTE: profile-scoped callers must NOT use this helper — the dashboard
+    approval path does not install the requested profile's secret scope, so
+    this read falls back to the process environment (the root allowlist) and
+    the subsequent profile-scoped write copies that root value into the
+    profile's ``.env``, clobbering the profile's own allowlist. Use
+    :func:`_read_profile_allowlist_env` so read and write resolve the same
+    scope (``#77490`` follow-up review).
     """
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
@@ -172,7 +175,111 @@ def _read_allowlist_env(env_var: str) -> str:
     return (os.getenv(env_var) or "").strip()
 
 
-def _sync_allowlist_add(platform: str, user_id: str) -> None:
+def _profile_home_dir(profile: str) -> Path:
+    """Resolve a profile's home directory the same way ``PairingStore`` does.
+
+    Uses ``get_default_hermes_root()`` (not ``get_hermes_home()``) so the
+    resolution stays correct even when the current process ``HERMES_HOME`` is
+    itself a profile home — nesting ``profiles`` under a profile home would
+    silently write to the wrong ``.env`` (``#77490``).
+    """
+    root = get_default_hermes_root()
+    return root if profile == "default" else root / "profiles" / profile
+
+
+def _read_profile_allowlist_env(env_var: str, profile: str) -> str:
+    """Read an allowlist env var from a profile's OWN ``.env`` file.
+
+    The grant mirror WRITES into the profile ``.env``, so the starting value
+    must come from the same file — not the process environment / installed
+    secret scope, which may hold the root (or another profile's) allowlist.
+    Reading and writing different scopes is exactly the cross-profile grant
+    leak ``#77490`` follow-up flagged.
+    """
+    try:
+        from agent.secret_scope import load_env_file
+
+        secrets = load_env_file(_profile_home_dir(profile) / ".env")
+        return (secrets.get(env_var) or "").strip()
+    except Exception:
+        return ""
+
+
+def _write_profile_env_file(
+    env_var: str, value: Optional[str], profile: str
+) -> None:
+    """Set (or remove, when ``value`` is None) an env var in a profile's OWN
+    ``.env`` file WITHOUT touching the process environment or the shared env
+    cache.
+
+    ``save_env_value()`` / ``remove_env_value()`` write the file AND then
+    mutate ``os.environ`` + invalidate the global env cache. Under
+    multiplexing that leaks a profile-scoped allowlist grant into the shared
+    process allowlist consumed by sibling profiles and live adapter checks —
+    approving one profile would grant users in another. This writer is
+    file-only, so the isolation is real (``#77519`` follow-up review, P1).
+    """
+    from hermes_cli.config import (
+        _env_line_defines_key,
+        _quote_env_value,
+        _sanitize_env_lines,
+    )
+
+    env_path = _profile_home_dir(profile) / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
+
+    lines: list = []
+    if env_path.exists():
+        with open(env_path, **read_kw) as f:
+            lines = f.readlines()
+        lines = _sanitize_env_lines(lines)
+
+    found = False
+    if value is None:
+        # Remove every line that defines the key (plain or export-prefixed),
+        # mirroring remove_env_value()'s matching semantics (#40041).
+        kept: list = []
+        for line in lines:
+            if _env_line_defines_key(line, env_var):
+                found = True
+                continue
+            kept.append(line)
+        lines = kept
+    else:
+        serialized = _quote_env_value(value)
+        for i, line in enumerate(lines):
+            if _env_line_defines_key(line, env_var):
+                lines[i] = f"{env_var}={serialized}\n"
+                found = True
+                break
+        if not found:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append(f"{env_var}={serialized}\n")
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
+    )
+    try:
+        with os.fdopen(fd, "w", **write_kw) as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _sync_allowlist_add(
+    platform: str, user_id: str, *, profile: Optional[str] = None
+) -> None:
     """Add ``user_id`` to the platform allowlist env var IF one is configured.
 
     Option (i): only materialize the grant into the allowlist when the operator
@@ -180,11 +287,23 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     allowlist) we do nothing — the pairing store remains the grant record and
     the authz union honors it, so we never silently convert an open gateway into
     a locked one on first pairing.
+
+    When ``profile`` is set, the allowlist write targets the profile's own
+    ``.env`` (``<HERMES_HOME>/profiles/<profile>/.env``) instead of the root
+    ``.env``, preventing cross-profile credential leakage under multiplexing
+    (``#77490``).
     """
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    if profile:
+        # Read AND write must resolve the same profile scope. The dashboard
+        # approval path does not install the profile's secret scope, so the
+        # unscoped read would fall back to the process/root allowlist and copy
+        # root grants into the profile .env (#77490 follow-up review).
+        current = _read_profile_allowlist_env(env_var, profile)
+    else:
+        current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — leave the gateway open (option i).
     ids = _split_allowlist(current)
@@ -192,17 +311,32 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
         return  # Already covered.
     ids.append(str(user_id))
     try:
-        from hermes_cli.config import save_env_value
+        if profile:
+            # File-only writer: the profile's .env must change WITHOUT
+            # mutating os.environ / the shared env cache — otherwise the
+            # grant leaks into sibling profiles' process allowlist and live
+            # adapter checks (#77519 follow-up review, P1).
+            _write_profile_env_file(env_var, ",".join(ids), profile)
+        else:
+            from hermes_cli.config import save_env_value
 
-        save_env_value(env_var, ",".join(ids))
+            save_env_value(env_var, ",".join(ids))
     except Exception:
         # Best-effort: the pairing store grant still authorizes via the union,
         # so a failure here degrades to "grant recorded but not mirrored".
         pass
 
 
-def _iter_live_gateway_adapters():
-    """Yield adapters from the in-process GatewayRunner, if one is running."""
+def _iter_live_gateway_adapters(profile: Optional[str] = None):
+    """Yield adapters from the in-process GatewayRunner, if one is running.
+
+    When ``profile`` is given (and not ``default``/``None``), only that
+    profile's adapters are yielded — the default-profile adapters live in
+    ``runner.adapters``, secondary-profile adapters in
+    ``runner._profile_adapters[profile]``. This lets a profile-scoped revoke
+    purge ONLY the target profile's live allowlist instead of every adapter
+    on the platform (``#77519`` follow-up review, P2).
+    """
     try:
         from gateway.run import _gateway_runner_ref
 
@@ -211,6 +345,23 @@ def _iter_live_gateway_adapters():
         return
     if runner is None:
         return
+    if profile:
+        # Explicit profile scope: yield ONLY that profile's adapters. The
+        # default profile's adapters live in runner.adapters; secondary
+        # profiles' adapters live in runner._profile_adapters[profile].
+        if profile == "default":
+            adapters = getattr(runner, "adapters", None) or {}
+            for adapter in adapters.values():
+                if adapter is not None:
+                    yield adapter
+            return
+        profile_adapters = getattr(runner, "_profile_adapters", None) or {}
+        mapping = profile_adapters.get(profile) or {}
+        for adapter in mapping.values():
+            if adapter is not None:
+                yield adapter
+        return
+    # Unscoped (legacy behavior): every adapter in the process.
     adapters = getattr(runner, "adapters", None) or {}
     for adapter in adapters.values():
         if adapter is not None:
@@ -258,18 +409,24 @@ def _purge_allowlist_entries(entries, platform: str, user_id: str):
     return entries
 
 
-def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
+def _sync_live_adapter_allowlist_remove(
+    platform: str, user_id: str, *, profile: Optional[str] = None
+) -> None:
     """Clear revoked principals from in-process adapter allowlist snapshots.
 
     ``WhatsAppAdapter`` (and Cloud) snapshot ``_allow_from`` at construction.
     Pairing revoke updates ``WHATSAPP_ALLOWED_USERS`` / cloud env, but when the
     revoked principal was the sole entry the env key is removed entirely.
     Intake must not keep authorizing from the stale snapshot until restart.
+
+    When ``profile`` is set, only the target profile's adapters are purged —
+    a profile-scoped revoke must not remove a sibling profile's live
+    authorization (``#77519`` follow-up review, P2).
     """
     platform_name = (platform or "").strip().lower()
     if not platform_name or not str(user_id or "").strip():
         return
-    for adapter in _iter_live_gateway_adapters():
+    for adapter in _iter_live_gateway_adapters(profile=profile):
         if _adapter_platform_name(adapter) != platform_name:
             continue
         if hasattr(adapter, "_allow_from"):
@@ -289,7 +446,9 @@ def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
                 pass
 
 
-def _sync_allowlist_remove(platform: str, user_id: str) -> None:
+def _sync_allowlist_remove(
+    platform: str, user_id: str, *, profile: Optional[str] = None
+) -> None:
     """Remove ``user_id`` (and WhatsApp alias equivalents) from the allowlist.
 
     Matching must mirror PairingStore / authz WhatsApp alias rules: approve
@@ -300,11 +459,22 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     Also clears matching entries from any in-process platform adapter
     ``_allow_from`` snapshot so sole-entry revocation is effective without a
     gateway restart.
+
+    When ``profile`` is set, the removal targets the profile's own ``.env``
+    (``<HERMES_HOME>/profiles/<profile>/.env``) instead of the root ``.env``,
+    preventing cross-profile credential leakage under multiplexing (``#77490``).
     """
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    if profile:
+        # Read AND write must resolve the same profile scope (see
+        # _sync_allowlist_add) — otherwise the unscoped read falls back to
+        # the process/root allowlist and the profile write removes the wrong
+        # entries / copies root grants across the boundary (#77490).
+        current = _read_profile_allowlist_env(env_var, profile)
+    else:
+        current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — do not touch config-only snapshots.
     ids = _split_allowlist(current)
@@ -316,15 +486,26 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     if len(remaining) == len(ids):
         return  # Not present.
     try:
-        from hermes_cli.config import save_env_value, remove_env_value
-
-        if remaining:
-            save_env_value(env_var, ",".join(remaining))
+        if profile:
+            # File-only writer: revoking one profile must not purge the
+            # process-global allowlist that sibling profiles consume (#77519
+            # follow-up review, P1).
+            _write_profile_env_file(
+                env_var, ",".join(remaining) if remaining else None, profile
+            )
         else:
-            remove_env_value(env_var)
+            from hermes_cli.config import save_env_value, remove_env_value
+
+            def _write(value_remaining: bool) -> None:
+                if value_remaining:
+                    save_env_value(env_var, ",".join(remaining))
+                else:
+                    remove_env_value(env_var)
+
+            _write(bool(remaining))
     except Exception:
         pass
-    _sync_live_adapter_allowlist_remove(platform, user_id)
+    _sync_live_adapter_allowlist_remove(platform, user_id, profile=profile)
 
 
 def _load_json_file(path: Path) -> dict:
@@ -552,7 +733,7 @@ class PairingStore:
         # Mirror the grant into the operator's allowlist when one is configured
         # (option i), so the pairing store and the allowlist stay a single
         # visible source of truth. No-op on open gateways.
-        _sync_allowlist_add(platform, normalized_user_id)
+        _sync_allowlist_add(platform, normalized_user_id, profile=self._profile)
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
@@ -571,7 +752,7 @@ class PairingStore:
                 # Keep the allowlist mirror in sync: revoking a paired user
                 # also removes the entry the approval added (option i). No-op if
                 # the user was added to the allowlist by other means.
-                _sync_allowlist_remove(platform, user_id)
+                _sync_allowlist_remove(platform, user_id, profile=self._profile)
                 return True
         return False
 

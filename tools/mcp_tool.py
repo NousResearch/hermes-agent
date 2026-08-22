@@ -4374,7 +4374,7 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     if isinstance(annotations, dict):
         hint = annotations.get("readOnlyHint")
     else:
-        hint = getattr(annotations, "readOnlyHint", None)
+        hint = mcp_field(annotations, "read_only_hint", "readOnlyHint")
     return hint is True
 
 
@@ -6980,7 +6980,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             for mcp_tool in server._tools:
                 if not _should_register(mcp_tool.name):
                     continue
-                schema_obj = getattr(mcp_tool, "inputSchema", None)
+                schema_obj = mcp_field(mcp_tool, "input_schema", "inputSchema")
                 tools_payload.append({
                     "name": mcp_tool.name,
                     "description": mcp_tool.description or "",

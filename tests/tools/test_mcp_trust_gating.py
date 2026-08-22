@@ -245,3 +245,96 @@ class TestAnnotationCaptureAtDiscovery:
         assert mcp_tool._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_real_sdk_annotations_read_only_hint_survives_2x_rename(self):
+        """mcp 2.0 renamed ``readOnlyHint`` -> ``read_only_hint`` on the SDK
+        model; camelCase survives only as a pydantic serialization alias,
+        which attribute access does not see. Every other case here builds a
+        duck-typed ``SimpleNamespace``, which cannot catch that rename —
+        pin one case to the actual SDK model, mirroring
+        test_mcp_elicitation.py's requestedSchema regression guard.
+        """
+        pytest.importorskip("mcp.types")
+        from mcp.types import ToolAnnotations
+
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations=ToolAnnotations(readOnlyHint=True))
+        ) is True
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations=ToolAnnotations(readOnlyHint=False))
+        ) is False
+
+    def test_real_sdk_tool_read_only_hint_captured_at_registration(self):
+        """End-to-end through _register_server_tools with real SDK Tool /
+        ToolAnnotations objects, not the SimpleNamespace stand-ins every
+        other test in this class uses — those cannot catch a field rename
+        in the installed SDK.
+        """
+        pytest.importorskip("mcp.types")
+        from mcp.types import Tool, ToolAnnotations
+        from tools.registry import ToolRegistry
+
+        server = mcp_tool.MCPServerTask("srv")
+        server.session = MagicMock()
+        server._tools = [
+            Tool(
+                name="list_repos", description="",
+                inputSchema={"type": "object"},
+                annotations=ToolAnnotations(readOnlyHint=True),
+            ),
+            Tool(
+                name="delete_repo", description="",
+                inputSchema={"type": "object"},
+                annotations=ToolAnnotations(readOnlyHint=False),
+            ),
+        ]
+        config = {
+            "trust": "untrusted",
+            "tools": {"resources": False, "prompts": False},
+        }
+        with patch("tools.registry.registry", ToolRegistry()), \
+             patch("tools.mcp_tool._track_mcp_tool_server"):
+            mcp_tool._register_server_tools("srv", server, config)
+
+        hints = mcp_tool._tool_read_only_hints["srv"]
+        assert hints.get("list_repos") is True
+        assert not hints.get("delete_repo")
+
+    def test_real_sdk_tool_input_schema_survives_2x_rename_in_cache_write_through(self):
+        """The on-disk schema cache write-through (#56832) must persist the
+        real inputSchema off a genuine SDK Tool object, not silently fall
+        back to {} because mcp 2.x renamed the attribute to input_schema. A
+        cache-registered tool that starts from an empty schema loses every
+        argument on the next lazy-start (no server spawn to notice).
+        """
+        pytest.importorskip("mcp.types")
+        from mcp.types import Tool
+        from tools.registry import ToolRegistry
+
+        real_schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+        server = mcp_tool.MCPServerTask("srv")
+        server.session = MagicMock()
+        server._tools = [
+            Tool(name="read_file", description="Read a file", inputSchema=real_schema),
+        ]
+        config = {"tools": {"resources": False, "prompts": False}}
+
+        captured = {}
+
+        def _capture_write(name, fingerprint, *, tools, utility_tools,
+                            ttl_ms=None, cache_scope=None):
+            captured["tools"] = tools
+
+        with patch("tools.registry.registry", ToolRegistry()), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             patch("tools.mcp_schema_cache.write_cache_entry",
+                   side_effect=_capture_write):
+            mcp_tool._register_server_tools("srv", server, config)
+
+        assert captured, "write_cache_entry was never called"
+        entry = next(t for t in captured["tools"] if t["name"] == "read_file")
+        assert entry["inputSchema"] == real_schema

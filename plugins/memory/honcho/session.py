@@ -1434,6 +1434,13 @@ class HonchoSessionManager:
 
         return target_peer_id, None
 
+    def resolve_peer_id(self, session_key: str, peer: str = "user") -> str:
+        """Resolve a tool-facing peer alias to the concrete Honcho peer ID."""
+        session = self._cache.get(session_key)
+        if not session:
+            return self._sanitize_id((peer or "user").strip())
+        return self._resolve_peer_id(session, peer)
+
     def get_peer_card(self, session_key: str, peer: str = "user") -> list[str]:
         """
         Fetch a peer card — a curated list of key facts.

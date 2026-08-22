@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import APIServerAdapter, _extract_mcp_app_envelope
 from hermes_state import SessionDB
 
 
@@ -51,6 +52,91 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
+
+
+def test_extract_mcp_app_envelope_is_bounded_and_fail_closed():
+    result = {
+        "result": ["IDENTITY: Name: Kenneth"],
+        "resolvedPeer": "kenneth",
+        "_meta": {
+            "ui": {"resourceUri": "ui://hugin/peer-card"},
+            "mimeType": "text/html;profile=mcp-app",
+        },
+    }
+    assert _extract_mcp_app_envelope("honcho_profile", {"peer": "kenneth", "secret": "no"}, result) == {
+        "resourceUri": "ui://hugin/peer-card",
+        "mimeType": "text/html;profile=mcp-app",
+        "tool": "honcho_profile",
+        "target": "kenneth",
+    }
+    assert _extract_mcp_app_envelope("honcho_search", {}, result) is None
+    assert _extract_mcp_app_envelope("terminal", {}, result) is None
+    missing_mime = dict(result, _meta={"ui": {"resourceUri": "ui://hugin/peer-card"}})
+    assert _extract_mcp_app_envelope("honcho_profile", {}, missing_mime) is None
+    oversized = dict(result, _meta={"ui": {"resourceUri": "ui://x/" + "a" * 2048}, "mimeType": "text/html;profile=mcp-app"})
+    assert _extract_mcp_app_envelope("honcho_profile", {}, oversized) is None
+    underscored = dict(result, resolvedPeer="runi_user")
+    envelope = _extract_mcp_app_envelope("honcho_profile", {}, underscored)
+    assert envelope is not None
+    assert envelope["target"] == "runi_user"
+    assert _extract_mcp_app_envelope("honcho_profile", {}, "not-json") is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_returns_only_bounded_mcp_app_metadata(adapter, session_db):
+    session_id = session_db.create_session("mcp-app-turn", "api_server")
+
+    async def fake_run_agent(**kwargs):
+        for idx in range(20):
+            kwargs["tool_complete_callback"](
+                f"call-{idx}",
+                "honcho_profile",
+                {"peer": "kenneth", "secret": "must-not-cross"},
+                json.dumps({
+                    "result": ["PRIVATE"],
+                    "resolvedPeer": "kenneth",
+                    "_meta": {
+                        "ui": {"resourceUri": "ui://hugin/peer-card"},
+                        "mimeType": "text/html;profile=mcp-app",
+                    },
+                }),
+            )
+        return {"final_response": "Kenneth", "session_id": session_id}, {"total_tokens": 1}
+
+    adapter._run_agent = fake_run_agent
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "Who is Kenneth?"})
+        assert resp.status == 200
+        payload = await resp.json()
+
+    expected_app = {
+        "resourceUri": "ui://hugin/peer-card",
+        "mimeType": "text/html;profile=mcp-app",
+        "tool": "honcho_profile",
+        "target": "kenneth",
+    }
+    assert len(payload["apps"]) == 16
+    assert all(app == expected_app for app in payload["apps"])
+    assert "PRIVATE" not in json.dumps(payload["apps"])
+    assert "must-not-cross" not in json.dumps(payload["apps"])
+
+
+@pytest.mark.asyncio
+async def test_session_chat_omits_apps_when_no_valid_app_metadata(adapter, session_db):
+    session_id = session_db.create_session("no-mcp-app-turn", "api_server")
+
+    async def fake_run_agent(**kwargs):
+        return {"final_response": "plain", "session_id": session_id}, {"total_tokens": 1}
+
+    adapter._run_agent = fake_run_agent
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "plain"})
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert "apps" not in payload
 
 
 @pytest.mark.asyncio

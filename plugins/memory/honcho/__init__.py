@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -57,6 +58,18 @@ def _is_internal_gateway_turn(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
+
+_MCP_APP_MIME = "text/html;profile=mcp-app"
+
+
+def _profile_app_metadata(platform: str) -> dict | None:
+    """Return optional API-host UI metadata for peer-card reads."""
+    if platform != "api_server":
+        return None
+    uri = os.environ.get("HONCHO_PROFILE_RESOURCE_URI", "").strip()
+    if not uri.startswith("ui://"):
+        return None
+    return {"ui": {"resourceUri": uri}, "mimeType": _MCP_APP_MIME}
 
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
@@ -279,6 +292,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
+        self._platform = "cli"
         self._query_rewriter = query_rewriter
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -374,6 +388,7 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
+            self._platform = platform
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -1558,9 +1573,21 @@ class HonchoMemoryProvider(MemoryProvider):
                         return tool_error("Failed to update peer card.")
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
                 card = self._manager.get_peer_card(self._session_key, peer=peer)
+                resolver = getattr(self._manager, "resolve_peer_id", None)
+                app_meta = _profile_app_metadata(self._platform)
                 if not card:
-                    return json.dumps(self._empty_profile_hint(peer))
-                return json.dumps({"result": card})
+                    payload = self._empty_profile_hint(peer)
+                    if app_meta:
+                        candidate = resolver(self._session_key, peer) if callable(resolver) else None
+                        resolved_peer = candidate if isinstance(candidate, str) else str(peer or "user")
+                        payload.update({"peer": peer, "resolvedPeer": resolved_peer, "_meta": app_meta})
+                    return json.dumps(payload)
+                payload: Dict[str, Any] = {"result": card}
+                if app_meta:
+                    candidate = resolver(self._session_key, peer) if callable(resolver) else None
+                    resolved_peer = candidate if isinstance(candidate, str) else str(peer or "user")
+                    payload.update({"peer": peer, "resolvedPeer": resolved_peer, "_meta": app_meta})
+                return json.dumps(payload)
 
             elif tool_name == "honcho_search":
                 query = (args.get("query") or "").strip()

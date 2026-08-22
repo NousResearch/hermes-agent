@@ -242,6 +242,53 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+_MCP_APP_MIME = "text/html;profile=mcp-app"
+_MAX_MCP_APP_URI_LENGTH = 2048
+_MAX_MCP_APPS_PER_TURN = 16
+
+
+def _extract_mcp_app_envelope(function_name, function_args, function_result):
+    """Return bounded UI metadata from one completed tool result.
+
+    Raw tool output and arbitrary arguments never cross into the host envelope.
+    Only a standard ui:// URI, MCP App MIME, tool name, and a simple peer target
+    are admitted.
+    """
+    if function_name != "honcho_profile":
+        return None
+    payload = function_result
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    ui = meta.get("ui")
+    if not isinstance(ui, dict):
+        return None
+    uri = ui.get("resourceUri")
+    mime = meta.get("mimeType")
+    if not isinstance(uri, str) or not uri.startswith("ui://") or len(uri) > _MAX_MCP_APP_URI_LENGTH:
+        return None
+    if mime != _MCP_APP_MIME:
+        return None
+    envelope = {
+        "resourceUri": uri,
+        "mimeType": mime,
+        "tool": str(function_name or ""),
+    }
+    resolved_peer = payload.get("resolvedPeer")
+    if (
+        isinstance(resolved_peer, str)
+        and 0 < len(resolved_peer) <= 128
+        and resolved_peer.replace("-", "").replace("_", "").isalnum()
+    ):
+        envelope["target"] = resolved_peer
+    return envelope
 
 
 class ThreadSafeAsyncQueue(asyncio.Queue):
@@ -4592,6 +4639,13 @@ class APIServerAdapter(BasePlatformAdapter):
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
         history = await self._conversation_history_for_session(session_id)
+        apps: List[Dict[str, Any]] = []
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            app = _extract_mcp_app_envelope(function_name, function_args, function_result)
+            if app is not None and len(apps) < _MAX_MCP_APPS_PER_TURN:
+                apps.append(app)
+
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
@@ -4603,6 +4657,7 @@ class APIServerAdapter(BasePlatformAdapter):
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active,
+            tool_complete_callback=_on_tool_complete,
             **agent_overrides,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
@@ -4627,16 +4682,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 else ""
             ),
         )
-        return web.json_response(
-            {
-                "object": "hermes.session.chat.completion",
-                "session_id": effective_session_id or session_id,
-                "message": {"role": "assistant", "content": final_response},
-                "usage": usage,
-                "runtime": runtime,
-            },
-            headers=headers,
-        )
+        response_payload = {
+            "object": "hermes.session.chat.completion",
+            "session_id": effective_session_id or session_id,
+            "message": {"role": "assistant", "content": final_response},
+            "usage": usage,
+            "runtime": runtime,
+        }
+        if apps:
+            response_payload["apps"] = apps
+        return web.json_response(response_payload, headers=headers)
 
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":

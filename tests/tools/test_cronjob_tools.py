@@ -389,6 +389,37 @@ class TestUnifiedCronjobTool:
 
 
 # =========================================================================
+# Agent-facing registry handler
+# =========================================================================
+
+
+@pytest.mark.parametrize("action", ["create", "update"])
+def test_handler_forwards_attach_to_session(monkeypatch, action):
+    """The schema-exposed flag must reach cronjob() through the registry."""
+    from tools import cronjob_tools
+    from tools.registry import registry
+
+    captured = {}
+
+    def fake_cronjob(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True})
+
+    monkeypatch.setattr(cronjob_tools, "cronjob", fake_cronjob)
+
+    raw_result = registry.dispatch(
+        "cronjob",
+        {"action": action, "attach_to_session": True},
+    )
+    assert isinstance(raw_result, str)
+    result = json.loads(raw_result)
+
+    assert result["success"] is True
+    assert captured["action"] == action
+    assert captured["attach_to_session"] is True
+
+
+# =========================================================================
 # Agent-facing surface: per-job model pins are user-owned
 # =========================================================================
 

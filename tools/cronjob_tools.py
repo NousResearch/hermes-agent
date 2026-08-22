@@ -1861,6 +1861,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
         task_id=kw.get("task_id"),

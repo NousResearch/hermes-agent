@@ -637,7 +637,7 @@ class SessionManager:
         # server sessions when the daemon is started with those env vars.
         from agent.isolation import resolve_agent_isolation
 
-        skip_context_files, skip_memory = resolve_agent_isolation()
+        isolated = resolve_agent_isolation()
 
         kwargs = {
             "platform": "acp",
@@ -649,8 +649,8 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
-            "skip_context_files": skip_context_files,
-            "skip_memory": skip_memory,
+            "skip_context_files": isolated,
+            "skip_memory": isolated,
         }
 
         try:

@@ -30,11 +30,12 @@ def resolve_agent_isolation(
     *,
     ignore_rules: bool | None = None,
     safe_mode: bool | None = None,
-) -> tuple[bool, bool]:
-    """Resolve isolation to the ``AIAgent`` skip flags.
+) -> bool:
+    """Return whether the shared agent-isolation contract is enabled.
 
-    Returns ``(skip_context_files, skip_memory)``.  The two flags are always
-    equal because the isolation contract skips rules and memory together.
+    Callers apply this one decision to both ``skip_context_files`` and
+    ``skip_memory`` because the isolation contract skips rules and memory
+    together.
 
     Args:
         ignore_rules: explicit ``--ignore-rules``-style flag; ``None`` means
@@ -48,4 +49,4 @@ def resolve_agent_isolation(
         isolated = env_var_enabled("HERMES_IGNORE_RULES") or env_var_enabled(
             "HERMES_SAFE_MODE"
         )
-    return isolated, isolated
+    return isolated

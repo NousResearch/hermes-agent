@@ -7057,7 +7057,7 @@ def _make_agent(
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
-    skip_context_files, skip_memory = resolve_agent_isolation()
+    isolated = resolve_agent_isolation()
 
     from run_agent import AIAgent
 
@@ -7220,8 +7220,8 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=skip_context_files,
-        skip_memory=skip_memory,
+        skip_context_files=isolated,
+        skip_memory=isolated,
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )

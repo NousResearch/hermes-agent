@@ -31,19 +31,18 @@ def test_resolve_agent_isolation(monkeypatch, ignore_rules, safe_mode, env, expe
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
-    skip_context_files, skip_memory = resolve_agent_isolation(
+    isolated = resolve_agent_isolation(
         ignore_rules=ignore_rules,
         safe_mode=safe_mode,
     )
-    assert skip_context_files is expected
-    assert skip_memory is expected
+    assert isolated is expected
 
 
-def test_resolve_agent_isolation_returns_pair_together(monkeypatch):
-    """Both skip flags must always move together."""
+def test_resolve_agent_isolation_returns_single_decision(monkeypatch):
+    """The resolver exposes one decision for both agent skip flags."""
     from agent.isolation import resolve_agent_isolation
 
     monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
-    assert resolve_agent_isolation() == (True, True)
+    assert resolve_agent_isolation() is True
     monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-    assert resolve_agent_isolation() == (False, False)
+    assert resolve_agent_isolation() is False

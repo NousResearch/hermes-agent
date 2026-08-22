@@ -6747,8 +6747,8 @@ def _resolve_gateway_isolation_skip_flags(
     """
     from agent.isolation import resolve_agent_isolation
 
-    isolation_skip_context, skip_memory = resolve_agent_isolation()
-    return isolation_skip_context or bool(platform_skip_context), skip_memory
+    isolated = resolve_agent_isolation()
+    return isolated or bool(platform_skip_context), isolated
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):

@@ -879,6 +879,32 @@ class TestGitDestructiveOps:
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_git_clean_text_in_quoted_data_not_flagged(self):
+        """#87973: `git clean -f*` inside a quoted argument (commit message,
+        --title, data) is DATA, not an executable command — the detector must
+        not fire on it, exactly like the rm hardline rules."""
+        for cmd in (
+            'git commit -m "rollback: use git clean -fdx to restore the tree"',
+            "git commit -m 'docs: mention git clean -f in the README section'",
+            'echo "run git clean -fd before rebuilding"',
+            'git log --format="%s" | grep "git clean -fdx"',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+    def test_git_clean_force_still_detected_in_command_position(self):
+        """The _CMDPOS anchor must keep catching real invocations, including
+        after separators and behind sudo/env wrappers."""
+        for cmd in (
+            "git clean -fdx",
+            "git add -A && git clean -fd",
+            "sudo git clean -f",
+            "cd repo && git clean -fdx; git status",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "clean" in desc.lower(), cmd
+
 
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a

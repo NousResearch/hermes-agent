@@ -1038,7 +1038,12 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    # Anchored to _CMDPOS so the pattern fires only when `git clean` is an
+    # actual command word — not when the literal text appears as DATA inside
+    # another command's argument, e.g. `git commit -m "rollback: use git
+    # clean -fdx ..."` (#87973). Same treatment the rm hardline rules and
+    # shutdown patterns already get.
+    (_CMDPOS + r'git\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` is shorthand for `-d --force`; the long-flag spellings
     # (`--delete`, `--force`) are different tokens entirely, so they slip

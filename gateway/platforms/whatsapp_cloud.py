@@ -1905,6 +1905,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """
         msg_type_str = str(raw_message.get("type") or "text").lower()
 
+        # Contentless envelopes: Meta delivers non-conversational payloads on
+        # the same ``messages`` webhook field. ``system`` covers
+        # user_changed_number and — since Aug 11 2026 — user_changed_user_id
+        # (BSUID rotation) events; ``reaction`` is an emoji tap on a prior
+        # message; ``unsupported``/``unknown`` are types the Cloud API cannot
+        # render. None of these carry a user utterance — falling through
+        # would produce a MessageEvent with empty text and kick off a blank
+        # agent turn. Drop them before any further processing.
+        if msg_type_str in {"system", "reaction", "unsupported", "unknown"}:
+            logger.debug(
+                "[whatsapp_cloud] skipping contentless %s envelope (wamid=%s)",
+                msg_type_str, raw_message.get("id"),
+            )
+            return None
+
         # Interactive replies (button taps, list selections) carry an ``id``
         # we set when sending the prompt. Route those to the appropriate
         # gateway resolver BEFORE falling through to text dispatch — the

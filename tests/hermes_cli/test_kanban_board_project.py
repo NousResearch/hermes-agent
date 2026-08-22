@@ -85,3 +85,72 @@ def test_create_task_explicit_project_beats_board(fresh_home, tmp_path):
         assert kb.get_task(conn, tid).project_id == task_proj
     finally:
         conn.close()
+
+
+def test_non_director_profile_resolves_project_from_shared_board(fresh_home, tmp_path):
+    repo = tmp_path / "account-gen"
+    repo.mkdir()
+    kb.create_board(
+        "account-gen",
+        name="Account Gen",
+        default_workdir=str(repo),
+    )
+
+    conn = kb.connect(board="account-gen")
+    try:
+        tid = kb.create_task(
+            conn,
+            title="shared project",
+            board="account-gen",
+            project_id="account-gen",
+        )
+        task = kb.get_task(conn, tid)
+        assert task.project_id == "account-gen"
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == str(repo / ".worktrees" / tid)
+        assert task.branch_name == f"account-gen/{tid}-shared-project"
+    finally:
+        conn.close()
+
+
+def test_unresolved_explicit_project_fails_without_creating_task(fresh_home):
+    kb.create_board("account-gen", name="Account Gen")
+    conn = kb.connect(board="account-gen")
+    try:
+        with pytest.raises(ValueError, match="project 'missing' was not found"):
+            kb.create_task(
+                conn,
+                title="must not silently drop",
+                board="account-gen",
+                project_id="missing",
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_explicit_worktree_and_branch_fallback_still_works(fresh_home, tmp_path):
+    repo = tmp_path / "account-gen"
+    repo.mkdir()
+    kb.create_board(
+        "account-gen",
+        name="Account Gen",
+        default_workdir=str(repo),
+    )
+
+    conn = kb.connect(board="account-gen")
+    try:
+        tid = kb.create_task(
+            conn,
+            title="fallback",
+            board="account-gen",
+            workspace_kind="worktree",
+            branch_name="account-gen/fallback",
+        )
+        task = kb.get_task(conn, tid)
+        assert task.project_id is None
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == str(repo)
+        assert task.branch_name == "account-gen/fallback"
+    finally:
+        conn.close()

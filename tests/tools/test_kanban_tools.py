@@ -416,6 +416,72 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+@pytest.mark.parametrize("project_ref", ["id", "slug"])
+def test_create_explicit_worktree_recovers_parent_project(
+    monkeypatch, tmp_path, project_ref
+):
+    """A non-director worker can route a worktree child by project id or slug."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    repo = tmp_path / "account-gen"
+    repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "non-director")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn,
+            name="Account Gen",
+            primary_path=str(repo),
+        )
+
+    conn = kb.connect()
+    try:
+        source_id = kb.create_task(
+            conn,
+            title="source",
+            assignee="non-director",
+            project_id=project_id,
+        )
+        kb.claim_task(conn, source_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", source_id)
+
+    # Simulate the non-director profile lacking this project registry row.
+    monkeypatch.setattr(pdb, "get_project", lambda _conn, _ref: None)
+    requested_project = project_id if project_ref == "id" else "account-gen"
+    out = json.loads(
+        kt._handle_create(
+            {
+                "title": f"child by {project_ref}",
+                "assignee": "peer",
+                "project": requested_project,
+                "workspace_kind": "worktree",
+            }
+        )
+    )
+    assert out["ok"] is True
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, out["task_id"])
+        assert child.project_id == project_id
+        assert child.workspace_kind == "worktree"
+        assert child.workspace_path == str(repo / ".worktrees" / child.id)
+        assert child.branch_name == f"account-gen/{child.id}-child-by-{project_ref}"
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

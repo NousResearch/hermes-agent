@@ -4978,16 +4978,27 @@ def refresh_xai_oauth_pure(
     # with a clear error so the user can re-run `hermes model` to refetch.
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
-            endpoint,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "refresh_token",
-                "client_id": XAI_OAUTH_CLIENT_ID,
-                "refresh_token": refresh_token,
-            },
-        )
+    try:
+        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+            response = client.post(
+                endpoint,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": XAI_OAUTH_CLIENT_ID,
+                    "refresh_token": refresh_token,
+                },
+            )
+    except Exception as exc:
+        # DNS/connect/TLS failures used to bubble as raw httpx errors and crash
+        # `hermes model`. Same pattern as discovery and Qwen: wrap as AuthError.
+        # Offline/DNS is not a bad credential, so do not ask for re-login.
+        raise AuthError(
+            f"xAI token refresh failed (network error): {exc}",
+            provider="xai-oauth",
+            code="xai_refresh_network_error",
+            relogin_required=False,
+        ) from exc
     if response.status_code != 200:
         detail = response.text.strip()
         # ``403`` from xAI's token endpoint is almost always a tier /
@@ -7087,6 +7098,15 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
             "logged_in": False,
             "auth_store": str(_auth_file_path()),
             "error": str(exc),
+            "error_code": exc.code,
+        }
+    except Exception as exc:
+        # Status is used by interactive flows. Never crash them on a bad resolve.
+        return {
+            "logged_in": False,
+            "auth_store": str(_auth_file_path()),
+            "error": f"xAI OAuth status check failed: {exc}",
+            "error_code": "xai_status_unexpected_error",
         }
 
 

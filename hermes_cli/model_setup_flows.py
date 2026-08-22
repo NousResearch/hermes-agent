@@ -753,6 +753,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         elif choice == "cancel":
             return
     else:
+        status_error = str(status.get("error") or "").strip()
+        if status_error:
+            # Tokens may exist but refresh failed (network/DNS). Show why.
+            print(f"  xAI Grok OAuth status: {status_error}")
+            print()
         print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:

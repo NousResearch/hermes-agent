@@ -473,6 +473,7 @@ export interface Translations {
     resetScopeToast: string;
     rawYaml: string;
     searchResults: string;
+    searchPlaceholder: string;
     fields: string;
     noFieldsMatch: string;
     configSaved: string;

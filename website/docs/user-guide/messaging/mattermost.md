@@ -18,7 +18,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. With `auto`, Hermes only threads when your message was itself in a thread. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -205,6 +205,7 @@ The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
 |------|----------|
 | `off` (default) | Hermes posts flat messages in the channel, like a normal user. |
 | `thread` | Hermes replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
+| `auto` | Hermes threads its reply **only** when your message was itself in a thread; top-level messages get a flat reply. In `thread` mode every top-level message starts a new thread (and, for gateways that key sessions by thread, a new session) — `auto` keeps a DM as one continuous conversation while still following you into threads. |
 
 Set it in your `~/.hermes/.env`:
 

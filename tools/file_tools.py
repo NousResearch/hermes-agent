@@ -23,6 +23,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.workspace_safety import check_path_side_effect_allowed
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -2239,6 +2240,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     protected_err = _check_protected_instruction_write([path], task_id)
     if protected_err:
         return tool_error(protected_err)
+    backend = str(os.getenv("TERMINAL_ENV") or _terminal_env_type_for_task(task_id)).lower()
+    workspace_path = path if backend != "local" else str(_resolve_path_for_task(path, task_id))
+    workspace_err = check_path_side_effect_allowed(workspace_path, backend=backend)
+    if workspace_err:
+        return tool_error(workspace_err)
     approval_err = _check_approval_required_write([path], task_id)
     if approval_err:
         return tool_error(approval_err)
@@ -2377,6 +2383,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        backend = str(os.getenv("TERMINAL_ENV") or _terminal_env_type_for_task(task_id)).lower()
+        workspace_path = _p if backend != "local" else _resolve_path_for_task(_p, task_id)
+        workspace_err = check_path_side_effect_allowed(workspace_path, backend=backend)
+        if workspace_err:
+            return tool_error(workspace_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:

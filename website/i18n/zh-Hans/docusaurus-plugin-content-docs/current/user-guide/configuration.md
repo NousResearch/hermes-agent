@@ -83,11 +83,11 @@ delegation:
 
 ## 终端后端配置
 
-Hermes 支持七种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区、Vercel Sandbox，或 Singularity/Apptainer 容器。
+Hermes 支持八种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区、Vercel Sandbox、Singularity/Apptainer 容器，或 Kubernetes 集群中的会话 Pod。
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity | kubernetes
   cwd: "."          # Gateway/cron 工作目录（CLI 始终使用启动目录）
   timeout: 180      # 每条命令的超时时间（秒）
   env_passthrough: []  # 转发到沙箱执行的环境变量名（terminal + execute_code）
@@ -109,6 +109,7 @@ terminal:
 | **daytona** | Daytona 工作区 | 完全（云容器） | 托管云开发环境 |
 | **vercel_sandbox** | Vercel Sandbox | 完全（云 microVM） | 带快照文件系统持久化的云执行 |
 | **singularity** | Singularity/Apptainer 容器 | 命名空间（--containall） | HPC 集群、共享机器 |
+| **kubernetes** | 集群内的会话 Pod | 完整（Pod 隔离，可选 kata 运行时） | 在集群内运行 Hermes |
 
 ### Local 后端
 

@@ -175,6 +175,14 @@ class FileSyncManager:
         with self._transaction_lock:
             self._sync_transaction(force=force)
 
+    def forget_remote_state(self) -> None:
+        """Drop all record of what was pushed so the next sync re-uploads;
+        force= only bypasses the rate limit, not the per-file mtime cache."""
+        with self._transaction_lock:
+            self._synced_files = {}
+            self._pushed_hashes = {}
+            self._last_sync_time = 0.0
+
     def _sync_transaction(self, *, force: bool = False) -> None:
         """Execute one sync cycle while holding the per-manager lock."""
         if not force and not os.environ.get(_FORCE_SYNC_ENV):

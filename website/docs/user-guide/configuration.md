@@ -1905,6 +1905,22 @@ display:
   language: zh   # CLI approval prompts appear in Chinese
 ```
 
+### Message register
+
+The `display.message_register` setting controls the **tone** of static user-facing messages -- the same information expressed in a different style. It is orthogonal to language: the language fallback chain runs first, then the register overlay applies on top.
+
+- `technical` (default) -- concise, original phrasing. Byte-compatible with prior output. No overlay is loaded.
+- `friendly` -- warmer, more conversational phrasing for a subset of high-visibility messages (session reset, stop, goal, model switch, voice toggle, drain notice). Keys without a friendly variant fall through to the base catalog unchanged.
+
+Unknown values fall back to `technical`.
+
+```yaml
+display:
+  message_register: friendly   # gateway messages use a warmer tone
+```
+
+You can also pass `register=` explicitly to any `t()` call site, which takes precedence over config.
+
 | Mode | What you see |
 |------|-------------|
 | `off` | Silent — just the final response |

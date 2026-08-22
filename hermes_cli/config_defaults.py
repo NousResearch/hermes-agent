@@ -1393,6 +1393,14 @@ DEFAULT_CONFIG = {
         # responses, log lines, tool outputs, or slash-command descriptions.
         # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
         "language": "en",
+        # Communication register for static user-facing messages.  A register
+        # is a tone/style variant of the SAME information — it does not
+        # suppress or replace content.  "technical" (default) preserves the
+        # original concise output byte-for-byte.  "friendly" uses warmer,
+        # more conversational phrasing for the subset of messages that have
+        # a friendly variant (locales/en-friendly.yaml); everything else
+        # falls through unchanged.  Unknown values fall back to "technical".
+        "message_register": "technical",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",

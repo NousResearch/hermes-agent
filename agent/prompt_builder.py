@@ -1176,7 +1176,23 @@ WSL_ENVIRONMENT_HINT = (
     "/mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. "
     "When the user references Windows paths or desktop files, translate "
     "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
-    "the Windows username if needed."
+    "the Windows username if needed. "
+    "Mount translation only changes the drive prefix (e.g. `C:\\…` → "
+    "`/mnt/c/…`); path *segments* stay byte-for-byte identical."
+)
+
+
+# Universal: models sometimes "helpfully" respell path segments (diacritics,
+# spacing, casing) when a directory name looks like a word in another language.
+# That invents paths that do not exist on disk (see #71943). File tools pass
+# path args through unchanged — the failure is almost always the model.
+PATH_LITERAL_GUIDANCE = (
+    "Path literals are opaque. Never correct spelling, diacritics, casing, or "
+    "spacing inside path segments the user supplied or that tools returned "
+    "(for example do not turn `felsokning` into `felsökning` or "
+    "`f elsökning`). Separator/mount translation (`C:\\` ↔ `/mnt/c/`, "
+    "`C:\\` ↔ `/c/`) is fine; renaming path components is not. "
+    "If a path fails, re-list the parent directory and copy the exact name."
 )
 
 
@@ -1476,6 +1492,10 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+
+    # Always-on: path segments are opaque (model-side respelling is a common
+    # footgun on WSL + native Windows with non-English directory names).
+    hints.append(PATH_LITERAL_GUIDANCE)
 
     # Embedder-supplied environment description. Lets a host that wraps Hermes
     # (e.g. a sandbox runner / managed platform) explain the environment the

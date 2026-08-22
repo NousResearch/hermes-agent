@@ -64,6 +64,46 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_plain_flag_sets_plain_true_in_tool_args(fake_tool):
+    """--plain must arrive in the send_message_tool arg dict as plain=True,
+    which is what drives parse_mode=None on the Telegram side."""
+    args = _parse(["--to", "telegram", "--plain", "status: <ok>"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert len(fake_tool.calls) == 1
+    call = fake_tool.calls[0]
+    assert call["action"] == "send"
+    assert call["target"] == "telegram"
+    assert call["message"] == "status: <ok>"
+    # The literal placeholder is passed through verbatim by the CLI.
+    assert call["plain"] is True
+
+
+def test_plain_short_flag_sets_plain_true(fake_tool):
+    """The -p short form is equivalent to --plain."""
+    args = _parse(["--to", "telegram", "-p", "hello"])
+    with pytest.raises(SystemExit):
+        send_cmd.cmd_send(args)
+    assert fake_tool.calls[0]["plain"] is True
+
+
+def test_default_send_has_plain_false(fake_tool):
+    """Without --plain the arg dict carries plain=False (anti-tautology:
+    proves the True cases above are driven by the flag, not a constant)."""
+    args = _parse(["--to", "telegram", "hello world"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls[0]["plain"] is False
+
+
+def test_plain_flag_default_is_false_on_parser():
+    """The parser default for the flag itself is False."""
+    args = _parse(["--to", "telegram", "hello"])
+    assert args.plain is False
+    args_plain = _parse(["--to", "telegram", "--plain", "hello"])
+    assert args_plain.plain is True
 
 
 

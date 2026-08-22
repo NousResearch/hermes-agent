@@ -1205,6 +1205,9 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    tool_snapshot_agent: Any = None,
+    expected_tool_snapshot_epoch: Optional[int] = None,
+    captured_registry_entry: Any = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1226,6 +1229,8 @@ def handle_function_call(
                        matching ``get_tool_definitions`` semantics.
         disabled_toolsets: The session's disabled toolsets, applied as a
                        subtraction when scoping the bridge catalog.
+        captured_registry_entry: Registry route captured with the advertised
+                       agent snapshot immediately before handler start.
 
     Returns:
         Function result as a JSON string.
@@ -1344,6 +1349,8 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                tool_snapshot_agent=tool_snapshot_agent,
+                expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
             )
 
     _tool_original_args = dict(function_args)
@@ -1490,21 +1497,60 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            def _dispatch_registry(
+                next_args: Dict[str, Any],
+                **dispatch_kwargs,
+            ) -> Any:
+                if captured_registry_entry is not None:
+                    return registry.dispatch_entry(
+                        function_name,
+                        captured_registry_entry,
+                        next_args,
+                        **dispatch_kwargs,
+                    )
+                if (
+                    tool_snapshot_agent is not None
+                    and expected_tool_snapshot_epoch is not None
+                ):
+                    from agent.tool_executor import ToolSnapshotChangedError
+                    from tools.mcp_tool import capture_agent_tool_execution_route
+
+                    route = capture_agent_tool_execution_route(
+                        tool_snapshot_agent,
+                        expected_tool_snapshot_epoch,
+                        function_name,
+                    )
+                    if route is None or route[0] != "registry":
+                        raise ToolSnapshotChangedError(
+                            "tool snapshot changed before registry handler start"
+                        )
+                    return registry.dispatch_entry(
+                        function_name,
+                        route[1],
+                        next_args,
+                        **dispatch_kwargs,
+                    )
+                return registry.dispatch(
+                    function_name,
+                    next_args,
+                    **dispatch_kwargs,
+                )
+
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _dispatch_registry(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         enabled_tools=sandbox_enabled,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
+                    return _dispatch_registry(
+                        next_args,
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
@@ -1586,6 +1632,10 @@ def handle_function_call(
         return result
 
     except Exception as e:
+        from agent.tool_executor import ToolSnapshotChangedError
+
+        if isinstance(e, ToolSnapshotChangedError):
+            raise
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         result = tool_error(_sanitize_tool_error(error_msg))

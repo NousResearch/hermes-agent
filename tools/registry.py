@@ -554,6 +554,36 @@ class ToolRegistry:
             target = self._tools if scope is None else self._scoped_tools.get(scope, {})
             return target.get(name)
 
+    def snapshot_entries_with_generation(
+        self,
+        *,
+        scope: Optional[str] = None,
+    ) -> tuple[int, Dict[str, ToolEntry]]:
+        """Return one coherent generation and immutable active-route map.
+
+        The registry may overlay profile-local plugin entries on the global
+        built-ins.  Snapshot the same merged view used for definitions and
+        dispatch so a captured route cannot silently switch profile scope.
+        """
+        with self._lock:
+            return self._generation, dict(self._merged_tools(scope))
+
+    def generation_is_current(self, generation: int) -> bool:
+        """Return whether *generation* still names the live registry state."""
+        with self._lock:
+            return self._generation == generation
+
+    def entry_is_current(
+        self,
+        name: str,
+        entry: ToolEntry,
+        *,
+        scope: Optional[str] = None,
+    ) -> bool:
+        """Return whether *entry* is still the live scoped route for *name*."""
+        with self._lock:
+            return self._merged_tools(scope).get(name) is entry
+
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
@@ -1142,6 +1172,23 @@ class ToolRegistry:
           for consistent error format.
         """
         entry = self.get_entry(name, scope=scope)
+        return self.dispatch_entry(name, entry, args, **kwargs)
+
+    def dispatch_entry(
+        self,
+        name: str,
+        entry: Optional[ToolEntry],
+        args: dict,
+        **kwargs,
+    ) -> str | dict:
+        """Execute an already-captured registry entry.
+
+        Dynamic agent snapshots use this after atomically validating their
+        epoch and retaining the corresponding ToolEntry. Registry mutations
+        replace entries, so the retained object remains a stable route while
+        the handler runs without holding either registry or agent locks.
+        """
+
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:

@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -66,6 +67,29 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+_TOOL_REQUEST_SNAPSHOT: contextvars.ContextVar[Optional[tuple[object, int]]]
+_TOOL_REQUEST_SNAPSHOT = contextvars.ContextVar(
+    "hermes_tool_request_snapshot",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def bind_tool_request_snapshot(tools: object, epoch: int):
+    """Bind one request's tool snapshot while its kwargs are assembled.
+
+    The conversation loop captures the advertised schemas and epoch before
+    calling ``_build_api_kwargs``.  Keeping that pair in a ContextVar lets
+    compatibility wrappers retain the historical builder signature without
+    recapturing a newer snapshot during assembly.
+    """
+    token = _TOOL_REQUEST_SNAPSHOT.set((tools, epoch))
+    try:
+        yield
+    finally:
+        _TOOL_REQUEST_SNAPSHOT.reset(token)
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
@@ -99,6 +123,21 @@ def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
             "scopes (#81521).",
             label,
         )
+
+
+class _ToolSnapshotAPIKwargs(dict):
+    """Provider kwargs carrying request-local metadata outside the wire map."""
+
+    __slots__ = ("_hermes_tool_snapshot_epoch",)
+
+
+def _bind_tool_snapshot_epoch(
+    api_kwargs: dict,
+    snapshot_epoch: int,
+) -> _ToolSnapshotAPIKwargs:
+    bound = _ToolSnapshotAPIKwargs(api_kwargs)
+    bound._hermes_tool_snapshot_epoch = snapshot_epoch
+    return bound
 
 
 def _ra():
@@ -1822,10 +1861,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
+def build_api_kwargs(
+    agent,
+    api_messages: list,
+    tools_for_api: list | None = None,
+    tool_snapshot_epoch: int | None = None,
+) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    snapshot = _TOOL_REQUEST_SNAPSHOT.get()
+    if snapshot is None:
+        from tools.mcp_tool import capture_agent_tool_request_snapshot
+
+        captured_tools, captured_epoch = capture_agent_tool_request_snapshot(agent)
+    else:
+        captured_tools, captured_epoch = snapshot
     if tools_for_api is None:
-        tools_for_api = agent.tools
+        tools_for_api = captured_tools
+    if tool_snapshot_epoch is None:
+        tool_snapshot_epoch = captured_epoch
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -1853,7 +1906,11 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # the profile hook that produces them is only consulted by the
         # OpenAI-wire transport. Merge them here so Messages traffic keeps
         # product attribution and sticky routing.
-        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+        anthropic_kwargs = _merge_nous_portal_messages_extra_body(
+            agent,
+            anthropic_kwargs,
+        )
+        return _bind_tool_snapshot_epoch(anthropic_kwargs, tool_snapshot_epoch)
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
@@ -1861,13 +1918,16 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
-        return _bt.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
-            region=region,
-            guardrail_config=guardrail,
+        return _bind_tool_snapshot_epoch(
+            _bt.build_kwargs(
+                model=agent.model,
+                messages=api_messages,
+                tools=tools_for_api,
+                max_tokens=agent.max_tokens or 4096,
+                region=region,
+                guardrail_config=guardrail,
+            ),
+            tool_snapshot_epoch,
         )
 
     # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
@@ -1935,26 +1995,29 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=_msgs_for_codex,
-            tools=tools_for_api,
-            reasoning_config=agent.reasoning_config,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            base_url=agent.base_url,
-            max_tokens=agent.max_tokens,
-            timeout=agent._resolved_api_call_timeout(),
-            request_overrides=agent.request_overrides,
-            provider=getattr(agent, "provider", None),
-            is_github_responses=is_github_responses,
-            is_codex_backend=is_codex_backend,
-            is_xai_responses=is_xai_responses,
-            github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
-            replay_encrypted_reasoning=bool(
-                getattr(agent, "_codex_reasoning_replay_enabled", True)
+        return _bind_tool_snapshot_epoch(
+            _ct.build_kwargs(
+                model=agent.model,
+                messages=_msgs_for_codex,
+                tools=tools_for_api,
+                reasoning_config=agent.reasoning_config,
+                session_id=getattr(agent, "session_id", None),
+                cache_scope_id=_cache_scope_id,
+                base_url=agent.base_url,
+                max_tokens=agent.max_tokens,
+                timeout=agent._resolved_api_call_timeout(),
+                request_overrides=agent.request_overrides,
+                provider=getattr(agent, "provider", None),
+                is_github_responses=is_github_responses,
+                is_codex_backend=is_codex_backend,
+                is_xai_responses=is_xai_responses,
+                github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+                replay_encrypted_reasoning=bool(
+                    getattr(agent, "_codex_reasoning_replay_enabled", True)
+                ),
+                context_management=_context_management,
             ),
-            context_management=_context_management,
+            tool_snapshot_epoch,
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -2039,27 +2102,30 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            base_url=agent.base_url,
-            timeout=agent._resolved_api_call_timeout(),
-            max_tokens=agent.max_tokens,
-            ephemeral_max_output_tokens=_ephemeral_out,
-            max_tokens_param_fn=agent._max_tokens_param,
-            reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            provider_profile=_profile,
-            ollama_num_ctx=agent._ollama_num_ctx,
-            # Context forwarded to profile hooks:
-            provider_preferences=_prefs or None,
-            openrouter_min_coding_score=agent.openrouter_min_coding_score,
-            anthropic_max_output=_ant_max,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
-            qwen_session_metadata=_qwen_meta,
+        return _bind_tool_snapshot_epoch(
+            _ct.build_kwargs(
+                model=agent.model,
+                messages=api_messages,
+                tools=tools_for_api,
+                base_url=agent.base_url,
+                timeout=agent._resolved_api_call_timeout(),
+                max_tokens=agent.max_tokens,
+                ephemeral_max_output_tokens=_ephemeral_out,
+                max_tokens_param_fn=agent._max_tokens_param,
+                reasoning_config=agent.reasoning_config,
+                request_overrides=agent.request_overrides,
+                session_id=getattr(agent, "session_id", None),
+                cache_scope_id=_cache_scope_id,
+                provider_profile=_profile,
+                ollama_num_ctx=agent._ollama_num_ctx,
+                # Context forwarded to profile hooks:
+                provider_preferences=_prefs or None,
+                openrouter_min_coding_score=agent.openrouter_min_coding_score,
+                anthropic_max_output=_ant_max,
+                supports_reasoning=agent._supports_reasoning_extra_body(),
+                qwen_session_metadata=_qwen_meta,
+            ),
+            tool_snapshot_epoch,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -2072,7 +2138,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    return _bind_tool_snapshot_epoch(
+        _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -2108,6 +2175,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        ),
+        tool_snapshot_epoch,
     )
 
 

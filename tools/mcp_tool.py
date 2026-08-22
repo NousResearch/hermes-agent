@@ -7691,6 +7691,79 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 # agent's run loop reads those during tool iteration, so a concurrent write
 # mid-read could otherwise expose a half-updated list.
 _agent_tools_lock = threading.Lock()
+_MAX_TOOL_REFRESH_GENERATION_ATTEMPTS = 3
+
+
+def capture_agent_tool_request_snapshot(agent) -> tuple[object, int]:
+    """Atomically capture the schemas and epoch advertised by one request."""
+    with _agent_tools_lock:
+        epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(epoch, int):
+            epoch = 0
+        return getattr(agent, "tools", None), epoch
+
+
+def agent_tool_snapshot_epoch_is_current(agent, expected_epoch: int) -> bool:
+    """Return whether a provider response still matches its request snapshot."""
+    with _agent_tools_lock:
+        current_epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(current_epoch, int):
+            current_epoch = 0
+        return current_epoch == expected_epoch
+
+
+def capture_agent_tool_execution_route(
+    agent,
+    expected_epoch: int,
+    function_name: str,
+) -> Optional[tuple[str, object]]:
+    """Validate an advertised epoch and capture its immutable dispatch target.
+
+    The tuple is captured under the same lock that publishes the agent's tool
+    schemas, routing-owner sets, and epoch. Callers must release this function
+    before invoking the target so long-running tools never hold the publication
+    lock. ``None`` means the response epoch is stale.
+    """
+    from tools.registry import registry
+
+    with _agent_tools_lock:
+        current_epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(current_epoch, int):
+            current_epoch = 0
+        if current_epoch != expected_epoch:
+            return None
+
+        provider_names = getattr(agent, "_memory_provider_tool_names", None)
+        manager = getattr(agent, "_memory_manager", None)
+        provider_owns_route = (
+            function_name in provider_names
+            if isinstance(provider_names, set)
+            else bool(
+                callable(getattr(manager, "has_tool", None))
+                and manager.has_tool(function_name)
+            )
+        )
+        if provider_owns_route:
+            handler = getattr(manager, "handle_tool_call", None)
+            return ("memory_provider", handler) if callable(handler) else None
+
+        engine_names = getattr(agent, "_context_engine_tool_names", set())
+        if isinstance(engine_names, set) and function_name in engine_names:
+            compressor = getattr(agent, "context_compressor", None)
+            handler = getattr(compressor, "handle_tool_call", None)
+            return ("context_engine", handler) if callable(handler) else None
+
+        registry_routes = getattr(agent, "_tool_registry_routes", None)
+        if not isinstance(registry_routes, dict):
+            return None
+        entry = registry_routes.get(function_name)
+        if entry is None or not registry.entry_is_current(function_name, entry):
+            return None
+
+        # ToolEntry objects are replaced rather than mutated by registry
+        # refreshes. Identity validation prevents a replacement handler from
+        # inheriting arguments produced for an older advertised schema.
+        return ("registry", entry)
 
 
 def has_registered_mcp_tools() -> bool:
@@ -7770,81 +7843,459 @@ def refresh_agent_mcp_tools(
     # the user just ENABLED in config is picked up; the agent's stored selection
     # is then updated to match. The automatic paths (between-turns, late-binding)
     # pass nothing and reuse the agent's build-time selection unchanged.
-    if enabled_override is not None or disabled_override is not None:
-        enabled = enabled_override if enabled_override is not None else getattr(agent, "enabled_toolsets", None)
-        disabled = disabled_override if disabled_override is not None else getattr(agent, "disabled_toolsets", None)
+    explicit_policy = enabled_override is not None or disabled_override is not None
+    # Policy epochs order explicit reloads against automatic rebuilds even when
+    # both derive from the same registry generation.  Policy is still staged:
+    # only a successful winning refresh publishes enabled/disabled toolsets.
+    with _agent_tools_lock:
+        published_policy_epoch = getattr(agent, "_tool_published_policy_epoch", 0)
+        if not isinstance(published_policy_epoch, int):
+            published_policy_epoch = 0
+        latest_policy_epoch = getattr(
+            agent, "_tool_policy_epoch", published_policy_epoch
+        )
+        if not isinstance(latest_policy_epoch, int):
+            latest_policy_epoch = published_policy_epoch
+        pending_policy = getattr(agent, "_tool_pending_policy", None)
+        if not (
+            isinstance(pending_policy, tuple)
+            and len(pending_policy) == 3
+            and isinstance(pending_policy[0], int)
+            and pending_policy[0] == latest_policy_epoch
+            and pending_policy[0] > published_policy_epoch
+        ):
+            pending_policy = None
+        if explicit_policy:
+            base_enabled = (
+                pending_policy[1]
+                if pending_policy is not None
+                else getattr(agent, "enabled_toolsets", None)
+            )
+            base_disabled = (
+                pending_policy[2]
+                if pending_policy is not None
+                else getattr(agent, "disabled_toolsets", None)
+            )
+            enabled = (
+                enabled_override if enabled_override is not None else base_enabled
+            )
+            disabled = (
+                disabled_override if disabled_override is not None else base_disabled
+            )
+            refresh_policy_epoch = latest_policy_epoch + 1
+            agent._tool_policy_epoch = refresh_policy_epoch
+            agent._tool_pending_policy = (
+                refresh_policy_epoch,
+                enabled,
+                disabled,
+            )
+            policy_refresh = True
+        elif pending_policy is not None:
+            refresh_policy_epoch, enabled, disabled = pending_policy
+            policy_refresh = True
+        else:
+            refresh_policy_epoch = published_policy_epoch
+            enabled = getattr(agent, "enabled_toolsets", None)
+            disabled = getattr(agent, "disabled_toolsets", None)
+            policy_refresh = False
+
+    def _publish_staged_policy() -> None:
         agent.enabled_toolsets = enabled
         agent.disabled_toolsets = disabled
-    else:
-        enabled = getattr(agent, "enabled_toolsets", None)
-        disabled = getattr(agent, "disabled_toolsets", None)
+        agent._tool_published_policy_epoch = refresh_policy_epoch
+        pending = getattr(agent, "_tool_pending_policy", None)
+        if (
+            isinstance(pending, tuple)
+            and pending
+            and pending[0] == refresh_policy_epoch
+        ):
+            agent._tool_pending_policy = None
 
-    # Capture the registry generation this rebuild is derived from BEFORE the
-    # (potentially slow) get_tool_definitions call. Used at publish time to
-    # reject a stale write: if two callers race (e.g. the late-refresh daemon
-    # and the between-turns prologue around turn 1), a slower caller that
-    # computed an OLDER set must not clobber a newer set another caller already
-    # published. ``registry._generation`` bumps on every (de)register.
-    snapshot_generation = registry._generation
+    for attempt in range(_MAX_TOOL_REFRESH_GENERATION_ATTEMPTS):
+        # Strict provider fallback is derived from the published ownership and
+        # schemas as one snapshot. Processing stays outside the lock, but a
+        # concurrent publisher cannot make us combine names from one tool
+        # surface with schemas from another.
+        with _agent_tools_lock:
+            fallback_provider_names = set(
+                getattr(agent, "_memory_provider_tool_names", set()) or set()
+            )
+            fallback_provider_tools = list(getattr(agent, "tools", None) or [])
+            snapshot_epoch_raw = getattr(agent, "_tool_snapshot_epoch", 0)
+            snapshot_epoch = (
+                snapshot_epoch_raw if isinstance(snapshot_epoch_raw, int) else 0
+            )
 
-    # Registry-derived tools (built-ins + MCP), filtered to the agent's toolsets.
-    # Computed OUTSIDE the lock (get_tool_definitions can be slow); the diff and
-    # publish below happen together in ONE critical section so two concurrent
-    # callers can't torn-publish or compute overlapping ``added`` sets.
-    new_defs = list(
-        get_tool_definitions(
-            enabled_toolsets=enabled,
-            disabled_toolsets=disabled,
-            quiet_mode=quiet_mode,
-        )
-        or []
-    )
-    new_names = {t["function"]["name"] for t in new_defs}
+        # Capture immutable routes with the generation the rebuild derives
+        # from. A later mutation forces a retry before publication.
+        (
+            snapshot_generation,
+            snapshot_registry_entries,
+        ) = registry.snapshot_entries_with_generation()
 
-    # Re-append the post-build injected families that get_tool_definitions does
-    # NOT reproduce, so a refresh never strips them (memory-provider + context-
-    # engine tools). Staged entirely on LOCALS — the live ``agent.tools`` /
-    # ``valid_tool_names`` / ``_context_engine_tool_names`` are never touched
-    # until the single atomic publish below, so a concurrent reader
-    # (``build_api_kwargs``) can't see a partial rebuild or a cross-attribute
-    # half-swap. ``staged_engine_names`` are the context-engine routing names
-    # this rebuild actually appended (matching agent_init's dedup-aware add).
-    staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+        # Registry-derived tools (built-ins + MCP), filtered to the agent's
+        # toolsets. Assembly remains outside the lock; only coherent snapshots
+        # and the final publication use the critical section.
+        try:
+            new_defs = list(
+                get_tool_definitions(
+                    enabled_toolsets=enabled,
+                    disabled_toolsets=disabled,
+                    quiet_mode=quiet_mode,
+                )
+                or []
+            )
+            new_names = {t["function"]["name"] for t in new_defs}
+            registry_scope_defs = new_defs
+            if {
+                "tool_search",
+                "tool_describe",
+                "tool_call",
+            } <= new_names:
+                registry_scope_defs = list(
+                    get_tool_definitions(
+                        enabled_toolsets=enabled,
+                        disabled_toolsets=disabled,
+                        quiet_mode=True,
+                        skip_tool_search_assembly=True,
+                    )
+                    or []
+                )
+            scoped_registry_names = {
+                tool.get("function", {}).get("name")
+                for tool in registry_scope_defs
+                if isinstance(tool, dict)
+            }
+            scoped_registry_names.intersection_update(
+                snapshot_registry_entries
+            )
 
-    # Single atomic read-diff-publish so the returned ``added`` is consistent
-    # with what was actually published, even under concurrent callers, and a
-    # stale (older-generation) rebuild can't overwrite a newer published one.
-    with _agent_tools_lock:
-        # Defensive: the published generation should be an int, but tolerate an
-        # agent that never set it (or set a non-int, e.g. a test mock) rather
-        # than throwing TypeError on the comparison and silently failing the
-        # whole refresh.
-        published_gen_raw = getattr(agent, "_tool_snapshot_generation", -1)
-        published_gen = published_gen_raw if isinstance(published_gen_raw, int) else -1
-        if snapshot_generation < published_gen:
-            # A newer snapshot already won; our set is stale — drop it.
-            return set()
-        current = {
-            t["function"]["name"]
-            for t in (getattr(agent, "tools", None) or [])
-        }
-        if new_names == current:
-            # No change → leave the live snapshot untouched (no churn), but
-            # record the generation so an in-flight older caller can't clobber.
+            # Re-append post-build injected families on staged locals.
+            (
+                staged_engine_names,
+                staged_provider_names,
+            ) = _reinject_post_build_tools(
+                agent,
+                new_defs,
+                new_names,
+                enabled_toolsets=enabled,
+                disabled_toolsets=disabled,
+                strict_memory_schemas=True,
+                fallback_provider_names=fallback_provider_names,
+                fallback_provider_tools=fallback_provider_tools,
+                reserved_registry_names=scoped_registry_names,
+            )
+            staged_registry_routes = {
+                name: snapshot_registry_entries[name]
+                for name in scoped_registry_names
+            }
+        except Exception:
+            # A failed policy rebuild remains pending at its unpublished epoch.
+            # The next automatic refresh retries that exact policy; a newer
+            # explicit policy replaces it under the lock and keeps ordering.
+            raise
+
+        # Single atomic read-diff-publish so the returned ``added`` is
+        # consistent with what was actually published.
+        with _agent_tools_lock:
+            if not registry.generation_is_current(snapshot_generation):
+                if attempt + 1 >= _MAX_TOOL_REFRESH_GENERATION_ATTEMPTS:
+                    raise RuntimeError(
+                        "tool registry generation did not stabilize after "
+                        f"{_MAX_TOOL_REFRESH_GENERATION_ATTEMPTS} attempts"
+                    )
+                continue
+            # Defensive: the published generation should be an int, but tolerate an
+            # agent that never set it (or set a non-int, e.g. a test mock) rather
+            # than throwing TypeError on the comparison and silently failing the
+            # whole refresh.
+            published_gen_raw = getattr(agent, "_tool_snapshot_generation", -1)
+            published_gen = published_gen_raw if isinstance(published_gen_raw, int) else -1
+            if snapshot_generation < published_gen:
+                # A newer snapshot already won. An automatic refresh can be
+                # dropped, but an explicit policy must be rebuilt against the
+                # winning generation before its epoch can be published.
+                if (
+                    policy_refresh
+                    and getattr(agent, "_tool_policy_epoch", None)
+                    == refresh_policy_epoch
+                ):
+                    if attempt + 1 >= _MAX_TOOL_REFRESH_GENERATION_ATTEMPTS:
+                        raise RuntimeError(
+                            "tool registry generation did not stabilize after "
+                            f"{_MAX_TOOL_REFRESH_GENERATION_ATTEMPTS} attempts"
+                        )
+                    continue
+                return set()
+            if refresh_policy_epoch < getattr(agent, "_tool_policy_epoch", 0):
+                # A newer explicit policy reload started after this snapshot.
+                return set()
+            published_snapshot_epoch_raw = getattr(
+                agent, "_tool_snapshot_epoch", 0
+            )
+            published_snapshot_epoch = (
+                published_snapshot_epoch_raw
+                if isinstance(published_snapshot_epoch_raw, int)
+                else 0
+            )
+            if snapshot_epoch != published_snapshot_epoch:
+                # Another caller published a same-generation snapshot after
+                # this attempt captured its provider fallback. Automatic
+                # refreshes are stale and stop; a current explicit policy
+                # retries against the winning snapshot.
+                if (
+                    policy_refresh
+                    and getattr(agent, "_tool_policy_epoch", None)
+                    == refresh_policy_epoch
+                ):
+                    if attempt + 1 >= _MAX_TOOL_REFRESH_GENERATION_ATTEMPTS:
+                        raise RuntimeError(
+                            "agent tool snapshot did not stabilize after "
+                            f"{_MAX_TOOL_REFRESH_GENERATION_ATTEMPTS} attempts"
+                        )
+                    continue
+                return set()
+            current_tools = list(getattr(agent, "tools", None) or [])
+            current = {
+                t["function"]["name"]
+                for t in current_tools
+            }
+            current_provider_names = set(
+                getattr(agent, "_memory_provider_tool_names", set()) or set()
+            )
+            current_engine_names = set(
+                getattr(agent, "_context_engine_tool_names", set()) or set()
+            )
+            current_registry_routes = getattr(agent, "_tool_registry_routes", {})
+            if not isinstance(current_registry_routes, dict):
+                current_registry_routes = {}
+            registry_routes_changed = (
+                current_registry_routes.keys() != staged_registry_routes.keys()
+                or any(
+                    current_registry_routes[name] is not entry
+                    for name, entry in staged_registry_routes.items()
+                )
+            )
+            provider_availability_changed = (
+                current_provider_names != staged_provider_names
+            )
+            snapshot_changed = (
+                current_tools != new_defs
+                or provider_availability_changed
+                or current_engine_names != staged_engine_names
+                or registry_routes_changed
+            )
+            if not snapshot_changed:
+                # The complete schema and routing snapshot is unchanged, so
+                # preserve the live list object and avoid churn.
+                # Record the generation so an in-flight older caller can't clobber.
+                agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+                if policy_refresh:
+                    _publish_staged_policy()
+                return set()
+            agent.tools = new_defs
+            agent.valid_tool_names = new_names
+            if policy_refresh:
+                _publish_staged_policy()
+            # Publish context-engine routing names atomically with the snapshot.
+            engine_names = getattr(agent, "_context_engine_tool_names", None)
+            if isinstance(engine_names, set):
+                engine_names.clear()
+                engine_names.update(staged_engine_names)
+            else:
+                agent._context_engine_tool_names = set(staged_engine_names)
+            agent._memory_provider_tool_names = set(staged_provider_names)
+            agent._tool_registry_routes = dict(staged_registry_routes)
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-            return set()
-        agent.tools = new_defs
-        agent.valid_tool_names = new_names
-        # Publish context-engine routing names atomically with the snapshot.
-        engine_names = getattr(agent, "_context_engine_tool_names", None)
-        if isinstance(engine_names, set):
-            engine_names.clear()
-            engine_names.update(staged_engine_names)
-        agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+            agent._tool_snapshot_epoch = published_snapshot_epoch + 1
+            if provider_availability_changed:
+                agent._cached_system_prompt = None
+            return new_names - current
 
 
-def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
+def _dynamic_denied_tool_names(
+    disabled_toolsets,
+    *,
+    family_name: str,
+    family_marker: Optional[str] = None,
+) -> Optional[set[str]]:
+    """Resolve dynamic-tool subtraction without requiring startup helpers.
+
+    The snapshot-consistency change must remain independently mergeable from
+    the startup-policy change.  When the centralized helpers are present this
+    module uses them; this local equivalent preserves the same fail-closed
+    refresh behavior when this PR lands first.
+    """
+    if not disabled_toolsets:
+        return set()
+    if isinstance(disabled_toolsets, str):
+        disabled_names = [disabled_toolsets]
+    else:
+        disabled_names = [str(name) for name in disabled_toolsets]
+    if any(name in {"all", "*", family_name} for name in disabled_names):
+        return None
+
+    try:
+        from toolsets import bundle_non_core_tools, resolve_toolset, validate_toolset
+
+        denied: set[str] = set()
+        for name in disabled_names:
+            if not validate_toolset(name):
+                continue
+            resolved = set(
+                bundle_non_core_tools(name)
+                if name.startswith("hermes-")
+                else resolve_toolset(name)
+            )
+            if family_marker is not None and family_marker in resolved:
+                return None
+            denied.update(resolved)
+    except Exception:
+        logger.debug(
+            "Failed to resolve disabled toolsets for %s tools",
+            family_name,
+            exc_info=True,
+        )
+        return None
+    return denied
+
+
+def _effective_memory_provider_schemas_for_refresh(
+    raw_schemas,
+    *,
+    enabled_toolsets,
+    disabled_toolsets,
+    memory_selected: bool,
+) -> list[dict]:
+    """Apply provider policy during refresh on either merge order."""
+    from agent import memory_manager as memory_module
+
+    centralized = getattr(
+        memory_module,
+        "effective_memory_provider_tool_schemas",
+        None,
+    )
+    if callable(centralized):
+        return centralized(
+            raw_schemas,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            memory_selected=memory_selected,
+        )
+
+    if not memory_selected and not memory_module.memory_provider_tools_enabled(
+        enabled_toolsets,
+    ):
+        return []
+    denied_names = _dynamic_denied_tool_names(
+        disabled_toolsets,
+        family_name="memory",
+        family_marker="memory",
+    )
+    if denied_names is None:
+        return []
+
+    effective = []
+    for raw_schema in raw_schemas:
+        schema = memory_module.normalize_tool_schema(raw_schema)
+        if schema is not None and schema["name"] not in denied_names:
+            effective.append(schema)
+    return effective
+
+
+def _memory_provider_family_disabled_for_refresh(disabled_toolsets) -> bool:
+    """Return whether refresh policy removes every provider-owned schema."""
+    from agent import memory_manager as memory_module
+
+    centralized = getattr(memory_module, "memory_provider_tools_disabled", None)
+    if callable(centralized):
+        return centralized(disabled_toolsets)
+    return (
+        _dynamic_denied_tool_names(
+            disabled_toolsets,
+            family_name="memory",
+            family_marker="memory",
+        )
+        is None
+    )
+
+
+def _effective_context_engine_schemas_for_refresh(
+    raw_schemas,
+    *,
+    enabled_toolsets,
+    disabled_toolsets,
+) -> list[dict]:
+    """Apply context-engine policy during refresh on either merge order."""
+    from agent import context_engine as context_module
+    from agent.memory_manager import normalize_tool_schema
+
+    centralized = getattr(
+        context_module,
+        "effective_context_engine_tool_schemas",
+        None,
+    )
+    if callable(centralized):
+        return centralized(
+            raw_schemas,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+        )
+
+    if enabled_toolsets is not None and "context_engine" not in enabled_toolsets:
+        return []
+    denied_names = _dynamic_denied_tool_names(
+        disabled_toolsets,
+        family_name="context_engine",
+    )
+    if denied_names is None:
+        return []
+
+    effective = []
+    for raw_schema in raw_schemas:
+        schema = normalize_tool_schema(raw_schema)
+        if schema is not None and schema["name"] not in denied_names:
+            effective.append(schema)
+    return effective
+
+
+def _context_engine_family_enabled_for_refresh(
+    enabled_toolsets,
+    disabled_toolsets,
+) -> bool:
+    """Check family policy before invoking provider-controlled enumeration."""
+    from agent import context_engine as context_module
+
+    centralized = getattr(
+        context_module,
+        "context_engine_tool_family_enabled",
+        None,
+    )
+    if callable(centralized):
+        return centralized(enabled_toolsets, disabled_toolsets)
+    if enabled_toolsets is not None and "context_engine" not in enabled_toolsets:
+        return False
+    return (
+        _dynamic_denied_tool_names(
+            disabled_toolsets,
+            family_name="context_engine",
+        )
+        is not None
+    )
+
+
+def _reinject_post_build_tools(
+    agent,
+    tools_list: list,
+    name_set: set,
+    *,
+    enabled_toolsets=None,
+    disabled_toolsets=None,
+    strict_memory_schemas: bool = False,
+    fallback_provider_names=None,
+    fallback_provider_tools=None,
+    reserved_registry_names=None,
+) -> tuple[set, set]:
     """Append memory-provider and context-engine tools onto staged locals.
 
     Mirrors the post-``get_tool_definitions`` injection in ``agent_init`` so a
@@ -7853,37 +8304,94 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     / ``name_set`` (never the live agent attributes) so the rebuild stays atomic.
     Idempotent (skips names already present) and fail-soft.
 
-    Returns the set of context-engine routing names actually appended by THIS
-    rebuild — matching ``agent_init``'s dedup behavior (a name already provided
-    by a registry/plugin tool is NOT claimed for context-engine routing). The
-    caller publishes this into ``agent._context_engine_tool_names`` atomically
-    with the snapshot.
+    Returns the context-engine and memory-provider names actually appended by
+    THIS rebuild.  The sets match ``agent_init``'s dedup behavior (a name
+    already provided by a registry/plugin tool is NOT claimed by an injected
+    family).
     """
+    reserved_names = set(reserved_registry_names or set())
+
     def _add(schema: dict) -> bool:
         name = schema.get("name", "")
-        if not name or name in name_set:
+        if not name or name in name_set or name in reserved_names:
             return False
         tools_list.append({"type": "function", "function": schema})
         name_set.add(name)
         return True
 
     # Memory-provider tools (mem0/honcho/byterover/supermemory/…).
+    staged_provider_names: set = set()
     try:
         memory_manager = getattr(agent, "_memory_manager", None)
         get_mem_schemas = getattr(memory_manager, "get_all_tool_schemas", None) if memory_manager else None
         if callable(get_mem_schemas):
-            # Honor the same toolset gate inject_memory_provider_tools uses.
-            from agent.memory_manager import memory_provider_tools_enabled
-            if memory_provider_tools_enabled(
-                getattr(agent, "enabled_toolsets", None),
-                getattr(agent, "disabled_toolsets", None),
-                memory_tool_present="memory" in name_set,
-            ):
-                for schema in get_mem_schemas():
-                    if isinstance(schema, dict):
-                        _add(schema)
+            # Honor the same final toolset policy inject_memory_provider_tools
+            # uses, while remaining independently mergeable from the startup
+            # policy helpers.
+            from agent.memory_manager import normalize_tool_schema
+            strict_get_schemas = getattr(
+                memory_manager, "get_all_tool_schemas_strict", None
+            )
+            schema_callback = (
+                strict_get_schemas
+                if strict_memory_schemas and callable(strict_get_schemas)
+                else get_mem_schemas
+            )
+            memory_selected = "memory" in name_set
+            if _memory_provider_family_disabled_for_refresh(disabled_toolsets):
+                # Complete family revocation is independent of provider code;
+                # do not let a broken plugin veto its own removal.
+                effective_schemas = []
+            else:
+                try:
+                    raw_schemas = list(schema_callback())
+                    normalized_schemas = [
+                        schema
+                        for raw_schema in raw_schemas
+                        if (schema := normalize_tool_schema(raw_schema)) is not None
+                    ]
+                    effective_schemas = _effective_memory_provider_schemas_for_refresh(
+                        normalized_schemas,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                        memory_selected=memory_selected,
+                    )
+                except Exception:
+                    if not strict_memory_schemas:
+                        raise
+                    # Tightening can safely filter the already-published
+                    # provider contracts when fresh enumeration is unavailable.
+                    # It may remove names, never invent or add them.
+                    current_provider_names = set(fallback_provider_names or set())
+                    current_provider_schemas = [
+                        schema
+                        for tool in (fallback_provider_tools or [])
+                        if isinstance(tool, dict)
+                        and (
+                            schema := normalize_tool_schema(tool)
+                        ) is not None
+                        and schema["name"] in current_provider_names
+                    ]
+                    effective_schemas = _effective_memory_provider_schemas_for_refresh(
+                        current_provider_schemas,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                        memory_selected=memory_selected,
+                    )
+                    effective_names = {
+                        schema["name"] for schema in effective_schemas
+                    }
+                    if not effective_names <= current_provider_names:
+                        raise
+            for schema in effective_schemas:
+                name = schema.get("name", "")
+                if _add(schema) and name:
+                    staged_provider_names.add(name)
     except Exception:
+        if strict_memory_schemas:
+            raise
         logger.debug("Memory-provider tool re-injection skipped", exc_info=True)
+        staged_provider_names = set()
 
     # Context-engine tools (lcm_grep/lcm_describe/…) — the `context_engine`
     # toolset is intentionally empty, so these only exist via this append.
@@ -7893,14 +8401,18 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     # model latency penalty.
     staged_engine_names: set = set()
     try:
-        enabled = getattr(agent, "enabled_toolsets", None)
-        context_engine_allowed = enabled is None or "context_engine" in enabled
         compressor = getattr(agent, "context_compressor", None)
         get_schemas = getattr(compressor, "get_tool_schemas", None) if compressor else None
-        if context_engine_allowed and callable(get_schemas):
-            for schema in get_schemas():
-                if not isinstance(schema, dict):
-                    continue
+        if callable(get_schemas) and _context_engine_family_enabled_for_refresh(
+            enabled_toolsets,
+            disabled_toolsets,
+        ):
+            schemas = _effective_context_engine_schemas_for_refresh(
+                get_schemas(),
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
+            for schema in schemas:
                 name = schema.get("name", "")
                 # Only claim the routing name when WE appended the schema, so a
                 # name already owned by a registry/plugin tool keeps its own
@@ -7910,7 +8422,7 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
 
-    return staged_engine_names
+    return staged_engine_names, staged_provider_names
 
 
 def shutdown_mcp_servers():

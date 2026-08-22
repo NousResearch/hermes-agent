@@ -32,6 +32,8 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.tool_guardrails import ToolGuardrailDecision
+from agent.agent_runtime_helpers import memory_provider_owns_tool
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -159,6 +161,131 @@ class _BatchAbandoned(BaseException):
     Derives from BaseException so intermediate ``except Exception`` handlers in
     the middleware chain cannot swallow it and dispatch the tool anyway.
     """
+
+
+class ToolSnapshotChangedError(RuntimeError):
+    """The model response was produced from a superseded tool contract."""
+
+
+class ToolSnapshotRefreshError(RuntimeError):
+    """Stale execution state could not be refreshed coherently."""
+
+
+def require_current_tool_snapshot(agent, assistant_message) -> None:
+    """Fail closed when a response's advertised tool snapshot is stale."""
+    expected_epoch = _expected_tool_snapshot_epoch(assistant_message)
+    if expected_epoch is None:
+        # Compatibility for direct/internal callers that did not originate
+        # from a Hermes provider request and therefore advertised no snapshot.
+        return
+
+    from tools.mcp_tool import agent_tool_snapshot_epoch_is_current
+
+    if not agent_tool_snapshot_epoch_is_current(agent, expected_epoch):
+        raise ToolSnapshotChangedError(
+            "tool snapshot changed while the model request was in flight"
+        )
+
+
+def _expected_tool_snapshot_epoch(assistant_message) -> Optional[int]:
+    expected = getattr(
+        assistant_message,
+        "_hermes_tool_snapshot_epoch",
+        None,
+    )
+    return expected if isinstance(expected, int) else None
+
+
+def _refresh_tool_snapshot_after_stale(agent, assistant_message) -> None:
+    """Publish an out-of-band route replacement before the next request."""
+    advertised_epoch = _expected_tool_snapshot_epoch(assistant_message)
+    if advertised_epoch is None:
+        return
+
+    from tools.mcp_tool import (
+        agent_tool_snapshot_epoch_is_current,
+        refresh_agent_mcp_tools,
+    )
+
+    if not agent_tool_snapshot_epoch_is_current(agent, advertised_epoch):
+        # Another publisher already installed a coherent snapshot.
+        return
+    try:
+        refresh_agent_mcp_tools(agent, quiet_mode=True)
+    except Exception as exc:
+        raise ToolSnapshotRefreshError(
+            "current tool snapshot could not be refreshed safely"
+        ) from exc
+
+
+def _capture_agent_tool_execution_route(
+    agent,
+    assistant_message,
+    function_name: str,
+    expected_kind: str,
+) -> object:
+    """Capture one dynamic handler after atomically validating its epoch."""
+    expected_epoch = _expected_tool_snapshot_epoch(assistant_message)
+    if expected_epoch is None:
+        return None
+
+    from tools.mcp_tool import capture_agent_tool_execution_route
+
+    route = capture_agent_tool_execution_route(
+        agent,
+        expected_epoch,
+        function_name,
+    )
+    if route is None and expected_kind == "registry":
+        # Direct/internal callers may extend ``valid_tool_names`` without
+        # rebuilding the optional route map. Leave those legacy calls to the
+        # existing dispatcher, which still revalidates the epoch before a
+        # handler starts; a captured-but-replaced entry remains fail-closed.
+        registry_routes = getattr(agent, "_tool_registry_routes", None)
+        if isinstance(registry_routes, dict) and function_name not in registry_routes:
+            return None
+    if (
+        route is None
+        or route[0] != expected_kind
+        or not callable(route[1]) and expected_kind != "registry"
+    ):
+        raise ToolSnapshotChangedError(
+            f"tool snapshot changed before {expected_kind} handler start"
+        )
+    return route[1]
+
+
+def _append_stale_tool_results(agent, messages: list, tool_calls) -> None:
+    """Append one explicit result for every stale call that never started."""
+    for tool_call in tool_calls:
+        function_name = tool_call.function.name
+        result = _stale_tool_result(function_name)
+        messages.append(
+            make_tool_result_message(
+                function_name,
+                result,
+                tool_call.id,
+                effect_disposition="none",
+            )
+        )
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"stale tool result {function_name}",
+        )
+
+
+def _stale_tool_result(function_name: str) -> str:
+    return json.dumps(
+        {
+            "error": (
+                "Tool snapshot changed before execution; "
+                f"'{function_name}' was not started"
+            ),
+            "error_type": "tool_snapshot_changed",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
@@ -1067,7 +1194,7 @@ def _begin_tool_execution(
             pass
 
 
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute multiple tool calls concurrently using a thread pool.
 
     Results are collected in the original tool-call order and appended to
@@ -1076,7 +1203,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
+
+    Returns ``True`` only when completed and stale workers were mixed, their
+    ordered results were already appended, and the agent snapshot was refreshed.
+    All-stale batches raise before appending so the conversation can retry
+    safely; ordinary batches return ``False`` for compatibility with callers
+    that previously ignored the implicit ``None`` return.
     """
+    require_current_tool_snapshot(agent, assistant_message)
+    expected_tool_snapshot_epoch = _expected_tool_snapshot_epoch(
+        assistant_message
+    )
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
 
@@ -1114,7 +1251,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 messages,
                 stage=f"cancelled tool result {tc.function.name}",
             )
-        return
+        return False
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
@@ -1192,6 +1329,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
+    snapshot_changed_indices: set[int] = set()
+    snapshot_change_errors: dict[int, ToolSnapshotChangedError] = {}
+    snapshot_change_lock = threading.Lock()
     for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
@@ -1349,6 +1489,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         skip_tool_request_middleware=True,
                         skip_tool_execution_middleware=True,
                         tool_request_middleware_trace=list(middleware_trace),
+                        expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
                     )
 
                 managed = _run_agent_tool_execution_middleware(
@@ -1407,8 +1548,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
                 return
             except Exception as tool_error:
-                result = f"Error executing tool '{function_name}': {tool_error}"
-                logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+                if isinstance(tool_error, ToolSnapshotChangedError):
+                    with snapshot_change_lock:
+                        snapshot_changed_indices.add(index)
+                        snapshot_change_errors[index] = tool_error
+                    result = _stale_tool_result(function_name)
+                    blocked = True
+                    logger.info(
+                        "tool %s did not start because its snapshot changed",
+                        function_name,
+                    )
+                else:
+                    result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             if not blocked and not dispatched:
                 _emit_terminal_post_tool_call(
@@ -1663,6 +1815,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             total_dur = sum(r[3] for r in results if r is not None)
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
+    runnable_indices = {item[0] for item in runnable_calls}
+    if runnable_indices and snapshot_changed_indices == runnable_indices:
+        # Every runnable worker failed before its handler began. No result has
+        # been appended and no sibling may have produced effects, so the whole
+        # response remains safe for the conversation loop's bounded retry.
+        raise snapshot_change_errors[min(snapshot_change_errors)]
+
     # ── Post-execution: display per-tool results ─────────────────────
     for i, (tc, name, args, middleware_trace, _parse_error, _scope_block) in enumerate(
         parsed_calls
@@ -1820,7 +1979,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             messages,
             stage=f"tool result {name}",
         ):
-            return
+            return False
 
         # Every completion surface is downstream of the canonical append. If
         # the UI bridge or process dies while projecting one of these events,
@@ -1892,6 +2051,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
+    if snapshot_changed_indices:
+        _refresh_tool_snapshot_after_stale(agent, assistant_message)
+        return True
+    return False
+
 
 
 def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -> None:
@@ -1921,6 +2085,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
     """
+    require_current_tool_snapshot(agent, assistant_message)
+    expected_tool_snapshot_epoch = _expected_tool_snapshot_epoch(
+        assistant_message
+    )
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
 
@@ -1932,6 +2100,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        try:
+            require_current_tool_snapshot(agent, assistant_message)
+        except ToolSnapshotChangedError:
+            _append_stale_tool_results(
+                agent,
+                messages,
+                assistant_message.tool_calls[i - 1:],
+            )
+            break
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
         # do NOT start any more tools -- skip them all immediately.
@@ -2402,7 +2579,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _ce_result = None
             try:
                 def _execute(next_args: dict) -> Any:
-                    return agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages)
+                    handler = agent.context_compressor.handle_tool_call
+                    captured_handler = _capture_agent_tool_execution_route(
+                        agent,
+                        assistant_message,
+                        function_name,
+                        "context_engine",
+                    )
+                    if captured_handler is not None:
+                        handler = captured_handler
+                    return handler(function_name, next_args, messages=messages)
                 function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                     agent,
                     function_name=function_name,
@@ -2415,6 +2601,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 ))
                 _ce_result = function_result
             except Exception as tool_error:
+                if isinstance(tool_error, ToolSnapshotChangedError):
+                    raise
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2424,7 +2612,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
-        elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+        elif agent._memory_manager and memory_provider_owns_tool(agent, function_name):
             # Memory provider tools (hindsight_retain, honcho_search, etc.)
             # These are not in the tool registry — route through MemoryManager.
             spinner = None
@@ -2438,7 +2626,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _mem_result = None
             try:
                 def _execute(next_args: dict) -> Any:
-                    return agent._memory_manager.handle_tool_call(function_name, next_args)
+                    handler = agent._memory_manager.handle_tool_call
+                    captured_handler = _capture_agent_tool_execution_route(
+                        agent,
+                        assistant_message,
+                        function_name,
+                        "memory_provider",
+                    )
+                    if captured_handler is not None:
+                        handler = captured_handler
+                    return handler(function_name, next_args)
                 function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                     agent,
                     function_name=function_name,
@@ -2451,6 +2648,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 ))
                 _mem_result = function_result
             except Exception as tool_error:
+                if isinstance(tool_error, ToolSnapshotChangedError):
+                    raise
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2472,6 +2671,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _spinner_result = None
             try:
                 def _execute(next_args: dict) -> Any:
+                    captured_entry = _capture_agent_tool_execution_route(
+                        agent,
+                        assistant_message,
+                        function_name,
+                        "registry",
+                    )
                     from model_tools import suppress_post_tool_call_hook
 
                     with suppress_post_tool_call_hook():
@@ -2493,6 +2698,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             skip_tool_request_middleware=True,
                             skip_tool_execution_middleware=True,
                             tool_request_middleware_trace=list(middleware_trace),
+                            tool_snapshot_agent=agent,
+                            expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
+                            captured_registry_entry=captured_entry,
                             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                         )
@@ -2542,6 +2750,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
+                if isinstance(tool_error, ToolSnapshotChangedError):
+                    raise
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2554,6 +2764,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             try:
                 def _execute(next_args: dict) -> Any:
+                    captured_entry = _capture_agent_tool_execution_route(
+                        agent,
+                        assistant_message,
+                        function_name,
+                        "registry",
+                    )
                     from model_tools import suppress_post_tool_call_hook
 
                     with suppress_post_tool_call_hook():
@@ -2575,6 +2791,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             skip_tool_request_middleware=True,
                             skip_tool_execution_middleware=True,
                             tool_request_middleware_trace=list(middleware_trace),
+                            tool_snapshot_agent=agent,
+                            expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
+                            captured_registry_entry=captured_entry,
                             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                         )
@@ -2621,6 +2840,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
+                if isinstance(tool_error, ToolSnapshotChangedError):
+                    raise
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
@@ -2850,25 +3071,54 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     """
     from types import SimpleNamespace
 
+    require_current_tool_snapshot(agent, assistant_message)
     if segments is None:
         _active_env = get_active_env(effective_task_id)
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    initial_message_count = len(messages)
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
-        if kind == "parallel":
-            execute_tool_calls_concurrent(
-                agent, segment_message, messages, effective_task_id, api_call_count,
-                finalize=False,
-            )
-        else:
-            execute_tool_calls_sequential(
-                agent, segment_message, messages, effective_task_id, api_call_count,
-                finalize=False,
-            )
+        request_epoch = getattr(
+            assistant_message,
+            "_hermes_tool_snapshot_epoch",
+            None,
+        )
+        if request_epoch is not None:
+            segment_message._hermes_tool_snapshot_epoch = request_epoch
+        try:
+            if kind == "parallel":
+                segment_had_stale = execute_tool_calls_concurrent(
+                    agent, segment_message, messages, effective_task_id, api_call_count,
+                    finalize=False,
+                )
+            else:
+                execute_tool_calls_sequential(
+                    agent, segment_message, messages, effective_task_id, api_call_count,
+                    finalize=False,
+                )
+                segment_had_stale = False
+        except ToolSnapshotChangedError:
+            if len(messages) == initial_message_count:
+                # No earlier segment completed, so whole-response retry cannot
+                # duplicate an effect.
+                raise
+            stale_calls = list(calls)
+            for _, later_calls in segments[segment_index + 1:]:
+                stale_calls.extend(later_calls)
+            _append_stale_tool_results(agent, messages, stale_calls)
+            _refresh_tool_snapshot_after_stale(agent, segment_message)
+            break
+
+        if segment_had_stale:
+            later_stale_calls = []
+            for _, later_calls in segments[segment_index + 1:]:
+                later_stale_calls.extend(later_calls)
+            _append_stale_tool_results(agent, messages, later_stale_calls)
+            break
 
         if getattr(agent, "_incremental_persistence_failed", False):
             return

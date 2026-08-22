@@ -103,14 +103,30 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
 )
 
 
+def memory_provider_owns_tool(agent: Any, function_name: str) -> bool:
+    """Return whether the published agent surface assigns provider routing."""
+    owned_names = getattr(agent, "_memory_provider_tool_names", None)
+    if isinstance(owned_names, set):
+        return function_name in owned_names
+
+    # Compatibility for the independently mergeable snapshot change: current
+    # main does not publish provider ownership at initial injection.  Once the
+    # startup-policy change lands, the explicit set above becomes authoritative
+    # and registry collisions cannot fall through to this legacy probe.
+    manager = getattr(agent, "_memory_manager", None)
+    has_tool = getattr(manager, "has_tool", None)
+    return bool(callable(has_tool) and has_tool(function_name))
+
+
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
         return True
     if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
         return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
+    return bool(getattr(agent, "_memory_manager", None)) and memory_provider_owns_tool(
+        agent, function_name
+    )
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -3061,7 +3077,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
-                 skip_tool_execution_middleware: bool = False) -> str:
+                 skip_tool_execution_middleware: bool = False,
+                 expected_tool_snapshot_epoch: Optional[int] = None) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -3151,6 +3168,29 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    snapshot_route = None
+    if expected_tool_snapshot_epoch is not None:
+        from agent.tool_executor import ToolSnapshotChangedError
+        from tools.mcp_tool import (
+            agent_tool_snapshot_epoch_is_current,
+            capture_agent_tool_execution_route,
+        )
+
+        snapshot_route = capture_agent_tool_execution_route(
+            agent,
+            expected_tool_snapshot_epoch,
+            function_name,
+        )
+        if snapshot_route is None and (
+            not agent_tool_snapshot_epoch_is_current(
+                agent, expected_tool_snapshot_epoch
+            )
+            or function_name not in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+        ):
+            raise ToolSnapshotChangedError(
+                "tool snapshot changed before advertised handler start"
+            )
+
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
@@ -3210,9 +3250,37 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     ),
                 )
             return _finish_agent_tool(result, next_args)
-    elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    elif (
+        snapshot_route is not None and snapshot_route[0] == "memory_provider"
+    ) or (
+        snapshot_route is None
+        and agent._memory_manager
+        and memory_provider_owns_tool(agent, function_name)
+    ):
         def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
+            handler = (
+                snapshot_route[1]
+                if snapshot_route is not None
+                else agent._memory_manager.handle_tool_call
+            )
+            return _finish_agent_tool(handler(function_name, next_args), next_args)
+    elif (
+        snapshot_route is not None and snapshot_route[0] == "context_engine"
+    ) or (
+        snapshot_route is None
+        and getattr(agent, "_context_engine_tool_names", None)
+        and function_name in agent._context_engine_tool_names
+    ):
+        def _execute(next_args: dict) -> Any:
+            handler = (
+                snapshot_route[1]
+                if snapshot_route is not None
+                else agent.context_compressor.handle_tool_call
+            )
+            return _finish_agent_tool(
+                handler(function_name, next_args, messages=messages),
+                next_args,
+            )
     elif function_name == "clarify":
         def _execute(next_args: dict) -> Any:
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -3334,6 +3402,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            if expected_tool_snapshot_epoch is not None:
+                dispatch_kwargs.update(
+                    tool_snapshot_agent=agent,
+                    expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
+                )
+                if snapshot_route is not None and snapshot_route[0] == "registry":
+                    dispatch_kwargs["captured_registry_entry"] = snapshot_route[1]
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             return _ra().handle_function_call(

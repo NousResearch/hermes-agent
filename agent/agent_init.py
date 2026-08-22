@@ -1024,6 +1024,12 @@ def init_agent(
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
     agent._tool_snapshot_generation = 0
+    # Immutable registry entries backing the schemas advertised to the model.
+    agent._tool_registry_routes = {}
+    # Policy publication has its own ordering because registry generation does
+    # not change when an explicit reload alters only enabled/disabled toolsets.
+    agent._tool_policy_epoch = 0
+    agent._tool_published_policy_epoch = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
@@ -1570,19 +1576,48 @@ def init_agent(
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
-    # Get available tools with filtering. Capture the registry generation this
-    # snapshot is derived from FIRST, so a later concurrent refresh can tell
-    # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
-    agent.tools = _ra().get_tool_definitions(
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+    # Bind immutable registry entries and schemas to one stable generation.
+    # Registry mutations replace entries, so the retained objects are safe
+    # dispatch routes once their live identity is checked at execution time.
+    from tools.registry import registry as _snapshot_registry
+
+    _snapshot_registry_entries = {}
+    _snapshot_registry_defs = []
+    for _snapshot_attempt in range(3):
+        (
+            _snapshot_generation,
+            _snapshot_registry_entries,
+        ) = _snapshot_registry.snapshot_entries_with_generation()
+        agent.tools = _ra().get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        )
+        _visible_registry_names = {
+            tool.get("function", {}).get("name")
+            for tool in (agent.tools or [])
+            if isinstance(tool, dict)
+        }
+        if {
+            "tool_search",
+            "tool_describe",
+            "tool_call",
+        } <= _visible_registry_names:
+            _snapshot_registry_defs = _ra().get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+        else:
+            _snapshot_registry_defs = list(agent.tools or [])
+        if _snapshot_registry.generation_is_current(_snapshot_generation):
+            agent._tool_snapshot_generation = _snapshot_generation
+            break
+    else:
+        raise RuntimeError(
+            "tool registry generation did not stabilize after 3 attempts"
+        )
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1598,6 +1633,17 @@ def init_agent(
                 print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+
+    _snapshot_registry_names = {
+        tool.get("function", {}).get("name")
+        for tool in (_snapshot_registry_defs or [])
+        if isinstance(tool, dict)
+    }
+    agent._tool_registry_routes = {
+        name: _snapshot_registry_entries[name]
+        for name in _snapshot_registry_names
+        if name in _snapshot_registry_entries
+    }
 
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban

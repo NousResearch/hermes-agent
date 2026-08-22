@@ -1897,6 +1897,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    stale_tool_snapshot_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     # One resolved per-turn compression attempt cap, shared by every site that
@@ -2808,6 +2809,7 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
+        request_tool_snapshot_epoch = None
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
 
@@ -2877,6 +2879,11 @@ def run_conversation(
                 # fallback refreshes the policy flags, but the decorated list
                 # still carries the primary's breakpoints (or none). Strip and
                 # re-render for the current provider before building kwargs.
+                from tools.mcp_tool import capture_agent_tool_request_snapshot
+
+                tools_for_api, request_tool_snapshot_epoch = (
+                    capture_agent_tool_request_snapshot(agent)
+                )
                 api_messages, _moa_prepared_request, tools_for_api = (
                     _redecorate_prompt_cache_for_provider(
                         agent,
@@ -2886,13 +2893,19 @@ def run_conversation(
                         tools_for_api=tools_for_api,
                     )
                 )
-                if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(api_messages)
-                else:
-                    api_kwargs = agent._build_api_kwargs(
-                        api_messages,
-                        tools_for_api=tools_for_api,
-                    )
+                from agent.chat_completion_helpers import bind_tool_request_snapshot
+
+                with bind_tool_request_snapshot(
+                    tools_for_api,
+                    request_tool_snapshot_epoch,
+                ):
+                    if tools_for_api == agent.tools:
+                        api_kwargs = agent._build_api_kwargs(api_messages)
+                    else:
+                        api_kwargs = agent._build_api_kwargs(
+                            api_messages,
+                            tools_for_api=tools_for_api,
+                        )
                 # Outbound-request surrogate chokepoint (#50959): the messages
                 # were scrubbed above, but the rest of the request body —
                 # tool/function descriptions (session_search's ±-heavy text is
@@ -6643,6 +6656,10 @@ def run_conversation(
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
+            if request_tool_snapshot_epoch is not None:
+                assistant_message._hermes_tool_snapshot_epoch = (
+                    request_tool_snapshot_epoch
+                )
             finish_reason = normalized.finish_reason
             
             # Normalize content to string — some OpenAI-compatible servers
@@ -6914,6 +6931,39 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                from agent.tool_executor import (
+                    ToolSnapshotChangedError,
+                    ToolSnapshotRefreshError,
+                    _append_stale_tool_results,
+                    require_current_tool_snapshot,
+                )
+
+                try:
+                    require_current_tool_snapshot(agent, assistant_message)
+                except ToolSnapshotChangedError:
+                    stale_tool_snapshot_retries += 1
+                    if stale_tool_snapshot_retries >= 3:
+                        final_response = (
+                            "Tool configuration kept changing while the model "
+                            "request was in flight; no tool call was executed."
+                        )
+                        agent._emit_status(f"⚠️ {final_response}")
+                        messages.append(
+                            {"role": "assistant", "content": final_response}
+                        )
+                        failed = True
+                        _turn_exit_reason = "stale_tool_snapshot_exhausted"
+                        break
+                    agent._buffer_status(
+                        "↻ Tool configuration changed while the model was "
+                        "responding; retrying with the current tools "
+                        f"({stale_tool_snapshot_retries}/3)"
+                    )
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
+                    agent.iteration_budget.refund()
+                    continue
+
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 
@@ -7330,7 +7380,81 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                try:
+                    agent._execute_tool_calls(
+                        assistant_message,
+                        messages,
+                        effective_task_id,
+                        api_call_count,
+                    )
+                except ToolSnapshotRefreshError:
+                    final_response = (
+                        "Tool configuration changed before execution, but "
+                        "the current tool snapshot could not be refreshed "
+                        "safely; no further tool call was executed."
+                    )
+                    agent._emit_status(f"⚠️ {final_response}")
+                    messages.append(
+                        {"role": "assistant", "content": final_response}
+                    )
+                    failed = True
+                    _turn_exit_reason = "tool_snapshot_refresh_failed"
+                    break
+                except ToolSnapshotChangedError:
+                    _append_stale_tool_results(
+                        agent,
+                        messages,
+                        assistant_message.tool_calls,
+                    )
+                    try:
+                        from agent.tool_executor import (
+                            _refresh_tool_snapshot_after_stale,
+                        )
+
+                        _refresh_tool_snapshot_after_stale(
+                            agent,
+                            assistant_message,
+                        )
+                    except ToolSnapshotRefreshError as refresh_error:
+                        logger.warning(
+                            "stale tool snapshot refresh failed before retry: %s",
+                            refresh_error,
+                        )
+                        final_response = (
+                            "Tool configuration changed before execution, but "
+                            "the current tool snapshot could not be refreshed "
+                            "safely; no tool call was executed."
+                        )
+                        agent._emit_status(f"⚠️ {final_response}")
+                        messages.append(
+                            {"role": "assistant", "content": final_response}
+                        )
+                        failed = True
+                        _turn_exit_reason = "tool_snapshot_refresh_failed"
+                        break
+                    stale_tool_snapshot_retries += 1
+                    if stale_tool_snapshot_retries >= 3:
+                        final_response = (
+                            "Tool configuration kept changing while the model "
+                            "request was in flight; no tool call was executed."
+                        )
+                        agent._emit_status(f"⚠️ {final_response}")
+                        messages.append(
+                            {"role": "assistant", "content": final_response}
+                        )
+                        failed = True
+                        _turn_exit_reason = "stale_tool_snapshot_exhausted"
+                        break
+                    agent._buffer_status(
+                        "↻ Tool configuration changed before tool execution; "
+                        "retrying with the current tools "
+                        f"({stale_tool_snapshot_retries}/3)"
+                    )
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
+                    agent.iteration_budget.refund()
+                    continue
+                stale_tool_snapshot_retries = 0
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
@@ -7555,6 +7679,7 @@ def run_conversation(
                 # an empty tool_calls array — is handled at the finalization
                 # chokepoint below, after final_msg is built, so it catches
                 # every path that reaches turn finalization, not just this one.)
+                stale_tool_snapshot_retries = 0
                 final_response = assistant_message.content or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch

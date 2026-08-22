@@ -2,6 +2,19 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _native_executor(monkeypatch):
+    """Pin the native worker.
+
+    `kanban.worker_executor` defaults to the direct host Claude CLI, whose
+    argv carries no `-p <profile>` / `--toolsets` flags. Everything in this
+    file is about how the *native* worker resolves its profile tool surface.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_EXECUTOR", "native")
+
 
 def _make_task(kb, *, assignee: str):
     return kb.Task(

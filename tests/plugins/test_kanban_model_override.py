@@ -118,6 +118,11 @@ def test_migration_adds_provider_override_column(conn):
 
 
 def _spawn_and_capture(monkeypatch, tmp_path, task):
+    # These assertions are about the *native* worker argv. `kanban.worker_executor`
+    # now defaults to the direct host Claude CLI, whose argv has no `-p <profile>`,
+    # `--toolsets`, `-m`, or `--skills` concept at all; that lane is covered in
+    # tests/hermes_cli/test_kanban_worker_executor.py.
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_EXECUTOR", "native")
     monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 

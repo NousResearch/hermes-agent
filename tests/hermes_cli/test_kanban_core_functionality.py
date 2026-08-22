@@ -703,7 +703,12 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
+
+    Pinned to the native lane: `kanban.worker_executor` now defaults to the
+    direct host Claude CLI, whose argv has no `--skills` concept. The
+    no-auto-skill guarantee asserted here is a native-argv property.
     """
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_EXECUTOR", "native")
     captured = {}
 
     class FakeProc:

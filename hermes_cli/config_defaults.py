@@ -2688,6 +2688,63 @@ DEFAULT_CONFIG = {
         # so stale rows don't accumulate and get scanned on every notifier
         # tick forever. Set 0 to disable the sweep.
         "done_sub_retention_days": 30,
+        # Which process a dispatcher-spawned worker actually is. Global —
+        # every board, every profile.
+        #
+        #   claude_cli (default) — the direct host Claude Code CLI
+        #     (`claude -p ...`) under the operator's own login, with
+        #     CLAUDE_CONFIG_DIR and every inherited Anthropic credential /
+        #     gateway override stripped so nothing redirects the run onto
+        #     metered or cloud-account billing.
+        #   hermes (alias: native) — the historical in-process worker
+        #     (`hermes -p <assignee> chat -q ...`), routed through Hermes'
+        #     own provider stack.
+        #
+        # The default moved to claude_cli after the native lane's provider
+        # pool exhausted and wedged a board: every worker failed at startup
+        # and one card was re-dispatched 132 times behind repeated 429s,
+        # while `env -u CLAUDE_CONFIG_DIR claude -p ...` answered fine in
+        # the same shell. There is no automatic fallback in either
+        # direction — an unresolvable CLI is a hard error naming the lane
+        # and path, never a quiet downgrade back onto the exhausted pool,
+        # and an unrecognized value here falls forward to the default
+        # rather than back to native. Override per-process with
+        # $HERMES_KANBAN_WORKER_EXECUTOR.
+        "worker_executor": "claude_cli",
+        # --- worker_executor: claude_cli settings (ignored on `hermes`) ---
+        # Executable to launch. Bare names resolve against PATH (never the
+        # current directory); path-like values are used as given.
+        "claude_cli_bin": "",
+        # Default --model for workers whose card pins no Claude model. Empty
+        # lets the host CLI pick its own default. A card's model_override
+        # wins only when it names a Claude model; a card pinned to another
+        # vendor's model falls back here rather than routing off-lane.
+        "claude_cli_model": "",
+        # --permission-mode for the run, used only when claude_cli_extra_args
+        # carries no permission flag of its own. A detached worker has no
+        # terminal and nobody to approve a tool call, so the default matches
+        # the unattended tool reach a native worker already has. Set to an
+        # empty string to add no flag at all (read-only lane) — note the
+        # lifecycle protocol needs shell access to run `hermes kanban
+        # complete` / `block`, which is granted separately via --allowedTools.
+        "claude_cli_permission_mode": "bypassPermissions",
+        # --effort for the run: the thinking depth every worker and reviewer
+        # on this lane runs at unless its card pins reasoning_effort of its
+        # own. One of low|medium|high|xhigh|max — the levels the host Claude
+        # CLI accepts. Hermes-only levels (minimal, ultra, none) are
+        # translated to the nearest of those; an unrecognized value falls
+        # forward to medium rather than being passed to the CLI, which would
+        # reject its own argv and kill the worker at startup. Set to an empty
+        # string to add no flag and let the host CLI choose. The resolved
+        # level is recorded in the worker log header as `effort=<level>`.
+        "claude_cli_effort": "medium",
+        # Extra argv appended before the prompt. YAML list, or a shell-quoted
+        # string. For operator escape hatches (--add-dir, --settings, ...).
+        "claude_cli_extra_args": [],
+        # Minimum seconds between two direct-lane `claude` process startups
+        # on this Hermes root, so a burst of spawns doesn't stampede the
+        # CLI's credential refresh. 0 disables the stagger.
+        "claude_cli_spawn_stagger_seconds": 2.0,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

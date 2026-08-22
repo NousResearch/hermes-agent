@@ -41,15 +41,26 @@ import os
 import platform
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
 SPAWN_ENV_VAR = "HERMES_SPAWN"
 _TAG_VERSION = "v1"
 LEDGER_FILENAME = "spawn-ledger.json"
+LEDGER_LOCK_TIMEOUT_SECONDS = 2.0
 
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
@@ -175,6 +186,69 @@ def _ledger_path() -> Path:
         return Path(get_hermes_home()) / LEDGER_FILENAME
 
 
+def _ledger_lock_path(path: Path) -> Path:
+    """Persistent sibling lock; never lock the replaceable ledger itself."""
+    return path.with_suffix(path.suffix + ".lock")
+
+
+@contextmanager
+def _ledger_transaction_lock(path: Path):
+    """Best-effort bounded cross-process lock for one ledger write transaction.
+
+    The lock lives beside the data file because ``os.replace()`` swaps the
+    ledger's inode. Any lock failure deliberately falls back to the existing
+    process-local behavior: process startup must never be held hostage by a
+    stale or inaccessible advisory lock.
+    """
+    if fcntl is None and msvcrt is None:
+        logger.debug("spawn ledger process lock unavailable; using local lock only")
+        yield
+        return
+
+    lock_path = _ledger_lock_path(path)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # msvcrt.locking() needs one byte at offset zero; an empty lock file
+        # does not protect anything on Windows.
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+        lock_file = lock_path.open("r+" if msvcrt else "a+", encoding="utf-8")
+    except OSError:
+        logger.debug("spawn ledger process lock failed; using local lock only", exc_info=True)
+        yield
+        return
+
+    with lock_file:
+        deadline = time.monotonic() + LEDGER_LOCK_TIMEOUT_SECONDS
+        acquired = False
+        while not acquired:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except (BlockingIOError, OSError, PermissionError):
+                if time.monotonic() >= deadline:
+                    logger.debug("spawn ledger process lock timed out; using local lock only")
+                    yield
+                    return
+                time.sleep(0.05)
+
+        try:
+            yield
+        finally:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+
+
 def _read_ledger(path: Path) -> Optional[list[dict]]:
     """Entries list, ``[]`` for empty/missing, ``None`` for CORRUPT.
 
@@ -271,29 +345,30 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None) -> bool:
 
     path = _ledger_path()
     with _LEDGER_LOCK:
-        entries = _read_ledger(path)
-        if entries is None:
-            _quarantine_ledger(path)
-            entries = []
-        pruned: list[dict] = []
-        for e in entries:
-            pid = e.get("pid")
-            if not isinstance(pid, int) or pid == entry.pid:
-                continue
-            alive = _pid_alive_matches(pid, e.get("create_time"))
-            if alive is False:
-                continue  # provably dead → prune
-            pruned.append(e)
-        pruned.append(asdict(entry))
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-            tmp.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
-            os.replace(tmp, path)
-            return True
-        except OSError:
-            logger.debug("spawn ledger write failed", exc_info=True)
-            return False
+        with _ledger_transaction_lock(path):
+            entries = _read_ledger(path)
+            if entries is None:
+                _quarantine_ledger(path)
+                entries = []
+            pruned: list[dict] = []
+            for e in entries:
+                pid = e.get("pid")
+                if not isinstance(pid, int) or pid == entry.pid:
+                    continue
+                alive = _pid_alive_matches(pid, e.get("create_time"))
+                if alive is False:
+                    continue  # provably dead → prune
+                pruned.append(e)
+            pruned.append(asdict(entry))
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+                tmp.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
+                os.replace(tmp, path)
+                return True
+            except OSError:
+                logger.debug("spawn ledger write failed", exc_info=True)
+                return False
 
 
 def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
@@ -308,10 +383,11 @@ def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
     want_install = install_id(project_root)
     path = _ledger_path()
     with _LEDGER_LOCK:
-        entries = _read_ledger(path)
-        if entries is None:
-            _quarantine_ledger(path)
-            return []
+        with _ledger_transaction_lock(path):
+            entries = _read_ledger(path)
+            if entries is None:
+                _quarantine_ledger(path)
+                return []
     out: list[dict] = []
     for e in entries:
         if e.get("install") != want_install:

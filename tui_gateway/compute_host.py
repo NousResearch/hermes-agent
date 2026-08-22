@@ -529,6 +529,9 @@ class ComputeHost:
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
+        # Lazy import — see ``_safe_cwd``. Computing an initial session cwd
+        # must not crash on a wiped launch directory.
+        from tui_gateway.server import _safe_cwd
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
         session = server._sessions.get(sid)
@@ -623,7 +626,7 @@ class ComputeHost:
                 "running": False,
                 "attached_images": [],
                 "image_counter": 0,
-                "cwd": str(frame.get("cwd") or os.getcwd()),
+                "cwd": str(frame.get("cwd") or _safe_cwd()),
                 "cols": int(frame.get("cols") or 80),
                 "slash_worker": None,
                 "show_reasoning": server._load_show_reasoning(),
@@ -836,6 +839,10 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()
 
+    # Lazy import — see ``_safe_cwd``. The boot hello must not crash on a
+    # wiped launch directory.
+    from tui_gateway.server import _safe_cwd
+
     def _signal_handler(_signum, _frame) -> None:
         if shutting_down.is_set():
             return
@@ -855,7 +862,7 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
             "host_pid": os.getpid(),
             "boot_id": host._boot_id,
             "build_sha": _build_sha(),
-            "cwd": os.getcwd(),
+            "cwd": _safe_cwd(),
             "hermes_home": os.environ.get("HERMES_HOME", ""),
         }
     )

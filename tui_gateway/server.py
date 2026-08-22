@@ -11,6 +11,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -465,7 +466,7 @@ class _SlashWorker:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             env=env,
             creationflags=windows_hide_flags(),
             start_new_session=True,
@@ -1649,9 +1650,10 @@ def _default_session_cwd() -> str:
     Mirrors the launch-config-aware tail of :func:`_completion_cwd` so freshly
     created AND resumed sessions land in the configured ``terminal.cwd`` rather
     than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
-    ``TERMINAL_CWD``.
+    ``TERMINAL_CWD``. Uses :func:`_safe_cwd` so a stale / deleted CWD falls
+    through to ``HERMES_HOME`` instead of crashing the dispatch loop.
     """
-    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
+    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or _safe_cwd()
 
 
 def write_json(obj: dict) -> bool:
@@ -2589,6 +2591,76 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
+def _safe_cwd() -> str:
+    """Return ``os.getcwd()``, or a stable fallback when the CWD is unusable.
+
+    A long-running gateway/dashboard process can outlive the directory it was
+    started in: ``hermes profile remove`` wipes a profile the launcher had
+    ``cd``-ed into, a deploy rotates a mount, or the CWD's permissions are
+    revoked. ``os.getcwd()`` then raises ``OSError`` (``FileNotFoundError`` /
+    ``PermissionError``) instead of returning a path — and because CPython's
+    ``posixpath.abspath`` consults the CWD unconditionally for relative paths,
+    any dispatch-path call site that relied on either crashed the RPC with an
+    unguarded exception (surfaced as JSON-RPC -32603 ``internal error``;
+    ``session.create`` was the visible casualty).
+
+    Falls through an ordered ladder so the process never lands on a
+    nonexistent directory (which would just move the failure downstream):
+
+    1. ``os.getcwd()`` — happy path; what every healthy process wants.
+    2. ``_hermes_home`` — the resolved launch profile's home, set at import;
+       the directory this process is most likely to outlive.
+    3. ``Path.home()`` — the user's real home, which a profile-remove
+       operator is far less likely to delete than the launch dir.
+    4. ``tempfile.gettempdir()`` — last resort that is virtually always
+       writable on a still-running box.
+    5. ``/`` — absolute last rung so we never return ``None``.
+
+    Each rung verifies the candidate still exists before returning it. The
+    rung that fired is logged once per call so an operator can spot the
+    symptom from ``agent.log``.
+    """
+    cwd: str | None = None
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+    if cwd and _cwd_usable(cwd):
+        return cwd
+
+    fallback_label: str
+    fallback_path: Path
+    if _cwd_usable(_hermes_home):
+        fallback_label, fallback_path = "hermes_home", _hermes_home
+    elif _cwd_usable(Path.home()):
+        fallback_label, fallback_path = "user_home", Path.home()
+    elif _cwd_usable(Path(tempfile.gettempdir())):
+        fallback_label, fallback_path = "tempdir", Path(tempfile.gettempdir())
+    else:
+        fallback_label, fallback_path = "root", Path("/")
+
+    logger.warning(
+        "_safe_cwd: process CWD unusable, falling back to %s (%s)",
+        fallback_label,
+        fallback_path,
+    )
+    return str(fallback_path)
+
+
+def _cwd_usable(candidate: Path | str | None) -> bool:
+    """Return True iff ``candidate`` resolves to a real, accessible directory."""
+    if candidate is None:
+        return False
+    try:
+        path = Path(candidate) if not isinstance(candidate, Path) else candidate
+    except (TypeError, ValueError):
+        return False
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
     raw = (
@@ -2603,7 +2675,7 @@ def _completion_cwd(params: dict | None = None) -> str:
         # configured terminal.cwd wins over a stale process env / launch dir.
         or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
-        or os.getcwd()
+        or _safe_cwd()
     )
     try:
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
@@ -2611,7 +2683,7 @@ def _completion_cwd(params: dict | None = None) -> str:
             return resolved
     except Exception:
         pass
-    return os.getcwd()
+    return _safe_cwd()
 
 
 def _terminal_task_cwd(session: dict | None) -> str:

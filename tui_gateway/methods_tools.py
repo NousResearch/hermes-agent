@@ -381,6 +381,9 @@ def _(rid, params: dict) -> dict:
         # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless
         # parent, this spawn otherwise flashes a console (#56747).
         from hermes_cli._subprocess_compat import windows_hide_flags
+        # Lazy import to avoid pulling server.py at module load — see
+        # ``_safe_cwd`` for why subprocess cwd must outlive the CWD.
+        from tui_gateway.server import _safe_cwd
 
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
@@ -391,7 +394,7 @@ def _(rid, params: dict) -> dict:
             encoding="utf-8",
             errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
@@ -1453,6 +1456,10 @@ def _(rid, params: dict) -> dict:
 @method("config.show")
 def _(rid, params: dict) -> dict:
     try:
+        # Lazy import — see ``_safe_cwd`` docstring. Display-only "Working
+        # Dir" must never crash the /status panel even if the launch dir was
+        # removed (see PR #90815 reproducer).
+        from tui_gateway.server import _safe_cwd
         cfg = _load_cfg()
         model = _resolve_model()
         from agent.secret_scope import get_secret
@@ -1481,7 +1488,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Environment",
                 "rows": [
-                    ["Working Dir", os.getcwd()],
+                    ["Working Dir", _safe_cwd()],
                     ["Config File", str(_hermes_home / "config.yaml")],
                 ],
             },
@@ -2551,9 +2558,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
+        # Lazy import — see ``_safe_cwd``. shell.exec subprocess cwd must
+        # survive a wiped launch directory.
+        from tui_gateway.server import _safe_cwd
 
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=_safe_cwd(),
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
             # the gateway thread on locale-mismatched Windows (#53137).
             encoding="utf-8", errors="replace",

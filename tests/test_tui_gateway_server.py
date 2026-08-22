@@ -906,6 +906,66 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     assert result == str(explicit)
 
 
+def _enter_deletable_cwd(tmp_path, monkeypatch):
+    """Reproduce the production failure for real: chdir into a scratch dir
+    and unlink it, leaving the *actual* process CWD dangling (exactly what
+    ``hermes profile remove`` does to a dashboard launched with
+    ``WorkingDirectory=<profile>``). ``os.getcwd()`` raises ``FileNotFoundError``
+    from here on; ``monkeypatch.chdir`` restores the real CWD on teardown.
+
+    POSIX-only mechanics — Windows refuses to unlink a process's CWD — which
+    matches the bug itself: this failure mode is structurally POSIX-only.
+    """
+    gone = tmp_path / "deleted-launch-dir"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    return gone
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only unlink-CWD mechanics; Windows cannot reproduce this path")
+def test_completion_cwd_falls_back_to_hermes_home_when_cwd_deleted(
+    monkeypatch, tmp_path
+):
+    """A long-running gateway whose CWD was removed must not crash dispatch.
+
+    Repro: ``hermes-dashboard.service`` is launched with
+    ``WorkingDirectory=/home/r/.hermes/profiles/cx43validate``; that profile
+    is later deleted; the process keeps serving. ``os.getcwd()`` then raises
+    ``FileNotFoundError`` on every RPC that needs a cwd, which surfaced as
+    JSON-RPC -32603 ``internal error`` on ``session.create`` ("Could not
+    create a new session" in the desktop). The resolver must land on
+    ``HERMES_HOME`` instead of raising.
+    """
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(server, "_profile_home", lambda _name: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    _enter_deletable_cwd(tmp_path, monkeypatch)
+
+    assert server._completion_cwd({}) == str(hermes_home)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only unlink-CWD mechanics; Windows cannot reproduce this path")
+def test_default_session_cwd_falls_back_to_hermes_home_when_cwd_deleted(
+    monkeypatch, tmp_path
+):
+    """``_default_session_cwd`` shares the same unguarded ``os.getcwd()``
+    tail and must survive the deleted-CWD state the same way."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    _enter_deletable_cwd(tmp_path, monkeypatch)
+
+    assert server._default_session_cwd() == str(hermes_home)
+
+
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
     """A local terminal backend must keep host-validated session cwd behaviour."""
     project = tmp_path / "project"

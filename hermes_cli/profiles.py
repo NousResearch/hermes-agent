@@ -2009,6 +2009,33 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+def _non_exportable_entries(directory: str, contents: list) -> set:
+    """Entries under *directory* that must never reach an export archive.
+
+    ``__pycache__`` directories and ``*.sock``/``*.tmp`` files are transient
+    noise. Beyond the name check, anything that is not a regular file,
+    directory, or symlink is dropped: :func:`shutil.copytree` cannot copy
+    special files, and a single live Unix socket without a ``.sock`` name
+    (or a FIFO, or a device node) would abort the whole export with
+    ``[Errno 6] No such device or address``. Symlinks survive — copytree
+    recreates them (``symlinks=True``).
+    """
+    ignored: set = set()
+    for entry in contents:
+        if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+            ignored.add(entry)
+            continue
+        try:
+            mode = os.lstat(os.path.join(directory, entry)).st_mode
+        except OSError:
+            # Vanished mid-walk — copytree would fail on it anyway.
+            ignored.add(entry)
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            ignored.add(entry)
+    return ignored
+
+
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
@@ -2020,22 +2047,18 @@ def _default_export_ignore(root_dir: Path):
       HERMES_HOME equals the cwd) is excluded. Blacklisting was tried
       first and proved unable to anticipate every non-Hermes file the
       user may have lying alongside HERMES_HOME (#58394).
-    * **Universal exclusions at any depth** — ``__pycache__``, sockets,
-      temp files; plus npm lockfiles, which may appear at the root.
+    * **Universal exclusions at any depth** — ``__pycache__``, sockets and
+      other special files, temp files (:func:`_non_exportable_entries`);
+      plus npm lockfiles, which may appear at the root.
 
     Surviving text files are later force-redacted by
     :func:`_scrub_export_secrets` before the archive is written.
     """
 
     def _ignore(directory: str, contents: list) -> set:
-        ignored: set = set()
-        for entry in contents:
-            # Universal exclusions (any depth)
-            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
-                ignored.add(entry)
-            # npm lockfiles can appear at root
-            elif entry in {"package.json", "package-lock.json"}:
-                ignored.add(entry)
+        ignored = _non_exportable_entries(directory, contents)
+        # npm lockfiles can appear at root
+        ignored.update({"package.json", "package-lock.json"} & set(contents))
         # Root-level allow-list: drop everything that isn't a known
         # Hermes profile artifact.
         if Path(directory) == root_dir:
@@ -2184,15 +2207,25 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             result = _make_profile_archive(base, tmpdir, "default")
             return Path(result)
 
-    # Named profiles — stage a filtered copy to exclude credentials
+    # Named profiles — stage a filtered copy to exclude credentials.  The
+    # universal exclusions apply here too: profiles accumulate Unix sockets
+    # in normal operation (e.g. an agent-browser control socket under
+    # ``home/.agent-browser/``), and a single one aborts copytree — and with
+    # it the whole export.
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
         _CREDENTIAL_FILES = {"auth.json", ".env"}
+
+        def _named_export_ignore(directory: str, contents: list) -> set:
+            ignored = _non_exportable_entries(directory, contents)
+            ignored.update(_CREDENTIAL_FILES & set(contents))
+            return ignored
+
         shutil.copytree(
             profile_dir,
             staged,
             symlinks=True,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=_named_export_ignore,
         )
         _stage_extras(staged)
         _scrub_export_secrets(staged)

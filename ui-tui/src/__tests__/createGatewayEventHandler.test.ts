@@ -1001,6 +1001,28 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('gateway.ready records the launch profile for the status bar', () => {
+    const ctx = buildCtx([])
+
+    createGatewayEventHandler(ctx)({
+      payload: { profile: 'mlperf', skin: {} },
+      type: 'gateway.ready'
+    } as any)
+
+    expect(getUiState().launchProfile).toBe('mlperf')
+  })
+
+  it('gateway.ready without a profile keeps launchProfile null (default home)', () => {
+    const ctx = buildCtx([])
+
+    createGatewayEventHandler(ctx)({
+      payload: { profile: null },
+      type: 'gateway.ready'
+    } as any)
+
+    expect(getUiState().launchProfile).toBeNull()
+  })
+
   it('on gateway.ready after a crash, resumes the recovered session once and skips forge', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

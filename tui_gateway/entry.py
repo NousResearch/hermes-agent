@@ -20,7 +20,13 @@ import traceback
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
-from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
+from tui_gateway.server import (
+    _CRASH_LOG,
+    dispatch,
+    resolve_launch_profile,
+    resolve_skin,
+    write_json,
+)
 from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
@@ -437,7 +443,13 @@ def main():
         "params": {
             "type": "gateway.ready",
             # change_events: see tui_gateway/ws.py — clients demote legacy polls.
-            "payload": {"skin": resolve_skin(), "change_events": True},
+            # profile: active launch profile, or None on the default home so the
+            # status bar's profile segment stays hidden there (#36081).
+            "payload": {
+                "skin": resolve_skin(),
+                "change_events": True,
+                "profile": resolve_launch_profile(),
+            },
         },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")

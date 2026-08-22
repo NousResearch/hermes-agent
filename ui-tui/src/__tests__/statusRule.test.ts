@@ -65,6 +65,7 @@ describe('statusBarSegments', () => {
     expect(s).toEqual({
       compactCtx: false,
       bar: true,
+      profile: true,
       duration: true,
       compressions: true,
       voice: true,
@@ -78,6 +79,7 @@ describe('statusBarSegments', () => {
 
     expect(s.compactCtx).toBe(true)
     expect(s.bar).toBe(false)
+    expect(s.profile).toBe(false)
     expect(s.duration).toBe(false)
   })
 
@@ -85,6 +87,7 @@ describe('statusBarSegments', () => {
     // the context bar is the last of the tail to go.
     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
       'bar',
+      'profile',
       'duration',
       'compressions',
       'voice',

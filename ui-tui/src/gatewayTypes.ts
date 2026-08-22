@@ -611,7 +611,12 @@ export interface SpawnTreeLoadResponse {
 }
 
 export type GatewayEvent =
-  | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | {
+      /** Active launch profile; null/absent on the default home (#36081). */
+      payload?: { profile?: null | string; skin?: GatewaySkin }
+      session_id?: string
+      type: 'gateway.ready'
+    }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }

@@ -329,6 +329,10 @@ export interface UiState {
   // persistent `◉ focus` status-bar badge; never affects request payloads.
   focusView: boolean
   info: null | SessionInfo
+  // Launch profile reported by gateway.ready (`profile`, #36081). Null on the
+  // default home so the status bar's profile segment stays hidden there. This
+  // is the pre-session fallback — a session.info profile_name wins once known.
+  launchProfile: null | string
   liveSessionCount: number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode

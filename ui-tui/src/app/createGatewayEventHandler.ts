@@ -647,10 +647,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
+  const handleReady = ({ profile, skin }: { profile?: null | string; skin?: GatewaySkin } = {}) => {
     if (skin) {
       applySkin(skin)
     }
+
+    // Launch-profile identity for the status bar (#36081). Null/absent on the
+    // default home → the segment stays hidden. A later session.info carries
+    // its own profile_name, which the status bar prefers once known.
+    patchUiState({ launchProfile: profile ?? null })
 
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can
@@ -759,7 +764,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload)
 
         return
 

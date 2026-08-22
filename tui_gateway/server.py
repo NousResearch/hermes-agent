@@ -3758,6 +3758,24 @@ def resolve_skin() -> dict:
         return {}
 
 
+def resolve_launch_profile() -> str | None:
+    """Active launch-profile name for the ``gateway.ready`` payload (#36081).
+
+    Returns the profile name when ``HERMES_HOME`` points into
+    ``~/.hermes/profiles/<name>``; None for the default home and for
+    unrecognized custom homes — the stock single-profile UX must not grow a
+    profile segment, matching how the composer prompt prefix suppresses them.
+    Additive + optional: clients that don't know the key are unaffected.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name()
+    except Exception:
+        return None
+    return name if name not in ("", "custom", "default") else None
+
+
 # Signature of the last skin broadcast: (name, active user-file mtime). Lets the
 # per-tool reconcile fire ``skin.changed`` on any real move — a name switch OR a
 # live color edit to the active skin — and nothing else.

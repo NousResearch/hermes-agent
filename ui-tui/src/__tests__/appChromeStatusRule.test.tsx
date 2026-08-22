@@ -491,3 +491,48 @@ describe('StatusRule idle-since read-out', () => {
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
+
+describe('StatusRule active profile segment', () => {
+  it('is hidden by default (no profile reported → stock UX unchanged)', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('mlperf')
+  })
+
+  it('shows the named profile between the context bar and the clocks', () => {
+    const element = StatusRule({
+      ...baseProps,
+      profileName: 'mlperf',
+      sessionStartedAt: Date.now() - 60_000
+    })
+
+    expect(textContent(element)).toContain('mlperf')
+    // The elapsed clock still renders after it — ordering sanity, not width.
+    expect(textContent(element)).toContain('%')
+  })
+
+  it('styles the segment like its muted neighbours (muted colour, truncate-end)', () => {
+    const element = StatusRule({ ...baseProps, profileName: 'mlperf' })
+
+    const leaf = findElementWithText(element, 'mlperf')
+
+    expect(leaf?.props.color).toBe(DEFAULT_THEME.color.muted)
+    expect(leaf?.props.wrap).toBe('truncate-end')
+  })
+
+  it.each(['default', 'custom'])('suppresses the non-profile name "%s" like the composer prefix does', name => {
+    const element = StatusRule({ ...baseProps, profileName: name })
+
+    // The names are common words — assert on the separator-prefixed segment
+    // shape so a stray occurrence elsewhere can't false-positive.
+    expect(textContent(element)).not.toContain(` │ ${name}`)
+  })
+
+  it('drops the whole segment below its breakpoint instead of truncating mid-name', () => {
+    const element = StatusRule({ ...baseProps, cols: 44, profileName: 'mlperf' })
+
+    expect(textContent(element)).not.toContain('mlperf')
+    // Essentials survive untouched.
+    expect(textContent(element)).toContain('opus 4.8')
+  })
+})

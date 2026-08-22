@@ -12,6 +12,7 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { showsNamedProfile } from '../lib/prompt.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -294,6 +295,7 @@ export interface StatusBarSegments {
   compactCtx: boolean
   compressions: boolean
   duration: boolean
+  profile: boolean
   subagents: boolean
   voice: boolean
 }
@@ -304,6 +306,9 @@ export function statusBarSegments(cols: number): StatusBarSegments {
   return {
     compactCtx: w < 72,
     bar: w >= 72,
+    // Active-profile identity only ever renders for a real named profile, so
+    // it shares the context-bar tier — visible whenever the bar is.
+    profile: w >= 72,
     duration: w >= 76,
     compressions: w >= 80,
     voice: w >= 84,
@@ -476,6 +481,7 @@ export function StatusRule({
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
   notice,
+  profileName,
   usage,
   bgCount,
   lastTurnEndedAt,
@@ -575,6 +581,12 @@ export function StatusRule({
       : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  // Active-profile identity (#36081). Hidden unless the backend reported a
+  // real named profile — `default`/custom homes render nothing, keeping the
+  // stock UX unchanged. Budgeted like every tail segment (evaluated ahead of
+  // the elapsed clocks: knowing WHICH instance you're on outranks its uptime)
+  // so it drops whole on a narrow terminal instead of crushing model │ ctx.
+  const showProfile = segs.profile && showsNamedProfile(profileName) && fits(SEP + stringWidth(profileName!))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -683,6 +695,12 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {showProfile ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {profileName}
           </Text>
         ) : null}
         {showDuration ? (
@@ -869,6 +887,9 @@ interface StatusRuleProps {
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
+  // Active launch profile (#36081). Null/absent on the default home → the
+  // segment renders nothing, so the stock single-profile UX is unchanged.
+  profileName?: null | string
   sessionStartedAt?: null | number
   sessionTitle?: string
   status: string

@@ -105,8 +105,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("claude-opus-4", 240),
     ("claude-opus-5", 240),
     ("claude-sonnet-5", 180),
-    ("claude-sonnet-4.5", 180),
-    ("claude-sonnet-4.6", 180),
+    ("claude-sonnet-4", 180),
     # Anthropic Mythos-class named reasoning models (claude-fable-5, …).
     # 1M context + 128K output — heavier thinking phase than the
     # numbered Claude line, so the floor is in the deep-reasoning tier

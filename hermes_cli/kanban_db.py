@@ -85,7 +85,7 @@ import threading
 import logging
 import time
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -8012,6 +8012,75 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Reviewer-feedback release: patterns that, when present in a comment body
+# AFTER the most recent PR-URL comment, count as reviewer feedback and
+# release the respawn guard. Compiled once at import time. The list comes
+# from the 2026-08-20 reproduction on t_de993dac — the operator's
+# "logging is not sufficient. all actions need to be logged properly…"
+# comment matched several of these patterns. Phrase match is case-
+# insensitive and operates on word boundaries (each pattern is a
+# standalone phrase, not a substring inside an arbitrary word).
+_REVIEWER_FEEDBACK_PHRASES = (
+    "please update",
+    "fix in this pr",
+    "also address",
+    "needs to",
+    "this pr",
+    "not sufficient",
+    "all actions",
+    "all clicks",
+    "please add",
+    "please include",
+)
+
+
+def _compile_word_boundary_re(phrases: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile a regex matching any phrase with PER-WORD word boundaries.
+
+    Multi-word phrases like ``"this pr"`` would otherwise match inside
+    larger words ("priority", "hall actions") because plain substring
+    matching doesn't enforce that the leading/trailing character of
+    each phrase segment is a word boundary. We solve this by tokenizing
+    each phrase on whitespace and wrapping each token in ``\\b`` so the
+    match requires every word to start/end at a word boundary. Inter-word
+    whitespace stays literal so multi-word phrases still match their
+    original prose ("please update the doc").
+
+    This is a stricter form than the legacy substring alternation and
+    eliminates false positives from tokens that happen to contain the
+    phrase as a substring. Verified 2026-08-21 against the
+    t_de993dac test bodies: all four existing pattern-match tests
+    still pass with the tightened regex, and the previously-broken
+    "this priority" / "hall actions" substrings no longer match.
+    """
+    pieces: list[str] = []
+    for p in phrases:
+        tokens = [re.escape(tok) for tok in p.split()]
+        pieces.append(r"\b" + r"\s+".join(tokens) + r"\b")
+    return re.compile(r"(?:" + "|".join(pieces) + r")", re.IGNORECASE)
+
+
+_REVIEWER_FEEDBACK_RE = _compile_word_boundary_re(_REVIEWER_FEEDBACK_PHRASES)
+# PR number reference patterns: `#178`, `PR #178`, `pull/178`.
+_REVIEWER_FEEDBACK_PR_NUM_RE = re.compile(
+    r"(?:#\d+|\bpr\s*#\d+|\bpull/\d+)",
+    re.IGNORECASE,
+)
+
+# Minimum comment length to count as reviewer feedback (vs auto-mirrored
+# status pings). Auto-mirrored comments from `mirror_push` /
+# `mirror_push_comments` are typically < 80 chars (an emoji + task id +
+# status); a substantive reviewer comment is >= 80 chars.
+_REVIEWER_FEEDBACK_MIN_BODY_LEN = 80
+
+# Process-level cache for `gh pr view --json reviewDecision` calls. Keyed
+# by PR URL. TTL 5 minutes — the reviewDecision only changes when the
+# operator takes an explicit action in the GH review UI, so polling that
+# fast is overkill, but we also can't cache forever because the
+# guard-release decision depends on the current state.
+_REVIEW_DECISION_CACHE: dict[str, tuple[float, str | None]] = {}
+_REVIEW_DECISION_TTL_SECONDS = 300
+
 
 @dataclass
 class DispatchResult:
@@ -9386,6 +9455,357 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _comment_content_key(body: str) -> str:
+    """Stable SHA1 of a comment body (whitespace-stripped).
+
+    Used by the reviewer-feedback release logic to distinguish
+    idempotent re-pushes of the same comment (same content_key) from
+    NEW comments with distinct bodies (different content_key). Per
+    SPEC-active-pr-guard-reviewer-feedback (2026-08-20).
+    """
+    import hashlib
+    norm = (body or "").rstrip()
+    return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _has_reviewer_feedback(
+    body: str,
+    pr_url: str | None = None,
+    author: str | None = None,
+) -> bool:
+    """Return True iff `body` looks like substantive reviewer feedback.
+
+    Triggers (per SPEC-active-pr-guard-reviewer-feedback §Part B #5):
+      - Contains any phrase in `_REVIEWER_FEEDBACK_PHRASES` (author-agnostic).
+      - References the PR number directly (`#178`, `PR #178`, `pull/178`),
+        gated on non-default author — see the rationale below.
+      - Optional: `pr_url` provided — body references the PR URL itself.
+
+    Note: the AUTHOR + LENGTH filter for substantive feedback is applied
+    at the call site, not here — this function only does the body-text
+    match. The caller is responsible for combining with author/length
+    heuristics so the single-purpose helper is unit-testable.
+
+    Why PR-number regex is gated on non-default author (REVIEWER
+    FEEDBACK IN HERMES-AGENT#2, 2026-08-21):
+      Status pings auto-mirrored by `mirror_push` routinely contain
+      "PR #N opened" / "PR #N closed" / "→ from kanban task N"
+      — releasing the guard on those would create a respawn loop
+      bounded only by the failure circuit breaker, defeating the 24h
+      active-PR window for any task whose auto-mirrored pings happen
+      to mention the PR number. Phrase matches stay author-agnostic
+      because phrases like "please update" / "fix in this pr" are
+      concrete reviewer signals that are extremely unlikely to appear
+      in mirrored status pings (those are short emoji + task id +
+      status lines).
+
+    Backward compat:
+      When ``author`` is None, the helper still permits the PR-number
+      regex to fire (pre-2026-08-21 behavior). Tests that don't carry
+      an author field keep working. New callers should always pass
+      ``author=``.
+    """
+    if not body:
+        return False
+    if _REVIEWER_FEEDBACK_RE.search(body):
+        return True
+    if author is None or author != "default":
+        if _REVIEWER_FEEDBACK_PR_NUM_RE.search(body):
+            return True
+        if pr_url and pr_url in body:
+            return True
+    return False
+
+
+def _query_pr_review_decision(pr_url: str) -> str | None:
+    """Return the reviewDecision for a PR via `gh pr view --json reviewDecision`.
+
+    Returns one of `'APPROVED'`, `'CHANGES_REQUESTED'`, `'REVIEW_REQUIRED'`,
+    `''` (no review yet), or None on subprocess/parse failure. Cached
+    process-wide for `_REVIEW_DECISION_TTL_SECONDS`.
+
+    Per SPEC-active-pr-guard-reviewer-feedback: this is a stronger signal
+    than comment text and catches the case where the reviewer used the
+    GitHub review UI (request-changes button) without leaving an inline
+    comment.
+    """
+    now = time.time()
+    cached = _REVIEW_DECISION_CACHE.get(pr_url)
+    if cached is not None:
+        ts, val = cached
+        if (now - ts) < _REVIEW_DECISION_TTL_SECONDS:
+            return val
+
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "reviewDecision"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        _REVIEW_DECISION_CACHE[pr_url] = (now, None)
+        return None
+    if result.returncode != 0:
+        _REVIEW_DECISION_CACHE[pr_url] = (now, None)
+        return None
+    try:
+        payload = json.loads(result.stdout)
+        decision = payload.get("reviewDecision") if isinstance(payload, dict) else None
+        if decision is None:
+            decision = ""
+        _REVIEW_DECISION_CACHE[pr_url] = (now, str(decision))
+        return str(decision)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        _REVIEW_DECISION_CACHE[pr_url] = (now, None)
+        return None
+
+
+# Process-level cache for the branch-override lookup. Keyed by PR URL.
+# TTL 5 minutes — the branch/head SHA only change on a push, and the
+# guard fires on a per-tick cadence, so re-querying every 5 minutes is
+# plenty. Side-effect (gh CLI call) costs ~100ms — cache hits are free.
+_BRANCH_OVERRIDE_CACHE: dict[str, tuple[float, tuple[str, str] | None]] = {}
+_BRANCH_OVERRIDE_TTL_SECONDS = 300
+
+# Per-dispatch-tick side-channel: when the guard releases due to reviewer
+# feedback, the dispatcher reads this dict to route the new Builder run
+# to the same branch + head SHA as the most recent PR-URL comment. The
+# dict is cleared by ``_dispatch_once_locked`` at the end of each tick.
+_pending_reviewer_branch_override: dict[str, "tuple[str, str]"] = {}
+
+
+def _populate_branch_override_for_task(
+    conn: sqlite3.Connection, task_id: str
+) -> None:
+    """Populate ``_pending_reviewer_branch_override[task_id]`` with the
+    (branch, head_sha) for the most recent PR-URL comment on this task.
+
+    Called from :func:`check_respawn_guard` ONLY when the guard releases
+    due to reviewer feedback (so the dispatcher can re-use the same
+    branch + head SHA instead of cutting a fresh ``wt/<task-id>``
+    branch). The caller reads ``_pending_reviewer_branch_override`` in
+    the dispatch path; the dict is cleared at the end of every tick.
+
+    Implementation: find the most recent PR-URL comment, parse the
+    owner/repo/N from it, run ``gh pr view <url> --json
+    headRefName,headRefOid`` (with TTL cache), and stash the result.
+
+    Failure mode: if the gh call fails (PR closed/merged/deleted, no
+    network, etc.), leave the dict entry empty — the dispatcher will
+    fall back to its normal ``wt/<task-id>`` branch-cut behavior, which
+    is safe.
+    """
+    now_epoch = int(time.time())
+    pr_cutoff = now_epoch - _RESPAWN_GUARD_PR_WINDOW
+    # Most recent PR-URL comment in the window — scan and filter, rather
+    # than relying on the comment-with-PR-URL to also be the most-recent
+    # comment (the spec case has the reviewer feedback landing AFTER the
+    # PR-URL breadcrumb, so the feedback is the most-recent comment
+    # overall, but the PR-URL is still the most-recent PR-URL comment).
+    pr_row = None
+    pr_row_at = 0
+    for cand in conn.execute(
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
+        (task_id, pr_cutoff),
+    ).fetchall():
+        body = cand["body"] or ""
+        if not _RESPAWN_GUARD_PR_URL_RE.search(body):
+            continue
+        ts = int(cand["created_at"] or 0)
+        if ts > pr_row_at:
+            pr_row = cand
+            pr_row_at = ts
+    if pr_row is None or not pr_row["body"]:
+        return
+    pr_url = _RESPAWN_GUARD_PR_URL_RE.search(pr_row["body"])
+    if not pr_url:
+        return
+    url = pr_url.group(0)
+
+    # TTL-cached gh call
+    now_f = time.time()
+    cached = _BRANCH_OVERRIDE_CACHE.get(url)
+    if cached is not None:
+        ts, val = cached
+        if (now_f - ts) < _BRANCH_OVERRIDE_TTL_SECONDS:
+            if val is not None:
+                _pending_reviewer_branch_override[task_id] = val
+            return
+
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", url, "--json", "headRefName,headRefOid"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        _BRANCH_OVERRIDE_CACHE[url] = (now_f, None)
+        return
+    if result.returncode != 0:
+        _BRANCH_OVERRIDE_CACHE[url] = (now_f, None)
+        return
+    try:
+        payload = json.loads(result.stdout)
+        branch = payload.get("headRefName") if isinstance(payload, dict) else None
+        sha = payload.get("headRefOid") if isinstance(payload, dict) else None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        _BRANCH_OVERRIDE_CACHE[url] = (now_f, None)
+        return
+    if not branch or not sha:
+        _BRANCH_OVERRIDE_CACHE[url] = (now_f, None)
+        return
+    pair = (str(branch), str(sha))
+    _BRANCH_OVERRIDE_CACHE[url] = (now_f, pair)
+    _pending_reviewer_branch_override[task_id] = pair
+
+
+def _check_reviewer_feedback_release(
+    conn: sqlite3.Connection, task_id: str
+) -> "tuple[bool, int | None, str | None]":
+    """Return (should_release, triggering_comment_id, triggering_reason).
+
+    - ``should_release``: True iff reviewer feedback exists AFTER the most
+      recent PR-URL comment AND is newer than the most recent prior
+      ``respawn_released`` event (so a released respawn that fails
+      without a new feedback comment doesn't re-release on the next tick
+      — the "respawn loop" failure mode documented in
+      REVIEWER FEEDBACK IN HERMES-AGENT#2, 2026-08-21).
+    - ``triggering_comment_id``: the ``task_comments.id`` of the comment
+      that fired the release. Used by the caller to record a
+      ``respawn_released`` event with that id as the dedupe watermark.
+    - ``triggering_reason``: short string describing which trigger fired
+      (a / b / c / d, mapped to the four spec triggers). Audit only.
+
+    Implements SPEC-active-pr-guard-reviewer-feedback §Part B #5: any of
+    these triggers releases the guard:
+
+      1. A comment AFTER the most recent PR-URL comment whose author is
+         not `default` and whose body is >= _REVIEWER_FEEDBACK_MIN_BODY_LEN
+         characters.
+      2. A comment AFTER the most recent PR-URL comment with a
+         distinct `_content_key` from that PR-URL comment itself
+         (idempotent re-push of the same comment body does NOT release).
+      3. A comment AFTER the most recent PR-URL comment matching any
+         phrase in `_REVIEWER_FEEDBACK_PHRASES`, OR referencing the PR
+         number directly (`#178`/`PR #178`/`pull/178`) — gated on
+         non-default author to prevent default-authored auto-mirrored
+         status pings like "PR #178 opened" from releasing the guard
+         (per REVIEWER FEEDBACK IN HERMES-AGENT#2, 2026-08-21).
+      4. The most recent PR-URL comment's PR has
+         `reviewDecision == 'CHANGES_REQUESTED'` (queried via
+         `gh pr view <url> --json reviewDecision`).
+
+    The function is conservative: returning ``(False, None, None)``
+    leaves the existing `active_pr` guard in force. Returning
+    ``(True, comment_id, reason)`` releases the guard for THIS dispatch
+    tick and signals the caller to record a ``respawn_released`` event
+    so the next tick skips comments with ``id <= comment_id``.
+    """
+    now = int(time.time())
+    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    # Pull all comments in the PR window, oldest first so we can find
+    # the most recent PR-URL comment and then everything that came
+    # after it.
+    rows = conn.execute(
+        "SELECT id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at ASC",
+        (task_id, pr_cutoff),
+    ).fetchall()
+
+    # Find the most recent PR-URL comment's (created_at, pr_url).
+    # The comment id isn't needed downstream — only the URL and the
+    # post-URL feedback window — so we don't carry it through.
+    most_recent_pr = None
+    most_recent_pr_at = 0
+    for r in rows:
+        body = r["body"] or ""
+        m = _RESPAWN_GUARD_PR_URL_RE.search(body)
+        if not m:
+            continue
+        if int(r["created_at"] or 0) > most_recent_pr_at:
+            most_recent_pr_at = int(r["created_at"] or 0)
+            most_recent_pr = m.group(0)
+    if most_recent_pr is None:
+        # No PR-URL comment in the window — caller is responsible for
+        # deciding what to do. Returning False here matches the
+        # "no PR-URL comment = no reviewer feedback to release against"
+        # semantics.
+        return False, None, None
+
+    # Dedupe watermark (REVIEWER FEEDBACK IN HERMES-AGENT#2, 2026-08-21):
+    # skip any feedback with created_at <= the most recent respawn_released
+    # feedback_at. Without this, a released respawn that fails would
+    # re-release on every subsequent tick because the same stale feedback
+    # still satisfies trigger 1 / 3 — a respawn loop bounded only by the
+    # failure circuit breaker. The watermark advances only when a NEW
+    # feedback source triggers a release, so legitimate fresh feedback
+    # (a follow-up comment from the reviewer, or a new
+    # CHANGES_REQUESTED review round) still fires.
+    #
+    # The watermark is keyed on `created_at`, not comment id, so a trigger-4
+    # release (no comment) can still record a meaningful timestamp (= the
+    # decision-check time) and any later comment with a higher
+    # `created_at` will advance past it.
+    watermark_row = conn.execute(
+        "SELECT MAX(CAST(payload ->> '$.feedback_at' AS INTEGER)) "
+        "AS max_fb_at "
+        "FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_released'",
+        (task_id,),
+    ).fetchone()
+    feedback_watermark_at = int(watermark_row["max_fb_at"] or 0) if watermark_row else 0
+
+    pr_url_key = _comment_content_key(most_recent_pr or "")
+
+    # Walk comments AFTER the most recent PR-URL comment.
+    for r in rows:
+        r_created = int(r["created_at"] or 0)
+        if r_created <= feedback_watermark_at:
+            continue
+        if r_created <= most_recent_pr_at:
+            continue
+        body = r["body"] or ""
+        author = r["author"] or ""
+        if not body:
+            continue
+
+        # Trigger 2 first — distinct content_key from the PR-URL
+        # comment itself. The PR-URL comment is the worker's original
+        # breadcrumb; any later comment with a different body is, by
+        # construction, NOT a re-push of the breadcrumb.
+        if _comment_content_key(body) != pr_url_key:
+            # Trigger 1 — non-default author + substantive length.
+            if (
+                author != "default"
+                and len(body) >= _REVIEWER_FEEDBACK_MIN_BODY_LEN
+            ):
+                return True, r_created, "a"
+            # Trigger 3 — body pattern match, author-gated for PR-number
+            # references (REVIEWER FEEDBACK IN HERMES-AGENT#2,
+            # 2026-08-21). Pass ``author=`` so a default-authored ping
+            # like "PR #178 opened" cannot release the guard.
+            if _has_reviewer_feedback(body, author=author):
+                return True, r_created, "c"
+
+    # Trigger 4 — reviewDecision == CHANGES_REQUESTED on the linked PR.
+    # Also gated on the watermark so a CHANGES_REQUESTED decision that
+    # has already released once doesn't keep firing on every tick when
+    # the released respawn fails. ``reason="d"`` is the audit label.
+    if feedback_watermark_at == 0:
+        decision = _query_pr_review_decision(most_recent_pr)
+        if decision == "CHANGES_REQUESTED":
+            # No specific comment fires trigger 4 — use ``now`` as the
+            # feedback watermark so any LATER feedback (a follow-up
+            # comment from the reviewer) still advances past it.
+            return True, now, "d"
+
+    return False, None, None
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9438,6 +9858,18 @@ def check_respawn_guard(
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+
+        EXCEPTION (SPEC-active-pr-guard-reviewer-feedback, 2026-08-20):
+        if reviewer feedback exists AFTER the most recent PR-URL comment
+        (see :func:`_check_reviewer_feedback_release` for the exact
+        triggers — non-default author + body length, distinct content
+        key, body-pattern match, or
+        ``reviewDecision == CHANGES_REQUESTED``), the guard is RELEASED
+        so the builder can iterate on the feedback. Without this
+        exception the reviewer-feedback loop is silently broken: a
+        task with an open PR and a review comment sits in `active_pr`
+        until the 24h window elapses, even though the reviewer is
+        explicitly waiting for a new commit.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9526,13 +9958,61 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Reviewer-feedback release (2026-08-20, SPEC-active-pr-guard-reviewer-feedback
+    #    Part B): if reviewer feedback has arrived AFTER the most recent
+    #    PR-URL comment (substantive comment from a non-default author,
+    #    body-pattern match, or reviewDecision == CHANGES_REQUESTED),
+    #    release the guard so the builder can iterate on the feedback.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    has_pr_url = False
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+            has_pr_url = True
+            break
+    if has_pr_url:
+        # _check_reviewer_feedback_release is conservative: returns True
+        # iff reviewer feedback is present. When True, the dispatcher
+        # reads ``_pending_reviewer_branch_override`` to route the new
+        # Builder run to the same branch + head SHA as the most recent
+        # PR-URL comment (per SPEC Part B step #6).
+        #
+        # RELEASING THE GUARD (REVIEWER FEEDBACK IN HERMES-AGENT#2,
+        # 2026-08-21): the release event records the timestamp and
+        # reason of the triggering feedback so subsequent ticks can
+        # skip already-released feedback (preventing the respawn-loop
+        # failure mode) and operators have an audit trail of why a
+        # spawn was allowed.
+        #
+        # ``_pending_reviewer_branch_override`` is the per-dispatch-tick
+        # side-channel set by the release path. Once a release fires
+        # and populates the override dict, re-running ``check_respawn_
+        # guard`` for the same task in the same dispatch tick (e.g.
+        # tests that call ``check_respawn_guard`` manually then
+        # ``dispatch_once``) must NOT re-guard the task — the override
+        # is in flight. We detect that here: if the dict already has an
+        # entry for this task, return None (release) without re-running
+        # the predicate or emitting another audit event.
+        if _pending_reviewer_branch_override.get(task_id) is not None:
+            return None  # Override already populated this tick — release.
+        should_release, feedback_at, feedback_reason = _check_reviewer_feedback_release(
+            conn, task_id
+        )
+        if should_release:
+            _populate_branch_override_for_task(conn, task_id)
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "respawn_released",
+                    {
+                        "reason": "reviewer_feedback",
+                        "feedback_at": int(feedback_at or 0),
+                        "trigger": feedback_reason,
+                    },
+                )
+            return None  # Reviewer feedback — release the guard.
+        return "active_pr"
 
     return None
 
@@ -10232,6 +10712,42 @@ def _dispatch_once_locked(
             continue
         try:
             resolved_branch_name = None
+            # Reviewer-feedback branch override (SPEC-active-pr-guard-reviewer-feedback
+            # Part B step #6): when the guard released because reviewer feedback
+            # arrived, route the new run to the same branch + head SHA as the
+            # most recent PR-URL comment. Falls through to the normal branch-cut
+            # logic if no override is registered for this task.
+            pr_head_sha: Optional[str] = None
+            override = _pending_reviewer_branch_override.pop(claimed.id, None)
+            if override is not None:
+                if claimed.workspace_kind == "worktree":
+                    # The branch the worker should land on; the head SHA is
+                    # surfaced separately via the spawn kwarg so the worker can
+                    # check it out after provisioning the worktree.
+                    pr_branch, pr_head_sha_for_task = override
+                    pr_head_sha = pr_head_sha_for_task
+                    # Re-provision the worktree pointing at this branch, not
+                    # ``wt/<task-id>``. _resolve_worktree_workspace already
+                    # handles "existing checkout of branch X" so we just need
+                    # to seed claimed.branch_name.
+                    claimed = replace(claimed, branch_name=pr_branch)
+                else:
+                    # Non-worktree tasks (dir / scratch) can't honour the
+                    # branch override — the override targets a git worktree
+                    # that dir/scratch workspaces don't provision. Drop it
+                    # (already popped above) and fall through to the normal
+                    # workspace resolution. Log at debug so operators can
+                    # diagnose why a reviewer-feedback release didn't route
+                    # to the PR branch (REVIEWER FEEDBACK IN
+                    # HERMES-AGENT#2, 2026-08-21).
+                    import logging
+                    logging.getLogger("kanban.dispatcher").debug(
+                        "respawn_released: dropping branch override for task %s "
+                        "because workspace_kind=%s does not support git "
+                        "worktrees; falling through to default workspace",
+                        claimed.id, claimed.workspace_kind,
+                    )
+                    pr_head_sha = None
             if claimed.workspace_kind == "worktree":
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
@@ -10249,18 +10765,31 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Reviewer-feedback branch override (SPEC-active-pr-guard-reviewer-feedback
+        # Part B step #6): when the guard released because reviewer feedback
+        # arrived, ``pr_head_sha`` is the head SHA the reviewer last commented
+        # on. Pass it to the spawn fn as a kwarg when the signature accepts
+        # it; ``_default_spawn`` forwards it to the child as
+        # ``HERMES_KANBAN_PR_HEAD_SHA`` so a worktree worker can
+        # ``git reset --hard`` to that exact commit. We pass via kwarg
+        # (not os.environ) because the dispatcher's process env is process-
+        # wide and would leak the SHA from one task's spawn into the next.
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
-            # Introspect the callable and pass `board` only when supported.
+            # Introspect the callable and pass `board` / `pr_head_sha` only
+            # when supported so existing stubs don't break.
             import inspect
             try:
                 sig = inspect.signature(_spawn)
+                kwargs: dict[str, object] = {}
                 if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
+                    kwargs["board"] = board
+                if "pr_head_sha" in sig.parameters and pr_head_sha:
+                    kwargs["pr_head_sha"] = pr_head_sha
+                # type: ignore[arg-type] — kwarg shape varies by spawn_fn impl.
+                pid = _spawn(claimed, str(workspace), **kwargs)  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
@@ -10415,6 +10944,15 @@ def _dispatch_once_locked(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+
+    # Clear reviewer-feedback branch overrides that were not consumed
+    # by a spawn this tick (e.g. spawn failed or task wasn't spawned
+    # for some other reason). Keeps the side-channel clean across
+    # ticks — a release decision only applies to the tick it was made
+    # in. Note: we no longer mutate ``os.environ['HERMES_KANBAN_PR_HEAD_SHA']``
+    # here (it never gets set on the parent process anymore — the SHA flows
+    # through the spawn kwarg), so there's nothing to pop.
+    _pending_reviewer_branch_override.clear()
     return result
 
 
@@ -10711,6 +11249,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    pr_head_sha: Optional[str] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -10723,6 +11262,13 @@ def _default_spawn(
     ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
+
+    ``pr_head_sha`` is the head SHA the reviewer last commented on
+    (SPEC-active-pr-guard-reviewer-feedback Part B step #6). When set,
+    it's forwarded to the worker as ``HERMES_KANBAN_PR_HEAD_SHA`` so the
+    worker can ``git reset --hard`` to that exact commit after worktree
+    provisioning. Backwards compatible: ``None`` / unset keeps the
+    historical behavior (no PR-head-SHA env var).
     """
     import subprocess
     if not task.assignee:
@@ -10787,6 +11333,17 @@ def _default_spawn(
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
+    # Reviewer-feedback branch override (SPEC-active-pr-guard-reviewer-feedback
+    # Part B step #6): the dispatcher passes (branch, head_sha) through the
+    # spawn call; the branch flows through via task.branch_name above, and
+    # the head SHA arrives as the ``pr_head_sha`` kwarg. Forward it into the
+    # child's env so a worktree worker can ``git reset --hard
+    # $HERMES_KANBAN_PR_HEAD_SHA`` after provisioning for byte-exact replay.
+    # We accept the kwarg rather than reading os.environ because the
+    # dispatcher's process env is process-wide and would leak the SHA from
+    # one task's spawn into the next task's spawn in the same tick.
+    if pr_head_sha:
+        env["HERMES_KANBAN_PR_HEAD_SHA"] = pr_head_sha
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:

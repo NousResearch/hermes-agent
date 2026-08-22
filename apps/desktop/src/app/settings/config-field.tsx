@@ -249,18 +249,28 @@ function ListField({
     }
   }, [normalizedValue])
 
+  const commitDraft = () => {
+    const parsed = parseListFieldDraft(draft)
+    setDraft(parsed.join(', '))
+    onChange(parsed)
+  }
+
   return (
     <Input
       className={CONTROL_TEXT}
       onBlur={() => {
         focusedRef.current = false
-        const parsed = parseListFieldDraft(draft)
-        setDraft(parsed.join(', '))
-        onChange(parsed)
+        commitDraft()
       }}
       onChange={e => setDraft(e.target.value)}
       onFocus={() => {
         focusedRef.current = true
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          commitDraft()
+          e.currentTarget.blur()
+        }
       }}
       placeholder={placeholder}
       value={draft}

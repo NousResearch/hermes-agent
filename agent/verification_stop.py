@@ -14,6 +14,9 @@ from typing import Any, Iterable
 
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
+VERIFY_ON_STOP_CONTINUATION_PREFIX = (
+    "[Internal runtime continuation — not a new human request."
+)
 
 # Non-code file extensions whose edits carry no verifiable runtime behavior:
 # documentation, prose, and data/markup that no test/build exercises. When a
@@ -303,12 +306,17 @@ def build_verify_on_stop_nudge(
             )
 
     return (
-        "[System: You edited code in this turn, but the workspace does not have "
+        f"{VERIFY_ON_STOP_CONTINUATION_PREFIX} Preserve the "
+        "original human request as the active task while completing this check.\n\n"
+        "System: You edited code in this turn, but the workspace does not have "
         "fresh passing verification evidence yet.\n\n"
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
         f"{command_instruction} If verification is not possible, explain the "
-        "concrete blocker instead of claiming the work is fully verified."
+        "concrete blocker instead of claiming the work is fully verified. After "
+        "the check, return a complete user-facing final response to the original "
+        "human request. A verification-only summary, receipt, or tool log is not "
+        "a complete answer."
         f"{addendum}]"
     )
 

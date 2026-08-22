@@ -76,6 +76,7 @@ from agent.model_metadata import (
     estimate_request_tokens_rough,
 )
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.verification_stop import VERIFY_ON_STOP_CONTINUATION_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -1919,6 +1920,7 @@ def conversation_history_after_compression(
 
 
 _SYNTHETIC_USER_PREFIXES = (
+    VERIFY_ON_STOP_CONTINUATION_PREFIX,
     "[System: Your previous response was truncated",
     "[System: The previous response was cut off",
     "[System: Your previous tool call",

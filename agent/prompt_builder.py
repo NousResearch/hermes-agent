@@ -423,6 +423,26 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# Universal conversation-continuity guidance for tool-capable sessions. The
+# runtime can surface real assistant commentary between tool rounds, but models
+# need an explicit contract to use that channel and to keep user-role runtime
+# scaffolding from becoming the apparent human task.
+CONVERSATION_CONTINUITY_GUIDANCE = (
+    "# Conversation continuity\n"
+    "When starting a multi-step tool task, before the first tool call send a "
+    "concise user-visible checkpoint stating the goal, first concrete step, and "
+    "safety boundary, plus when the next checkpoint will occur. During long "
+    "runs, update the user after meaningful milestones and before context "
+    "compression; internal todo changes and tool logs do not count as user updates.\n"
+    "Runtime-generated user-role notices (verification, compression, todo, or "
+    "background-process notices) are operational scaffolding, not a new human "
+    "request. Handle them without replacing the last genuine human request.\n"
+    "Before finalizing, verify that the original user request was directly "
+    "answered. After an internal verification or continuation, return a complete "
+    "user-facing answer that integrates the result; verification-only output, "
+    "receipts, or tool logs are incomplete."
+)
+
 # Universal parallel-tool-call guidance — applied to ALL models.
 #
 # Why this matters for cost: every assistant turn resends the entire

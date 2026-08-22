@@ -248,3 +248,24 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+
+
+def test_verification_nudge_preserves_the_original_human_request(tmp_path, monkeypatch):
+    """The internal verifier must not become the user's apparent new task."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+    )
+
+    assert nudge is not None
+    lower = nudge.lower()
+    assert "internal runtime continuation" in lower
+    assert "not a new human request" in lower
+    assert "original human request" in lower
+    assert "complete user-facing final response" in lower
+    assert "verification-only" in lower

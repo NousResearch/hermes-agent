@@ -79,6 +79,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "model_override": t.model_override,
         "provider_override": t.provider_override,
         "session_id": t.session_id,
+        "approval_grant": t.approval_grant,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
     }
@@ -472,6 +473,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
     )
+
+    # --- approval ---
+    p_approval = sub.add_parser(
+        "approval",
+        help="Grant or revoke a short-lived, task-scoped worker approval",
+    )
+    approval_sub = p_approval.add_subparsers(
+        dest="approval_action", required=True
+    )
+    p_approval_grant = approval_sub.add_parser(
+        "grant", help="Attach a typed approval envelope from a JSON file"
+    )
+    p_approval_grant.add_argument("task_id")
+    p_approval_grant.add_argument(
+        "--file", required=True, metavar="PATH", help="Typed approval JSON envelope"
+    )
+    p_approval_grant.add_argument("--json", action="store_true")
+    p_approval_revoke = approval_sub.add_parser(
+        "revoke", help="Immediately revoke one matching task approval"
+    )
+    p_approval_revoke.add_argument("task_id")
+    p_approval_revoke.add_argument("--approval-id", required=True)
+    p_approval_revoke.add_argument(
+        "--revoked-by", default=None, help="Audit actor (defaults to active profile)"
+    )
+    p_approval_revoke.add_argument("--reason", required=True)
+    p_approval_revoke.add_argument("--json", action="store_true")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1112,6 +1140,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
+            "approval": _cmd_approval,
             "assign":   _cmd_assign,
             "set-model": _cmd_set_model,
             "reclaim":  _cmd_reclaim,
@@ -1158,7 +1187,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 2
         try:
             return int(handler(args) or 0)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, PermissionError) as exc:
             print(f"kanban: {exc}", file=sys.stderr)
             return 1
 
@@ -1166,6 +1195,52 @@ def kanban_command(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+def _cmd_approval(args: argparse.Namespace) -> int:
+    """Manage operator-issued task grants; never exposed as a model tool."""
+    from hermes_cli import kanban_approval as ka
+
+    action = getattr(args, "approval_action", None)
+    with kb.connect() as conn:
+        if action == "grant":
+            path = Path(args.file).expanduser()
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except OSError as exc:
+                raise ValueError(f"could not read approval file {path}: {exc}") from exc
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"approval file is not valid JSON: {exc}") from exc
+            approval = ka.grant_task_approval(conn, args.task_id, raw)
+            result = {"ok": True, "task_id": args.task_id, "approval": approval}
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False))
+            else:
+                operations = ", ".join(approval["allowed_operations"])
+                print(
+                    f"Granted {approval['approval_id']} to {args.task_id} "
+                    f"until {approval['expires_at']} ({operations})"
+                )
+            return 0
+        if action == "revoke":
+            revoked = ka.revoke_task_approval(
+                conn,
+                args.task_id,
+                approval_id=args.approval_id,
+                revoked_by=args.revoked_by or _profile_author(),
+                reason=args.reason,
+            )
+            result = {"ok": revoked, "task_id": args.task_id, "revoked": revoked}
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False))
+            elif revoked:
+                print(f"Revoked {args.approval_id} from {args.task_id}")
+            else:
+                print(
+                    f"kanban approval: no matching active grant on {args.task_id}",
+                    file=sys.stderr,
+                )
+            return 0 if revoked else 1
+    raise ValueError(f"unknown approval action {action!r}")
 
 def _profile_author() -> str:
     """Best-effort author name for an interactive CLI call."""
@@ -1184,6 +1259,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
     "create",
     "swarm",
+    "approval",
     "assign",
     "reclaim",
     "reassign",
@@ -1226,6 +1302,8 @@ _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
 
 def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     action = getattr(args, "kanban_action", None)
+    if action == "approval" and os.environ.get("HERMES_KANBAN_TASK"):
+        return True
     if action == "boards":
         boards_action = getattr(args, "boards_action", None) or "list"
         if boards_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:

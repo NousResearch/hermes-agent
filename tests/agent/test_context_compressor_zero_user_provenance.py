@@ -18,8 +18,10 @@ from agent.context_compressor import (
 )
 from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
+    _is_real_user_message,
     compress_context,
 )
+from agent.verification_stop import VERIFY_ON_STOP_CONTINUATION_PREFIX
 from hermes_state import SessionDB
 from tools.process_registry import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
@@ -218,6 +220,25 @@ def test_max_iterations_nudge_is_synthetic_not_actionable():
     assert ContextCompressor._is_synthetic_compression_user_turn(human) is False
     assert ContextCompressor._transcript_has_real_user_turn([nudge]) is False
     assert ContextCompressor._transcript_has_real_user_turn([human, nudge]) is True
+
+
+def test_projected_verify_on_stop_nudge_is_synthetic_not_actionable():
+    """The verifier marker remains synthetic after metadata is projected out."""
+    nudge = {
+        "role": "user",
+        "content": f"{VERIFY_ON_STOP_CONTINUATION_PREFIX}\n\nSystem: Run tests.]",
+    }
+
+    assert ContextCompressor._is_synthetic_compression_user_turn(nudge) is True
+    assert ContextCompressor._transcript_has_real_user_turn([nudge]) is False
+    assert _is_real_user_message(nudge) is False
+
+    human = {
+        "role": "user",
+        "content": f"Please quote {VERIFY_ON_STOP_CONTINUATION_PREFIX}",
+    }
+    assert ContextCompressor._is_synthetic_compression_user_turn(human) is False
+    assert _is_real_user_message(human) is True
 
 
 def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):

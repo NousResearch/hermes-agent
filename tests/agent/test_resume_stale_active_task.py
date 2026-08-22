@@ -8,8 +8,9 @@ the user asked about an unrelated task B. The model answered with A because
 the handoff's resume directive outranked the fresh ask.
 
 The structural fix lives in ``SUMMARY_PREFIX``: the handoff is framed as
-reference-only and the latest user message explicitly *wins* on conflict, with
-named reverse-signal verbs. Two invariants guard the resume path specifically:
+reference-only and the latest genuine human message explicitly *wins* on
+conflict, with named reverse-signal verbs. Two invariants guard the resume path
+specifically:
 
   1. A handoff persisted under the OLD (conflicting) prefix is re-normalized to
      the CURRENT prefix when it is re-compacted on a resumed lineage — so a
@@ -48,10 +49,9 @@ _OLD_CONFLICTING_PREFIX = (
 
 
 def test_latest_message_wins_over_inherited_active_task():
-    """The handoff must explicitly privilege the latest user message over a
-    stale historical task snapshot — the core #35344 contract."""
+    """The handoff privileges human intent over stale history and scaffolding."""
     lower = SUMMARY_PREFIX.lower()
-    assert "latest user message" in lower
+    assert "latest genuine human-authored user message" in lower
     assert HISTORICAL_TASK_HEADING.lower() in lower
     # Conflict-resolution must be explicit, not implied.
     assert "wins" in lower or "supersede" in lower
@@ -61,7 +61,10 @@ def test_latest_message_wins_over_inherited_active_task():
     assert "you may use the summary as background" not in lower
     assert "topic overlap" in lower
     # #80622: empty-after-handoff must not resume historical work.
-    assert "if no user message appears after this summary" in lower
+    assert (
+        "if no genuine human-authored user message appears after this summary"
+        in lower
+    )
 
 
 

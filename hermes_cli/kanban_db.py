@@ -1134,6 +1134,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Optional short-lived, operation-allowlisted approval grant. Stored as
+    # JSON in SQLite and revalidated against the active task/run/claim on every
+    # use; the worker environment carries only its approval_id.
+    approval_grant: Optional[dict] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -1154,6 +1158,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        approval_grant_value: Optional[dict] = None
+        if "approval_grant" in keys and row["approval_grant"]:
+            try:
+                parsed_grant = json.loads(row["approval_grant"])
+                if isinstance(parsed_grant, dict):
+                    approval_grant_value = parsed_grant
+            except Exception:
+                approval_grant_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -1227,6 +1239,7 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            approval_grant=approval_grant_value,
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
             ),
@@ -1405,11 +1418,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- goals-engine default.
     goal_max_turns       INTEGER,
     -- Originating chat/agent session id when the task was created from
-    -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
-    -- for tasks created from the CLI, dashboard, or any path that doesn't
+    -- inside an agent loop that propagated ``HERMES_SESSION_ID`` (e.g. ACP). NULL
+    -- for tasks created from the CLI, the dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Optional task-scoped approval grant. JSON is validated on grant and on
+    -- every consumption; NULL keeps the historical fail-closed worker mode.
+    approval_grant       TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2661,6 +2677,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # creation path that doesn't set the env var (CLI, dashboard).
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
+        )
+
+    if "approval_grant" not in cols:
+        # Existing tasks remain unapproved. A grant is always an explicit,
+        # short-lived operator action and is never synthesized by migration.
+        _add_column_if_missing(
+            conn, "tasks", "approval_grant", "approval_grant TEXT"
         )
 
     if "block_kind" not in cols:
@@ -4725,6 +4748,15 @@ def claim_task(
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
         )
+        from hermes_cli.kanban_approval import bind_task_approval_to_run
+
+        bind_task_approval_to_run(
+            conn,
+            task_id,
+            run_id=run_id,
+            claim_lock=lock,
+            now=now,
+        )
         claimed = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
@@ -4823,6 +4855,15 @@ def claim_review_task(
             {"lock": lock, "expires": expires, "run_id": run_id,
              "source_status": "review"},
             run_id=run_id,
+        )
+        from hermes_cli.kanban_approval import bind_task_approval_to_run
+
+        bind_task_approval_to_run(
+            conn,
+            task_id,
+            run_id=run_id,
+            claim_lock=lock,
+            now=now,
         )
         return get_task(conn, task_id)
 
@@ -10734,6 +10775,9 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # Never inherit a parent worker's scoped grant. The dispatcher may install
+    # only the id validated for THIS claimed task below.
+    env.pop("HERMES_KANBAN_APPROVAL_ID", None)
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.
@@ -10791,6 +10835,11 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    from hermes_cli.kanban_approval import active_grant_id_for_task
+
+    approval_id = active_grant_id_for_task(task, now=int(time.time()))
+    if approval_id:
+        env["HERMES_KANBAN_APPROVAL_ID"] = approval_id
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
@@ -11001,6 +11050,95 @@ def run_daemon(
 # Worker context builder (what a spawned worker sees)
 # ---------------------------------------------------------------------------
 
+def worker_context_history_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, Any]:
+    """Return the canonical run/handoff/history inputs rendered for a worker.
+
+    Approval scope hashing consumes this same snapshot. Keep instruction-bearing
+    DB input in this helper rather than adding an independent query to
+    ``build_worker_context``; otherwise a prompt mutation could escape a bound
+    approval digest.
+    """
+    task = get_task(conn, task_id)
+    if not task:
+        raise ValueError(f"unknown task {task_id}")
+
+    all_prior = [run for run in list_runs(conn, task_id) if run.ended_at is not None]
+    prior_omitted = max(0, len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS)
+    shown_prior = all_prior[-_CTX_MAX_PRIOR_ATTEMPTS:]
+    prior_attempts = [
+        {
+            "id": run.id,
+            "profile": run.profile,
+            "status": run.status,
+            "started_at": run.started_at,
+            "ended_at": run.ended_at,
+            "outcome": run.outcome,
+            "summary": run.summary,
+            "metadata": run.metadata,
+            "error": run.error,
+        }
+        for run in shown_prior
+    ]
+
+    parent_handoffs: list[dict[str, Any]] = []
+    parent_rows = conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        (task_id,),
+    ).fetchall()
+    for parent_row in parent_rows:
+        parent = get_task(conn, parent_row["parent_id"])
+        if not parent or parent.status != "done":
+            continue
+        completed_runs = [
+            run for run in list_runs(conn, parent.id) if run.outcome == "completed"
+        ]
+        completed_runs.sort(key=lambda run: run.started_at, reverse=True)
+        run = completed_runs[0] if completed_runs else None
+        parent_handoffs.append(
+            {
+                "task_id": parent.id,
+                "task_result": parent.result,
+                "task_completed_at": parent.completed_at,
+                "run": (
+                    {
+                        "id": run.id,
+                        "started_at": run.started_at,
+                        "ended_at": run.ended_at,
+                        "summary": run.summary,
+                        "metadata": run.metadata,
+                    }
+                    if run is not None
+                    else None
+                ),
+            }
+        )
+
+    role_history: list[dict[str, Any]] = []
+    if task.assignee:
+        role_history = [
+            {key: row[key] for key in row.keys()}
+            for row in conn.execute(
+                "SELECT t.id, t.title, r.summary, r.ended_at "
+                "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
+                "WHERE r.profile = ? AND r.task_id != ? "
+                "  AND r.outcome = 'completed' "
+                "ORDER BY r.ended_at DESC LIMIT 5",
+                (task.assignee, task_id),
+            ).fetchall()
+        ]
+
+    return {
+        "schema_version": 1,
+        "prior_attempts_omitted": prior_omitted,
+        "prior_attempts": prior_attempts,
+        "parent_handoffs": parent_handoffs,
+        "role_history": role_history,
+    }
+
+
 def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     """Return the full text a worker should read to understand its task.
 
@@ -11027,6 +11165,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
+    history_snapshot = worker_context_history_snapshot(conn, task_id)
 
     # Single clock reading shared by every relative-age stamp below, so all
     # ages in one rendering are consistent ("3h ago" / "3h ago", not drifting
@@ -11092,16 +11231,9 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
-    # list_runs returns ascending by started_at; "most recent" = last N
-    if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
-        omitted = len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS
-        shown = all_prior[-_CTX_MAX_PRIOR_ATTEMPTS:]
-        first_shown_idx = omitted + 1
-    else:
-        omitted = 0
-        shown = all_prior
-        first_shown_idx = 1
+    omitted = history_snapshot["prior_attempts_omitted"]
+    shown = history_snapshot["prior_attempts"]
+    first_shown_idx = omitted + 1
     if shown:
         lines.append("## Prior attempts on this task")
         if omitted:
@@ -11111,19 +11243,21 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for offset, run in enumerate(shown):
             idx = first_shown_idx + offset
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(run.started_at))
-            age = _relative_age(run.started_at, _now)
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(run["started_at"]))
+            age = _relative_age(run["started_at"], _now)
             ts_disp = f"{ts}, {age}" if age else ts
-            profile = run.profile or "(unknown)"
-            outcome = run.outcome or run.status
+            profile = run["profile"] or "(unknown)"
+            outcome = run["outcome"] or run["status"]
             lines.append(f"### Attempt {idx} — {outcome} ({profile}, {ts_disp})")
-            if run.summary and run.summary.strip():
-                lines.append(_cap(run.summary))
-            if run.error and run.error.strip():
-                lines.append(f"_error_: {_cap(run.error)}")
-            if run.metadata:
+            if run["summary"] and run["summary"].strip():
+                lines.append(_cap(run["summary"]))
+            if run["error"] and run["error"].strip():
+                lines.append(f"_error_: {_cap(run['error'])}")
+            if run["metadata"]:
                 try:
-                    meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
+                    meta_str = json.dumps(
+                        run["metadata"], ensure_ascii=False, sort_keys=True
+                    )
                     lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
                     pass
@@ -11132,54 +11266,43 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Parents: prefer the most-recent 'completed' run's summary + metadata,
     # fall back to ``task.result`` when no run rows exist (legacy DBs,
     # or tasks completed before the runs table landed).
-    parent_rows = conn.execute(
-        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
-        (task_id,),
-    ).fetchall()
-    parent_ids = [r["parent_id"] for r in parent_rows]
-
-    if parent_ids:
-        wrote_header = False
-        for pid in parent_ids:
-            pt = get_task(conn, pid)
-            if not pt or pt.status != "done":
-                continue
-            runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
-            runs.sort(key=lambda r: r.started_at, reverse=True)
-            run = runs[0] if runs else None
-
-            if not wrote_header:
-                lines.append("## Parent task results")
-                lines.append(
-                    "_Handoffs from upstream tasks, captured when each parent "
-                    "completed (see age below). These are point-in-time "
-                    "snapshots, not live state — if a result drives your "
-                    "current work and it's not recent, re-verify against the "
-                    "source before acting on it as current._"
-                )
-                wrote_header = True
+    parent_handoffs = history_snapshot["parent_handoffs"]
+    if parent_handoffs:
+        lines.append("## Parent task results")
+        lines.append(
+            "_Handoffs from upstream tasks, captured when each parent "
+            "completed (see age below). These are point-in-time "
+            "snapshots, not live state — if a result drives your "
+            "current work and it's not recent, re-verify against the "
+            "source before acting on it as current._"
+        )
+        for parent in parent_handoffs:
+            pid = parent["task_id"]
+            run = parent["run"]
 
             # When did this parent's result get produced? Prefer the
             # completed run's end time; fall back to the task's completed_at.
             done_ts = None
-            if run is not None and getattr(run, "ended_at", None):
-                done_ts = run.ended_at
-            elif pt.completed_at:
-                done_ts = pt.completed_at
+            if run is not None and run["ended_at"]:
+                done_ts = run["ended_at"]
+            elif parent["task_completed_at"]:
+                done_ts = parent["task_completed_at"]
             age = _relative_age(done_ts, _now)
             lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
 
             body_lines: list[str] = []
-            if run is not None and run.summary and run.summary.strip():
-                body_lines.append(_cap(run.summary))
-            elif pt.result:
-                body_lines.append(_cap(pt.result))
+            if run is not None and run["summary"] and run["summary"].strip():
+                body_lines.append(_cap(run["summary"]))
+            elif parent["task_result"]:
+                body_lines.append(_cap(parent["task_result"]))
             else:
                 body_lines.append("(no result recorded)")
 
-            if run is not None and run.metadata:
+            if run is not None and run["metadata"]:
                 try:
-                    meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
+                    meta_str = json.dumps(
+                        run["metadata"], ensure_ascii=False, sort_keys=True
+                    )
                     body_lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
                     pass
@@ -11192,27 +11315,19 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # the user to wire anything into SOUL.md / MEMORY.md. Bounded to the
     # most recent 5 completed runs, excluding this task so the retry
     # section above isn't duplicated. Safe on assignee=None (skipped).
-    if task.assignee:
-        role_rows = conn.execute(
-            "SELECT t.id, t.title, r.summary, r.ended_at "
-            "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
-            "WHERE r.profile = ? AND r.task_id != ? "
-            "  AND r.outcome = 'completed' "
-            "ORDER BY r.ended_at DESC LIMIT 5",
-            (task.assignee, task_id),
-        ).fetchall()
-        if role_rows:
-            lines.append(f"## Recent work by @{task.assignee}")
-            for row in role_rows:
-                ts = time.strftime(
-                    "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
-                )
-                age = _relative_age(row["ended_at"], _now)
-                ts_disp = f"{ts}, {age}" if age else ts
-                s = (row["summary"] or "").strip().splitlines()
-                first = s[0][:200] if s else "(no summary)"
-                lines.append(f"- {row['id']} — {row['title']} ({ts_disp}): {first}")
-            lines.append("")
+    role_rows = history_snapshot["role_history"]
+    if role_rows:
+        lines.append(f"## Recent work by @{task.assignee}")
+        for row in role_rows:
+            ts = time.strftime(
+                "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
+            )
+            age = _relative_age(row["ended_at"], _now)
+            ts_disp = f"{ts}, {age}" if age else ts
+            s = (row["summary"] or "").strip().splitlines()
+            first = s[0][:200] if s else "(no summary)"
+            lines.append(f"- {row['id']} — {row['title']} ({ts_disp}): {first}")
+        lines.append("")
 
     # Comments: cap at the most-recent _CTX_MAX_COMMENTS so
     # comment-storm tasks don't blow out the worker's prompt. Older

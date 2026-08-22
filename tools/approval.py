@@ -290,6 +290,68 @@ def _is_single_query_approval_context() -> bool:
         return env_var_enabled("HERMES_SINGLE_QUERY_SESSION")
 
 
+def _consume_kanban_task_approval(
+    operation_keys: list[str],
+    *,
+    action_class: str,
+) -> dict | None:
+    """Consume a task/run-scoped Kanban grant, failing closed on any error.
+
+    The child environment is only a routing hint. ``consume_task_approval``
+    re-reads and receipts the authoritative task + run rows before returning a
+    grant, so a fabricated/stale env value never authorizes an operation.
+    """
+    if not _is_single_query_approval_context():
+        return None
+    if not os.environ.get("HERMES_KANBAN_APPROVAL_ID"):
+        return None
+    try:
+        from hermes_cli.kanban_approval import consume_task_approval
+
+        return consume_task_approval(operation_keys, action_class=action_class)
+    except Exception:
+        logger.warning("Kanban delegated approval failed closed", exc_info=True)
+        return None
+
+
+def _delegated_approval_result(receipt: dict) -> dict:
+    """Return the common tool-facing result for an audited delegated grant."""
+    return {
+        "approved": True,
+        "message": None,
+        "delegated_approved": True,
+        "approval_id": receipt.get("approval_id"),
+        "change_id": receipt.get("change_id"),
+    }
+
+
+def _kanban_command_operation_keys(command: str) -> list[str] | None:
+    """Return every recoverable warning key a command would need approved.
+
+    This preflight runs only when a Kanban grant id is present. Requiring the
+    dangerous-pattern key *and* the Tirith key prevents a grant for one guard
+    from silently bypassing a second guard on the same command. Scanner errors
+    fail closed for delegated approval; the normal guard then decides using
+    its existing configured policy.
+    """
+    operation_keys: list[str] = []
+    is_dangerous, pattern_key, _description = detect_dangerous_command(command)
+    if is_dangerous and pattern_key:
+        operation_keys.append(pattern_key)
+    try:
+        from tools.tirith_security import check_command_security
+
+        tirith_result = check_command_security(command)
+    except Exception:
+        logger.warning("Kanban approval preflight could not run Tirith", exc_info=True)
+        return None
+    if tirith_result.get("action") in {"block", "warn"}:
+        findings = tirith_result.get("findings") or []
+        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        operation_keys.append(f"tirith:{rule_id}")
+    return list(dict.fromkeys(operation_keys))
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -3472,6 +3534,12 @@ def _run_approval_gate(
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
+    delegated = _consume_kanban_task_approval(
+        [pattern_key], action_class="command"
+    )
+    if delegated is not None:
+        return _delegated_approval_result(delegated)
+
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
@@ -4396,6 +4464,17 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
+    if _is_single_query_approval_context() and os.environ.get(
+        "HERMES_KANBAN_APPROVAL_ID"
+    ):
+        delegated_operations = _kanban_command_operation_keys(command)
+        if delegated_operations:
+            delegated = _consume_kanban_task_approval(
+                delegated_operations, action_class="command"
+            )
+            if delegated is not None:
+                return _delegated_approval_result(delegated)
+
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
@@ -5026,6 +5105,12 @@ def check_execute_code_guard(code: str, env_type: str,
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
+
+    delegated = _consume_kanban_task_approval(
+        ["execute_code"], action_class="command"
+    )
+    if delegated is not None:
+        return _delegated_approval_result(delegated)
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")

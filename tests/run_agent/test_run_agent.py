@@ -1271,6 +1271,15 @@ class TestTaskCompletionGuidance:
         prompt = agent._build_system_prompt()
         assert TASK_COMPLETION_GUIDANCE in prompt
 
+    def test_default_injects_conversation_continuity_guidance(self):
+        """Every tool-capable model gets the user-communication contract."""
+        from agent.prompt_builder import CONVERSATION_CONTINUITY_GUIDANCE
+
+        agent = self._make_agent(model="anthropic/claude-opus-4.8")
+        prompt = agent._build_system_prompt()
+
+        assert CONVERSATION_CONTINUITY_GUIDANCE in prompt
+
 
 
 

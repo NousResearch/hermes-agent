@@ -25,6 +25,7 @@ from agent.prompt_builder import (
     _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
     drain_truncation_warnings,
+    CONVERSATION_CONTINUITY_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -44,6 +45,31 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_conversation_continuity_requires_user_visible_start_checkpoint(self):
+        lower = CONVERSATION_CONTINUITY_GUIDANCE.lower()
+        assert "before the first tool call" in lower
+        assert "goal" in lower
+        assert "first concrete step" in lower
+        assert "safety boundary" in lower
+        assert "next checkpoint" in lower
+
+    def test_conversation_continuity_requires_long_run_and_compaction_updates(self):
+        lower = CONVERSATION_CONTINUITY_GUIDANCE.lower()
+        assert "meaningful milestones" in lower
+        assert "before context compression" in lower
+
+    def test_conversation_continuity_keeps_runtime_scaffolding_internal(self):
+        lower = CONVERSATION_CONTINUITY_GUIDANCE.lower()
+        assert "runtime-generated" in lower
+        assert "not a new human request" in lower
+        assert "last genuine human request" in lower
+
+    def test_conversation_continuity_requires_complete_closeout(self):
+        lower = CONVERSATION_CONTINUITY_GUIDANCE.lower()
+        assert "tool logs" in lower
+        assert "verification-only" in lower
+        assert "directly answered" in lower
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE

@@ -764,6 +764,9 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
+hermes kanban approval grant <id> --file grant.json    # attach a scoped approval envelope
+hermes kanban approval revoke <id>                     # revoke it immediately
+        --approval-id <id> --reason "..." [--revoked-by <actor>] [--json]
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
@@ -786,6 +789,55 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
+
+### Relaying one user approval to a Kanban worker
+
+Kanban workers run as single-query processes and normally have no human at stdin. Their recoverable terminal/tool warnings therefore follow `approvals.single_query_mode` (fail-closed by default). Do **not** switch an entire worker profile to `approve` merely because a user already approved one delegated batch: that turns a scoped decision into a profile-wide permission.
+
+Instead, an operator/orchestrator can attach a short-lived, operation-allowlisted envelope to one assigned, idle task:
+
+```json
+{
+  "version": 1,
+  "approval_id": "apr-review-batch-001",
+  "change_id": "chg-review-batch-001",
+  "approver": "human:alice",
+  "actor": "reviewer",
+  "target": "review-worker",
+  "segment_id": "source-code-ci",
+  "action_class": "command",
+  "allowed_operations": [
+    "script execution via -e/-c flag"
+  ],
+  "valid_from": 1786900000,
+  "expires_at": 1786900600,
+  "rollback_ref": "hermes kanban approval revoke <task-id>"
+}
+```
+
+```bash
+hermes kanban approval grant t_abcd1234 --file grant.json --json
+hermes kanban unblock t_abcd1234
+
+# Immediate revocation (also affects an already-running worker's next call):
+hermes kanban approval revoke t_abcd1234 \
+  --approval-id apr-review-batch-001 \
+  --revoked-by orchestrator \
+  --reason "review complete"
+```
+
+Important contract details:
+
+- The envelope TTL is at most **30 minutes** and must already be active when attached.
+- `actor` must exactly match the task assignee. At use time Hermes also verifies the current task id, run id, claim lock, actor/profile, action class, expiry, and exact operation keys against the authoritative board database.
+- The first successful claim atomically binds the grant to that exact run id and claim lock. A retry or replacement run cannot reuse it; the operator must revoke and issue a fresh bounded grant.
+- Operation keys are the existing Hermes dangerous-pattern keys (or `tirith:<rule-id>` / plugin rule keys) returned by the approval guard. Safe commands that produce no recoverable warning need no entry. Every warning on a mixed command must be listed.
+- The CLI generates a `scope_digest` over worker-relevant task fields, comments, attachment bytes, prior attempts, completed parent-run handoffs, and the bounded recent role history. The digest and worker renderer consume the same canonical history snapshot. Editing that context after the grant invalidates it; the environment carries only the expected `approval_id`, never the mutable envelope.
+- Hardline blocks, `approvals.deny`, protected instruction-file rules, missing/expired/mismatched grants, and operations outside the allowlist remain fail-closed. This is not `--yolo`.
+- `kanban approval` is an operator surface, not a model tool. Dispatcher/delegation child contexts are explicitly forbidden from granting or revoking approvals, so a worker cannot self-escalate. Child tasks never inherit a parent's grant.
+- Grant, run binding, consumption, and revocation emit `approval_granted`, `approval_bound`, `approval_consumed`, and `approval_revoked` events without storing raw command text.
+
+The board still follows its documented trusted-local-user model: this prevents workflow-level scope drift and duplicate human prompts, but it is not an OS sandbox against another process running as the same Unix user.
 
 ### Concurrency, scheduling, and child promotion config
 
@@ -1126,6 +1178,10 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `created` | `{assignee, status, parents, tenant}` | Task inserted. `run_id` is `NULL`. |
 | `promoted` | — | `todo → ready` because all parents hit `done`. `run_id` is `NULL`. |
 | `claimed` | `{lock, expires, run_id}` | Dispatcher atomically claimed a `ready` task for spawn. |
+| `approval_granted` | `{approval_id, change_id, actor, action_class, allowed_operations, expires_at, scope_digest}` | Operator attached a typed, short-lived grant to an idle assigned task. `run_id` is `NULL`. |
+| `approval_bound` | `{approval_id, change_id, run_id}` | Dispatcher atomically bound the grant to the first exact run and claim. A retry cannot reuse it. |
+| `approval_consumed` | `{approval_id, change_id, task_id, run_id, operations}` | A worker operation matched the active task/run/claim/actor/scope binding and was approved without another user prompt. Raw command text is not stored. |
+| `approval_revoked` | `{approval_id, change_id, revoked_by, reason, revoked_at}` | Operator revoked the grant. A running worker observes this on its next approval-gated call. |
 | `completed` | `{result_len, summary?}` | Worker wrote `--result` / `--summary` and task hit `done`. `summary` is the first-line handoff (400-char cap); full version lives on the run row. If `complete_task` is called on a never-claimed task with handoff fields, a zero-duration run is synthesized so `run_id` still points at something. |
 | `blocked` | `{reason, kind, recurrences}` | Worker or human flipped the task to `blocked`. `kind` is the typed block reason (`needs_input`, `capability`, `transient`, or `null` for a generic block); `recurrences` is the unblock-loop counter. Synthesizes a zero-duration run when called on a never-claimed task with `--reason`. |
 | `dependency_wait` | `{reason, kind}` | Worker blocked with `kind=dependency` — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked`. No human needed. |

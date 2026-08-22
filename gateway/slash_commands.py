@@ -916,6 +916,10 @@ class GatewaySlashCommandsMixin:
                                 to_go=f"{threshold - used:,}",
                             )
                         )
+                    from agent.context_compressor import compression_threshold_floor_notice
+                    floor_notice = compression_threshold_floor_notice(ctx)
+                    if floor_notice:
+                        lines.append(floor_notice)
                 compressions = getattr(ctx, "compression_count", 0) or 0
                 lines.append(t("gateway.context.compressions", count=compressions))
                 if compressions:

@@ -2993,6 +2993,10 @@ def init_agent(
             if _cap and _cap > 0:
                 _cap_note = f" (capped at {_cap:,} tokens)"
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
+            from agent.context_compressor import compression_threshold_floor_notice
+            _floor_notice = compression_threshold_floor_notice(agent.context_compressor)
+            if _floor_notice:
+                print(f"  {_floor_notice}")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # Notice with the exact opt-back-out command. Printed inline at startup

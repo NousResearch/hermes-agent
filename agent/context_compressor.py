@@ -1232,6 +1232,18 @@ _SMALL_CTX_WINDOW_LIMIT = 512_000
 _SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
+def compression_threshold_floor_notice(compressor: Any) -> str:
+    """Describe a small-window threshold raise for session-aware surfaces."""
+    if not getattr(compressor, "threshold_floor_applied", False):
+        return ""
+    requested = float(getattr(compressor, "requested_threshold_percent", 0) or 0)
+    effective = float(getattr(compressor, "threshold_percent", 0) or 0)
+    return (
+        f"Requested threshold: {requested * 100:.0f}%; raised to "
+        f"{effective * 100:.0f}% by the sub-512K context safety floor."
+    )
+
+
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 
 # MEDIA delivery directives must not reach the summarizer — if one leaks into
@@ -2931,6 +2943,20 @@ class ContextCompressor(ContextEngine):
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
+
+    @property
+    def requested_threshold_percent(self) -> float:
+        """Return the active model's threshold before the small-window floor."""
+        return getattr(self, "_base_threshold_percent", self.threshold_percent)
+
+    @property
+    def threshold_floor_applied(self) -> bool:
+        """Whether the small-window safeguard raised the requested threshold."""
+        requested = self.requested_threshold_percent
+        return (
+            self.context_length < _SMALL_CTX_WINDOW_LIMIT
+            and self.threshold_percent > requested + 1e-9
+        )
 
     @staticmethod
     def _compute_threshold_tokens(

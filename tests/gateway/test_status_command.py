@@ -541,6 +541,49 @@ def _stub_agent(**overrides) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
+async def test_context_command_explains_small_window_threshold_floor():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-threshold-floor",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    compressor = SimpleNamespace(
+        last_prompt_tokens=105_352,
+        context_length=262_144,
+        threshold_tokens=196_608,
+        threshold_percent=0.75,
+        requested_threshold_percent=0.60,
+        threshold_floor_applied=True,
+        compression_count=0,
+        _last_compression_savings_pct=None,
+    )
+    runner._running_agents[session_entry.session_key] = _stub_agent(
+        context_compressor=compressor,
+    )
+
+    with patch(
+        "agent.context_breakdown.compute_session_context_breakdown",
+        return_value={
+            "categories": [],
+            "context_max": 262_144,
+            "context_percent": 40,
+            "context_used": 105_352,
+            "estimated_total": 0,
+            "model": "openai/gpt-test",
+        },
+    ):
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Auto-compresses at: 196,608 (75%)" in result
+    assert "Requested threshold: 60%; raised to 75%" in result
+    assert "sub-512K context safety floor" in result
+
+
+@pytest.mark.asyncio
 async def test_context_all_appends_expanded_listings():
     """/context all appends per-toolset and per-skill cost listings."""
     session_entry = SessionEntry(

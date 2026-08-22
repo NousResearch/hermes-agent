@@ -3151,6 +3151,32 @@ class TestContextLengthSetterCoherence:
         # ...and budgets recompute from the same window+percent.
         assert c.threshold_tokens == 150_000
 
+    def test_small_window_exposes_requested_threshold_and_floor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=262_144):
+            c = ContextCompressor(
+                model="test",
+                threshold_percent=0.60,
+                quiet_mode=True,
+            )
+            _ = c.context_length
+
+        assert c.requested_threshold_percent == 0.60
+        assert c.threshold_percent == 0.75
+        assert c.threshold_floor_applied is True
+
+    def test_unchanged_threshold_does_not_report_floor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="test",
+                threshold_percent=0.60,
+                quiet_mode=True,
+            )
+            _ = c.context_length
+
+        assert c.requested_threshold_percent == 0.60
+        assert c.threshold_percent == 0.60
+        assert c.threshold_floor_applied is False
+
 
 
 class TestPreLlmFeasibilityCheck:

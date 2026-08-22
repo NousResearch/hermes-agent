@@ -1,6 +1,6 @@
 name: basic
 version: 1.0.0
-description: "Dashboard auth provider — username/password (no OAuth IDP). A self-hosted 'just put a password on my dashboard' provider. Activates when dashboard.basic_auth.username plus a password (or password_hash) are configured via config.yaml (canonical surface) or the HERMES_DASHBOARD_BASIC_AUTH_* env vars. Sessions are stateless HMAC-signed tokens minted by the provider; password hashing uses stdlib scrypt (no third-party dependency). Set dashboard.basic_auth.secret for restart-surviving / multi-worker sessions."
+description: "Dashboard auth provider — username/password (no OAuth IDP). A self-hosted 'just put a password on my dashboard' provider. Activates when dashboard.basic_auth.username plus a password (or password_hash) are configured via config.yaml (canonical surface) or HERMES_DASHBOARD_BASIC_AUTH_* env vars (short aliases HERMES_DASHBOARD_USER / HERMES_DASHBOARD_PASSWORD / HERMES_DASHBOARD_SECRET also accepted; long names win if both set). Sessions are stateless HMAC-signed tokens minted by the provider; password hashing uses stdlib scrypt (no third-party dependency). Set dashboard.basic_auth.secret for restart-surviving / multi-worker sessions."
 author: NousResearch
 kind: backend
 requires_env:

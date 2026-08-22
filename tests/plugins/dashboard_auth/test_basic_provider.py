@@ -34,6 +34,12 @@ def _clear_basic_env(monkeypatch):
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
         "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS",
+        # short aliases
+        "HERMES_DASHBOARD_USER",
+        "HERMES_DASHBOARD_PASSWORD",
+        "HERMES_DASHBOARD_PASSWORD_HASH",
+        "HERMES_DASHBOARD_SECRET",
+        "HERMES_DASHBOARD_TTL_SECONDS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -181,6 +187,50 @@ class TestRegister:
         s = provider.complete_password_login(username="admin", password="hunter2")
         assert s.user_id == "admin"
         assert basic.LAST_SKIP_REASON == ""
+
+    def test_registers_with_short_env_aliases(self, basic, monkeypatch):
+        """steipete: HERMES_DASHBOARD_USER/PASSWORD (etc.) should work."""
+        monkeypatch.setenv("HERMES_DASHBOARD_USER", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_PASSWORD", "hunter2")
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        ctx = MagicMock()
+        basic.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_called_once()
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        s = provider.complete_password_login(username="admin", password="hunter2")
+        assert s.user_id == "admin"
+        assert basic.LAST_SKIP_REASON == ""
+
+    def test_long_env_name_beats_short_alias(self, basic, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "long-user")
+        monkeypatch.setenv("HERMES_DASHBOARD_USER", "short-user")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "long-pw")
+        monkeypatch.setenv("HERMES_DASHBOARD_PASSWORD", "short-pw")
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        ctx = MagicMock()
+        basic.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        s = provider.complete_password_login(username="long-user", password="long-pw")
+        assert s.user_id == "long-user"
+        with pytest.raises(InvalidCredentialsError):
+            provider.complete_password_login(username="short-user", password="short-pw")
+
+    def test_short_env_password_overrides_config_hash(self, basic, monkeypatch):
+        cfg_hash = basic.hash_password("config-pw")
+        monkeypatch.setattr(
+            basic,
+            "_load_config_basic_auth_section",
+            lambda: {"username": "admin", "password_hash": cfg_hash},
+        )
+        monkeypatch.setenv("HERMES_DASHBOARD_PASSWORD", "env-short-pw")
+        ctx = MagicMock()
+        basic.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert provider.complete_password_login(
+            username="admin", password="env-short-pw"
+        )
+        with pytest.raises(InvalidCredentialsError):
+            provider.complete_password_login(username="admin", password="config-pw")
 
 
     def test_env_password_overrides_config(self, basic, monkeypatch):

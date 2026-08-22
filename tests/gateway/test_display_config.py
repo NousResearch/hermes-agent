@@ -168,6 +168,22 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "long_running_notifications") is False
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
+    def test_buzz_defaults_to_final_answer_first(self):
+        """Buzz should not turn mid-turn narration into permanent channel posts."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "buzz", "interim_assistant_messages") is False
+        config = {
+            "display": {
+                "platforms": {
+                    "buzz": {"interim_assistant_messages": True},
+                }
+            }
+        }
+        assert resolve_display_setting(
+            config, "buzz", "interim_assistant_messages"
+        ) is True
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
@@ -300,5 +316,4 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
 

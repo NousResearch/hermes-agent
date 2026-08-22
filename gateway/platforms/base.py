@@ -164,6 +164,13 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    # Buzz: reply-anchoring creates nested message threads in the mobile/desktop
+    # UI (collapsed "1 reply" under the user message). Keep top-level posts for
+    # DMs and normal channel replies; only honor an explicit source.thread_id.
+    if platform == "buzz":
+        if thread_id and str(thread_id) not in {"", "None"}:
+            return str(thread_id)
+        return None
     return getattr(event, "message_id", None)
 
 

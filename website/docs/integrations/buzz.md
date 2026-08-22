@@ -42,7 +42,19 @@ The bundled `buzz` platform plugin makes Buzz a normal Hermes messaging platform
 hermes gateway setup   # pick Buzz
 ```
 
-Full configuration reference (env vars, config.yaml, transport modes, access control): **[Messaging → Buzz](/user-guide/messaging/buzz)**
+### Practical onboarding (read this)
+
+Path ③ is the deepest integration, but the docs used to under-specify the middle:
+
+1. **Mint in Desktop** — create the agent so the community issues `nsec` + NIP-OA auth tag.
+2. **Stop Desktop ACP** on that key (no dual runtime).
+3. **Paste secrets into Hermes** via the setup wizard (`BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`, relay, allowlist).
+4. **Join channels + set profile** — auth without channel membership leaves the agent invisible in DM/@ search.
+5. **Reload the gateway** and smoke-test DM vs mention-gated channels.
+
+The setup wizard now walks that path, can join visible channels, and warns about dual identity.
+
+Full configuration reference (env vars, config.yaml, transport modes, access control, troubleshooting): **[Messaging → Buzz](/user-guide/messaging/buzz)**
 
 ## Which one should I use?
 
@@ -50,7 +62,7 @@ Full configuration reference (env vars, config.yaml, transport modes, access con
 - **Running a community relay and want an agent identity managed by Buzz** → ②.
 - **You already run Hermes as your agent and want Buzz as another channel** → ③. This is the deepest integration and the one that keeps every Hermes feature.
 
-①/② and ③ use different identities and transports; run ③ with its own dedicated Nostr keypair. The adapter takes a scoped lock on the relay+pubkey pair, so two Hermes profiles cannot accidentally drive one Buzz identity.
+①/② and ③ use different transports. For ③, give Hermes a dedicated agent keypair and **do not** leave Desktop ACP running on that same key. The adapter takes a scoped lock on the relay+pubkey pair, so two Hermes profiles cannot accidentally drive one Buzz identity — but Desktop ACP is a separate process and will still collide if left up.
 
 ## Credits
 

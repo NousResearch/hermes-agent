@@ -180,6 +180,67 @@ def schnorr_sign(
     return nonce_x + signature_scalar.to_bytes(32, "big")
 
 
+
+def build_signed_event(
+    *,
+    private_key: str,
+    kind: int,
+    tags: list[list[str]],
+    content: str = "",
+    created_at: Optional[int] = None,
+    auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
+    """Sign a Nostr event (BIP-340) the same way as AUTH events."""
+    pubkey = public_key_hex(private_key)
+    timestamp = int(time.time()) if created_at is None else int(created_at)
+    serialized = json.dumps(
+        [0, pubkey, timestamp, int(kind), tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    return {
+        "id": event_id.hex(),
+        "pubkey": pubkey,
+        "created_at": timestamp,
+        "kind": int(kind),
+        "tags": tags,
+        "content": content,
+        "sig": schnorr_sign(
+            event_id,
+            private_key,
+            auxiliary_randomness=auxiliary_randomness,
+        ).hex(),
+    }
+
+
+def build_typing_event(
+    *,
+    private_key: str,
+    channel_id: str,
+    parent_event_id: str | None = None,
+    root_event_id: str | None = None,
+    created_at: Optional[int] = None,
+    auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
+    """Build a Buzz typing indicator (kind 20002) for a channel/DM."""
+    tags: list[list[str]] = [["h", str(channel_id)]]
+    parent = (parent_event_id or "").strip() or None
+    root = (root_event_id or "").strip() or None
+    if parent:
+        if root and root != parent:
+            tags.append(["e", root, "", "root"])
+        tags.append(["e", parent, "", "reply"])
+    return build_signed_event(
+        private_key=private_key,
+        kind=20002,
+        tags=tags,
+        content="",
+        created_at=created_at,
+        auxiliary_randomness=auxiliary_randomness,
+    )
+
+
 def build_auth_event(
     *,
     private_key: str,

@@ -1506,6 +1506,39 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.stop.no_active")
 
+    async def _handle_extend_command(self, event: MessageEvent) -> str:
+        """Handle ``/extend [minutes]`` — raise this turn's inactivity timeout.
+
+        Stores a monotonic deadline (time.time() + minutes*60), hard-capped so a
+        single command cannot pin a hung turn forever (#4815). The inactivity
+        watchdog reads it and extends the idle budget until the deadline.
+        """
+        # Hard cap per call so an extension cannot pin a hung turn forever.
+        _CAP = 3600.0
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        raw = (event.get_command_args() or "").strip()
+        try:
+            minutes = float(raw) if raw else 30.0
+        except ValueError:
+            return (
+                "Usage: /extend [minutes] — e.g. /extend 30 (max "
+                f"{int(_CAP // 60)} min per call)."
+            )
+        if minutes <= 0:
+            # A non-positive value clears any prior extension.
+            self._inactivity_extend_deadlines.pop(session_key, None)
+            return "Inactivity extension cleared for this session."
+        minutes = min(minutes, _CAP / 60.0)
+        deadline = time.monotonic() + minutes * 60.0
+        # Persist keyed by session so the watchdog can find it. The watch-
+        # dog also checks TurnContext; mirror there when a turn is live.
+        self._inactivity_extend_deadlines[session_key] = deadline
+        return (
+            f"⏱️ Inactivity timeout extended by {int(minutes)} min for this "
+            f"session (will not be reaped before then). Send /extend 0 to clear."
+        )
+
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and
         manually control failed/paused gateway adapters.

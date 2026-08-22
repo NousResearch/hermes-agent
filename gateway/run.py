@@ -2474,6 +2474,10 @@ if _config_path.exists():
                 )
             if "gateway_timeout_warning" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+            if "gateway_timeout_provider_grace" in _agent_cfg:
+                os.environ["HERMES_AGENT_TIMEOUT_PROVIDER_GRACE"] = str(
+                    _agent_cfg["gateway_timeout_provider_grace"]
+                )
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "session_stall_timeout" in _agent_cfg:
@@ -6755,6 +6759,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
+    # Session-keyed map of /extend deadlines (monotonic time.time()). Set by
+    # _handle_extend_command, read by the inactivity watchdog so a user can
+    # raise the timeout for a long-running turn (#4815).
+    _inactivity_extend_deadlines: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Legacy per-session dict adapters.  All per-session state lives in
@@ -17621,6 +17629,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "stop":
             return await self._handle_stop_command(event)
         
+        if canonical == "extend":
+            return await self._handle_extend_command(event)
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -29149,6 +29159,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            # Grace while the agent is explicitly waiting on a provider response
+            # (non-streaming "thinking" gap). Added to the idle threshold below.
+            _agent_provider_grace_raw = _float_env("HERMES_AGENT_TIMEOUT_PROVIDER_GRACE", 300)
+            _agent_provider_grace = _agent_provider_grace_raw if _agent_provider_grace_raw > 0 else 0.0
             _warning_fired = False
 
             # A background=true process intentionally survives a successful
@@ -29302,6 +29316,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.
+                    # While explicitly waiting on a provider response (non-streaming
+                    # "thinking" gap), extend the idle budget by _agent_provider_grace
+                    # so a slow reasoning model is not reaped mid-think (#4815).
+                    # An /extend command may also raise the deadline for this turn.
+                    _effective_timeout = _agent_timeout
+                    if _agent_provider_grace and _agent_timeout is not None:
+                        _desc = _act.get("last_activity_desc") or _act.get("description") or ""
+                        _prov = _act.get("last_activity_provenance") or _act.get("provenance") or ""
+                        if "waiting for provider response" in _desc or _prov == "waiting_for_provider_response":
+                            _effective_timeout = _agent_timeout + _agent_provider_grace
+                    # Honor a user-issued /extend deadline (monotonic time.time()).
+                    # The deadline is stored on the gateway keyed by session_key
+                    # (set by _handle_extend_command, which runs in a different
+                    # scope than this turn's TurnContext) and also on the live
+                    # TurnContext for the in-turn case.
+                    _ext_deadline = getattr(turn_ctx, "_inactivity_extended_deadline", None)
+                    if _ext_deadline is None:
+                        try:
+                            _ext_deadline = self._inactivity_extend_deadlines.get(
+                                self._session_key_for_source(source)
+                            )
+                        except Exception:
+                            _ext_deadline = None
+                    if _ext_deadline is not None:
+                        _ext_idle_budget = max(0.0, _ext_deadline - time.monotonic())
+                        if _agent_timeout is None or _ext_idle_budget > _effective_timeout:
+                            _effective_timeout = _ext_idle_budget
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
@@ -29315,12 +29356,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    f"You can continue waiting, send /extend N to add N minutes, or use /reset.",
                                     metadata=_interim_metadata(_status_thread_metadata),
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)
-                    if _idle_secs >= _agent_timeout:
+                    if _idle_secs >= _effective_timeout:
                         _inactivity_timeout = True
                         threading.Thread(
                             target=_abandon_timed_out_gateway_turn,

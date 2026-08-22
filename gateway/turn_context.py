@@ -103,6 +103,14 @@ class TurnContext:
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
 
+    # --- inactivity-timeout extension (driven by the /extend slash command) ---
+    # When the user sends /extend N during a long-running turn, this holds the
+    # monotonic deadline (time.time()) the watchdog must respect instead of the
+    # configured gateway_timeout. None = use the default timeout. Hard-capped by
+    # _INACTIVITY_EXTEND_CAP_S so the extension cannot pin a hung turn forever.
+    _inactivity_extended_deadline: Optional[float] = None
+    _INACTIVITY_EXTEND_CAP_S: float = 3600.0
+
     # --- lazy-imported callables captured from the outer body -------------
     AIAgent: Any = None
     resolve_display_setting: Any = None

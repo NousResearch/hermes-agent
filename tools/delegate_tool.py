@@ -2800,7 +2800,29 @@ def _run_single_child(
             _run_with_thread_capture,
         )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            # Poll the child future instead of blocking on .result(timeout=...) so
+            # the orchestrator (parent) agent keeps its activity clock fresh while
+            # a synchronous subagent runs. Without this, a child whose runtime
+            # exceeds the gateway inactivity timeout reaps its own parent (#4815).
+            _heartbeat = getattr(parent_agent, "_touch_activity", None)
+            _poll_interval = 5.0
+            _deadline = time.monotonic() + float(child_timeout or 0.0)
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    raise FuturesTimeoutError()
+                try:
+                    result = _child_future.result(timeout=min(_poll_interval, _remaining))
+                    break
+                except FuturesTimeoutError:
+                    # Not done yet — refresh the parent's activity clock so the
+                    # gateway inactivity watchdog does not reap us mid-wait.
+                    if _heartbeat is not None:
+                        try:
+                            _heartbeat("delegating to subagent (child running)")
+                        except Exception:
+                            pass
+                    continue
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and

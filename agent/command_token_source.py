@@ -178,6 +178,19 @@ class CommandTokenSource:
             )
             return token
 
+    def invalidate(self) -> None:
+        """Drop the cached token so the next call re-runs the helper.
+
+        The advertised TTL can outlive the credential: a helper answering from
+        its own cache may reprint a stale lifetime, and a broker can revoke a
+        token early. A rejected token is therefore the only authoritative
+        signal that the cache is stale, so the request path calls this on an
+        auth failure to force exactly one re-mint.
+        """
+        with self._lock:
+            self._token = ""
+            self._expires_at = 0.0
+
 
 def build_command_token_provider(
     key_cmd: str,

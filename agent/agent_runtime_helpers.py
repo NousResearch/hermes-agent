@@ -939,6 +939,52 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = None
 
 
+def _remint_command_token(
+    agent,
+    status_code: Optional[int],
+    classified_reason: Optional[FailoverReason],
+) -> bool:
+    """Force one key_cmd re-mint after an auth failure. True when re-minted.
+
+    ``agent.api_key`` is the token source itself when the provider uses
+    ``key_cmd``, so the invalidation happens on the object the request path
+    already calls. Providers without a ``key_cmd`` credential are untouched.
+    """
+    is_auth = classified_reason in {FailoverReason.auth, FailoverReason.auth_permanent} or (
+        classified_reason is None and status_code in {401, 403}
+    )
+    if not is_auth:
+        return False
+
+    source = getattr(agent, "api_key", None)
+    invalidate = getattr(source, "invalidate", None)
+    if not callable(invalidate):
+        return False
+
+    # One re-mint per provider: a revoked credential returns the same dead
+    # token every time, and retrying it forever would replace the old
+    # never-recovers bug with a spin.
+    attempted = getattr(agent, "_command_token_reminted", None)
+    if attempted is None:
+        attempted = set()
+        agent._command_token_reminted = attempted
+    key = getattr(agent, "provider", "") or ""
+    if key in attempted:
+        return False
+    attempted.add(key)
+
+    try:
+        invalidate()
+    except Exception:
+        return False
+    _ra().logger.info(
+        "Auth failure on key_cmd provider %s — invalidated cached token, "
+        "re-minting for one retry",
+        key or "?",
+    )
+    return True
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -970,6 +1016,13 @@ def recover_with_credential_pool(
     """
     pool = agent._credential_pool
     if pool is None:
+        # No pool, but a key_cmd provider still has a recoverable credential:
+        # its token source caches a bearer whose advertised TTL can outlive
+        # the credential. Invalidate on an auth failure so the next attempt
+        # re-runs the helper. Bounded to one re-mint per provider so a
+        # genuinely dead credential cannot spin.
+        if _remint_command_token(agent, status_code, classified_reason):
+            return True, has_retried_429
         return False, has_retried_429
 
     # Defensive guard: if a fallback provider is active and its provider name

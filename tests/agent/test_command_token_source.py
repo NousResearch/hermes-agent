@@ -347,3 +347,45 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         assert self._resolve(
             monkeypatch, {**self.BASE, "key_cmd": "   "}
         ) == "no-key-required"
+
+
+# ── invalidate(): one re-mint after an auth failure ────────────────────
+
+class TestInvalidate:
+    """A rejected token is the only authoritative staleness signal.
+
+    The advertised TTL can outlive the credential (a helper answering from its
+    own cache reprints a stale lifetime; a broker can revoke early), so the
+    request path must be able to force a re-mint on an auth failure.
+    """
+
+    def test_invalidate_forces_the_next_call_to_re_mint(self, tmp_path):
+        counter = tmp_path / "n"
+        counter.write_text("0")
+        cmd = (
+            f"python3 -c \"import pathlib;p=pathlib.Path(r'{counter}');"
+            "n=int(p.read_text());p.write_text(str(n+1));"
+            "print('tok-%d' % n)\""
+        )
+        src = build_command_token_provider(cmd, "demo")
+
+        assert src() == "tok-0"
+        assert src() == "tok-0", "cached until expiry"
+        assert counter.read_text() == "1", "helper ran once"
+
+        src.invalidate()
+
+        assert src() == "tok-1", "re-minted after invalidate"
+        assert counter.read_text() == "2"
+
+    def test_invalidate_is_idempotent(self):
+        src = build_command_token_provider("printf tok", "demo")
+        assert src() == "tok"
+        src.invalidate()
+        src.invalidate()
+        assert src() == "tok"
+
+    def test_invalidate_before_first_mint_is_safe(self):
+        src = build_command_token_provider("printf tok", "demo")
+        src.invalidate()
+        assert src() == "tok"

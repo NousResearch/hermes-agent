@@ -2211,6 +2211,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
+            ("GET", "/api/sessions/{session_id}/context", self._handle_session_context),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
@@ -4472,6 +4473,69 @@ class APIServerAdapter(BasePlatformAdapter):
                 "order": order or ("latest" if default_page else "oldest"),
                 "returned": len(messages),
             },
+        })
+
+    async def _handle_session_context(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/context — 会话上下文占用估算.
+
+        返回该会话当前上下文使用情况:模型窗口上限、已用 token(优先实测值,
+        否则按 DB 历史消息估算)、占用百分比、模型名。WebUI 用它显示真实
+        上下文占用,替代 SSE 拦截的虚高累加值。
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        model = session.get("model") or self._model_name or ""
+        base_url = session.get("billing_base_url") or ""
+
+        # 模型窗口上限(不抛异常,拿不到就用 0)
+        context_max = 0
+        try:
+            from agent.model_metadata import get_model_context_length
+            context_max = get_model_context_length(model, base_url=base_url) or 0
+        except Exception:
+            context_max = 0
+
+        # 对话历史估算
+        conversation_tokens = 0
+        try:
+            history = await self._conversation_history_for_session(session_id)
+            from agent.model_metadata import estimate_messages_tokens_rough
+            conversation_tokens = estimate_messages_tokens_rough(history) or 0
+        except Exception:
+            conversation_tokens = 0
+
+        # 实测值:若该会话有活 agent 在跑,用其 last_prompt_tokens
+        measured = 0
+        try:
+            for agent in list(self._active_run_agents.values()):
+                comp = getattr(agent, "context_compressor", None)
+                sess = getattr(agent, "session_id", None) or (
+                    getattr(comp, "session_id", None) if comp else None)
+                if sess and sess == session_id:
+                    measured = int(getattr(comp, "last_prompt_tokens", 0) or 0)
+                    break
+        except Exception:
+            measured = 0
+
+        context_used = measured if measured > 0 else conversation_tokens
+        context_percent = (
+            max(0, min(100, round(context_used / context_max * 100)))
+            if context_max else 0
+        )
+        return web.json_response({
+            "object": "hermes.session.context",
+            "session_id": session_id,
+            "model": model,
+            "context_max": context_max,
+            "context_used": context_used,
+            "context_percent": context_percent,
+            "measured": measured > 0,
+            "conversation_tokens": conversation_tokens,
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

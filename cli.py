@@ -4848,6 +4848,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     Provides a REPL interface with rich formatting, command history,
     and tool execution capabilities.
     """
+
+    # Ctrl+C double-press guard. Never-armed sentinel is -inf, not 0: the
+    # window clock is time.monotonic(), which starts at boot, so 0 is a
+    # *live* value in the first 2s of uptime and would make the very first
+    # Ctrl+C look like a double-press (force-exit).
+    _CTRL_C_NEVER_ARMED = float("-inf")
+    _CTRL_C_WINDOW_S = 2.0
     
     def __init__(
         self,
@@ -5342,8 +5349,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _handle_update_command() so the relaunch happens on the main thread,
         # not the background process_loop thread.
         self._pending_relaunch: list[str] | None = None
-        self._last_ctrl_c_time = 0
-        self._last_idle_ctrl_c_time = 0
+        self._last_ctrl_c_time = self._CTRL_C_NEVER_ARMED
+        self._last_idle_ctrl_c_time = self._CTRL_C_NEVER_ARMED
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -16909,6 +16916,143 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ] if item is not None
         ]
 
+    def _disarm_ctrl_c_timers(self) -> None:
+        """Disarm both double-press timers (sentinel ``_CTRL_C_NEVER_ARMED``).
+
+        Every intervening Ctrl+C press disarms the other path's timer (see
+        the ``_handle_ctrl_c`` docstring) so a stale arm from one path can
+        never combine with a later press on the other path. This is the
+        only place both timers are disarmed together after construction
+        (``__init__`` sets the initial sentinels); the agent branch (idle
+        only) and the idle arm (arms idle, disarms agent) set theirs
+        explicitly.
+        """
+        self._last_ctrl_c_time = self._CTRL_C_NEVER_ARMED
+        self._last_idle_ctrl_c_time = self._CTRL_C_NEVER_ARMED
+
+    def _handle_ctrl_c(self, event: Any) -> None:
+        """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
+
+        Priority (in branch order):
+        0. Cancel active voice recording
+        1. Cancel slash-confirm prompt
+        2. Cancel /model picker
+        3. Clear agent-blocking overlays (approval/clarify/sudo/secret)
+           (falls through to 4 if the agent is running)
+        4. Interrupt the running agent (first press; force exit on the
+           second press within 2s)
+        5. Clear text/images at the prompt
+        6. Idle exit: arm on first press, force exit on the second within 2s
+
+        Extracted from the ``run()`` keybinding closure (PR #90874) so the
+        full state machine — idle double-press timer, agent-path timer, and
+        every intervening-press disarm — is reachable from unit tests with
+        a mocked ``event.app``.
+
+        Disarm contract (symmetric): a press is only "part of a double-press"
+        if it lands in the same branch as the previous one. Every press that
+        takes any other path disarms the other path's timer — the cancel/
+        clear branches disarm both, while an idle arm or an agent interrupt
+        arms its own path and disarms only the other — so a stale arm from
+        one path can never combine with a later press on the other path
+        into an accidental force-exit.
+        """
+        now = time.monotonic()  # elapsed-time window: wall clock can step backwards
+
+        # Cancel active voice recording.
+        # Run cancel() in a background thread to prevent blocking the
+        # event loop if AudioRecorder._lock or CoreAudio takes time.
+        _should_cancel_voice = False
+        _recorder_ref = None
+        with self._voice_lock:
+            if self._voice_recording and self._voice_recorder:
+                _recorder_ref = self._voice_recorder
+                self._voice_recording = False
+                self._voice_continuous = False
+                _should_cancel_voice = True
+        if _should_cancel_voice:
+            _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+            threading.Thread(
+                target=_recorder_ref.cancel, daemon=True
+            ).start()
+            self._disarm_ctrl_c_timers()
+            event.app.invalidate()
+            return
+
+        # Cancel slash confirmation prompt (foreground UI, not an
+        # agent-blocking overlay — cancel and stop here).
+        if self._slash_confirm_state:
+            self._submit_slash_confirm_response("cancel")
+            event.app.current_buffer.reset()
+            self._disarm_ctrl_c_timers()
+            event.app.invalidate()
+            return
+
+        # Cancel /model picker (foreground UI — cancel and stop here).
+        if self._model_picker_state:
+            self._close_model_picker()
+            event.app.current_buffer.reset()
+            self._disarm_ctrl_c_timers()
+            event.app.invalidate()
+            return
+
+        # Clear all agent-blocking overlays (approval/clarify/sudo/secret)
+        # in one shot.  We do NOT return after clearing — we fall through so
+        # that if the agent is also running we fire the interrupt on the same
+        # Ctrl+C press.  This fixes the case where a stale/orphaned overlay
+        # (left behind by a previous interrupt) consumes the press without
+        # ever reaching the agent-interrupt branch, leaving the chat frozen
+        # (#14026).
+        _overlay_cleared = bool(
+            self._sudo_state
+            or self._secret_state
+            or self._approval_state
+            or self._clarify_state
+        )
+        if _overlay_cleared:
+            self._clear_active_overlays_for_interrupt()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
+        # If we only cleared overlays and the agent is NOT running, stop here
+        # (don't fall through to the interrupt/exit path).
+        if _overlay_cleared and not (self._agent_running and self.agent):
+            self._disarm_ctrl_c_timers()
+            return
+
+        if self._agent_running and self.agent:
+            # Any Ctrl+C press while the agent runs is an intervening press:
+            # disarm the idle-path timer so a stale idle arm can't combine
+            # with a later idle press into an accidental force-exit.
+            self._last_idle_ctrl_c_time = self._CTRL_C_NEVER_ARMED
+            if now - self._last_ctrl_c_time < self._CTRL_C_WINDOW_S:
+                print("\n⚡ Force exiting...")
+                self._should_exit = True
+                event.app.exit()
+                return
+
+            self._last_ctrl_c_time = now
+            print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+            request_hard_interrupt(self.agent)
+        # If there's text or images, clear them (like bash).
+        # If everything is already empty, exit (with double Ctrl+C guard).
+        elif event.app.current_buffer.text or self._attached_images:
+            event.app.current_buffer.reset()
+            self._attached_images.clear()
+            self._disarm_ctrl_c_timers()
+            event.app.invalidate()
+        else:
+            if now - self._last_idle_ctrl_c_time < self._CTRL_C_WINDOW_S:
+                print("\n⚡ Force exiting...")
+                self._should_exit = True
+                event.app.exit()
+                return
+            self._last_idle_ctrl_c_time = now
+            # Idle arm is itself an intervening press for the agent path.
+            self._last_ctrl_c_time = self._CTRL_C_NEVER_ARMED
+            _cprint(f"\n{_DIM}Press Ctrl+C again to exit.{_RST}")
+            event.app.invalidate()
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
@@ -17109,8 +17253,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # the earlier __init__ branch.
         self._last_turn_interrupted = False
         self._should_exit = False
-        self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
-        self._last_idle_ctrl_c_time = 0  # Idle-path double Ctrl+C timer (separate from agent path)
+        # Fresh session: both double-press timers start never-armed.
+        self._disarm_ctrl_c_timers()
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -17946,103 +18090,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
-            """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
-            
-            Priority:
-            0. Cancel active voice recording
-            1. Cancel active sudo/approval/clarify prompt
-            2. Interrupt the running agent (first press)
-            3. Force exit (second press within 2s)
-            """
-            now = time.time()
-
-            # Cancel active voice recording.
-            # Run cancel() in a background thread to prevent blocking the
-            # event loop if AudioRecorder._lock or CoreAudio takes time.
-            _should_cancel_voice = False
-            _recorder_ref = None
-            with cli_ref._voice_lock:
-                if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    _recorder_ref = cli_ref._voice_recorder
-                    cli_ref._voice_recording = False
-                    cli_ref._voice_continuous = False
-                    _should_cancel_voice = True
-            if _should_cancel_voice:
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                threading.Thread(
-                    target=_recorder_ref.cancel, daemon=True
-                ).start()
-                self._last_idle_ctrl_c_time = 0
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt (foreground UI, not an
-            # agent-blocking overlay — cancel and stop here).
-            if self._slash_confirm_state:
-                self._submit_slash_confirm_response("cancel")
-                event.app.current_buffer.reset()
-                self._last_idle_ctrl_c_time = 0
-                event.app.invalidate()
-                return
-
-            # Cancel /model picker (foreground UI — cancel and stop here).
-            if self._model_picker_state:
-                self._close_model_picker()
-                event.app.current_buffer.reset()
-                self._last_idle_ctrl_c_time = 0
-                event.app.invalidate()
-                return
-
-            # Clear all agent-blocking overlays (approval/clarify/sudo/secret)
-            # in one shot.  We do NOT return after clearing — we fall through so
-            # that if the agent is also running we fire the interrupt on the same
-            # Ctrl+C press.  This fixes the case where a stale/orphaned overlay
-            # (left behind by a previous interrupt) consumes the press without
-            # ever reaching the agent-interrupt branch, leaving the chat frozen
-            # (#14026).
-            _overlay_cleared = bool(
-                self._sudo_state
-                or self._secret_state
-                or self._approval_state
-                or self._clarify_state
-            )
-            if _overlay_cleared:
-                self._clear_active_overlays_for_interrupt()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-
-            # If we only cleared overlays and the agent is NOT running, stop here
-            # (don't fall through to the interrupt/exit path).
-            if _overlay_cleared and not (self._agent_running and self.agent):
-                self._last_idle_ctrl_c_time = 0
-                return
-
-            if self._agent_running and self.agent:
-                if now - self._last_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
-                    self._should_exit = True
-                    event.app.exit()
-                    return
-                
-                self._last_ctrl_c_time = now
-                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
-                request_hard_interrupt(self.agent)
-            # If there's text or images, clear them (like bash).
-            # If everything is already empty, exit (with double Ctrl+C guard).
-            elif event.app.current_buffer.text or self._attached_images:
-                event.app.current_buffer.reset()
-                self._attached_images.clear()
-                self._last_idle_ctrl_c_time = 0
-                event.app.invalidate()
-            else:
-                if now - self._last_idle_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
-                    self._should_exit = True
-                    event.app.exit()
-                    return
-                self._last_idle_ctrl_c_time = now
-                _cprint(f"\n{_DIM}Press Ctrl+C again to exit.{_RST}")
-                event.app.invalidate()
+            """Ctrl+C keybinding — see HermesCLI._handle_ctrl_c."""
+            self._handle_ctrl_c(event)
 
         # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
         # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
@@ -19669,7 +19718,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
-                    # Regular chat - run agent
+                    # Regular chat - run agent. A new run starts both
+                    # double-press state machines clean: a stale arm from a
+                    # previous run (interrupt, idle arm, or a half-finished
+                    # force-exit attempt) must never make the FIRST Ctrl+C
+                    # against this run force-exit the session.
+                    self._disarm_ctrl_c_timers()
                     self._agent_running = True
                     self._interactive_turn = True
                     self._pet_turn_error = False

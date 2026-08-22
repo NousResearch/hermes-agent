@@ -40,7 +40,10 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    neutralize_user_forged_memory_context,
+)
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import (
@@ -69,8 +72,11 @@ def compose_user_api_content(
     from the bytes on the wire — which is the whole prompt-cache invariant:
     what turn N sends must be what turn N+1 replays.
 
-    Returns ``None`` when nothing is injected (multimodal/non-string content,
-    or no ephemeral context), meaning the message is sent as-is.
+    Returns ``None`` when nothing is injected and the user content needs no
+    reserved-fence neutralization (or for multimodal/non-string content),
+    meaning the message is sent as-is.  A forged reserved fence still receives
+    an ``api_content`` sidecar even without runtime context: user-owned fence
+    tokens must never reach the provider as an impersonable runtime boundary.
     """
     if not isinstance(content, str):
         return None
@@ -81,9 +87,10 @@ def compose_user_api_content(
             injections.append(fenced)
     if plugin_user_context:
         injections.append(plugin_user_context)
+    neutralized_content = neutralize_user_forged_memory_context(content)
     if not injections:
-        return None
-    return content + "\n\n" + "\n\n".join(injections)
+        return neutralized_content if neutralized_content != content else None
+    return neutralized_content + "\n\n" + "\n\n".join(injections)
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:

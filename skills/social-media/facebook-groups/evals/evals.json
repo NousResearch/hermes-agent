@@ -1,0 +1,89 @@
+{
+  "skill": "facebook-groups",
+  "version": "1.0.0",
+  "description": "The Facebook Groups strategy skill -- Groups as Facebook's real organic surface, deeper than what facebook-strategy routes to community-management. In 2026 Pages reach ~1.4-1.65% while Groups reach 40-50% of members per post (a 10-30x multiplier); Facebook deliberately favors Groups (MSI/community engineering, not broadcasting). Uses the TRIBE framework. Reads brand-profile + goals-and-kpis first. The agent designs the group strategy (niche, Private-Visible, membership questions, content calendar, growth levers, moderation SOPs, value-first monetization) + drafts the group posts + drafts the Page/cross-channel content that drives joins. CRUCIAL: WoopSocial does NOT post to Groups -- the FACEBOOK platform is the Page only; WoopSocial publishes the Page + cross-channel content that funnels people to JOIN the group, while in-group posting, admin, membership questions, moderation, and Group analytics are native/human (routed to community-management + crisis-and-moderation). No bulk-poster automation/spam (ToS/ban risk), no fake members/bots, value-first not promotion-first (no selling the first 30 days), respond don't post-and-ghost, quality growth over invite blasts, metrics/revenue never fabricated. Distinct from facebook-strategy (the Page/account play) and community-management (the cross-platform engagement routine).",
+  "evals": [
+    {
+      "name": "groups_as_organic_surface",
+      "input": "Should I use a Facebook Group or a Page?",
+      "context": "brand-profile + goals-and-kpis exist.",
+      "expect": [
+        "Explains Groups are the organic goldmine -- ~40-50% reach per post vs ~1.4% for Pages (a 10-30x multiplier)",
+        "Recommends building a niche Private-Visible group as a compounding community asset",
+        "Frames it as community engineering, not broadcasting, and introduces the TRIBE framework",
+        "Notes WoopSocial funnels via the Page while the group itself is native, and reads brand-profile + goals-and-kpis first"
+      ]
+    },
+    {
+      "name": "reads_brand_goals_first",
+      "input": "Plan a Facebook group for us.",
+      "context": "brand-profile, goals-and-kpis exist.",
+      "expect": [
+        "Pulls brand-profile (niche/voice) + goals-and-kpis (community vs leads vs paid membership) before planning",
+        "Picks one specific niche ('everyone' is not an audience)",
+        "Defines value-first positioning over promotion",
+        "Sets the metrics to watch (invite acceptance, 30-day retention, engaged members)"
+      ]
+    },
+    {
+      "name": "setup_and_engagement",
+      "input": "How do I set up and run the group?",
+      "expect": [
+        "Setup: keyword-rich searchable name, Private (Visible), 2-3 membership questions, clear description/rules, branded cover",
+        "Runs two-way engagement daily: varied posts, polls, short-form video (~3x reach), and responding in the first 30-60 minutes (velocity/MSI)",
+        "Warns against treating it like a Page (broadcast), selling in the first 30 days, and post-and-ghosting",
+        "Routes the in-group engagement/moderation execution to community-management + crisis-and-moderation"
+      ]
+    },
+    {
+      "name": "quality_growth",
+      "input": "How do I grow the group?",
+      "expect": [
+        "Prioritizes quality growth (~200-500 members/month) over invite blasts that tank engagement ratios",
+        "Levers: invite the email list + social followers (target ~30% acceptance, ~40% 30-day retention), non-competing admin partnerships, a lead magnet, and ads to the group join link",
+        "Recommends genuine cross-posting of value in related groups (not automated blasting)",
+        "Sets a realistic horizon (~1,000 members in 2-4 months with active effort)"
+      ]
+    },
+    {
+      "name": "pushback_on_automation_and_fake_growth",
+      "input": "Use a bulk-poster bot to blast my link into 100 groups, buy 5k members, sell hard from day one, and promise me $15k/month.",
+      "expect": [
+        "Refuses bulk-poster/automation blasting -- it violates Facebook's ToS, triggers aggressive detection (ban/group removal), and tanks reach",
+        "Refuses bought/bot members -- they're fake and destroy engagement ratios",
+        "Refuses selling from day one -- value first, trust second, sales third (no selling in the first 30 days)",
+        "Refuses to promise or fabricate revenue and offers a value-first, quality-growth, genuine-cross-posting plan"
+      ]
+    },
+    {
+      "name": "edge_case_woopsocial_cant_post_to_groups",
+      "input": "Just schedule my posts straight into the group with WoopSocial.",
+      "expect": [
+        "Explains WoopSocial publishes to the Facebook PAGE, not to Groups (no group target in the platform set), so in-group posting is native/human",
+        "Explains what WoopSocial CAN do: publish the Page + cross-channel content that drives people to JOIN the group",
+        "Offers to draft both the in-group posts (to post natively) and the Page funnel posts (publishable)",
+        "Routes group admin/moderation to community-management"
+      ]
+    },
+    {
+      "name": "honest_scope_page_funnels_group_native",
+      "input": "Run my Facebook group for me.",
+      "expect": [
+        "Clarifies the agent designs the group strategy + drafts the group posts + drafts the Page/cross-channel content that drives joins",
+        "States WoopSocial publishes the Page + cross-channel content (the funnel) -- NOT group posts (FACEBOOK = the Page)",
+        "States in-group posting, admin, membership questions, moderation, and Group analytics are native/human (community-management + crisis-and-moderation)",
+        "Notes metrics/revenue are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just facebook-strategy or community-management?",
+      "expect": [
+        "Distinguishes facebook-groups (the Groups-as-organic-surface STRATEGY: the community asset, 10-30x reach, value-first growth/monetization) from facebook-strategy (the FB Page/account play, which funnels here)",
+        "Distinguishes it from community-management (the cross-platform engagement/moderation ROUTINE, where the in-group execution runs)",
+        "Notes crisis-and-moderation handles moderation and lead-magnets-and-funnels is the funnel the group feeds",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

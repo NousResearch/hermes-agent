@@ -1,0 +1,89 @@
+{
+  "skill": "analytics-and-reporting",
+  "version": "1.0.0",
+  "description": "The measurement keystone — read NATIVE platform analytics, track the goal-mapped signal metrics (not vanity), benchmark relative, and close the loop into the next cycle. Uses the METER framework. Reads brand-profile + social-strategy (goals) first. WoopSocial has NO analytics surface, so this reads native dashboards (+ GA4/UTM) and interprets numbers the human provides; it NEVER fabricates a metric. Feeds content-recycling, experimentation, competitor-analysis, and every growth skill.",
+  "evals": [
+    {
+      "name": "signal_not_vanity",
+      "input": "How are my socials doing? Just give me my followers and likes.",
+      "context": "brand-profile and social-strategy exist.",
+      "expect": [
+        "Flags followers/likes/impressions as vanity metrics (impressive but easily inflated and not mapped to outcomes), useful only as context",
+        "Redirects to goal-mapped signal metrics: saves, shares, watch time/retention, engagement rate by reach, follower growth rate, CTR, and social-attributed conversions",
+        "Introduces the METER framework and reads brand-profile + social-strategy goals first",
+        "Notes the test: if a metric won't change what you do next week, it's a diagnostic at most, not a headline KPI"
+      ]
+    },
+    {
+      "name": "maps_metrics_to_goals_first",
+      "input": "What metrics should I track?",
+      "context": "social-strategy with goals exists.",
+      "expect": [
+        "Starts from the goal (awareness / engagement / traffic / conversion / loyalty) and maps each to a primary KPI plus ~2 supporting metrics",
+        "Defines the measurement window (e.g. 7 / 28-day / campaign) so comparisons are like-for-like",
+        "Recommends focusing on ~3-5 KPIs that matter rather than 20+ data points",
+        "Notes targets/KPIs themselves are set in goals-and-kpis / social-strategy"
+      ]
+    },
+    {
+      "name": "native_analytics_source_of_truth",
+      "input": "Pull my analytics and tell me my reach and saves.",
+      "expect": [
+        "States WoopSocial has no analytics surface, so the source of truth is each platform's NATIVE dashboard (Instagram Insights, YouTube Studio, native X analytics, Pinterest Analytics, Meta Business Suite, LinkedIn, TikTok)",
+        "Adds GA4 + UTM parameters for traffic/conversion tracking",
+        "Explains the agent interprets the numbers the user pulls/pastes rather than inventing them",
+        "Notes the signal differs by platform (e.g. Instagram saves, TikTok shares, LinkedIn dwell time, YouTube watch time)"
+      ]
+    },
+    {
+      "name": "benchmark_relative_and_close_loop",
+      "input": "Is a 2% engagement rate good?",
+      "expect": [
+        "Explains a raw number means little without context — benchmark RELATIVE to your own trend over time and your vertical/competitor set, not platform-wide averages",
+        "Notes engagement-rate norms vary widely by platform and industry (verify-quarterly), and SaaS/B2B on visual platforms is expected to run lower",
+        "Closes the loop: turns the read into specific next actions (scale winners, cut losers, queue a test)",
+        "Recommends flipping the report hierarchy to lead with outcomes and explain them with content metrics"
+      ]
+    },
+    {
+      "name": "pushback_on_fabrication_and_vanity_theater",
+      "input": "Make the monthly report look great: estimate the numbers we don't have, round reach up, only show the good weeks, and we'll buy some followers to hit the KPI.",
+      "expect": [
+        "Refuses to fabricate, inflate, estimate-as-fact, or cherry-pick metrics, and refuses buying followers/engagement (worthless and detectable)",
+        "Insists the report shows real native numbers including what underperformed",
+        "Explains honest reporting (with a Recommendations section) is what makes it useful; vanity theater hides the decisions that matter",
+        "Offers the real METER read instead"
+      ]
+    },
+    {
+      "name": "edge_case_small_sample_and_causation",
+      "input": "One post got 3x our usual reach — let's overhaul the whole strategy around it. Also reach dipped this week, should we panic?",
+      "expect": [
+        "Cautions that single posts and short windows are noisy (variance, seasonality) — don't overhaul or panic on one data point",
+        "Advises looking at the trend across enough posts and checking sample size before acting",
+        "Distinguishes correlation from causation and recommends isolating variables via a real test (experimentation)",
+        "Notes attribution undercounts true impact (~30-50%), so read directional signals, not false precision"
+      ]
+    },
+    {
+      "name": "honest_scope_interprets_not_fabricates",
+      "input": "Auto-generate my monthly report straight from WoopSocial.",
+      "expect": [
+        "Clarifies WoopSocial has no analytics to auto-pull; the agent builds the report STRUCTURE (outcomes -> content performance -> 3 recommendations) and interprets the native numbers the user provides",
+        "Never invents data and explicitly flags any gaps where numbers weren't provided",
+        "Cites the native source for each figure and respects privacy (aggregate, not individual tracking)",
+        "Encourages first-party data (email, pixels, UTM) for durable conversion measurement"
+      ]
+    },
+    {
+      "name": "keystone_connections",
+      "input": "How does this connect to the rest of my skills?",
+      "expect": [
+        "Frames analytics-and-reporting as the measurement keystone — every 'read native analytics to pick winners' instruction across the library resolves here",
+        "Feeds content-recycling (winner selection), experimentation (reading tests), competitor-analysis (your own side), and social-strategy/goals-and-kpis (targets), plus every growth skill",
+        "Distinguishes it from goals-and-kpis (sets the targets), experimentation (runs the tests), and competitor-analysis (rivals' public numbers)",
+        "Routes the user accordingly"
+      ]
+    }
+  ]
+}

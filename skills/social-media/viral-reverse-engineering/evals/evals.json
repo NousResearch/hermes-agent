@@ -1,0 +1,101 @@
+{
+  "skill": "viral-reverse-engineering",
+  "version": "1.0.0",
+  "description": "Scenario tests for viral-reverse-engineering. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-teardown",
+      "input": "This founder's video about quitting his job got 4M views. Break down why it worked so I can learn from it.",
+      "expect": [
+        "reads brand-profile and audience first",
+        "deconstructs the piece layer by layer (hook, emotional/share driver, structure, packaging, distribution)",
+        "isolates the real driver from incidental features rather than crediting everything",
+        "runs a replicability check (account size, luck, one-time moment, sample size)",
+        "extracts a transferable principle and applies it to the user's niche",
+        "hands execution to the content skills rather than copying the original"
+      ]
+    },
+    {
+      "name": "mechanism-not-surface-copy",
+      "input": "Just recreate this viral video exactly with our product swapped in.",
+      "expect": [
+        "pushes back on copying the surface (same sound/topic/format) as the reason it worked",
+        "extracts the underlying mechanism and applies it with the brand's own angle/substance",
+        "notes that a surface copy is derivative, likely to flop, and risks ripping someone's IP"
+      ]
+    },
+    {
+      "name": "isolate-real-driver",
+      "input": "It went viral because of the trending sound, right? Let's just use that sound.",
+      "expect": [
+        "tests whether the sound was the actual driver or incidental (counterfactual: would it still have popped without it?)",
+        "identifies the more likely real lever (e.g., a relatable hook or emotional trigger)",
+        "warns that copying the wrong factor reproduces the noise, not the success"
+      ]
+    },
+    {
+      "name": "survivorship-luck-honesty",
+      "input": "A creator with 8M followers posted this and it blew up. What's the repeatable formula?",
+      "expect": [
+        "flags that a huge existing audience (and possible luck/timing) confounds the analysis",
+        "is honest that this may not be replicable for a small account and warns against a false principle",
+        "separates what's structurally transferable from what's account-size or one-time luck"
+      ]
+    },
+    {
+      "name": "why-people-shared",
+      "input": "Why did people actually share this post?",
+      "expect": [
+        "analyzes the share-trigger psychology (identity/self-expression, high-arousal emotion, social currency, practical value, relatability), not just describes the content",
+        "ties virality to shareability (people sending it to others), not just views",
+        "names the specific trigger most likely responsible"
+      ]
+    },
+    {
+      "name": "sample-size-one-example",
+      "input": "Here's one viral video. Tell me the pattern I should always follow.",
+      "expect": [
+        "notes that one example is an anecdote, not a pattern",
+        "recommends tearing down multiple viral pieces in the niche to find recurring mechanisms",
+        "frames any single-example takeaway as a hypothesis to test, not a law"
+      ]
+    },
+    {
+      "name": "no-guarantee-viral",
+      "input": "Use this to guarantee our next post goes viral.",
+      "expect": [
+        "does not promise virality; explains luck and distribution are partly outside anyone's control",
+        "frames the value as stacking the odds via proven mechanisms, not guaranteeing outcomes",
+        "stays honest rather than overselling"
+      ]
+    },
+    {
+      "name": "bare-link-sourcing",
+      "input": "https://www.tiktok.com/@someone/video/123456 — reverse engineer why this went viral.",
+      "expect": [
+        "explains it cannot watch the video from a link (platforms are walled)",
+        "runs the structured intake: asks for the hook, transcript/play-by-play, caption + on-screen text, stats, follower count, and top comments (or uses a subtitles/fetch tool if available)",
+        "does not fabricate frames, lines, or details it was not given",
+        "offers to proceed with whatever the user can provide and name the gaps"
+      ]
+    },
+    {
+      "name": "partial-input-name-the-gaps",
+      "input": "Here's the transcript of the video (no screenshots). Why did it work?",
+      "expect": [
+        "analyzes the layers the transcript supports (hook, structure, angle, share-trigger)",
+        "explicitly names what it cannot assess without visuals (the visual hook, packaging, edit/pacing)",
+        "does not invent the on-screen/visual details it wasn't given"
+      ]
+    },
+    {
+      "name": "no-analytics-visible-signals",
+      "input": "Reverse-engineer our own top post from last month.",
+      "expect": [
+        "does not claim WoopSocial provides analytics/performance data",
+        "works from visible/native signals the user can see (views, likes, shares, comments) or pasted data",
+        "still applies mechanism analysis and flags small-sample caution on a single own-post"
+      ]
+    }
+  ]
+}

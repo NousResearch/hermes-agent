@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,6 +63,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return {
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
+        "headers": entry.get("headers", {}) or {},
         "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
         "tenant": entry.get("tenant", ""),
@@ -79,17 +81,45 @@ def _auth_header(auth: dict) -> dict:
 # --------------------------------------------------------------------------
 
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-A2A/1.0", **headers}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
+
+
+# Retry budget for Cloudflare 524 (origin timeout) on blocking POST.
+# Streaming path handles long tasks via SSE keepalives, but the blocking
+# fallback can still hit 524 if the peer takes >100s. Retry with exponential
+# backoff to survive transient origin timeouts.
+_POST_MAX_RETRIES = 3
 
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
+    # Custom peer headers are operator-controlled but Content-Type and
+    # A2A-Version are protocol-owned and must not be clobbered; a config typo
+    # would otherwise cause peer rejection or protocol-version mismatches.
+    # User-Agent stays overridable (some proxies filter user agents).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
-        return json.loads(resp.read().decode("utf-8"))
+    
+    # Retry on 524 (Cloudflare origin timeout) with exponential backoff.
+    # Streaming path handles long tasks via SSE keepalives, but the blocking
+    # fallback can still hit 524 if the peer takes >100s.
+    for attempt in range(_POST_MAX_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 524 and attempt < _POST_MAX_RETRIES - 1:
+                # Exponential backoff: 1s, 2s, 4s
+                time.sleep(2 ** attempt)
+                continue
+            raise
 
 
 def _card_url(base_url: str) -> str:
@@ -153,7 +183,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     outbound redaction, audit, persistence, and metrics.
     """
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **(peer.get("headers", {}) or {})}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
 
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
@@ -385,6 +415,8 @@ def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id:
         peer = {
             "url": peer_entry.get("url", ""),
             "auth": peer_entry.get("auth", {}) or {},
+            "headers": peer_entry.get("headers", {}) or {},
+            "tenant": peer_entry.get("tenant", ""),
             "timeout": int(peer_entry.get("timeout", _DEFAULT_TIMEOUT)),
         }
         reply, _ctx, _state = _send_task(agent_name, peer, message, context_id)
@@ -585,12 +617,20 @@ _HANDLERS = {
 def register_tools(ctx) -> None:
     """Register the client tools in the ``a2a`` toolset."""
     for name, schema in _SCHEMAS.items():
-        function_schema = schema["function"]
+        # The registry stores schemas as-is and ``get_definitions()`` wraps
+        # them in {"type": "function", "function": ...}. ``_SCHEMAS`` entries
+        # are pre-wrapped for OpenAI compatibility, so unwrap here — passing
+        # them wrapped would double-nest them and the model-facing tool defs
+        # (and ``tool_describe``) would come back empty.
+        # NOTE: upstream landed the same unwrap as cefeed4ca using hard
+        # indexing; this variant keeps the defensive ``.get()`` fallbacks
+        # and is a behavioral superset of it.
+        flat = schema.get("function", schema)
         ctx.register_tool(
             name=name,
             toolset="a2a",
-            schema=function_schema,
+            schema=flat,
             handler=_HANDLERS[name],
-            description=function_schema["description"],
+            description=flat.get("description", ""),
             emoji="\U0001f9e9",  # puzzle piece
         )

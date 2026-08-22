@@ -62,6 +62,21 @@ a2a_agents:
     capabilities: [web_search, research]
 ```
 
+Peers fronted by a header-authenticating proxy — e.g. **Cloudflare Access**
+with a service token — take a `headers` map that is merged into every
+outbound request (card fetch and task submit alike):
+
+```yaml
+a2a_agents:
+  hermes-server:
+    url: "https://hermes-server-a2a.example.com"
+    auth: { type: bearer, token: "..." }
+    headers:
+      CF-Access-Client-Id: "<client id>"
+      CF-Access-Client-Secret: "<client secret>"
+    timeout: 300
+```
+
 Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
 
 ## Inbound: being callable

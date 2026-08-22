@@ -15,6 +15,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 
+from . import _RECALL_MODE_CHOICES, _normalize_recall_mode
 from ._oss_providers import (
     LLM_PROVIDERS,
     EMBEDDER_PROVIDERS,
@@ -85,6 +86,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
         "oss_vector_password": "",
         "oss_vector_dbname": "",
         "user_id": "",
+        "recall_mode": "",
         "dry_run": False,
     }
 
@@ -109,6 +111,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
         "--oss-vector-password": "oss_vector_password",
         "--oss-vector-dbname": "oss_vector_dbname",
         "--user-id": "user_id",
+        "--recall-mode": "recall_mode",
     }
 
     i = 0
@@ -231,6 +234,50 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
+def _load_mem0_json(hermes_home: str) -> dict:
+    """Read the native Mem0 config, returning an empty mapping on failure."""
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                return existing
+        except Exception:
+            pass
+    return {}
+
+
+_RECALL_MODE_DESCRIPTIONS = {
+    "hybrid": "Auto-injected context plus Mem0 tools (default)",
+    "context": "Auto-injected context only; Mem0 tools hidden",
+    "tools": "Mem0 tools only; no automatic context injection",
+}
+
+
+def _select_recall_mode(
+    existing_config: dict,
+    flags: dict[str, str],
+    *,
+    interactive: bool,
+) -> str:
+    """Resolve recall mode from an optional flag, existing config, or picker."""
+    requested = flags.get("recall_mode")
+    if requested:
+        return _normalize_recall_mode(requested)
+
+    current = _normalize_recall_mode(existing_config.get("recall_mode"))
+    if not interactive:
+        return current
+
+    items = [(_mode, _RECALL_MODE_DESCRIPTIONS[_mode]) for _mode in _RECALL_MODE_CHOICES]
+    selected = _curses_select(
+        "  Recall mode",
+        items,
+        default=_RECALL_MODE_CHOICES.index(current),
+    )
+    return _RECALL_MODE_CHOICES[selected]
+
+
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     """Platform mode setup — uses the framework's schema-based flow.
 
@@ -242,15 +289,10 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
         {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
+        {"key": "recall_mode", "description": "Memory recall mode", "default": "hybrid", "choices": list(_RECALL_MODE_CHOICES)},
     ]
 
-    existing_config = {}
-    config_path = Path(hermes_home) / "mem0.json"
-    if config_path.exists():
-        try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    existing_config = _load_mem0_json(hermes_home)
 
     provider_config = dict(existing_config)
     env_writes: dict[str, str] = {}
@@ -265,6 +307,14 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         choices = field.get("choices")
         env_var = field.get("env_var")
         url = field.get("url")
+
+        if key == "recall_mode":
+            provider_config[key] = _select_recall_mode(
+                existing_config,
+                flags,
+                interactive=not bool(flags.get("_mode_from_flag") or flags.get("mode")),
+            )
+            continue
 
         if flags.get("api_key") and key == "api_key":
             env_writes["MEM0_API_KEY"] = flags["api_key"]
@@ -339,7 +389,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     print("  Provider config saved")
     if env_writes:
         print("  API keys saved to .env")
-    print("\n  Start a new session to activate.\n")
+    print("\n  Restart Hermes to activate.\n")
 
 
 def _check_selfhosted_server(host: str) -> None:
@@ -365,13 +415,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     server URL (behavioral -> mem0.json) and an optional API key
     (secret -> .env as MEM0_API_KEY).
     """
-    existing_config = {}
-    config_path = Path(hermes_home) / "mem0.json"
-    if config_path.exists():
-        try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    existing_config = _load_mem0_json(hermes_home)
 
     provider_config = dict(existing_config)
 
@@ -403,6 +447,11 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
         "User identifier", default=provider_config.get("user_id") or "hermes-user"
     )
     agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")
+    provider_config["recall_mode"] = _select_recall_mode(
+        existing_config,
+        flags,
+        interactive=not bool(flags.get("_mode_from_flag") or flags.get("mode")),
+    )
 
     if flags.get("dry_run"):
         print(f"\n  [dry-run] Would save config: host={host}, user_id={user_id}, agent_id={agent_id}")
@@ -435,7 +484,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     print("  Provider config saved")
     if env_writes:
         print("  API key saved to .env")
-    print("\n  Start a new session to activate.\n")
+    print("\n  Restart Hermes to activate.\n")
 
 
 def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -444,10 +493,11 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     Non-interactive when --mode was set explicitly via flags (post_setup already
     resolved mode). Interactive only when mode was chosen via curses picker.
     """
-    if not flags.get("_mode_from_flag"):
-        _setup_oss_interactive(hermes_home, config)
+    if not flags.get("_mode_from_flag") and flags.get("mode") != "oss":
+        _setup_oss_interactive(hermes_home, config, flags)
         return
 
+    existing_config = _load_mem0_json(hermes_home)
     oss_config, env_writes = build_oss_config(flags)
     errors = validate_oss_config(oss_config)
     if errors:
@@ -456,25 +506,24 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
         sys.exit(1)
 
     user_id = flags.get("user_id") or os.getenv("USER", "hermes-user")
+    recall_mode = _select_recall_mode(existing_config, flags, interactive=False)
 
     llm_id = oss_config["llm"]["provider"]
     embedder_id = oss_config["embedder"]["provider"]
     vector_id = oss_config["vector_store"]["provider"]
 
     if flags.get("dry_run"):
-        print("\n  [dry-run] OSS config would be:")
-        print(f"    LLM: {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
-        print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
-        print(f"    Vector: {vector_id}")
-        if env_writes:
-            print(f"    Env vars: {', '.join(env_writes.keys())}")
-        _run_connectivity_checks(oss_config)
-        print("  [dry-run] No files written.\n")
+        _print_oss_dry_run(oss_config, vector_id, recall_mode, env_writes)
         return
 
-    if env_writes:
-        _write_env(Path(hermes_home) / ".env", env_writes)
-    _save_mem0_json(hermes_home, {"mode": "oss", "user_id": user_id, "agent_id": "hermes", "oss": oss_config})
+    _persist_oss_config(
+        hermes_home,
+        env_writes,
+        user_id=user_id,
+        agent_id="hermes",
+        recall_mode=recall_mode,
+        oss_config=oss_config,
+    )
 
     _install_provider_deps(llm_id, embedder_id, vector_id)
 
@@ -491,7 +540,7 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
         print("    API keys saved to .env")
     print("    Config saved to mem0.json")
     print("    Provider set in config.yaml")
-    print("\n  Start a new session to activate.\n")
+    print("\n  Restart Hermes to activate.\n")
 
 
 def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
@@ -731,8 +780,56 @@ def _vector_description(pid: str, v: dict) -> str:
     return pid
 
 
-def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
+def _print_oss_dry_run(
+    oss_config: dict,
+    vector_id: str,
+    recall_mode: str,
+    env_writes: dict[str, str],
+) -> None:
+    """Print the shared non-mutating OSS setup preview."""
+    print("\n  [dry-run] OSS config would be:")
+    print(f"    LLM: {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
+    print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
+    print(f"    Vector: {vector_id}")
+    print(f"    Recall: {recall_mode}")
+    if env_writes:
+        print(f"    Env vars: {', '.join(env_writes.keys())}")
+    print("  [dry-run] No files written.\n")
+
+
+def _persist_oss_config(
+    hermes_home: str,
+    env_writes: dict[str, str],
+    *,
+    user_id: str,
+    agent_id: str,
+    recall_mode: str,
+    oss_config: dict,
+) -> None:
+    """Persist the shared OSS credentials and behavioral configuration."""
+    if env_writes:
+        _write_env(Path(hermes_home) / ".env", env_writes)
+    _save_mem0_json(
+        hermes_home,
+        {
+            "mode": "oss",
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "recall_mode": recall_mode,
+            "oss": oss_config,
+        },
+    )
+
+
+def _setup_oss_interactive(
+    hermes_home: str,
+    config: dict,
+    setup_flags: dict[str, str] | None = None,
+) -> None:
     """Interactive OSS setup using curses pickers."""
+    setup_flags = setup_flags or {}
+    dry_run = bool(setup_flags.get("dry_run"))
+    existing_config = _load_mem0_json(hermes_home)
     llm_items = [(v["label"], _provider_description(v)) for pid, v in LLM_PROVIDERS.items()]
     llm_idx = _curses_select("LLM Provider", llm_items, 0)
     llm_id = list(LLM_PROVIDERS.keys())[llm_idx]
@@ -777,12 +874,12 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
         ollama_models.append(llm_model)
     if embedder_id == "ollama":
         ollama_models.append(embedder_model)
-    if ollama_models:
+    if ollama_models and not dry_run:
         _ensure_ollama(ollama_models)
 
     # Auto-setup: ensure pgvector is reachable (offer Docker if not)
     pgvector_config = None
-    if vector_id == "pgvector":
+    if vector_id == "pgvector" and not dry_run:
         pgvector_config = _ensure_pgvector()
         if not pgvector_config:
             # Native PostgreSQL — prompt for connection details
@@ -804,8 +901,13 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
 
     agent_id = input("  Agent ID [hermes]: ").strip()
     agent_id = agent_id or "hermes"
+    recall_mode = _select_recall_mode(
+        existing_config,
+        setup_flags,
+        interactive=not bool(setup_flags.get("recall_mode")),
+    )
 
-    flags = {
+    build_flags = {
         "oss_llm": llm_id,
         "oss_llm_key": env_writes.get(llm_def["env_var"], "") if llm_def.get("env_var") else "",
         "oss_llm_model": llm_model,
@@ -815,21 +917,32 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
         "oss_embedder_url": embedder_url or "",
         "oss_vector": vector_id,
         "user_id": user_id,
+        "recall_mode": recall_mode,
+        "dry_run": dry_run,
     }
 
     if pgvector_config:
-        flags["oss_vector_host"] = pgvector_config["host"]
-        flags["oss_vector_port"] = str(pgvector_config["port"])
-        flags["oss_vector_user"] = pgvector_config["user"]
+        build_flags["oss_vector_host"] = pgvector_config["host"]
+        build_flags["oss_vector_port"] = str(pgvector_config["port"])
+        build_flags["oss_vector_user"] = pgvector_config["user"]
         if pgvector_config.get("password"):
-            flags["oss_vector_password"] = pgvector_config["password"]
-        flags["oss_vector_dbname"] = pgvector_config["dbname"]
+            build_flags["oss_vector_password"] = pgvector_config["password"]
+        build_flags["oss_vector_dbname"] = pgvector_config["dbname"]
 
-    oss_config, _ = build_oss_config(flags)
+    oss_config, _ = build_oss_config(build_flags)
 
-    if env_writes:
-        _write_env(Path(hermes_home) / ".env", env_writes)
-    _save_mem0_json(hermes_home, {"mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config})
+    if dry_run:
+        _print_oss_dry_run(oss_config, vector_id, recall_mode, env_writes)
+        return
+
+    _persist_oss_config(
+        hermes_home,
+        env_writes,
+        user_id=user_id,
+        agent_id=agent_id,
+        recall_mode=recall_mode,
+        oss_config=oss_config,
+    )
 
     _install_provider_deps(llm_id, embedder_id, vector_id)
 
@@ -849,7 +962,7 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
         print("    API keys saved to .env")
     print("    Config saved to mem0.json")
     print("    Provider set in config.yaml")
-    print("\n  Start a new session to activate.\n")
+    print("\n  Restart Hermes to activate.\n")
 
 
 def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> None:
@@ -978,10 +1091,12 @@ def post_setup(hermes_home: str, config: dict) -> None:
         return
 
     if flags["mode"] in ("selfhosted", "self-hosted"):
+        flags["_mode_from_flag"] = True
         _setup_selfhosted(hermes_home, config, flags)
         return
 
     if flags["mode"] == "platform":
+        flags["_mode_from_flag"] = True
         _setup_platform(hermes_home, config, flags)
         return
 

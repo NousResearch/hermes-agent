@@ -398,6 +398,29 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `recall_mode` | `hybrid` | `hybrid`, `context`, or `tools` |
+
+#### Recall modes
+
+Set `recall_mode` in `$HERMES_HOME/mem0.json` (normally `~/.hermes/mem0.json`):
+
+```json
+{
+  "recall_mode": "hybrid"
+}
+```
+
+`hybrid` is the compatibility default. Missing or unsupported values also use `hybrid`. For predictable retrieval volume, `hybrid` and `context` allow at most one automatic exact current-question attempt per turn, while `tools` allows zero. Explicit `mem0_search` calls are separate from this ceiling.
+
+| Mode | Automatic retrieval | Mem0 tools | Semantics |
+|------|---------------------|------------|-----------|
+| `hybrid` | At most one exact current-question attempt per turn | All four | Use injected context first when available. Use `mem0_search` when injected context is absent or insufficient, when the needed query depends on prior conversation state, or when a genuine multi-hop question needs targeted follow-up searches. |
+| `context` | At most one exact current-question attempt per turn | None | Context only. The attempt is best effort: empty results, timeouts, an open breaker, or backend errors inject no Mem0 block, make no backstop call, and do not imply memory was consulted. |
+| `tools` | Zero automatic attempts | All four | No automatic context injection is performed. This trades deterministic current-question recall for zero automatic retrievals, so recall correctness depends on the model issuing an appropriate `mem0_search`. |
+
+Automatic turn capture and synchronization remain enabled in every mode. Recall mode does not change capture or existing write behavior; it changes automatic retrieval and tool exposure.
+
+The provider resolves the mode when it is constructed. After changing `mem0.json`, restart Hermes so a new agent and provider are constructed. `/new` may reuse the existing agent and is not a reliable activation boundary. Setup also accepts `--recall-mode`.
 
 **OSS supported providers:**
 

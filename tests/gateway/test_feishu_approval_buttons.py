@@ -447,3 +447,121 @@ class TestResolveUpdatePrompt:
         assert 1 not in adapter._update_prompt_state
 
 
+# ===========================================================================
+# _feishu_send_with_retry — withdrawn-reply exception fallback
+# ===========================================================================
+
+def _withdrawn_then_success(code):
+    """Return a side-effect that raises a withdrawn-reply error once, then
+    returns a successful response."""
+    state = {"called": 0}
+
+    def _effect(*_args, **_kwargs):
+        state["called"] += 1
+        if state["called"] == 1:
+            exc = RuntimeError("reply target missing")
+            exc.code = code
+            raise exc
+        return SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_new"),
+        )
+
+    return _effect
+
+
+class TestFeishuSendWithRetryExceptionFallback:
+    """Test the exception-path withdrawn-reply fallback.
+
+    Regression for the review feedback that the fallback must perform the
+    reply-free send directly rather than consuming a retry iteration, and must
+    keep retry state local without mutating caller-provided metadata.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fallback_sends_reply_free_directly(self):
+        """A withdrawn-reply exception sends a reply-free message directly."""
+        adapter = _make_adapter()
+
+        with patch.object(
+            adapter, "_send_raw_message", side_effect=_withdrawn_then_success(230011)
+        ) as mock_send:
+            result = await adapter._feishu_send_with_retry(
+                chat_id="oc_12345",
+                msg_type="post",
+                payload='{"content":"hello"}',
+                reply_to="om_old",
+                metadata={"thread_id": None},
+            )
+
+        # The reply attempt failed, then the fallback sent once with
+        # reply_to=None (two _send_raw_message calls total, no retry spin).
+        assert mock_send.call_count == 2
+        kwargs = mock_send.call_args[1]
+        assert kwargs["reply_to"] is None
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["payload"] == '{"content":"hello"}'
+
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_consume_retry_iteration_on_final_attempt(self):
+        """Raising on the final attempt still performs the fallback send."""
+        adapter = _make_adapter()
+
+        with patch.object(feishu_module, "_FEISHU_SEND_ATTEMPTS", 1), patch.object(
+            adapter, "_send_raw_message", side_effect=_withdrawn_then_success(231003)
+        ) as mock_send:
+            result = await adapter._feishu_send_with_retry(
+                chat_id="oc_12345",
+                msg_type="post",
+                payload='{"content":"hello"}',
+                reply_to="om_old",
+                metadata=None,
+            )
+
+        # The send still occurred (2 calls) rather than the loop exiting and
+        # re-raising with no message delivered.
+        assert mock_send.call_count == 2
+        kwargs = mock_send.call_args[1]
+        assert kwargs["reply_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_mutate_caller_metadata(self):
+        """The fallback leaves the caller-provided metadata untouched."""
+        adapter = _make_adapter()
+        metadata = {"thread_id": None, "reply_to_message_id": "om_old"}
+
+        with patch.object(
+            adapter, "_send_raw_message", side_effect=_withdrawn_then_success(230011)
+        ) as mock_send:
+            await adapter._feishu_send_with_retry(
+                chat_id="oc_12345",
+                msg_type="post",
+                payload='{"content":"hello"}',
+                reply_to="om_old",
+                metadata=metadata,
+            )
+
+        # Non-thread metadata is not consulted by the reply-free fallback, so
+        # the caller's dict must be left unchanged.
+        assert metadata == {"thread_id": None, "reply_to_message_id": "om_old"}
+
+    @pytest.mark.asyncio
+    async def test_threaded_failure_still_raises(self):
+        """A withdrawn reply inside a thread still raises, preserving the
+        existing no-top-level-fallback behaviour."""
+        adapter = _make_adapter()
+
+        with patch.object(
+            adapter, "_send_raw_message", side_effect=_withdrawn_then_success(230011)
+        ) as mock_send:
+            with pytest.raises(RuntimeError):
+                await adapter._feishu_send_with_retry(
+                    chat_id="oc_12345",
+                    msg_type="post",
+                    payload='{"content":"hello"}',
+                    reply_to="om_old",
+                    metadata={"thread_id": "omt_thread"},
+                )
+
+        mock_send.assert_called_once()
+

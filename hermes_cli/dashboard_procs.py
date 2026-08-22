@@ -360,24 +360,27 @@ def _kill_stale_dashboard_processes(
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
-    exclude: set[int] | None = None
+    exclude: set[int] = set()
     raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
     if raw_pid:
         # The desktop may manage several backends (one per active profile) and
         # passes them comma-separated; a lone int still parses for back-compat.
-        parsed: set[int] = set()
         for part in raw_pid.split(","):
             part = part.strip()
             if not part:
                 continue
             try:
-                parsed.add(int(part))
+                exclude.add(int(part))
             except (ValueError, TypeError):
                 pass
-        if parsed:
-            exclude = parsed
 
-    pids = _m()._find_stale_dashboard_pids(exclude_pids=exclude)
+    # An SSH-owned backend belongs to an attached Desktop client even when the
+    # updater runs from an unrelated remote shell with no Desktop child PID.
+    # Honor the same validated ownership records as the orphan reaper; killing
+    # one permanently strands that client's fixed SSH port-forward.
+    exclude |= _lock_owned_serve_pids()
+
+    pids = _m()._find_stale_dashboard_pids(exclude_pids=exclude or None)
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 

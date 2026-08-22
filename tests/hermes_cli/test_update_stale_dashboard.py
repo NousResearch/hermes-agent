@@ -14,6 +14,7 @@ History:
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -85,6 +86,43 @@ def _ps_runner(stdout: str):
         # Any other subprocess.run (e.g. taskkill) — benign success stub.
         return MagicMock(returncode=0, stdout="", stderr="")
     return _side_effect
+
+
+def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
+    pid = 4242
+    ownership_id = "a" * 32
+    spawn_nonce = "b" * 16
+    lock_dir = tmp_path / "desktop-ssh" / ownership_id
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "backend.lock.json").write_text(json.dumps({
+        "schemaVersion": 2,
+        "protocolVersion": 1,
+        "ownershipId": ownership_id,
+        "spawnNonce": spawn_nonce,
+        "tokenFingerprint": "c" * 32,
+        "pid": pid,
+        "port": 46369,
+        "profile": "default",
+        "hermesPath": "/opt/hermes/bin/hermes",
+        "hermesHome": str(tmp_path),
+        "logPath": f"{tmp_path}/desktop-ssh/{ownership_id}/{spawn_nonce}.log",
+        "startedAt": "2026-08-21T15:27:39Z",
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+
+    def assert_owned_pid_is_excluded(*, exclude_pids=None):
+        assert exclude_pids is not None
+        assert pid in exclude_pids
+        return []
+
+    with patch(
+        "hermes_cli.main._find_stale_dashboard_pids",
+        side_effect=assert_owned_pid_is_excluded,
+    ):
+        result = _kill_stale_dashboard_processes(restart_managed=True)
+
+    assert result == {"matched": [], "killed": [], "failed": []}
 
 
 class TestFindStaleDashboardPids:

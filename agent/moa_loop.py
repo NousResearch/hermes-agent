@@ -282,6 +282,114 @@ _REFERENCE_SYSTEM_PROMPT = (
 )
 
 
+# Wall-clock ceiling for a slot's ``context_command``. Reference fan-out is
+# already the slow leg of a turn; a retrieval helper that cannot answer inside
+# this budget is dropped rather than allowed to stall the council.
+_SLOT_CONTEXT_TIMEOUT = 80
+
+# Sentinel for a context_command that produced nothing usable. Rendered to the
+# advisor as an explicit retrieval FAILURE, never as an empty record — a
+# PRECEDENT-style advisor told "here is the record: <nothing>" will report "the
+# record is silent", which is a false statement about the world when the real
+# cause is a broken retriever.
+_CONTEXT_FAILED = "__CONTEXT_COMMAND_FAILED__"
+
+
+def _slot_context_block(slot: dict[str, Any],
+                        ref_messages: list[dict[str, Any]] | None = None) -> str:
+    """Run a slot's ``context_command`` and return retrieved evidence, or ''.
+
+    References are tool-less by design (see the fan-out note below), so an
+    advisor cannot look anything up for itself. This is the escape hatch: a
+    per-slot command runs on the host at fan-out time and its stdout is appended
+    to that advisor's system prompt. The advisor still calls no tools — it just
+    receives real retrieved material instead of reasoning from recall.
+
+    The latest user message is passed on argv (``$1``) and on stdin, so helpers
+    can retrieve against the actual question.
+
+    Fails OPEN: any error, timeout, or non-zero exit yields '' and a warning.
+    A broken retriever degrades that advisor to recall-only; it never breaks the
+    turn. Output is capped so a runaway helper cannot blow up the prompt.
+    """
+    cmd = slot.get("context_command")
+    if not cmd:
+        return ""
+    question = ""
+    for m in reversed(ref_messages or []):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            question = m["content"]
+            break
+    argv = [*cmd, question] if isinstance(cmd, list) else [cmd, question]
+    try:
+        import subprocess
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           input=question, timeout=_SLOT_CONTEXT_TIMEOUT)
+        if r.returncode != 0:
+            logger.warning("MoA slot context_command failed (%s): rc=%s %s",
+                           _slot_label(slot), r.returncode, (r.stderr or "")[:200])
+            return _CONTEXT_FAILED
+        out = (r.stdout or "").strip()
+        if not out:
+            return _CONTEXT_FAILED
+        return out[:12000]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("MoA slot context_command error (%s): %s",
+                       _slot_label(slot), exc)
+        return _CONTEXT_FAILED
+
+
+def _slot_ref_system(slot: dict[str, Any],
+                     ref_messages: list[dict[str, Any]] | None = None,
+                     context_block: str | None = None) -> str:
+    """Resolve the system prompt for one reference slot.
+
+    Optional per-slot keys, all absent by default (so stock presets are
+    byte-identical to prior behaviour):
+
+    - ``prompt_hint``: appended to the END of the stock advisory prompt. The
+      light-touch form — the standard framing (no tools, never claim to have
+      executed anything) stays intact and a role nudge lands at the tail. Tail
+      placement also keeps the cacheable prefix stable across turns.
+    - ``prompt``: full replacement of the stock advisory prompt. Use sparingly;
+      a replacement silently drops the stock guardrails.
+    - ``context_command``: host command whose stdout is appended last — real
+      retrieved evidence for an advisor that cannot call tools.
+
+    Order is deliberate: stable text first, volatile last, so the cacheable
+    prefix does not move when retrieved content changes between turns.
+
+    ``context_block`` is an optional precomputed command result. When set
+    (including empty), the slot's ``context_command`` is NOT run again — the
+    caller has already executed it and is reusing the result (command_only
+    fall-through, failure path). The command is a subprocess; running it twice
+    per reference doubles retrieval latency and side effects at fan-out.
+    """
+    base = str(slot.get("prompt") or "").strip() or _REFERENCE_SYSTEM_PROMPT
+    parts = [base]
+    hint = str(slot.get("prompt_hint") or "").strip()
+    if hint:
+        parts.append(hint)
+    if context_block is None:
+        context_block = _slot_context_block(slot, ref_messages)
+    block = context_block
+    if block == _CONTEXT_FAILED:
+        parts.append(
+            "RETRIEVAL FAILED this turn. A lookup was attempted on your behalf and "
+            "returned nothing — the tool broke, not the record. Do NOT conclude that "
+            "the record is empty or silent: you simply have no retrieval this turn. "
+            "Say \"retrieval unavailable\" and advise from the conversation alone."
+        )
+    elif block:
+        parts.append(
+            "Retrieved material for this turn, gathered on your behalf because you "
+            "cannot call tools. Treat it as the record. Cite from it specifically. "
+            "If it does not cover the question, say so rather than guessing:\n\n"
+            + block
+        )
+    return "\n\n".join(parts)
+
+
 
 def _slot_label(slot: dict[str, Any]) -> str:
     label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
@@ -516,12 +624,45 @@ def _run_reference(
 
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
+    # Slot system prompt, resolved inside the try and reused by the failure
+    # path. _slot_ref_system may run the slot's context_command (a subprocess),
+    # so it must never be resolved twice for one reference.
+    ref_system = None
     try:
+        _cmd_out = None
+        # ``command_only``: the slot's ``context_command`` output IS this
+        # advisor's answer — return it and skip the model call entirely.
+        #
+        # For a retriever that already produces a finished advisory (xAI's
+        # /v1/responses x_search returns a cited practitioner summary), running
+        # the slot model over that output is a second generation that adds
+        # latency and tokens without adding evidence. Measured: ~47s search plus
+        # ~56s relay vs ~47s total. Costs nothing when unset.
+        if slot.get("command_only"):
+            _cmd_out = _slot_context_block(slot, ref_messages)
+            if _cmd_out and _cmd_out != _CONTEXT_FAILED:
+                return label, _cmd_out, _RefAccounting(
+                    CanonicalUsage(),
+                    messages=[{"role": "system", "content": "[command_only slot]"},
+                              *ref_messages],
+                    output=_cmd_out,
+                    model=slot.get("model"),
+                    provider=runtime.get("provider") or slot.get("provider"),
+                    temperature=temperature,
+                )
+            logger.warning("MoA command_only slot %s produced nothing; "
+                           "falling through to the model", label)
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        # Optional per-slot ``prompt_hint`` (appended) / ``prompt`` (replaces) —
+        # see _slot_ref_system. Absent by default, so stock is unchanged.
+        # Resolved ONCE, with the command_only attempt reused when present:
+        # resolving again would re-run the slot's context_command subprocess.
+        ref_system = _slot_ref_system(slot, ref_messages, context_block=_cmd_out)
+        messages = [{"role": "system", "content": ref_system},
+                    *ref_messages]
         # Trim to fit THIS reference model's context window. Reference models
         # may have a smaller window than the aggregator (e.g. kimi-k2.7-code
         # @ 262K advising a glm-5.2 @ 1M conversation); without this trim the
@@ -638,7 +779,13 @@ def _run_reference(
         logger.warning("MoA reference model %s failed: %s", label, exc)
         return label, f"[failed: {exc}]", _RefAccounting(
             CanonicalUsage(),
-            messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
+            # Reuse the slot system prompt resolved in the try block — never
+            # re-run the slot's context_command from here (subprocess with
+            # side effects). Stock prompt only when the failure fired before
+            # the resolve (defensive: _run_reference never raises).
+            messages=[{"role": "system",
+                       "content": ref_system if ref_system is not None
+                       else _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
             output=f"[failed: {exc}]",
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
@@ -1741,7 +1888,27 @@ class MoAChatCompletions:
         history.
         """
         guidance = prepared.get("guidance")
-        agg_messages = [dict(message) for message in messages]
+        # Strip internal bookkeeping fields before the aggregator call.
+        # The normal agent loop (chat_completion_helpers) strips these via
+        # its sanitizer; the MoA aggregator path copies messages here and
+        # must do the same. Fields to remove:
+        #   - _db_persisted: stamped by run_agent during persistence
+        #   - tool_name: SQLite FTS bookkeeping on tool-role messages
+        #   - codex_reasoning_items / codex_message_items: reasoning carriers
+        #   - timestamp: gateway replay bookkeeping
+        #   - All underscore-prefixed keys: Hermes-internal scaffolding
+        # Strict providers (Anthropic, Fireworks) reject unknown fields
+        # with HTTP 400 "Extra inputs are not permitted".
+        _MOA_INTERNAL_FIELDS = {"_db_persisted", "tool_name", "codex_reasoning_items",
+                                "codex_message_items", "timestamp"}
+        agg_messages = []
+        for message in messages:
+            clean = dict(message)
+            for field in _MOA_INTERNAL_FIELDS:
+                clean.pop(field, None)
+            for key in [k for k in clean if isinstance(k, str) and k.startswith("_")]:
+                clean.pop(key, None)
+            agg_messages.append(clean)
         if guidance:
             _attach_reference_guidance(agg_messages, str(guidance))
         return {**prepared, "messages": agg_messages}
@@ -2240,7 +2407,19 @@ class MoAChatCompletions:
                 )
 
         guidance: str | None = None
-        agg_messages = [dict(m) for m in messages]
+        # Strip internal bookkeeping fields before the aggregator call (same
+        # fix as the prepared-request path above — strict providers reject
+        # unknown fields with HTTP 400 "Extra inputs are not permitted").
+        _MOA_INTERNAL_FIELDS = {"_db_persisted", "tool_name", "codex_reasoning_items",
+                                "codex_message_items", "timestamp"}
+        agg_messages = []
+        for m in messages:
+            clean = dict(m)
+            for field in _MOA_INTERNAL_FIELDS:
+                clean.pop(field, None)
+            for key in [k for k in clean if isinstance(k, str) and k.startswith("_")]:
+                clean.pop(key, None)
+            agg_messages.append(clean)
         successful_outputs = _successful_references(reference_outputs)
         failed_labels = _failed_reference_labels(reference_outputs)
         joined = ""

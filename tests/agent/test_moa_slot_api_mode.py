@@ -205,3 +205,122 @@ class TestCallLlmApiMode:
         sig = inspect.signature(call_llm)
         assert "api_mode" in sig.parameters
         assert sig.parameters["api_mode"].default is None
+
+
+def test_run_reference_command_only_skips_model_call(monkeypatch):
+    """command_only: the command output IS the answer; no model call happens."""
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("should not be called")
+
+    monkeypatch.setattr(
+        moa_loop, "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": slot["model"],
+            "base_url": "https://api.example/v1",
+            "api_key": "test-key",
+        },
+    )
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop, "_slot_context_block",
+        lambda slot, ref_messages=None: "FINISHED_ADVISORY",
+    )
+
+    label, text, acct = moa_loop._run_reference(
+        {"provider": "custom", "model": "fake-model", "command_only": True},
+        [{"role": "user", "content": "q"}],
+    )
+    assert label == "custom:fake-model"
+    assert text == "FINISHED_ADVISORY"
+    assert calls == []
+    assert acct.usage is not None
+
+
+def test_run_reference_command_only_falls_through_and_runs_command_once(monkeypatch):
+    """Empty/failed command output falls back to the model — and the command
+    is executed exactly once for the whole reference."""
+    from agent import moa_loop
+
+    cmd_calls = []
+
+    def counting_block(slot, ref_messages=None):
+        cmd_calls.append(1)
+        return moa_loop._CONTEXT_FAILED
+
+    monkeypatch.setattr(moa_loop, "_slot_context_block", counting_block)
+    monkeypatch.setattr(
+        moa_loop, "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": slot["model"],
+            "base_url": "https://api.example/v1",
+            "api_key": "test-key",
+        },
+    )
+    monkeypatch.setattr(
+        moa_loop, "call_llm", lambda **kwargs: _response("model answer")
+    )
+    monkeypatch.setattr(
+        moa_loop, "_maybe_apply_moa_cache_control",
+        lambda messages, runtime: messages,
+    )
+
+    label, text, acct = moa_loop._run_reference(
+        {
+            "provider": "custom",
+            "model": "fake-model",
+            "command_only": True,
+            "context_command": ["echo"],
+            "prompt_hint": "act as the red team",
+        },
+        [{"role": "user", "content": "q"}],
+    )
+    assert text == "model answer"
+    # Single execution: the fall-through path reuses the failed result rather
+    # than re-running the subprocess (regression for double-run at fan-out).
+    assert cmd_calls == [1]
+
+
+def test_run_reference_failure_path_does_not_rerun_context_command(monkeypatch):
+    """The failure path reuses the resolved system prompt — no second run."""
+    from agent import moa_loop
+
+    cmd_calls = []
+
+    def counting_block(slot, ref_messages=None):
+        cmd_calls.append(1)
+        return "EVIDENCE"
+
+    monkeypatch.setattr(moa_loop, "_slot_context_block", counting_block)
+    monkeypatch.setattr(
+        moa_loop, "_slot_runtime",
+        lambda slot: {
+            "provider": "custom",
+            "model": slot["model"],
+            "base_url": "https://api.example/v1",
+            "api_key": "test-key",
+        },
+    )
+
+    def boom(**kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(moa_loop, "call_llm", boom)
+    monkeypatch.setattr(
+        moa_loop, "_maybe_apply_moa_cache_control",
+        lambda messages, runtime: messages,
+    )
+
+    label, text, acct = moa_loop._run_reference(
+        {"provider": "custom", "model": "fake-model", "context_command": ["echo"]},
+        [{"role": "user", "content": "q"}],
+    )
+    assert text.startswith("[failed:")
+    assert cmd_calls == [1]
+    assert "EVIDENCE" in " ".join(m.get("content", "") for m in acct.messages)

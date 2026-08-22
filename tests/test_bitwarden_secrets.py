@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.secret_sources import bitwarden as bw  # noqa: E402
+from agent.secret_sources.base import scrub_ansi  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +200,17 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
         return mock.Mock(returncode=0, stdout=payload, stderr="")
 
     monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "sentinel-openai")
+    monkeypatch.setenv("GH_TOKEN", "sentinel-github")
+    monkeypatch.setenv("AUXILIARY_WEB_API_KEY", "sentinel-auxiliary")
+    network_values = {
+        "HTTPS_PROXY": "http://proxy.example:8080",
+        "https_proxy": "http://proxy.lower.example:8080",
+        "NO_PROXY": "localhost,.internal",
+        "SSL_CERT_FILE": "/etc/hermes/custom-ca.pem",
+    }
+    for key, value in network_values.items():
+        monkeypatch.setenv(key, value)
 
     bw.fetch_bitwarden_secrets(
         access_token="0.t",
@@ -208,6 +220,132 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
         server_url="https://vault.bitwarden.eu",
     )
     assert captured_env.get("BWS_SERVER_URL") == "https://vault.bitwarden.eu"
+    assert captured_env.get("BWS_ACCESS_TOKEN") == "0.t"
+    for key, value in network_values.items():
+        assert captured_env.get(key) == value
+    for key in ("OPENAI_API_KEY", "GH_TOKEN", "AUXILIARY_WEB_API_KEY"):
+        assert key not in captured_env
+
+
+def test_bws_failure_redacts_access_token_from_diagnostic(monkeypatch, tmp_path):
+    """Provider diagnostics retain their cause without exposing the token."""
+    token = "0.synthetic-bw-diagnostic-77468"
+    split_token = f"{token[:8]}\x1b[31m{token[8:]}\x1b[0m"
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr=f"provider rejected {split_token}; invalid_client",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bw.fetch_bitwarden_secrets(
+            access_token=token,
+            project_id="project-1",
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+    message = str(exc_info.value)
+    assert token not in scrub_ansi(message)
+    assert "provider rejected <redacted>" in message
+    assert "invalid_client" in message
+
+
+def test_bws_invalid_name_warning_redacts_access_token(monkeypatch, tmp_path):
+    """Provider-controlled invalid keys must not echo the bootstrap token."""
+    token = "0.synthetic-bw-invalid-name-77468"
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": token, "value": "inert-value"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token=token,
+        project_id="project-1",
+        binary=fake_binary,
+        use_cache=False,
+    )
+
+    assert secrets == {}
+    assert len(warnings) == 1
+    assert token not in warnings[0]
+    assert "Skipping secret '<redacted>'" in warnings[0]
+
+
+def test_bws_failure_redacts_c1_csi_split_access_token(monkeypatch, tmp_path):
+    """8-bit CSI cannot split a token around exact diagnostic redaction."""
+    token = "0.synthetic-bw-c1-diagnostic-77468"
+    split_token = f"{token[:8]}\x9b31m{token[8:]}\x9b0m"
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr=f"provider rejected {split_token}; invalid_client",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bw.fetch_bitwarden_secrets(
+            access_token=token,
+            project_id="project-1",
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "provider rejected <redacted>" in message
+    assert "\x9b" not in message
+
+
+@pytest.mark.parametrize(
+    "control", ["\x00", "\x07", "\x08", "\x09", "\x0b", "\x0c", "\x0d", "\x0e", "\x0f", "\x1b", "\x1b["]
+)
+def test_bws_failure_redacts_access_token_split_by_bare_controls(
+    monkeypatch, tmp_path, control
+):
+    token = "0.synthetic-bw-control-diagnostic-77468"
+    split_token = f"{token[:8]}{control}{token[8:]}"
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr=f"provider rejected {split_token}; invalid_client",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bw.fetch_bitwarden_secrets(
+            access_token=token,
+            project_id="project-1",
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "provider rejected <redacted>" in message
+    assert "\x1b" not in message
 
 
 
@@ -517,7 +655,3 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
-
-
-
-

@@ -44,7 +44,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, FrozenSet, List, MutableMapping, Optional, Sequence
+from typing import (
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+)
 
 # Bump ONLY for breaking changes to the required contract surface
 # (abstract-method signatures, FetchResult required fields).  Additive
@@ -256,13 +265,31 @@ class SecretSource(ABC):
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# ANSI CSI/OSC escape sequences — helper-CLI stderr often carries color
-# codes that must not reach Hermes' own startup output.
-# NOTE: intentionally NOT migrated to tools.ansi_strip.strip_ansi — the
-# optional terminator here (``(?:\x07|\x1b\\)?``) also strips *unterminated*
-# OSC sequences (common when a CLI is killed mid-write), which strip_ansi
-# leaves untouched. strip_ansi is not a superset of this regex.
-_ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
+# ECMA-48 control sequences — helper-CLI stderr often carries controls that
+# must not reach Hermes' own startup output or split an exact token before it
+# is redacted.  This intentionally remains separate from
+# ``tools.ansi_strip.strip_ansi``: the ``$`` alternatives also consume an
+# unterminated OSC/DCS/SOS/PM/APC string, which is common when a CLI is killed
+# mid-write and is required for safe provider-output handling.
+_ANSI_RE = re.compile(
+    r"(?:"
+    # 7-bit ESC-prefixed forms: CSI, OSC, DCS/SOS/PM/APC, nF, Fe/Fs.
+    r"\x1b(?:"
+    r"\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\][\s\S]*?(?:\x07|\x1b\\|$)"
+    r"|[PX^_][\s\S]*?(?:\x1b\\|$)"
+    r"|[\x20-\x2f]+[\x30-\x7e]"
+    r"|[\x30-\x7e]"
+    r")"
+    # 8-bit C1 forms: CSI, OSC, DCS/SOS/PM/APC.
+    r"|\x9b[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\x9d[\s\S]*?(?:\x07|\x9c|\x1b\\|$)"
+    r"|(?:\x90|\x98|\x9e|\x9f)[\s\S]*?(?:\x9c|\x1b\\|$)"
+    # Any remaining C1 byte is itself a non-printing control.
+    r"|[\x80-\x9f]"
+    r")",
+    re.DOTALL,
+)
 
 
 def is_valid_env_name(name: str) -> bool:
@@ -271,8 +298,352 @@ def is_valid_env_name(name: str) -> bool:
 
 
 def scrub_ansi(text: str) -> str:
-    """Strip ANSI escape sequences (whole CSI/OSC sequences, not just ESC)."""
+    """Strip ANSI/ECMA-48 controls, including 8-bit C1 forms."""
     return _ANSI_RE.sub("", text or "")
+
+
+# Provider diagnostics need a slightly different policy from the general
+# ECMA-48 scrubber above.  An ambiguous ``ESC`` followed by a printable byte
+# is deliberately treated as a lone ESC here: consuming the following byte
+# can remove the first character of a known token before exact redaction.  The
+# complete, unambiguous CSI/OSC/DCS families remain stripped, including their
+# unterminated forms.
+_PROVIDER_ANSI_RE = re.compile(
+    r"(?:"
+    r"\x1b(?:"
+    r"\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\][\s\S]*?(?:\x07|\x1b\\|$)"
+    r"|[PX^_][\s\S]*?(?:\x1b\\|$)"
+    r")"
+    r"|\x9b[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\x9d[\s\S]*?(?:\x07|\x9c|\x1b\\|$)"
+    r"|(?:\x90|\x98|\x9e|\x9f)[\s\S]*?(?:\x9c|\x1b\\|$)"
+    r"|[\x80-\x9f]"
+    r")",
+    re.DOTALL,
+)
+
+# Preserve ordinary tabs and line feeds for readable diagnostics.  Every
+# other C0/C1 byte is removed; in particular CR is not retained because it
+# can overwrite an earlier terminal line and it must not split a token.
+_PROVIDER_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def normalize_provider_output(text: str) -> str:
+    """Normalize untrusted provider output before it is surfaced.
+
+    Full ECMA-48 strings are removed, ambiguous/lone ESC bytes are removed
+    without consuming adjacent printable text, and unsafe bare controls are
+    dropped.  Tabs and LF remain for useful line structure; CR is removed so
+    it cannot spoof terminal output or split a known secret.
+    """
+    normalized = _PROVIDER_ANSI_RE.sub("", text or "")
+    return _PROVIDER_CONTROL_RE.sub("", normalized)
+
+
+def _redact_secret_with_escape_payload(
+    text: str,
+    secret: str,
+    replacement: str,
+) -> str:
+    """Redact one secret across controls and malformed escape payloads.
+
+    Provider output is untrusted and may contain an incomplete or malformed
+    escape sequence between two characters of a credential.  A regular
+    expression for that language is both difficult to make complete and easy
+    to make catastrophically backtracking.  This scanner keeps at most two
+    candidate states per secret character instead:
+
+    * C0/C1 controls are transparent gaps;
+    * after an ESC, printable bytes are a possible malformed payload, so the
+      scanner retains both the path which skips a byte and the path which
+      consumes it as the next secret character;
+    * normal printable bytes must match the next secret character exactly.
+
+    The state count is bounded by the secret length and every input byte is
+    processed by that finite automaton once.  Completed matches are
+    represented as source spans, so one replacement covers the credential and
+    any controls/payload separating its characters.  This preserves the
+    existing readable diagnostic shape after the later ANSI/control
+    normalization while never leaving a matched token character in the output.
+    """
+    if not text or not secret:
+        return text or ""
+
+    # Credential values should not contain controls, but retaining exact
+    # replacement semantics for such a value is safer than interpreting one
+    # of its bytes as a scanner separator.
+    if any(
+        ord(char) < 0x20 or 0x7f <= ord(char) <= 0x9f
+        for char in secret
+    ):
+        return text.replace(secret, replacement)
+
+    secret_length = len(secret)
+    # A repeated first-character stream can legitimately create several
+    # finite candidates while an ESC payload is open.  Keep the total work
+    # linear in the untrusted diagnostic; if the candidate automaton would
+    # exceed its budget, fail closed by replacing the entire diagnostic.  No
+    # provider-controlled text can then survive with a credential fragment.
+    transition_budget = max(4096, len(text) * 8)
+    transitions = 0
+    # A candidate is (start offset, in_escape_gap); the matched source
+    # characters need not be retained because a completed path's source span
+    # is exactly ``start:index + 1``.  Avoiding per-transition position tuples
+    # keeps long provider tokens from turning the finite scanner into a large
+    # allocation loop.
+    # Keep only the newest path for each (matched length, gap) state.  Any
+    # future input has the same transition possibilities for those states;
+    # retaining the newest path prevents stale candidates from spanning the
+    # entire diagnostic while keeping the automaton finite.
+    active: dict[tuple[int, bool], int] = {}
+    spans: list[tuple[int, int]] = []
+
+    def add_candidate(
+        target: dict[tuple[int, bool], int],
+        matched: int,
+        in_escape_gap: bool,
+        start: int,
+        end: int,
+    ) -> None:
+        if matched >= secret_length:
+            spans.append((start, end))
+            return
+        target[(matched, in_escape_gap)] = start
+
+    for index, char in enumerate(text):
+        codepoint = ord(char)
+        is_control = codepoint < 0x20 or 0x7f <= codepoint <= 0x9f
+        starts_escape_gap = char == "\x1b" or codepoint in {
+            0x90, 0x98, 0x9B, 0x9D, 0x9E, 0x9F
+        }
+        next_active: dict[tuple[int, bool], int] = {}
+
+        for (matched, in_escape_gap), start in active.items():
+            transitions += 1
+            if transitions > transition_budget:
+                return replacement
+            if is_control:
+                # ESC and the 8-bit C1 string/CSI introducers start a
+                # permissive malformed-payload gap. Other C0/C1 bytes are
+                # transparent without changing the current mode.
+                add_candidate(
+                    next_active,
+                    matched,
+                    in_escape_gap or starts_escape_gap,
+                    start,
+                    index + 1,
+                )
+                continue
+
+            expected = secret[matched]
+            if in_escape_gap:
+                # The payload may contain arbitrary printable bytes.  Keep
+                # the skip path and, when this byte is the expected secret
+                # character, a consuming path which exits the gap.
+                add_candidate(
+                    next_active,
+                    matched,
+                    True,
+                    start,
+                    index + 1,
+                )
+                if char == expected:
+                    add_candidate(
+                        next_active,
+                        matched + 1,
+                        False,
+                        start,
+                        index + 1,
+                    )
+                continue
+
+            if char == expected:
+                add_candidate(
+                    next_active,
+                    matched + 1,
+                    False,
+                    start,
+                    index + 1,
+                )
+
+        # A secret may begin at any ordinary character, including one inside
+        # a malformed escape payload.  It is deliberately added after the
+        # active transitions so a one-character secret is handled uniformly.
+        if char == secret[0]:
+            add_candidate(next_active, 1, False, index, index + 1)
+        active = next_active
+
+    if not spans:
+        return text
+
+    # Merge overlapping/adjacent matches.  Adjacent occurrences should retain
+    # the historical single marker shape, and overlap can arise when a secret
+    # has a repeated prefix.
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        pieces.append(text[cursor:start])
+        pieces.append(replacement)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def redact_provider_output(
+    text: str,
+    secrets: Iterable[str],
+    *,
+    replacement: str = "<redacted>",
+) -> str:
+    """Normalize provider output and redact every explicitly known secret.
+
+    ``secrets`` must contain only authentication values intentionally passed to
+    the provider child.  Matching tolerates all C0/C1 controls between secret
+    characters, including tabs, newlines, CR, and a lone ESC, while preserving
+    those characters in unrelated diagnostic text where safe.
+    """
+    normalized = text or ""
+    values = sorted(
+        {value for value in secrets if isinstance(value, str) and value},
+        key=len,
+        reverse=True,
+    )
+    if not values:
+        return normalize_provider_output(normalized)
+
+    # Keep the marker out of the untrusted text while ANSI normalization runs.
+    # A literal ``<redacted>`` contains CSI-final characters; if it follows an
+    # 8-bit CSI introducer in provider output, the normalizer could consume the
+    # beginning of the marker as an escape payload.  Select a supplementary
+    # Unicode sentinel absent from the complete diagnostic and every supplied
+    # secret, so later scanner passes cannot match it. If a hostile diagnostic
+    # occupies the whole candidate range, fail closed rather than using a
+    # colliding fallback that would corrupt unrelated output.
+    occupied = set(normalized)
+    for value in values:
+        occupied.update(value)
+    sentinel = next(
+        (
+            chr(codepoint)
+            for codepoint in range(0x100000, 0x10FFFE)
+            if chr(codepoint) not in occupied
+        ),
+        None,
+    )
+    if sentinel is None:
+        return replacement
+    for secret in values:
+        # Redact before ANSI parsing as well: a malformed ESC sequence can
+        # contain arbitrary printable payload that a strict parser would
+        # otherwise partially consume as its final character.  The scanner
+        # is finite-state and linear in the diagnostic length; do not replace
+        # it with a nested regex.
+        normalized = _redact_secret_with_escape_payload(
+            normalized, secret, sentinel
+        )
+    normalized = normalize_provider_output(normalized)
+    return normalized.replace(sentinel, replacement)
+
+
+def redact_secret_value(
+    text: str, secret: str, *, replacement: str = "<redacted>"
+) -> str:
+    """Replace an exact secret value before provider text is surfaced.
+
+    Provider diagnostics are untrusted output, so broad pattern-based
+    redaction is not sufficient when the candidate credential is already
+    known to the caller.  Exact replacement preserves the provider's other
+    useful context without allowing it to echo that credential.
+    """
+    if not text or not secret:
+        return text or ""
+    return text.replace(secret, replacement)
+
+
+# The provider CLIs only need process-location/locale basics plus the standard
+# network/TLS settings used by Hermes' own HTTP clients.  In particular, do
+# not add a broad ``*_TOKEN``/``*_API_KEY`` pattern here: the allowlist is
+# deliberately explicit at each provider call site so its authentication and
+# session contract stays reviewable.  Proxy values can contain connection
+# credentials, but are intentionally limited to the standard proxy names;
+# unrelated credentials remain excluded.
+_PROVIDER_ENV_BASE = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "APPDATA",
+    "LOCALAPPDATA",
+    # Windows preserves the mixed-case spelling in some plain per-fetch
+    # mappings; keep it alongside the normalized form used by os.environ.
+    "SystemRoot",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HERMES_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+
+
+def build_minimal_provider_env(
+    source_env: Optional[Mapping[str, str]] = None,
+    *,
+    allow_env: Sequence[str] = (),
+    extra_env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+    """Build a provider-child environment from an explicit allowlist.
+
+    ``source_env`` defaults to the active per-fetch environment, which keeps
+    registry-managed source fetches isolated without changing ``os.environ``.
+    Callers add only the provider's required token/session/account variables
+    through ``allow_env`` or ``extra_env``.
+    """
+    source = source_env if source_env is not None else get_source_environment()
+    env: Dict[str, str] = {}
+    for key in (*_PROVIDER_ENV_BASE, *allow_env):
+        val = source.get(key)
+        if val is not None:
+            env[key] = val
+    if extra_env:
+        env.update(extra_env)
+    env["NO_COLOR"] = "1"
+    return env
+
+
+_VERSION_RE = re.compile(r"(?<![\w.])v?\d+(?:\.\d+){1,3}(?![\w.])")
+
+
+def sanitize_provider_version(output: str) -> str:
+    """Return only a plain numeric version from provider-controlled output."""
+    first_line = scrub_ansi(output or "").strip().splitlines()
+    if not first_line:
+        return "version unknown"
+    match = _VERSION_RE.search(first_line[0])
+    return match.group(0) if match else "version unknown"
 
 
 def run_secret_cli(
@@ -302,16 +673,10 @@ def run_secret_cli(
     surface); returns the completed process otherwise — callers own
     returncode interpretation.
     """
-    base_keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP",
-                 "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
-    env: Dict[str, str] = {}
-    for key in (*base_keep, *allow_env):
-        val = os.environ.get(key)
-        if val is not None:
-            env[key] = val
-    if extra_env:
-        env.update(extra_env)
-    env.setdefault("NO_COLOR", "1")
+    env = build_minimal_provider_env(
+        allow_env=allow_env,
+        extra_env=extra_env,
+    )
 
     try:
         proc = subprocess.run(  # noqa: S603 — argv list, no shell

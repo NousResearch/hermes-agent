@@ -22,7 +22,7 @@ Hermes never authenticates on your behalf and never downloads `op`: it shells ou
 
 When you authenticate with a **service-account token**, that token is itself the bootstrap credential Hermes needs *before* it can resolve any `op://` reference. It must be present in `os.environ` of every process that resolves secrets — including cron jobs (`kanban.dispatch_in_gateway: false`), subprocess invocations, CLI runs, macOS launchd agents, and Docker containers — not just the interactive gateway. There are three ways to make it available, in order of precedence:
 
-1. **In `~/.hermes/.env` (recommended).** `hermes secrets onepassword setup --token <token>` writes the token to `~/.hermes/.env`, exactly like Bitwarden's `BWS_ACCESS_TOKEN`. Because `load_hermes_dotenv()` always loads `.env`, the token is available everywhere with zero extra setup. This is the simplest reliable option.
+1. **In `~/.hermes/.env` (recommended).** Inject `OP_SERVICE_ACCOUNT_TOKEN` from your secret provider, then run `hermes secrets onepassword setup` without a token flag. Hermes stores the token in `~/.hermes/.env`, exactly like Bitwarden's `BWS_ACCESS_TOKEN`. Because `load_hermes_dotenv()` always loads `.env`, the token is available everywhere with zero extra setup. This is the simplest reliable option.
 
 2. **In `~/.hermes/.op.env` (gitignored).** If you'd rather keep the service-account token out of `.env` — for example so `.env` can be checked into a private dotfiles repo while the token stays out of version control — place it in `~/.hermes/.op.env`:
 
@@ -61,6 +61,24 @@ hermes secrets onepassword setup
 ```
 
 This verifies `op` is on `PATH` (or use `--binary-path`), records your account/token settings, checks for an active session, and flips `secrets.onepassword.enabled: true`. Non-interactive flags:
+
+When `OP_SERVICE_ACCOUNT_TOKEN` (or the configured `--token-env` name) is
+already injected before startup, setup stores that captured token in
+`~/.hermes/.env` in both interactive and non-interactive sessions. A desktop
+session without a service-account token is used for verification only and is
+not persisted as a service-account token.
+
+```bash
+# Inject OP_SERVICE_ACCOUNT_TOKEN from your secret provider or CI secret store.
+hermes secrets onepassword setup \
+  --account my.1password.com \
+  --token-env OP_SERVICE_ACCOUNT_TOKEN
+```
+
+Use the configured environment variable for non-interactive guidance. The
+`--token` flag remains a compatibility fallback for wrappers that cannot
+inject it, but its value can appear in process listings, shell history, or CI
+logs and Hermes warns when it is used:
 
 ```bash
 hermes secrets onepassword setup \
@@ -101,6 +119,11 @@ From now on, every `hermes` invocation resolves the references at startup. You'l
 | `hermes secrets onepassword disable` | Flip `enabled: false`; leaves mappings in place |
 
 `op` and `1password` are accepted as aliases for `onepassword`.
+
+For non-interactive token rotation, inject the configured
+`service_account_token_env` name before invoking `hermes secrets onepassword
+token`; Hermes captures that rotation input before loading a persisted `.env`
+value, so an older token there does not shadow the injected one.
 
 ## Configuration
 
@@ -157,7 +180,7 @@ Successful, complete pulls are cached in-process and on disk under `<hermes_home
 
 - A 1Password service-account token can read every secret the account has access to. Store it in `~/.hermes/.env` (not `config.yaml`), and revoke + regenerate from 1Password if it leaks.
 - Hermes refuses to let a resolved value overwrite the token env var itself, even with `override_existing: true`.
-- The `op` child process gets a minimal allowlisted environment (auth/session vars + `PATH`/`HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child.
+- The `op` child process gets a minimal allowlisted environment (auth/session vars, `PATH`/`HOME`, standard proxy settings `HTTP_PROXY`, `http_proxy`, `NO_PROXY`, and the `REQUESTS_CA_BUNDLE` trust-store override), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child.
 - References are validated to start with `op://`, and the reference is passed after a `--` option terminator so a crafted value can't be parsed as an `op` flag.
 
 ## When NOT to use this

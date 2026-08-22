@@ -27,13 +27,23 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.secret_sources import onepassword as op_src
+from agent.secret_sources.base import (
+    build_minimal_provider_env,
+    is_valid_env_name,
+    redact_provider_output,
+    sanitize_provider_version,
+)
 from hermes_cli.config import (
     get_env_path,
     load_config,
     save_config,
     save_env_value,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import (
+    cli_secret_arg_warning,
+    get_pre_dotenv_rotation_input,
+    masked_secret_prompt,
+)
 
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"
@@ -62,7 +72,10 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.add_argument(
         "--token",
-        help="Service-account token to store in .env non-interactively",
+        help=(
+            "Service-account token to store in .env non-interactively "
+            "(warning: the value is visible in process listings and shell history)"
+        ),
     )
     setup.add_argument(
         "--binary-path",
@@ -79,7 +92,10 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     token.add_argument(
         "--token",
-        help="Provide the new token non-interactively (default: masked prompt)",
+        help=(
+            "Provide the new token non-interactively (default: masked prompt; "
+            "warning: the value is visible in process listings and shell history)"
+        ),
     )
     token.add_argument(
         "--no-verify",
@@ -127,12 +143,43 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
 
     cfg = load_config()
-    op_cfg = cfg.setdefault("secrets", {}).setdefault("onepassword", {})
+    secrets_root = cfg.get("secrets")
+    if not isinstance(secrets_root, dict):
+        secrets_root = {}
+        cfg["secrets"] = secrets_root
+    op_cfg = secrets_root.get("onepassword")
+    if not isinstance(op_cfg, dict):
+        op_cfg = {}
+        secrets_root["onepassword"] = op_cfg
+    configured_token_env = op_cfg.get("service_account_token_env")
+    token_env = args.token_env or (
+        configured_token_env
+        if isinstance(configured_token_env, str)
+        else _DEFAULT_TOKEN_ENV
+    )
+    token_env = token_env.strip() if isinstance(token_env, str) else _DEFAULT_TOKEN_ENV
+    if not token_env:
+        token_env = _DEFAULT_TOKEN_ENV
+    if not is_valid_env_name(token_env):
+        if isinstance(args.token_env, str) and args.token_env.strip():
+            console.print(
+                f"  [yellow]⚠ {args.token_env.strip()!r} is not a valid "
+                f"environment variable name; using {_DEFAULT_TOKEN_ENV}.[/yellow]"
+            )
+        token_env = _DEFAULT_TOKEN_ENV
+    if args.token:
+        console.print(
+            f"[yellow]⚠ {cli_secret_arg_warning('--token', token_env)}[/yellow]"
+        )
 
     # ------------------------------------------------------------------ binary
     console.print()
     console.print("[bold]Step 1[/bold]  Locate the op CLI")
-    binary_path = (args.binary_path or op_cfg.get("binary_path", "") or "").strip()
+    configured_binary_path = op_cfg.get("binary_path", "")
+    binary_path = args.binary_path or (
+        configured_binary_path if isinstance(configured_binary_path, str) else ""
+    )
+    binary_path = binary_path.strip() if isinstance(binary_path, str) else ""
     binary = op_src.find_op(binary_path)
     if binary is None:
         if binary_path:
@@ -153,20 +200,30 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # ------------------------------------------------------------------- token
     console.print()
     console.print("[bold]Step 2[/bold]  Authentication")
-    token_env = (args.token_env or op_cfg.get("service_account_token_env")
-                 or _DEFAULT_TOKEN_ENV).strip()
     op_cfg["service_account_token_env"] = token_env
 
     token = (args.token or "").strip()
+    pre_dotenv_token = ""
+    if not token:
+        pre_dotenv_token = get_pre_dotenv_rotation_input(token_env).strip()
     if token:
         save_env_value(token_env, token)
         os.environ[token_env] = token
         console.print(f"  [green]✓[/green] service-account token stored in "
                       f"{get_env_path()} as {token_env}")
+    elif pre_dotenv_token:
+        token = pre_dotenv_token
+        save_env_value(token_env, token)
+        os.environ[token_env] = token
+        console.print(
+            f"  [green]✓[/green] service-account token from {token_env} "
+            f"stored in {get_env_path()}"
+        )
     elif os.environ.get(token_env):
         console.print(f"  [green]✓[/green] using service-account token from {token_env}")
     else:
-        who = _op_whoami(binary, op_cfg.get("account", ""))
+        account = op_cfg.get("account", "")
+        who = _op_whoami(binary, account if isinstance(account, str) else "")
         if who:
             console.print(f"  [green]✓[/green] using existing op session ({who})")
         else:
@@ -308,21 +365,48 @@ def cmd_token(args: argparse.Namespace) -> int:
     """
     console = Console()
     cfg = load_config()
-    op_cfg = (cfg.get("secrets") or {}).get("onepassword") or {}
-    token_env = op_cfg.get("service_account_token_env", _DEFAULT_TOKEN_ENV)
+    secrets_root = cfg.get("secrets")
+    op_cfg = (
+        secrets_root.get("onepassword")
+        if isinstance(secrets_root, dict)
+        else None
+    )
+    if not isinstance(op_cfg, dict):
+        op_cfg = {}
+    configured_token_env = op_cfg.get("service_account_token_env")
+    token_env = (
+        configured_token_env.strip()
+        if isinstance(configured_token_env, str) and configured_token_env.strip()
+        else _DEFAULT_TOKEN_ENV
+    )
+    if not is_valid_env_name(token_env):
+        token_env = _DEFAULT_TOKEN_ENV
     account = str(op_cfg.get("account", "") or "").strip()
     binary_path = str(op_cfg.get("binary_path", "") or "").strip()
 
     token = (args.token or "").strip()
+    if token:
+        console.print(
+            f"[yellow]⚠ {cli_secret_arg_warning('--token', token_env)}[/yellow]"
+        )
     if not token:
         if not sys.stdin.isatty():
-            console.print("[red]No TTY — pass the token with --token.[/red]")
+            token = (
+                get_pre_dotenv_rotation_input(token_env)
+                or os.environ.get(token_env, "")
+            ).strip()
+        if not token and not sys.stdin.isatty():
+            console.print(
+                f"[red]No TTY — set {token_env} through your secret provider "
+                "or pass the token with --token (argv exposure warning).[/red]"
+            )
             return 1
-        console.print(
-            "Create a new service-account token at "
-            "https://my.1password.com → Developer → Service Accounts.\n"
-        )
-        token = masked_secret_prompt(f"Paste new token ({token_env}): ").strip()
+        if not token:
+            console.print(
+                "Create a new service-account token at "
+                "https://my.1password.com → Developer → Service Accounts.\n"
+            )
+            token = masked_secret_prompt(f"Paste new token ({token_env}): ").strip()
     if not token:
         console.print("[red]Empty token, aborting.[/red]")
         return 1
@@ -485,6 +569,7 @@ def _op_version(binary: Path) -> str:
     try:
         res = subprocess.run(
             [str(binary), "--version"],
+            env=build_minimal_provider_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -492,7 +577,7 @@ def _op_version(binary: Path) -> str:
             timeout=5,
         )
         if res.returncode == 0:
-            return (res.stdout or res.stderr).strip().splitlines()[0]
+            return sanitize_provider_version(res.stdout or res.stderr)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "version unknown"
@@ -510,13 +595,10 @@ def _op_whoami(
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    # 1Password CLI child: intentionally receives the service-account token —
-    # no scrub, no HOME rewrite (op stores auth state under the real home).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env.setdefault("NO_COLOR", "1")
-    if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    # Reuse the startup source's allowlist: preserve op session/account
+    # material and the required service-account token, never unrelated
+    # credentials loaded by Hermes.
+    env = op_src._op_child_env(token_value)
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
@@ -526,5 +608,5 @@ def _op_whoami(
         return None
     if res.returncode != 0:
         return None
-    out = (res.stdout or "").strip()
-    return out.replace("\n", " ")[:120] or "authenticated"
+    out = redact_provider_output(res.stdout or "", op_src._op_auth_values(env))
+    return out.strip().replace("\n", " ")[:120] or "authenticated"

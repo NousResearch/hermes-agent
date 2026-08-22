@@ -24,8 +24,10 @@ from agent.secret_sources.base import (  # noqa: E402
     ErrorKind,
     FetchResult,
     SecretSource,
+    build_minimal_provider_env,
     is_valid_env_name,
     run_secret_cli,
+    sanitize_provider_version,
     scrub_ansi,
 )
 from agent.secret_sources import registry as reg  # noqa: E402
@@ -222,6 +224,85 @@ class TestHelpers:
         assert not any(k.endswith(("_API_KEY", "_TOKEN", "_SECRET"))
                        for k in child_env)
         assert "NO_COLOR" in child_env
+
+    @pytest.mark.parametrize(
+        "control",
+        [
+            "\x9b31m",                         # 8-bit CSI
+            "\x9d0;title\x07",                 # 8-bit OSC
+            "\x90provider-data\x9c",           # 8-bit DCS
+            "\x98provider-data\x9c",           # 8-bit SOS
+            "\x9eprovider-data\x9c",           # 8-bit PM
+            "\x9fprovider-data\x9c",           # 8-bit APC
+            "\x1bPprovider-data\x1b\\",       # 7-bit DCS
+        ],
+    )
+    def test_scrub_ansi_removes_c1_and_ecma48_strings(self, control):
+        token = "synthetic-token-77468"
+        split = f"provider {token[:9]}{control}{token[9:]}"
+
+        scrubbed = scrub_ansi(split)
+
+        assert scrubbed == "provider " + token
+        assert "\x9b" not in scrubbed
+
+    def test_scrub_ansi_consumes_unterminated_osc(self):
+        token = "synthetic-token-77468"
+
+        scrubbed = scrub_ansi(f"provider\x1b]0;{token}")
+
+        assert scrubbed == "provider"
+        assert token not in scrubbed
+
+    def test_build_minimal_provider_env_keeps_only_explicit_provider_values(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "sentinel-openai")
+        monkeypatch.setenv("GH_TOKEN", "sentinel-github")
+        monkeypatch.setenv("BWS_SERVER_URL", "https://vault.example")
+
+        env = build_minimal_provider_env(
+            allow_env=("BWS_SERVER_URL",),
+            extra_env={"BWS_ACCESS_TOKEN": "synthetic-token"},
+        )
+
+        assert env["BWS_ACCESS_TOKEN"] == "synthetic-token"
+        assert env["BWS_SERVER_URL"] == "https://vault.example"
+        assert "OPENAI_API_KEY" not in env
+        assert "GH_TOKEN" not in env
+
+    def test_build_minimal_provider_env_preserves_network_tls_settings(
+        self, monkeypatch
+    ):
+        network_values = {
+            "HTTPS_PROXY": "http://proxy.upper:8080",
+            "HTTP_PROXY": "http://http.upper:8080",
+            "ALL_PROXY": "socks5://all.upper:1080",
+            "NO_PROXY": "localhost,.internal",
+            "https_proxy": "http://proxy.lower:8080",
+            "http_proxy": "http://http.lower:8080",
+            "all_proxy": "socks5://all.lower:1080",
+            "no_proxy": "127.0.0.1,.corp",
+            "HERMES_CA_BUNDLE": "/etc/hermes/ca.pem",
+            "SSL_CERT_FILE": "/etc/ssl/custom.pem",
+            "REQUESTS_CA_BUNDLE": "/etc/requests/custom.pem",
+            "CURL_CA_BUNDLE": "/etc/curl/custom.pem",
+        }
+        for key, value in network_values.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("OPENAI_API_KEY", "sentinel-openai")
+        monkeypatch.setenv("GH_TOKEN", "sentinel-github")
+
+        env = build_minimal_provider_env()
+
+        for key, value in network_values.items():
+            assert env[key] == value
+        assert "OPENAI_API_KEY" not in env
+        assert "GH_TOKEN" not in env
+
+    def test_sanitize_provider_version_drops_untrusted_text(self):
+        assert sanitize_provider_version("bws v2.0.0 (secret-value)") == "v2.0.0"
+        assert sanitize_provider_version("version synthetic-token") == "version unknown"
 
 
 

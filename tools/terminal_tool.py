@@ -47,7 +47,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 
 from utils import env_var_enabled
 
@@ -982,7 +982,10 @@ def _rewrite_compound_background(command: str) -> str:
     return result
 
 
-def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
+def _transform_sudo_command(
+    command: str | None,
+    sudo_nopasswd_check: Callable[[], bool] | None = None,
+) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 
@@ -1043,14 +1046,18 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         else _get_cached_sudo_password()
     )
 
-    # Local hosts with sudoers NOPASSWD should not be forced through the
+    # Environments with sudoers NOPASSWD should not be forced through the
     # interactive Hermes password prompt or the sudo -S password-pipe path.
-    # Scoped to the local terminal backend so Docker/SSH/Modal/etc. can't
-    # inherit host sudo state. Re-probes every call (no process-lifetime
-    # cache) so an expired sudo timestamp doesn't make a later command block
-    # silently without Hermes prompting.
-    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
-        return command, None
+    # BaseEnvironment supplies a probe scoped to the selected backend; direct
+    # callers retain the local-only fallback. Re-probe every call so an expired
+    # sudo timestamp cannot make a later command silently block.
+    if not has_configured_password and not sudo_password:
+        nopasswd_check = sudo_nopasswd_check or _sudo_nopasswd_works
+        try:
+            if nopasswd_check():
+                return command, None
+        except Exception:
+            pass
 
     has_sudo_prompt_callback = _get_sudo_password_callback() is not None
     should_prompt_for_sudo = (

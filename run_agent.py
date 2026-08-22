@@ -4121,10 +4121,19 @@ class AIAgent:
         if not headers:
             return
         try:
-            from agent.rate_limit_tracker import parse_rate_limit_headers
+            from agent.rate_limit_tracker import (
+                parse_rate_limit_headers,
+                throttle_seconds_from_state,
+            )
             state = parse_rate_limit_headers(headers, provider=self.provider)
             if state is not None:
                 self._rate_limit_state = state
+                if self.provider == "nous" and throttle_seconds_from_state(state) is not None:
+                    try:
+                        from agent.nous_rate_guard import record_nous_rate_limit
+                        record_nous_rate_limit(headers=headers)
+                    except Exception:
+                        pass
         except Exception:
             pass  # Never let header parsing break the agent loop
 

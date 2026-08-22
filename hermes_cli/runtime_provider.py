@@ -484,6 +484,10 @@ def _resolve_runtime_from_pool_entry(
     # config.default was still a Claude model.
     effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
+    if provider == "ollama-cloud":
+        from hermes_cli.auth import ensure_ollama_cloud_openai_base_url
+
+        base_url = ensure_ollama_cloud_openai_base_url(base_url)
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
     if provider == "openai-codex":
@@ -603,6 +607,14 @@ def _resolve_runtime_from_pool_entry(
 
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+
+    # After pool / config.yaml / env have all had a chance to overwrite
+    # the URL: a host-only model.base_url (https://ollama.com) must not
+    # re-drop /v1 once we have already healed the pool entry (#85417).
+    if provider == "ollama-cloud":
+        from hermes_cli.auth import ensure_ollama_cloud_openai_base_url
+
+        base_url = ensure_ollama_cloud_openai_base_url(base_url)
 
     return {
         "provider": provider,
@@ -1750,6 +1762,11 @@ def _resolve_explicit_runtime(
 
         if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
             api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+
+        if provider == "ollama-cloud":
+            from hermes_cli.auth import ensure_ollama_cloud_openai_base_url
+
+            base_url = ensure_ollama_cloud_openai_base_url(base_url)
 
         return {
             "provider": provider,

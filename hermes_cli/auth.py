@@ -135,6 +135,26 @@ DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
+
+
+def ensure_ollama_cloud_openai_base_url(base_url: str) -> str:
+    """Keep Ollama Cloud on the OpenAI-compat ``/v1`` surface.
+
+    ``OLLAMA_BASE_URL=https://ollama.com`` (or a host-only override) makes
+    the OpenAI client POST to the marketing homepage and log HTTP 404 with
+    ``<title>Ollama</title>`` (#85417). Chat completions live at ``/v1``.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return DEFAULT_OLLAMA_CLOUD_BASE_URL
+    try:
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+    except Exception:
+        host = ""
+    if host == "ollama.com" or host.endswith(".ollama.com"):
+        if not url.endswith("/v1"):
+            return url + "/v1"
+    return url
 DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
@@ -7359,6 +7379,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     # otherwise wedges chat inference — #50252).
     if not (isinstance(base_url, str) and base_url.strip()):
         base_url = pconfig.inference_base_url
+
+    if provider_id == "ollama-cloud":
+        base_url = ensure_ollama_cloud_openai_base_url(base_url)
 
     if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
         api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER

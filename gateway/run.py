@@ -26051,10 +26051,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             continue
                         idle_events.append(evt)
 
-                # Formatting and adapter/network delivery must never hold the
-                # routing lock. Only events classified idle above leave it.
-                # Same-session idle events still coalesce into ONE synthetic
-                # turn (#70300) — grouping happens outside the lock.
+                # Grouping, formatting, and adapter/network delivery must never
+                # hold the routing lock. Only events classified idle above leave
+                # the critical section. Same-session siblings share one turn;
+                # different sessions and routes never coalesce.
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 group_order: list[tuple[str, ...]] = []
                 for evt in idle_events:
